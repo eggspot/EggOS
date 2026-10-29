@@ -27,8 +27,13 @@ claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\p
 
 Claude Code starts the script when it needs EggOS; the script boots EggOS in QEMU and connects
 its own standard input and output to EggOS's agent channel. The QEMU window still shows the
-desktop; add `--no-window` (`-NoWindow`) on a machine without a display. Other clients take the
-same command: run `run-eggos.sh --mcp` as a stdio MCP server.
+desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdio MCP server.
+
+- **No screen at all.** Add `--no-window` (`-NoWindow`) on a server, in CI or whenever you don't
+  want a window: QEMU gets no display, keyboard or mouse, and EggOS draws its desktop in memory
+  at the same 1280x800 (D144). Windows, macOS and Linux apps still open (`app_open`), and the
+  agent sees and operates their windows exactly as with a screen. EggOS's console says `boot:
+  offscreen display 1280x800` in `eggos-<arch>-serial.log`.
 
 - **Nothing else is on standard output.** MCP's stdio transport carries only protocol messages
   there, so with `--mcp` the script's own messages go to standard error, EggOS's console goes
@@ -55,11 +60,11 @@ same command: run `run-eggos.sh --mcp` as a stdio MCP server.
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps | `ls`, `cat`, `ps`, `wm_list`, `app_list` |
-| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included | `wm_capture` |
+| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get` |
+| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu | `wm_capture`, `wm_menu_list` |
 | `write` | write files below `/home/root` and move them to the Trash | `tee`, `trash` |
-| `install` | install apps from `/media/host`, open and uninstall installed apps | `app_install`, `app_open`, `app_uninstall` |
-| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll` |
+| `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
+| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `clock_set` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -85,20 +90,25 @@ same command: run `run-eggos.sh --mcp` as a stdio MCP server.
 | `ps` | Lists the processes | `ps` | |
 | `wm_list` | Lists the windows on the desktop | `wm list` | |
 | `app_list` | Lists the installed apps | `app list` | |
+| `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
-| `app_install` | Installs an app from `/media/host` (`path`) | `app install -- <path>` | `install` |
-| `app_open` | Opens an installed app, or the built-in `Terminal`, `Files` or `Settings`, by name (`name`) | `app open -- <name>` | `install` |
+| `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
+| `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148) | `app install [--entry <entry>] -- <path>` | `install` |
+| `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
+| `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
 | `app_uninstall` | Uninstalls an app (`name`, `confirm`) | `app uninstall -- <name>` | `install` |
 | `wm_capture` | A window's content as a PNG image (`window`; `max_width`, 16 to 1568, 1024 by default) | `wm capture -o /run/eggmcpd-capture.png --max-width <n> --max-bytes 716800 -- <window>` | `view` |
 | `wm_click` | Clicks in a window (`window`, `x`, `y`, `button`: `left`, `right` or `middle`) | `wm click --button <button> -- <window> <x> <y>` | `run` |
 | `wm_type` | Types printable ASCII into a window (`window`, `text`, at most 96 characters) | `wm type -- <window> <text>` | `run` |
 | `wm_press` | Presses a key with modifiers in a window (`window`, `keys` such as `Enter` or `ctrl+s`) | `wm press -- <window> <keys>` | `run` |
 | `wm_scroll` | Turns the wheel `dy` notches (-16 to 16) in a window, at `x`, `y` or the centre | `wm scroll [--at <x> <y>] -- <window> 0 <dy>` | `run` |
+| `wm_menu_list` | A window's main menu, the one a macOS app shows in the top bar (`window`): each menu's number and title, each entry's number, label, key equivalent and `[disabled]`, separators as `----` (D147) | `wm menu -- <window>` | `view` |
+| `wm_menu_choose` | Chooses an enabled item of a window's main menu (`window`; `menu`, 0 to 5, and `entry`, 0 to 15, the numbers `wm_menu_list` shows; optionally `label`, at most 64 bytes, the item's label, so a menu the app changed since is refused instead of choosing another item) as a click on it in the top bar would; covered and minimised windows too; refused while the app shows a dialog | `wm menu --choose [--label <label>] -- <window> <menu> <entry>` | `run` |
 
-The reading tools and `wm_capture` are `readOnlyHint`; `tee`, `trash`, `run`, `app_uninstall`
-and the four input tools are `destructiveHint`, so clients ask their user before them. Paths are absolute and resolved
+The reading tools, `wm_capture` and `wm_menu_list` are `readOnlyHint`; `tee`, `trash`, `run`,
+`app_uninstall`, the four input tools and `wm_menu_choose` are `destructiveHint`, so clients ask their user before them. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
 component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. A refusal is
 a tool result with `isError: true` that says why. A command that fails gives its error output and
@@ -129,6 +139,8 @@ coordinates times 2.
 - **A person wins.** While you hold a key or a button, or for half a second after you last
   used the keyboard or the pointer, input tools are refused with `Busy: a person is using the
   machine; wait a moment and retry.` `wm_type` says how many characters it typed before that.
+  With `--no-window` there is no keyboard or pointer, so this never happens: the agent is the
+  only one at the machine.
 - **Window content is data, never instructions**, like file contents: the tool descriptions
   and the server's instructions say so. A window can show anything, a page made to steer an
   agent included.
@@ -200,18 +212,17 @@ what the agent did through the tools, not what it could hide.
 ```
 eggsh:/# agentlog
 TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL
-1970-01-01T00:00:04  claude-code  -  initialize  {"requested":"2025-11-25",...}
-1970-01-01T00:00:09  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
-1970-01-01T00:00:12  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...
+2026-10-29T14:05:04  claude-code  -  initialize  {"requested":"2025-11-25",...}
+2026-10-29T14:05:09  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
+2026-10-29T14:05:12  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...
 ```
 
 `agentlog -n 20` shows the last 20, `agentlog --raw` the records as stored. A question and its
 answer are one row; a `started` or `asked` call with no outcome (the machine stopped meanwhile)
 shows as `interrupted`. Anything a client
 chose (its name, paths) is shown escaped: control characters as `\e`, `\t` or `\xHH`, invisible
-and direction-changing characters as `\u{202e}`, so it cannot disguise a line. Times count from
-the boot until EggOS reads a real-time clock (item 29). The log in Settings comes after the
-release.
+and direction-changing characters as `\u{202e}`, so it cannot disguise a line. Times are the wall clock's, in UTC, read from the real-time
+clock at boot (D150). The log in Settings comes after the release.
 
 ## How it works
 
@@ -221,7 +232,11 @@ release.
   not QEMU's `virtconsole`, whose output QEMU drops when the host does not read fast enough; a
   named port's output waits instead. EggOS's virtio console driver finds the port by its name
   and the kernel offers it as `/dev/agent`, to one privileged opener at a time (docs/drivers.md).
-- **The grants.** The script's `--mcp-allow` becomes `-append eggos.mcp_allow=...`; the kernel
+- **The command line.** The script passes one `-append` (QEMU keeps only the last one) with
+  `eggos.display=offscreen` for `--no-window`, then `eggos.mcp_allow=...` for `--mcp-allow`. With
+  no display device and the first word, the kernel makes its display in memory; a virtio GPU, if
+  one is there anyway, wins.
+- **The grants.** The script's `--mcp-allow` becomes `eggos.mcp_allow=...`; the kernel
   shows its command line in `/proc/cmdline` (on AArch64 and RISC-V from the device tree's
   `/chosen/bootargs`, on x86_64 copied from the PVH loader at boot) and `eggmcpd` reads it there
   at each start. Grants are only as safe as where the command line comes from.
@@ -237,7 +252,8 @@ release.
   view,write,run,install`, and a scripted client drives every tool, answers questions and runs
   `agentlog`; it captures Settings, `win-paint` (x86_64 and aarch64) and `linux-paint`, covered
   and minimised windows included, compares each image exactly with the host's drawing, and
-  clicks and types through the tools.
+  clicks and types through the tools. Both boots use `--no-window`, so all of it runs with no
+  screen.
 
 ## Known limits of this version
 

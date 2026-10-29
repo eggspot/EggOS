@@ -1,13 +1,20 @@
 //! The macOS layer (D120), at `/usr/lib/eggos/macos`: the kernel starts it for a Mach-O or fat
-//! file, and it runs that macOS console program natively, arm64 programs on aarch64 and x86_64
-//! programs on x86_64. The Mach-O format, the fat slice, chained fixups, `printf`'s formatting
-//! and Darwin's numbers and layouts are pure logic with host tests; `start.rs` loads the
+//! file, and it runs that macOS program natively, arm64 programs on aarch64 and x86_64
+//! programs on x86_64. The Mach-O format, the fat slice, chained fixups and Darwin's numbers and
+//! layouts are pure logic with host tests, and `printf`'s formatting is the shared
+//! `eggos-c-format` crate's (D146); `start.rs` loads the
 //! program, standing in for dyld, `libsystem/` implements the libSystem functions it imports,
-//! and `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142).
+//! `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142), and
+//! `appkit/` AppKit for GUI apps on the window server (D147), drawing through `eggos-macos-gui`.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
+#[cfg(all(
+    target_env = "musl",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+mod appkit;
 #[cfg(any(
     test,
     all(
@@ -32,14 +39,11 @@ mod darwin;
     )
 ))]
 mod fixups;
-#[cfg(any(
-    test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+#[cfg(all(
+    target_env = "musl",
+    any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-mod format;
+use eggos_c_format as format;
 #[cfg(any(
     test,
     all(
@@ -56,6 +60,14 @@ mod foundation;
     )
 ))]
 mod getopt;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
+mod info_plist;
 #[cfg(all(
     target_env = "musl",
     any(target_arch = "aarch64", target_arch = "x86_64")

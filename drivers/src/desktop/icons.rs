@@ -1,13 +1,66 @@
 //! The shell's icon set (docs/ux/desktop-v0.3-gui.md, section 7, and 6.4.1): Terminal, Files,
-//! Settings, Host share and the generic app tile, at 48x48 and 32x32, each a table of shapes
-//! drawn with the desktop's primitives, no bitmaps. An icon draws only its own pixels.
+//! Settings, Host share, the Text Editor's page (docs/ux/text-editor-v0.3.md section 13) and
+//! the generic app tile, at 48x48 and 32x32, each a table of shapes
+//! drawn with the desktop's primitives, no bitmaps; and an installed app's own icon (D148,
+//! docs/ux/app-icons-v0.3.md), the pixels of its `app.icon` blended over what is beneath. An
+//! icon draws only its own pixels.
 
 use super::colour;
 use super::paint::{self, Canvas};
 use crate::display::Rect;
 use crate::terminal::TERM_BACKGROUND;
+use alloc::vec::Vec;
+use eggos_app_manifest::icon as icon_file;
 
 pub use eggos_app_manifest::Source;
+
+/// An installed app's own icon: the large image then the small one, premultiplied
+/// `0xAARRGGBB`, each colour channel at most its alpha.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IconPixels {
+    pixels: Vec<u32>,
+}
+
+impl core::fmt::Debug for IconPixels {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("IconPixels").finish_non_exhaustive()
+    }
+}
+
+impl IconPixels {
+    /// The icon an `app.icon` file holds; `None` when it is not one or memory is short.
+    pub fn from_file(file: &[u8]) -> Option<Self> {
+        let read = icon_file::pixels(file)?;
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(icon_file::PIXELS).ok()?;
+        pixels.extend(read);
+        Some(Self { pixels })
+    }
+
+    fn at(&self, size: IconSize) -> &[u32] {
+        match size {
+            IconSize::Large => &self.pixels[..icon_file::LARGE_PIXELS],
+            IconSize::Small => &self.pixels[icon_file::LARGE_PIXELS..],
+        }
+    }
+}
+
+/// `source`, a premultiplied pixel, over `under`: each channel `s + (d * (255 - a) + 127) /
+/// 255`.
+pub fn blend(source: u32, under: u32) -> u32 {
+    let alpha = source >> 24;
+    match alpha {
+        255 => source & 0x00ff_ffff,
+        0 => under & 0x00ff_ffff,
+        _ => {
+            let mix = |shift: u32| {
+                let (from, below) = (source >> shift & 0xff, under >> shift & 0xff);
+                (from + (below * (255 - alpha) + 127) / 255).min(255)
+            };
+            mix(16) << 16 | mix(8) << 8 | mix(0)
+        }
+    }
+}
 
 /// An icon's size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,21 +83,25 @@ impl IconSize {
 
 /// What an icon shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Icon {
+pub enum Icon<'a> {
     /// The terminal's prompt on a dark tile.
     Terminal,
     /// A yellow folder.
     Files,
     /// A grey gear.
     Settings,
+    /// An off-white page with grey lines and the yolk caret: the Text Editor (D149).
+    TextEditor,
     /// A folder with a grey front: the host's shared folder.
     HostShare,
     /// A tile with `letter` (`A`-`Z`, `0`-`9` or `?`) and, for an installed app, the badge of
     /// its source (none for a window the catalogue cannot name).
     App { letter: u8, badge: Option<Source> },
+    /// An installed app's own icon, without a badge.
+    Own(&'a IconPixels),
 }
 
-impl Icon {
+impl Icon<'_> {
     /// The generic tile for something called `name`, with `badge`: its first ASCII letter or
     /// digit, upper-cased, else `?`.
     pub fn named(name: &str, badge: Option<Source>) -> Self {
@@ -142,6 +199,35 @@ const SETTINGS_SMALL: [Shape; 8] = [
     Shape::Circle((16, 16), 4, colour::ICON_GEAR_HOLE),
 ];
 
+const TEXT_EDITOR_LARGE: [Shape; 7] = [
+    Shape::Tile(
+        rect(8, 0, 32, 48),
+        Corners::R4,
+        colour::ICON_PAGE,
+        colour::ICON_PAGE_EDGE,
+    ),
+    Shape::Fill(rect(14, 9, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 15, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 21, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 27, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 33, 10, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(26, 30, 2, 8), colour::ACCENT),
+];
+
+const TEXT_EDITOR_SMALL: [Shape; 6] = [
+    Shape::Tile(
+        rect(5, 0, 22, 32),
+        Corners::R4,
+        colour::ICON_PAGE,
+        colour::ICON_PAGE_EDGE,
+    ),
+    Shape::Fill(rect(9, 6, 14, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(9, 11, 14, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(9, 16, 14, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(9, 21, 7, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(18, 19, 2, 6), colour::ACCENT),
+];
+
 fn badge_colours(source: Source) -> (u32, u8, u32) {
     match source {
         Source::Windows => (colour::ICON_WINDOWS, b'W', colour::TEXT),
@@ -230,10 +316,25 @@ fn draw_shape(canvas: &mut Canvas<'_>, shape: Shape, x: u32, y: u32) {
     }
 }
 
+fn draw_own(canvas: &mut Canvas<'_>, pixels: &[u32], side: u32, x: u32, y: u32) {
+    let skip = canvas.clip().x.saturating_sub(x) as usize;
+    for (row, source) in pixels.chunks_exact(side as usize).enumerate() {
+        if let Some(line) = canvas.row_pixels(y + row as u32, x, x + side) {
+            for (target, &pixel) in line.iter_mut().zip(&source[skip..]) {
+                *target = blend(pixel, *target);
+            }
+        }
+    }
+}
+
 /// Draws `icon` at `size` with its top-left corner at (`x`, `y`).
-pub(super) fn draw_icon(canvas: &mut Canvas<'_>, icon: Icon, size: IconSize, x: u32, y: u32) {
+pub(super) fn draw_icon(canvas: &mut Canvas<'_>, icon: Icon<'_>, size: IconSize, x: u32, y: u32) {
     let area = Rect::new(x, y, size.pixels(), size.pixels());
     if !area.overlaps(&canvas.clip()) {
+        return;
+    }
+    if let Icon::Own(own) = icon {
+        draw_own(canvas, own.at(size), size.pixels(), x, y);
         return;
     }
     let generic;
@@ -246,10 +347,13 @@ pub(super) fn draw_icon(canvas: &mut Canvas<'_>, icon: Icon, size: IconSize, x: 
         (Icon::HostShare, IconSize::Small) => &HOST_SHARE_SMALL,
         (Icon::Settings, IconSize::Large) => &SETTINGS_LARGE,
         (Icon::Settings, IconSize::Small) => &SETTINGS_SMALL,
+        (Icon::TextEditor, IconSize::Large) => &TEXT_EDITOR_LARGE,
+        (Icon::TextEditor, IconSize::Small) => &TEXT_EDITOR_SMALL,
         (Icon::App { letter, badge }, size) => {
             generic = app_shapes(letter, badge, size);
             &generic.0[..generic.1]
         }
+        (Icon::Own(_), _) => &[],
     };
     for &shape in shapes {
         draw_shape(canvas, shape, x, y);
@@ -262,7 +366,7 @@ mod tests {
 
     const BACKGROUND: u32 = 0x00ff_00ff;
 
-    fn pixels(icon: Icon, size: IconSize) -> Vec<u32> {
+    fn pixels(icon: Icon<'_>, size: IconSize) -> Vec<u32> {
         let side = size.pixels();
         let mut pixels = vec![BACKGROUND; (side * side) as usize];
         let mut canvas =
@@ -280,7 +384,7 @@ mod tests {
             })
     }
 
-    const ICONS: [(&str, Icon); 8] = [
+    const ICONS: [(&str, Icon<'static>); 8] = [
         ("terminal", Icon::Terminal),
         ("files", Icon::Files),
         ("settings", Icon::Settings),
@@ -382,6 +486,36 @@ mod tests {
     }
 
     #[test]
+    fn the_text_editor_shows_a_page_with_lines_and_the_caret() {
+        let large = pixels(Icon::TextEditor, IconSize::Large);
+        assert_eq!(large[2 * 48 + 2], BACKGROUND);
+        assert_eq!(large[2 * 48 + 12], colour::ICON_PAGE);
+        assert_eq!(large[24 * 48 + 8], colour::ICON_PAGE_EDGE);
+        assert_eq!(large[10 * 48 + 20], colour::ICON_PAGE_LINE);
+        assert_eq!(large[34 * 48 + 26], colour::ACCENT);
+        assert_eq!(large[34 * 48 + 25], colour::ICON_PAGE);
+        let small = pixels(Icon::TextEditor, IconSize::Small);
+        assert_eq!(small[16 * 32 + 2], BACKGROUND);
+        assert_eq!(small[7 * 32 + 12], colour::ICON_PAGE_LINE);
+        assert_eq!(small[20 * 32 + 18], colour::ACCENT);
+        for size in [IconSize::Large, IconSize::Small] {
+            let side = size.pixels();
+            let mut pixels = vec![BACKGROUND; (3 * side * 3 * side) as usize];
+            let screen = Rect::new(0, 0, 3 * side, 3 * side);
+            let mut canvas = Canvas::new(&mut pixels, 3 * side as usize, screen).unwrap();
+            draw_icon(&mut canvas, Icon::TextEditor, size, side, side);
+            for y in 0..3 * side {
+                for x in 0..3 * side {
+                    let inside = (side..2 * side).contains(&x) && (side..2 * side).contains(&y);
+                    if !inside {
+                        assert_eq!(pixels[(y * 3 * side + x) as usize], BACKGROUND);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_name_gives_its_first_letter_or_a_question_mark() {
         assert_eq!(
             Icon::named("paint", Some(Source::Windows)),
@@ -406,5 +540,95 @@ mod tests {
                 }
             );
         }
+    }
+
+    fn own_from(pixels: &[u32]) -> IconPixels {
+        let mut all = [0u32; icon_file::PIXELS];
+        all[..pixels.len()].copy_from_slice(pixels);
+        let mut file = [0u8; icon_file::FILE_BYTES];
+        icon_file::write(&all, &mut file);
+        IconPixels::from_file(&file).unwrap()
+    }
+
+    #[test]
+    fn own_pixels_blend_over_what_is_beneath() {
+        assert_eq!(blend(0xffff_0000, BACKGROUND), 0x00ff_0000);
+        assert_eq!(blend(0x8000_8000, BACKGROUND), 0x007f_807f);
+        assert_eq!(blend(0x0000_0000, BACKGROUND), 0x00ff_00ff);
+        assert_eq!(blend(0xffff_ffff, BACKGROUND), 0x00ff_ffff);
+        assert_eq!(blend(0x8000_8000, colour::DOCK), {
+            let mix = |shift: u32| {
+                let below = colour::DOCK >> shift & 0xff;
+                (below * 127 + 127) / 255
+            };
+            mix(16) << 16 | (0x80 + mix(8)) << 8 | mix(0)
+        });
+    }
+
+    #[test]
+    fn an_own_icon_draws_inside_its_square_and_its_clip() {
+        let mut large = vec![0u32; icon_file::LARGE_PIXELS];
+        large[0] = 0xffff_0000;
+        large[1] = 0x8000_8000;
+        large[47] = 0xffff_ffff;
+        let own = own_from(&large);
+        let drawn = pixels(Icon::Own(&own), IconSize::Large);
+        assert_eq!(drawn[0], 0x00ff_0000);
+        assert_eq!(drawn[1], 0x007f_807f);
+        assert_eq!(drawn[2], BACKGROUND);
+        assert_eq!(drawn[47], 0x00ff_ffff);
+        let small = pixels(Icon::Own(&own), IconSize::Small);
+        assert!(small.iter().all(|&pixel| pixel == BACKGROUND));
+        let side = 48u32;
+        let mut screen = vec![BACKGROUND; (3 * side * 3 * side) as usize];
+        let clip = Rect::new(side + 1, side, 3 * side - side - 1, 3 * side - side);
+        let mut canvas = Canvas::new(&mut screen, 3 * side as usize, clip).unwrap();
+        draw_icon(&mut canvas, Icon::Own(&own), IconSize::Large, side, side);
+        let at = |x: u32, y: u32| screen[(y * 3 * side + x) as usize];
+        assert_eq!(at(side, side), BACKGROUND, "clipped away");
+        assert_eq!(at(side + 1, side), 0x007f_807f);
+        assert_eq!(at(2 * side - 1, side), 0x00ff_ffff);
+        assert_eq!(at(2 * side, side), BACKGROUND);
+        assert_eq!(at(side + 1, side - 1), BACKGROUND);
+    }
+
+    #[test]
+    fn a_channel_above_its_alpha_draws_as_the_alpha_and_other_files_are_no_icon() {
+        let own = own_from(&[0x80ff_0000]);
+        assert_eq!(
+            pixels(Icon::Own(&own), IconSize::Large)[0],
+            blend(0x8080_0000, BACKGROUND)
+        );
+        assert!(IconPixels::from_file(&[0u8; icon_file::FILE_BYTES - 1]).is_none());
+        assert!(IconPixels::from_file(&[0u8; icon_file::FILE_BYTES + 1]).is_none());
+    }
+
+    #[test]
+    fn own_icons_of_formulas_are_pinned_at_both_sizes() {
+        let formula = |side: u32| {
+            (0..side * side).map(move |index| {
+                let (x, y) = (index % side, index / side);
+                let alpha = x * 255 / (side - 1);
+                let colour = (y * 255 / (side - 1)).min(alpha);
+                alpha << 24 | colour << 16 | (((alpha - colour) / 2) << 8) | (colour / 3)
+            })
+        };
+        let mut all: Vec<u32> = formula(48).collect();
+        all.extend(formula(32));
+        let own = own_from(&all);
+        let large = pixels(Icon::Own(&own), IconSize::Large);
+        let small = pixels(Icon::Own(&own), IconSize::Small);
+        let expected: Vec<u32> = all
+            .iter()
+            .map(|&pixel| blend(icon_file::sanitised(pixel), BACKGROUND))
+            .collect();
+        assert_eq!(large, expected[..icon_file::LARGE_PIXELS]);
+        assert_eq!(small, expected[icon_file::LARGE_PIXELS..]);
+        assert_eq!(large[0], BACKGROUND);
+        assert_eq!(large[47] >> 16 & 0xff, 0);
+        assert_ne!(
+            hash(&large),
+            hash(&pixels(Icon::named("x", None), IconSize::Large))
+        );
     }
 }

@@ -209,8 +209,9 @@ row 27. It is a strip of items, each with a rectangular hit target of the bar's 
   once a minute (its rect, 56x16 for 7 glyphs centred on the midpoint, is what gets flushed,
   whichever text is shown). Until a real-time clock driver sets the wall clock
   (D73: it starts at the epoch; the RTC is a v0.3.0 nice-to-have) it shows uptime instead,
-  `up m:ss` in `text.dim`, updated once a second. The rule: realtime seconds < 86400 means
-  "unset". Not a button.
+  `up m:ss` in `text.dim`, updated once a second. The rule: the wall clock is "unset" until a
+  hardware clock was read at boot or the clock was set (D150; first written as realtime
+  seconds < 86400). Not a button.
 - Right, the power button: a 28x28 hit target whose right edge is 8 px from the screen edge,
   showing the 13x13 icon below in `text` (centred; `#` = pixel). Hover `bar.hover`, pressed
   `bar.pressed`. Click opens the power menu; a second click, Esc, or a click anywhere outside

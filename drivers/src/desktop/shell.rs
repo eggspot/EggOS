@@ -48,6 +48,7 @@ const DOCK_MARK_TOP: u32 = 52;
 const DOCK_SEPARATOR_ROOM: u32 = 2 * DOCK_GAP + 1;
 const DOCK_SEPARATOR_INSET: u32 = 8;
 const DOCK_PINNED: [AppId; 3] = [AppId::Terminal, AppId::Files, AppId::Settings];
+const TEXT_EDITOR_TITLE_SUFFIX: &str = " - Text Editor";
 const DOCK_CAPACITY: usize = DOCK_PINNED.len() + MAX_WINDOWS;
 const STARTING_MS: u32 = 2000;
 const TOOLTIP_HEIGHT: u32 = 24;
@@ -76,6 +77,8 @@ pub(super) enum PanelItem {
     /// The dock's icon of the window in this slot: minimised, or of an app the catalogue
     /// cannot name.
     DockWindow(u8),
+    /// The macOS top bar's title of this menu of the main menu it shows.
+    MenuTitle(u8),
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -255,13 +258,17 @@ impl Desktop {
     }
 
     /// The app window `slot` belongs to, if the catalogue knows it: the terminal's window is
-    /// Terminal's; another window (a dialog: its parent) is the app its title names.
+    /// Terminal's; a window whose title ends with ` - Text Editor` the Text Editor's (D149);
+    /// another window (a dialog: its parent) is the app its title names.
     pub(super) fn app_of(&self, slot: usize) -> Option<AppId> {
         let slot = self.window_at(slot).parent.map_or(slot, usize::from);
         if slot == TERMINAL_SLOT {
             return Some(AppId::Terminal);
         }
         let title = self.window_at(slot).title();
+        if title.ends_with(TEXT_EDITOR_TITLE_SUFFIX) {
+            return Some(AppId::TextEditor);
+        }
         [AppId::Files, AppId::Settings]
             .into_iter()
             .find(|&app| self.catalogue.name(app) == title)
@@ -269,7 +276,7 @@ impl Desktop {
     }
 
     /// Window `slot`'s icon: its app's, else the generic tile of its title (6.4.1).
-    pub(super) fn window_icon(&self, slot: usize) -> Icon {
+    pub(super) fn window_icon(&self, slot: usize) -> Icon<'_> {
         match self.app_of(slot) {
             Some(app) => self.catalogue.icon(app),
             None => Icon::named(self.window_at(slot).title(), None),
@@ -377,6 +384,11 @@ impl Desktop {
         }
         if self.layout.top_bar.is_some() || self.layout.taskbar.is_some() {
             item(PanelItem::Power, self.power_button());
+        }
+        if let Some(bar) = self.menu_bar() {
+            self.for_each_menu_title(bar.window, |menu, rect| {
+                item(PanelItem::MenuTitle(menu as u8), rect)
+            });
         }
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
         self.for_each_taskbar_item(&mut item);
@@ -510,8 +522,9 @@ impl Desktop {
     /// terminal's window; Settings and Files focus their window if they have one, else ask the
     /// kernel to start them (Files says it is not installed when it is not), as
     /// `Install from host share...` asks to start the installer and the host share Files on
-    /// it; installed apps, and the host share without Files, focus the terminal and ask the
-    /// kernel to type their command in it.
+    /// it; the Text Editor starts a new window each time, as Notepad does (D149); installed
+    /// apps, and the host share without Files, focus the terminal and ask the kernel to type
+    /// their command in it.
     pub fn launch(
         &mut self,
         app: AppId,
@@ -542,11 +555,19 @@ impl Desktop {
                 self.show_notice(super::launcher::FILES_MISSING, damage);
                 Action::None
             }
+            AppId::TextEditor if !self.catalogue.text_editor_present() => {
+                self.show_notice(super::launcher::TEXT_EDITOR_MISSING, damage);
+                Action::None
+            }
             AppId::HostShare if !self.catalogue.files_present() => {
                 self.activate(TERMINAL_SLOT, damage, events);
                 Action::Type(app)
             }
-            AppId::Files | AppId::Settings | AppId::InstallFromHostShare | AppId::HostShare => {
+            AppId::Files
+            | AppId::Settings
+            | AppId::TextEditor
+            | AppId::InstallFromHostShare
+            | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {
                     pending == app && self.now_ms.wrapping_sub(at) < STARTING_MS
                 });
@@ -601,6 +622,10 @@ impl Desktop {
             PanelItem::DockApp(app) => self.activate_app(app, damage, events),
             PanelItem::DockWindow(slot) => {
                 self.activate(usize::from(slot), damage, events);
+                Action::None
+            }
+            PanelItem::MenuTitle(menu) => {
+                self.press_menu_title(usize::from(menu), damage, events);
                 Action::None
             }
         }
@@ -700,7 +725,10 @@ impl Desktop {
             return;
         };
         let rested = self.now_ms.wrapping_sub(self.panels.hover_since_ms) >= TOOLTIP_DELAY_MS;
-        let blocked = self.panels.tooltip_spent || self.popup_open() || self.menu_open;
+        let blocked = self.panels.tooltip_spent
+            || self.popup_open()
+            || self.menu_open
+            || self.open_main_menu.is_some();
         if self.panels.tooltip.is_some() || !rested || blocked {
             return;
         }
@@ -873,9 +901,25 @@ impl Desktop {
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             super::draw_chip_text(canvas, chip, self.window_at(slot).title());
         });
-        let clock = self.clock_rect();
-        canvas.text(clock.x, clock.y, self.clock_text(), colour::TEXT_DIM);
+        self.draw_menu_titles(canvas);
+        self.draw_clock(canvas);
         self.draw_power(canvas, bar);
+    }
+
+    fn draw_clock(&self, canvas: &mut Canvas<'_>) {
+        let clock = self.clock_rect();
+        let text = self.clock_text();
+        let width = text.len() as u32 * GLYPH_WIDTH as u32;
+        let ink = match self.clock_shows_time_of_day() {
+            true => colour::TEXT,
+            false => colour::TEXT_DIM,
+        };
+        canvas.text(
+            clock.x + clock.width.saturating_sub(width) / 2,
+            clock.y,
+            text,
+            ink,
+        );
     }
 
     fn draw_taskbar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
@@ -933,8 +977,7 @@ impl Desktop {
                 _ => {}
             }
         });
-        let clock = self.clock_rect();
-        canvas.text(clock.x, clock.y, self.clock_text(), colour::TEXT_DIM);
+        self.draw_clock(canvas);
         self.draw_power(canvas, bar);
     }
 

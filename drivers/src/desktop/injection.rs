@@ -231,7 +231,7 @@ impl Desktop {
         }
     }
 
-    fn any_window(&self, window: u32) -> Result<usize, WindowError> {
+    pub(super) fn any_window(&self, window: u32) -> Result<usize, WindowError> {
         let id = WindowId::try_from(window).map_err(|_| WindowError::NoSuchWindow)?;
         self.find(id).ok_or(WindowError::NoSuchWindow)
     }

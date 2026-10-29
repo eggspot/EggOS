@@ -115,6 +115,17 @@ pub trait View {
 
     /// Called whenever the loop wakes, with the time.
     fn tick(&mut self, _now_ms: u32) {}
+
+    /// The user asked to close the window; `true` closes it now, `false` keeps it open (the
+    /// view asks first, and [`Self::handle`] says when to close).
+    fn close_requested(&mut self, _time_ms: u32) -> bool {
+        true
+    }
+
+    /// The window's new title, once after it changes.
+    fn take_title(&mut self) -> Option<&str> {
+        None
+    }
 }
 
 struct Tree<'a, A, const N: usize>(&'a mut A);
@@ -180,6 +191,9 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     let mut everything = true;
     let mut records = [0u8; RECORD_SIZE * RECORDS_READ];
     loop {
+        if let Some(title) = view.take_title() {
+            window.set_title(title)?;
+        }
         draw(window, view, everything)?;
         everything = false;
         let shape = view.pointer_shape();
@@ -197,7 +211,11 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                 continue;
             }
             match event.input {
-                Input::CloseRequest => return Ok(()),
+                Input::CloseRequest => {
+                    if view.close_requested(event.time_ms) {
+                        return Ok(());
+                    }
+                }
                 Input::Resize { width, height } => {
                     window.resize(width, height)?;
                     let (width, height) = window.size();

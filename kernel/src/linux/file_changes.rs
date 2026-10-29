@@ -10,7 +10,7 @@
 use super::descriptors::{FileKind, OpenFile, open_flag};
 use super::files::{PathBuffer, read_path, starting_points, walk_error};
 use super::thread::LinuxThread;
-use super::{Errno, Iovecs, MAX_RW_COUNT, iovec, time};
+use super::{Errno, Iovecs, MAX_RW_COUNT, iovec};
 use crate::process::Process;
 use crate::vfs::{self, NAME_MAX, Node, NodeKind, Refused, WriteAt};
 use eggos_hal::Platform;
@@ -27,9 +27,9 @@ pub(super) const UMASK: u32 = 0o022;
 const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;
 
-/// The wall clock's seconds.
+/// The wall clock's seconds ([`crate::wall_clock`], D150).
 pub fn now<P: Platform>() -> u64 {
-    time::monotonic_nanoseconds::<P>() / 1_000_000_000
+    crate::wall_clock::seconds::<P>()
 }
 
 /// The Linux error for a file system's refusal.

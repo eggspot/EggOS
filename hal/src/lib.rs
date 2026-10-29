@@ -173,6 +173,22 @@ pub trait Platform: 'static {
         None
     }
 
+    /// Calls `clock` with the platform's own real-time clock, one no bus describes, if it has
+    /// one (D150): the PC's CMOS clock on x86_64, unless the ACPI FADT says there is none. The
+    /// device-tree clocks of AArch64 and RISC-V are drivers of the driver model instead. The
+    /// default: none. The clock calls `wait_duty` at each poll while it waits for the hardware.
+    ///
+    /// # Safety
+    ///
+    /// Every call, and every use of the clock it hands `clock`, is made under one lock the
+    /// caller holds for the platform's clock, so no two calls' register accesses interleave
+    /// (the CMOS clock's index and data ports are one shared pair).
+    unsafe fn platform_clock(
+        _wait_duty: fn(),
+        _clock: &mut dyn FnMut(&dyn eggos_drivers::rtc::RealTimeClock),
+    ) {
+    }
+
     /// Whether a device-tree device that says neither `dma-coherent` nor `dma-noncoherent` has
     /// coherent DMA: the architecture's convention (Linux's), true on RISC-V and false on Arm.
     const DEVICE_TREE_DMA_COHERENT_BY_DEFAULT: bool = true;
@@ -251,7 +267,7 @@ pub trait Platform: 'static {
     /// What user programs may run beyond the base instruction set, as Linux's `AT_HWCAP` and
     /// `AT_HWCAP2` encode it for the architecture (D51): only what user mode really runs as
     /// the kernel sets it up. FP/SIMD, which programs get on first use (D54): FP and ASIMD on
-    /// AArch64 (no SVE or SME), RV64GC's letters with F and D on RISC-V (no V), and on x86_64
+    /// AArch64 (no SVE or SME), with the ARMv8.1 atomics when the processor has them (D151), RV64GC's letters with F and D on RISC-V (no V), and on x86_64
     /// `CPUID.1:EDX`, with `AT_HWCAP2` 0 (its `FSGSBASE` bit would let programs set their GS
     /// base, D49's trigger).
     fn linux_hardware_capabilities() -> [u64; 2];

@@ -7,12 +7,15 @@ publish = false
 
 [dependencies]
 eggos-app = { path = "../userland/app", features = ["window"] }
+eggos-editor = { path = "../userland/editor", features = ["window"] }
 eggos-files = { path = "../userland/files", features = ["window", "memory"] }
 eggos-mcp = { path = "../userland/mcp", features = ["fuzz"] }
 eggos-eggway = { path = "../userland/eggway", features = ["fuzz"] }
 eggos-linux-gui-tests = { path = "../tests/linux-gui" }
+eggos-macos-gui-tests = { path = "../tests/macos-gui" }
 eggos-wayland = { path = "../wayland" }
 eggos-app-manifest = { path = "../app-manifest" }
+eggos-calendar = { path = "../calendar" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
 eggos-png = { path = "../png" }

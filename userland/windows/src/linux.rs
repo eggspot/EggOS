@@ -13,6 +13,7 @@ pub mod number {
     pub const MMAP: usize = 9;
     pub const MPROTECT: usize = 10;
     pub const MUNMAP: usize = 11;
+    pub const RT_SIGACTION: usize = 13;
     pub const IOCTL: usize = 16;
     pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
@@ -29,6 +30,7 @@ pub mod number {
     pub const CLOCK_GETTIME: usize = 228;
     pub const CLOCK_NANOSLEEP: usize = 230;
     pub const EXIT_GROUP: usize = 231;
+    pub const TGKILL: usize = 234;
     pub const OPENAT: usize = 257;
     pub const MKDIRAT: usize = 258;
     pub const NEWFSTATAT: usize = 262;
@@ -61,6 +63,8 @@ pub mod number {
     pub const CLOCK_NANOSLEEP: usize = 115;
     pub const SCHED_GETAFFINITY: usize = 123;
     pub const SCHED_YIELD: usize = 124;
+    pub const TGKILL: usize = 131;
+    pub const RT_SIGACTION: usize = 134;
     pub const GETPID: usize = 172;
     pub const GETTID: usize = 178;
     pub const MUNMAP: usize = 215;
@@ -383,6 +387,69 @@ pub fn process_id() -> u32 {
 pub fn thread_id() -> u32 {
     // SAFETY: `gettid` touches no memory.
     unsafe { syscall(number::GETTID, [0; 6]) }.unwrap_or(0) as u32
+}
+
+/// A signal handler that gets the signal's `siginfo_t` and the interrupted `ucontext_t`.
+pub type SignalHandler = extern "C" fn(i32, *const u8, *mut u8);
+
+const SIGNAL_DEFAULT: usize = 0;
+const SA_SIGINFO: u64 = 4;
+#[cfg(target_arch = "x86_64")]
+const SA_RESTORER: u64 = 0x0400_0000;
+const SIGNAL_SET_BYTES: usize = 8;
+
+fn set_signal_action(signal: i32, handler: usize, flags: u64) -> Result<usize, Errno> {
+    #[cfg(target_arch = "x86_64")]
+    let (flags, restorer) = (
+        flags | SA_RESTORER,
+        eggos_runtime::process::restore_after_signal as *const () as u64,
+    );
+    #[cfg(target_arch = "aarch64")]
+    let restorer = 0u64;
+    let action = [handler as u64, flags, restorer, 0];
+    // SAFETY: `rt_sigaction` reads one `struct sigaction` from the borrowed words and changes
+    // only the signal's action.
+    unsafe {
+        syscall(
+            number::RT_SIGACTION,
+            [
+                signal as usize,
+                action.as_ptr() as usize,
+                0,
+                SIGNAL_SET_BYTES,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+/// Has `handler` run on `signal`, for every thread of the process.
+pub fn handle_signal(signal: i32, handler: SignalHandler) -> Result<usize, Errno> {
+    set_signal_action(signal, handler as usize, SA_SIGINFO)
+}
+
+/// Gives `signal` back its default action.
+pub fn default_signal_action(signal: i32) -> Result<usize, Errno> {
+    set_signal_action(signal, SIGNAL_DEFAULT, 0)
+}
+
+/// Sends `signal` to the calling thread.
+pub fn signal_this_thread(signal: i32) -> Result<usize, Errno> {
+    // SAFETY: `tgkill` touches no memory.
+    unsafe {
+        syscall(
+            number::TGKILL,
+            [
+                process_id() as usize,
+                thread_id() as usize,
+                signal as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
 }
 
 /// Points the calling thread's register for its thread environment block at `address`: GS's

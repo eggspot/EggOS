@@ -1,5 +1,6 @@
 //! The Win32 functions Windows programs import, implemented natively on EggOS's Linux system
-//! calls and, for windows, the window server: each is an `extern "efiapi"` function (Windows'
+//! calls and, for windows, the window server, and the C runtime of MSVC's `/MD` programs
+//! (`crt/`): each is an `extern "efiapi"` function (Windows'
 //! calling convention on x86_64 and aarch64, `abi.rs`) the program calls through its import
 //! address table, directly on x86_64 and through an entry that restores `x18` on aarch64.
 
@@ -17,6 +18,7 @@ macro_rules! exports {
 
 mod console;
 mod controls;
+mod crt;
 mod dialog;
 mod directory;
 mod environment;
@@ -47,6 +49,7 @@ use eggos_runtime::errno::Errno;
 
 pub use abi::call_program;
 pub use console::set_gui_program;
+pub use crt::set_processor_features;
 pub use heap::{allocate as heap_allocate, process_heap};
 pub use process::set_process;
 pub use thread::finish as end_thread;
@@ -106,6 +109,36 @@ impl<T> SpinLock<T> {
         self.locked.store(false, Ordering::Release);
         result
     }
+
+    /// Runs `work` as [`SpinLock::with`] does, unless `give_up`, asked each time the wait
+    /// yields, says to stop waiting for the lock: it then returns `None` without running `work`.
+    pub fn try_with<R>(
+        &self,
+        mut give_up: impl FnMut() -> bool,
+        work: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        use core::sync::atomic::Ordering;
+        let mut spins = 0u32;
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spins = spins.wrapping_add(1);
+            if spins.is_multiple_of(SPINS_BEFORE_YIELD) {
+                if give_up() {
+                    return None;
+                }
+                crate::linux::yield_now();
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+        // SAFETY: the lock is held, so this is the only reference to the value.
+        let result = work(unsafe { &mut *self.value.get() });
+        self.locked.store(false, Ordering::Release);
+        Some(result)
+    }
 }
 
 /// Sets the calling thread's last error and returns `value`: how a failing function ends.
@@ -129,6 +162,7 @@ const KERNEL32: &[&[Export]] = &[
     thread::EXPORTS,
     thread_environment::EXPORTS,
     time::EXPORTS,
+    crt::KERNEL32_EXPORTS,
 ];
 
 const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS, system::NTDLL_EXPORTS];
@@ -158,6 +192,8 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::User32 => USER32,
         Library::Gdi32 => GDI32,
         Library::Comdlg32 => COMDLG32,
+        Library::VcRuntime => crt::VCRUNTIME,
+        Library::Ucrt => crt::UCRT,
     }
 }
 

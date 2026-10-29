@@ -107,7 +107,7 @@ Must-have, in order:
     capabilities: users can double-click the title bar to maximise the terminal; users see a
     pointer drawn by the GPU's cursor queue and hover highlights on the bar and controls;
     users see a boot screen with the logo and progress before the desktop; users can drag a
-    window partly off screen; users see the wall clock once an RTC driver sets it; users with a display smaller than
+    window partly off screen; users see the wall clock once an RTC driver sets it (done, D150); users with a display smaller than
     658x458 get a full-screen terminal; console output never waits for the desktop's repaint
     (D115's review follow-ups).
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
@@ -307,7 +307,7 @@ D16):
     space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
 28. **Done** — users can now connect Claude Code or any MCP client to EggOS and let it work
     with files, programs and apps under the grants they set (D136, D137, docs/mcp.md):
-    `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` for headless hosts) wires a named
+    `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` with no screen, D144) wires a named
     virtio console port to the script's stdio; init starts `eggmcpd` when `/dev/agent` exists;
     the tools `ls`, `cat`, `ps`, `wm_list` and `app_list` read; with `--mcp-allow
     write,run,install` (kernel command line, `/proc/cmdline`) `tee` and `trash` write below
@@ -351,6 +351,13 @@ D16):
     it as data; `wm_click`, `wm_type`, `wm_press` and `wm_scroll` under `run`; each call in the
     audit log (typed text included); the MCP boot check captures Settings, `win-paint` and
     `linux-paint` (covered and minimised) exactly and clicks and types through the tools.
+47b. **done** — users can now run EggOS with no screen at all and still open Windows, macOS and
+    Linux GUI apps for an AI agent (D144, docs/mcp.md): `run-eggos.sh --mcp --no-window`
+    (`-Mcp -NoWindow`) gives QEMU no display, keyboard or mouse and passes
+    `eggos.display=offscreen[:<width>x<height>]` in the one `-append` it builds with the grants;
+    with no display device the kernel draws the desktop into a framebuffer in memory, at
+    1280x800 by default, and ticks its clock without an input poller. The MCP check's boots run
+    that way on all three architectures.
 42. **done** — users can now run Windows programs with buttons, text boxes, labels, lists,
     menus, timers and Open and Save dialogs (D145, docs/windows-programs.md): child windows in
     the layer, the system's `BUTTON`, `EDIT`, `STATIC` and `LISTBOX` with `WM_COMMAND`, the
@@ -358,14 +365,68 @@ D16):
     comdlg32's `GetOpenFileNameW` and `GetSaveFileNameW` on EggOS's own picker, all in Claude
     Fable's design (docs/ux/windows-controls-v0.3.md). The Windows GUI boot test drives
     `win-controls.exe` through typing, clicks, the menu and both pickers on x86_64 and aarch64
-    and compares every frame with the host's render. Next: multi-line edits and the clipboard
-    (item 43's notepad), radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet").
-41. macOS GUI apps, part 1.
+    and compares every frame with the host's render. Next: multi-line edits and the clipboard,
+    radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet").
+43. **done** — users can now run Windows programs built by Microsoft's compiler on its C
+    runtime (D146, docs/windows-programs.md): C programs built with `/MD`, console or GUI, x64
+    on x86_64 and ARM64 on aarch64, import `vcruntime140.dll` and the Universal C Runtime
+    through the `api-ms-win-crt-*` API sets, which the Windows layer now provides: the
+    runtime's startup and exit, `malloc`, strings, `FILE` streams in text or binary mode and
+    `printf`'s family (one engine with the macOS layer's, `eggos-c-format`). A QEMU test on
+    x86_64 and aarch64 runs `eggpad.exe`, our own C notepad built by MSVC in CI, opens a file,
+    types, saves it with Ctrl+S and reads it back. Next: `scanf`, locales, the math library,
+    C++ exceptions (D146's "Not yet").
+41. **done** — users can now run macOS GUI apps (D147, docs/macos-programs.md): programmatic
+    Objective-C AppKit apps in an `.app` bundle install and open from the launcher, arm64 on
+    aarch64 and x86_64 on x86_64. The macOS layer's own AppKit runs NSApplication's event loop
+    and its delegate, NSWindow on the window server, NSView's `drawRect:` with NSColor,
+    `NSRectFill`, NSBezierPath and NSString's `drawAtPoint:`, and `mouseDown:` and `keyDown:`;
+    NSBundle reads the bundle's `Info.plist`. A QEMU test installs `mac-paint.app`, our own
+    source built by clang in CI, opens it from the launcher and compares every frame.
+44. **done** — users can now use macOS apps' buttons, text fields, alerts and menus (D147):
+    NSButton's target and action, editable NSTextField and labels drawn as the toolkit's
+    controls, NSAlert's `runModal` in a dialog, and the main menu in the macOS profile's top bar
+    (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
+    same test types into a field, presses buttons, answers an alert, opens the `File` menu and
+    quits with Cmd+Q. Next: nibs, Swift, scroll views, images, timers (D147's "Not yet").
+45. **done** — users can now install an app from a `.zip` and see its own icon (D148,
+    docs/apps.md, Claude Fable's docs/ux/app-icons-v0.3.md): `app install <file>.zip` (and
+    Files and the installer's window, and the MCP tool `app_install`) extracts the archive's
+    one program with everything beside it, `--entry` choosing among several, through our own
+    inflate (every DEFLATE block type, shared by a new row-by-row PNG decoder in `eggos-png`);
+    the installer then makes the app's own icon from a Windows program's icon resources, a
+    bundle's `.icns` or a PNG beside it, scaled to 48 and 32 pixels and written as `app.icon`,
+    which the dock, desktop, launcher, taskbar and switcher draw instead of the letter tile;
+    `app list` and `app_list` name it. A QEMU test installs `mac-paint.zip` and compares the
+    desktop's and the launcher's frames, its own icon in them. Next: `app icon` and `app_icon`,
+    icons in the installer's dialogs and title bars, 2x images, binary property lists.
+46. **done** — users can now open, edit, find in and save text files in a native Text Editor
+    (D149, docs/apps.md, Claude Fable's docs/ux/text-editor-v0.3.md), replacing old item 24's
+    terminal `edit`: Files opens text files in it, the launcher lists it (Notepad, TextEdit,
+    gedit), `edit <path>` opens a file in a window of its own and returns, `app open "Text
+    Editor"` and the MCP tool `edit_open` open it too. New, Open, Save and Save As (a path bar,
+    no picker yet), find with next, previous and `Match case`, undo and redo, cut, copy and
+    paste, line numbers, `Ln, Col` and `Modified` in the status bar, CRLF files and byte-order
+    marks kept, up to 4 MiB of UTF-8, both Ctrl and Cmd in every profile; the editing logic is
+    the host-tested `eggos-editor` crate. A QEMU test opens a file with `edit`, types, finds,
+    saves and closes it, every frame compared, and `cat` reads the saved text. Next: word wrap,
+    replace, a file picker, a shared clipboard, text beyond Egg Mono's glyphs.
+29. **done** — users can now see the real date and time, and files carry real times (D150,
+    docs/coreutils.md, Claude Fable's docs/ux/date-time-v0.3.md): the kernel reads the
+    machine's real-time clock once at boot (x86_64's CMOS clock, AArch64's PL031 and RISC-V's
+    Goldfish clock, behind the driver model), so `CLOCK_REALTIME`, `gettimeofday`, `time`, file
+    times, the Windows and macOS layers' clocks and the desktop's clock (`HH:MM`) are real.
+    `date` shows and, for root, sets the time (`date -s`), `hwclock` reads and writes the
+    hardware clock, Settings has a `Date & time` pane, and the MCP tools `clock_get` and
+    `clock_set` read and set it; setting the clock writes the hardware clock too. All UTC. A
+    QEMU test checks on all three architectures that `date`, a new file's time and `hwclock`
+    are within minutes of the host's clock and that `date -s` reaches the hardware clock.
+    Next: time zones, network time, `/dev/rtc0`, alarms.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
-Editor; 29 an RTC driver for `date`. Moved after the release: networking and the terminal's
-`edit`; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
+Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date` (done, D150). Moved after
+the release: networking; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
 
 ## Milestones
 
@@ -684,7 +745,7 @@ disk (D131); no network or real hardware yet.
 | Kernel | per-CPU scheduler locks, the Linux syscalls (processes run their programs in user mode on every CPU, preempted on return to user mode, and make system calls; user address spaces exist; CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch on yield and, with time slices, at preemption points; they sleep and wait in wait queues, and an idle CPU takes no tick; every CPU starts, has its per-CPU block, takes its own timer and wake-up interrupts and runs threads, and idle CPUs take threads from busy ones) |
 | Hardware | the other architectures; every driver beyond the early UARTs and the polled virtio core with virtio-rng (D111), virtio-gpu 2D (D112), virtio-input (D113) and virtio-blk (D130); device interrupts for drivers |
 | Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write`, `writev`, `exit`, `brk`, `mmap`, `munmap`, `mprotect`, `getpid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`, `getrandom`, `sched_yield`, `arch_prctl`, the resource limits and the signal state's calls, `poll`, `ppoll` and the console's `ioctl`s work, with `AT_RANDOM` from the kernel's generator; pages are mapped on first touch and the stack grows on demand; each thread keeps its own thread pointer; signals are sent and delivered to handlers on Linux's frames, faults included, real-time signals are queued with their `siginfo_t`, and `rt_sigsuspend` and `pause` wait for a handler; the clocks read and programs sleep; the console's status is a character device and it cannot seek; `futex` waits and wakes; `clone` starts threads, Rust's `std::thread` runs, each on its process's one CPU until TLB shootdown; FP state per thread; signals between a process's threads and to the process sent and delivered, interrupted futex waits and sleeps still missing; new processes and files still missing), Android, Windows (console programs, and GUI programs' windows, painting, input and message
-boxes, part 1, D129; controls, menus, timers and file pickers, part 2, D145; the C runtime missing), macOS and iOS layers |
+boxes, part 1, D129; controls, menus, timers and file pickers, part 2, D145; C programs on MSVC's C runtime, D146), macOS and iOS layers |
 | Desktop / UX | compositor, apps, maximise, pointer, boot screen (the minimal desktop works: wallpaper, top bar with clock and power menu, the shell's terminal in a window moved, focused and minimised with the mouse, D115); design in `docs/ux/` |
 | AI-native | built-in MCP server, app capability registry, agent permissions |
 | Editions | component manager; packaging and policy per edition |

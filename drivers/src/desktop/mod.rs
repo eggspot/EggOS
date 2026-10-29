@@ -1,6 +1,6 @@
 //! The desktop and its window server's state (D115, D127, D128): the procedural wallpaper, the
-//! top bar with the system item, the clock, the chips of minimised windows and the power button
-//! and its menu, and the windows: the terminal's and those programs open through
+//! top bar with the system item, the focused app's main menu (D147), the clock, the chips of
+//! minimised windows and the power button and its menu, and the windows: the terminal's and those programs open through
 //! `/dev/window` (docs/windows.md), with their stacking, focus, chrome, dragging, resizing,
 //! maximising, minimising, close requests, the switcher, the window menu, the server's
 //! shortcuts and the pointer (docs/ux/desktop-v0.3-gui.md, sections 2 to 5).
@@ -10,8 +10,9 @@
 //! the events its clients get in an [`EventSink`], and [`Desktop::draw`] repaints any
 //! rectangle of a framebuffer from scratch, copying each window's content from its buffer
 //! through [`Contents`]. Every window table is fixed ([`protocol::MAX_WINDOWS`]); after
-//! [`Desktop::new`] only the catalogue of installed apps allocates, when the kernel hands the
-//! desktop a new one ([`Desktop::set_catalogue`]).
+//! [`Desktop::new`] only the catalogue of installed apps and the windows' main menus allocate,
+//! when the kernel hands the desktop a new catalogue ([`Desktop::set_catalogue`]) or a client
+//! sets a menu ([`Desktop::set_menu`]).
 
 mod catalogue;
 mod desktop_icons;
@@ -20,6 +21,7 @@ mod icons;
 mod injection;
 mod launcher;
 pub mod layout;
+mod main_menu;
 mod management;
 mod paint;
 mod pointer;
@@ -31,6 +33,8 @@ mod windows;
 
 #[cfg(test)]
 mod injection_tests;
+#[cfg(test)]
+mod main_menu_tests;
 #[cfg(test)]
 mod management_tests;
 #[cfg(test)]
@@ -46,12 +50,14 @@ pub use catalogue::{
 };
 pub use desktop_icons::{ICON_CELL, ICON_GRID_MARGIN};
 pub use events::EventQueue;
-pub use icons::{Icon, IconSize, Source};
+pub use icons::{Icon, IconPixels, IconSize, Source};
 pub use injection::{
     ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
     TerminalInput,
 };
-pub use launcher::{FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS};
+pub use launcher::{
+    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS, TEXT_EDITOR_MISSING,
+};
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
@@ -73,6 +79,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use desktop_icons::DesktopIcons;
 use launcher::{Launcher, Notice};
+use main_menu::{MainMenu, OpenMainMenu};
 use management::Resize;
 use paint::{Canvas, egg_half_width, isqrt};
 use popups::{Switcher, WindowMenu};
@@ -125,6 +132,9 @@ pub mod colour {
     pub const ICON_MAC: u32 = 0x00c9_d1db;
     pub const ICON_LINUX: u32 = 0x00e2_b341;
     pub const ICON_DARK: u32 = 0x000b_0e13;
+    pub const ICON_PAGE: u32 = 0x00f6_f1e7;
+    pub const ICON_PAGE_EDGE: u32 = 0x00c9_d1db;
+    pub const ICON_PAGE_LINE: u32 = 0x004a_5466;
 }
 
 /// Height of the top bar, the 1 px edge line included.
@@ -276,6 +286,8 @@ pub struct Desktop {
     menu_hover: Option<usize>,
     switcher: Option<Switcher>,
     window_menu: Option<WindowMenu>,
+    main_menus: Box<[Option<Box<MainMenu>>]>,
+    open_main_menu: Option<OpenMainMenu>,
     pointer: (u32, u32),
     pointer_visible: bool,
     pointer_drawn: Option<(u32, u32, PointerShape)>,
@@ -294,19 +306,26 @@ pub struct Desktop {
     focus_serial: u32,
     dialogs: usize,
     clock: [u8; CLOCK_GLYPHS],
+    clock_length: u8,
+    clock_shows_time_of_day: bool,
 }
 
 impl Desktop {
+    /// Whether a `width` by `height` screen has room for the terminal's window in every
+    /// profile's work area, as [`Desktop::new`] needs.
+    pub fn fits(width: u32, height: u32) -> bool {
+        Profile::ALL.into_iter().all(|profile| {
+            let work = layout(width, height, 1, profile).work_area;
+            work.width >= WINDOW_WIDTH && work.height >= WINDOW_HEIGHT
+        })
+    }
+
     /// The desktop of a `width` by `height` screen in the default profile with the terminal's
     /// window centred in the work area, shown and focused, the clock at `up 0:00`, and only the
     /// built-in apps in the catalogue; `None` when the window does not fit every profile's
     /// work area.
     pub fn new(width: u32, height: u32) -> Option<Self> {
-        let fits = Profile::ALL.into_iter().all(|profile| {
-            let work = layout(width, height, 1, profile).work_area;
-            work.width >= WINDOW_WIDTH && work.height >= WINDOW_HEIGHT
-        });
-        if !fits {
+        if !Self::fits(width, height) {
             return None;
         }
         let gradient = (0..height).map(|row| gradient_pixel(row, height)).collect();
@@ -350,6 +369,8 @@ impl Desktop {
             menu_hover: None,
             switcher: None,
             window_menu: None,
+            main_menus: (0..MAX_WINDOWS).map(|_| None).collect(),
+            open_main_menu: None,
             pointer: (0, 0),
             pointer_visible: false,
             pointer_drawn: None,
@@ -368,6 +389,8 @@ impl Desktop {
             focus_serial: 0,
             dialogs: 0,
             clock: [b' '; CLOCK_GLYPHS],
+            clock_length: 0,
+            clock_shows_time_of_day: false,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -505,6 +528,7 @@ impl Desktop {
         self.focus == Some(TERMINAL_SLOT)
             && self.is_visible(TERMINAL_SLOT)
             && !self.menu_open
+            && self.open_main_menu.is_none()
             && !self.popup_open()
     }
 
@@ -657,9 +681,16 @@ impl Desktop {
             .expect("the terminal's window is a normal one")
     }
 
-    /// The clock's text ([`Self::set_uptime`]), centred in [`CLOCK_GLYPHS`] cells.
+    /// The clock's text: the time of day ([`Self::set_wall_clock`]) or the uptime
+    /// ([`Self::set_uptime`]), drawn pixel-centred in its rectangle of [`CLOCK_GLYPHS`] cells.
     pub fn clock_text(&self) -> &str {
-        core::str::from_utf8(&self.clock).unwrap_or("")
+        core::str::from_utf8(&self.clock[..usize::from(self.clock_length)]).unwrap_or("")
+    }
+
+    /// Whether the clock shows the time of day, drawn in `text`; the uptime is drawn in
+    /// `text.dim` (docs/ux/date-time-v0.3.md section 6).
+    pub fn clock_shows_time_of_day(&self) -> bool {
+        self.clock_shows_time_of_day
     }
 
     /// The terminal's chip in the bar, where it shows when the terminal is the only window
@@ -749,13 +780,36 @@ impl Desktop {
             written.push_str(unit);
         }
         let length = written.length;
-        let shift = (CLOCK_GLYPHS - length) / 2;
-        let mut centred = [b' '; CLOCK_GLYPHS];
-        centred[shift..shift + length].copy_from_slice(&text[..length]);
-        if centred == self.clock {
+        self.show_clock(text, length, false, damage)
+    }
+
+    /// Shows the time of day of the wall clock reading `seconds` since the epoch on the clock,
+    /// `HH:MM` (24-hour, UTC), once the wall clock is set (D150, docs/ux/date-time-v0.3.md
+    /// section 6). Returns whether its text changed, adding its rectangle to `damage` if so.
+    pub fn set_wall_clock(&mut self, seconds: u64, damage: &mut Damage) -> bool {
+        let of_day = seconds % (SECONDS_PER_HOUR * HOURS_PER_DAY);
+        let mut text = [b' '; CLOCK_GLYPHS];
+        let mut written = Writer::new(&mut text);
+        written.push_number(of_day / SECONDS_PER_HOUR, 2);
+        written.push_str(":");
+        written.push_number(of_day % SECONDS_PER_HOUR / SECONDS_PER_MINUTE, 2);
+        let length = written.length;
+        self.show_clock(text, length, true, damage)
+    }
+
+    fn show_clock(
+        &mut self,
+        text: [u8; CLOCK_GLYPHS],
+        length: usize,
+        time_of_day: bool,
+        damage: &mut Damage,
+    ) -> bool {
+        if text == self.clock && time_of_day == self.clock_shows_time_of_day {
             return false;
         }
-        self.clock = centred;
+        self.clock = text;
+        self.clock_length = length as u8;
+        self.clock_shows_time_of_day = time_of_day;
         damage.add(self.clock_rect());
         true
     }
@@ -1076,6 +1130,7 @@ impl Desktop {
                 self.destroy_slot(dialog, damage, events);
             }
         }
+        self.forget_main_menu(slot, damage);
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
         }
@@ -1282,6 +1337,7 @@ impl Desktop {
         if self.focus == focus {
             return;
         }
+        let menu_bar = self.menu_bar();
         if focus.is_some() {
             self.set_desktop_focused(false, damage);
         }
@@ -1314,6 +1370,7 @@ impl Desktop {
                 );
             }
         }
+        self.menu_bar_moved(menu_bar, damage);
     }
 
     fn focus_top(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -1443,6 +1500,7 @@ impl Desktop {
                 damage.add(self.menu());
             }
         }
+        self.main_menu_hover(x, y, damage);
         self.window_menu_hover(x, y, damage);
         self.launcher_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
@@ -1601,6 +1659,9 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
+        if self.main_menu_press(code, x, y, damage, events) {
+            return Action::None;
+        }
         if self.switcher_press(x, y, damage, events) || self.window_menu_press(x, y, damage, events)
         {
             return Action::None;
@@ -1810,6 +1871,10 @@ impl Desktop {
             self.window_menu_key(code, pressed, damage, events);
             return Action::None;
         }
+        if self.open_main_menu.is_some() {
+            self.main_menu_key(code, pressed, damage, events);
+            return Action::None;
+        }
         if !self.menu_open {
             if pressed
                 && let Some(shortcut) = shortcut(
@@ -1915,6 +1980,7 @@ impl Desktop {
             }
         }
         self.draw_panels(&mut canvas);
+        self.draw_main_menu(&mut canvas);
         if self.menu_open {
             canvas.shadow(self.menu());
             self.draw_menu(&mut canvas);

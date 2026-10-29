@@ -10,7 +10,10 @@ name = "macos"
 path = "src/main.rs"
 
 [dependencies]
+eggos-c-format = { path = "../c-format" }
+eggos-macos-gui = { path = "../macos-gui" }
 eggos-runtime = { path = "../runtime" }
+eggos-toolkit = { path = "../toolkit" }
 
 [lints]
 workspace = true

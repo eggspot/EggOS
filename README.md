@@ -39,8 +39,9 @@ On Windows, if PowerShell refuses to run a downloaded script, start it with
 
 To use files from your computer, pass a folder: it appears read-only at `/media/host`, where
 you can list it, read its files and run programs from it (`ls /media/host`, `cat`,
-`/media/host/hello`). It must fit about 500 MB, with fewer than about 250 names at its top
-level ([docs/limitations.md](docs/limitations.md)):
+`/media/host/hello`), or install an app from it, a program, an `.app` or a `.zip`, with its
+own icon (`app install /media/host/Paint.zip`, [docs/apps.md](docs/apps.md)). It must fit about
+500 MB, with fewer than about 250 names at its top level ([docs/limitations.md](docs/limitations.md)):
 
 ```
 sh run-eggos.sh --apps ~/eggos-apps                  # macOS, Linux
@@ -60,10 +61,10 @@ claude mcp add eggos -- /path/to/run-eggos.sh --mcp --mcp-allow write,install
 
 `run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine.
 
-The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
+The window shows the desktop: the top bar with the time (UTC) and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
-`grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, pipes such as `ls /bin | grep s | wc -l`,
+`grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, `date`, pipes such as `ls /bin | grep s | wc -l`,
 files in `/tmp` and `/home` (`echo hi > /tmp/x`, `cp`, `mv`, `rm`, `mkdir`, `touch`), the up
 arrow for the last lines, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
 [core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives
@@ -74,6 +75,8 @@ another image, `--no-disk` none (then `/home` is in memory and nothing is kept),
 `--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Type
 `settings` to open [Settings](docs/settings.md) and pick the Windows, macOS or Linux layout
 profile (where the window controls are and which shortcuts work); it is kept on the disk.
+Type `edit notes.txt` (or double-click a text file in Files) to open it in the Text Editor
+([docs/apps.md](docs/apps.md#the-text-editor-edit)).
 Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 

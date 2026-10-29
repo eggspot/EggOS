@@ -472,7 +472,9 @@ pub fn futex<P: Platform>(
     let deadline = match (command, timeout) {
         (op::WAIT | op::WAIT_BITSET, 0) => Ok(u64::MAX),
         (op::WAIT, _) => time::deadline_after::<P>(process, timeout),
-        (op::WAIT_BITSET, _) => time::deadline_at::<P>(process, timeout),
+        (op::WAIT_BITSET, _) => {
+            time::deadline_at::<P>(process, timeout, operation & op::CLOCK_REALTIME != 0)
+        }
         _ => Ok(u64::MAX),
     };
     let call = Call {

@@ -231,6 +231,24 @@ fn double_clicks_run_programs_offer_installs_and_show_text_in_the_terminal() {
 }
 
 #[test]
+fn text_opens_in_the_text_editor_when_it_is_installed() {
+    let mut driver = Driver::new();
+    driver.files.file("/bin/text-editor", b"\x7fELF", 5);
+    driver.place(Place::HostShare);
+    let rect = driver.window.row_rect(driver.row("notes.txt"));
+    driver.double_click(rect);
+    assert_eq!(
+        driver.request(),
+        Some(Request::OpenInEditor(
+            Path::from(b"/media/host/notes.txt").unwrap()
+        ))
+    );
+    driver.select("blob.bin");
+    driver.press(key::ENTER, 0, '\r');
+    assert_eq!(driver.window.notice(), Some("No app opens blob.bin yet."));
+}
+
+#[test]
 fn a_quote_in_a_path_is_written_for_the_shell() {
     let line = TerminalLine::quoted(b"cat ", b"/tmp/it's").unwrap();
     assert_eq!(line.as_bytes(), b"cat '/tmp/it'\\''s'");

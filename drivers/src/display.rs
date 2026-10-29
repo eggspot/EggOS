@@ -7,6 +7,9 @@
 /// Bytes per pixel of a framebuffer.
 pub const BYTES_PER_PIXEL: u32 = 4;
 
+/// The mode xtask asks QEMU's virtio GPU for, and the offscreen display's default.
+pub const DEFAULT_MODE: Mode = Mode::new(1280, 800);
+
 /// A display mode: the framebuffer's size in pixels, rows packed with no padding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mode {

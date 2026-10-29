@@ -77,6 +77,33 @@ fn the_window_starts_centred_in_the_work_area_as_the_design_places_it() {
 }
 
 #[test]
+fn a_screen_fits_exactly_when_the_desktop_can_be_made_on_it() {
+    let narrowest = (1..=1280).find(|&width| Desktop::fits(width, 800)).unwrap();
+    let lowest = (1..=800)
+        .find(|&height| Desktop::fits(1280, height))
+        .unwrap();
+    for (width, height) in [
+        (1280, 800),
+        (1024, 768),
+        (640, 400),
+        (narrowest, 800),
+        (narrowest - 1, 800),
+        (1280, lowest),
+        (1280, lowest - 1),
+    ] {
+        assert_eq!(
+            Desktop::new(width, height).is_some(),
+            Desktop::fits(width, height),
+            "{width}x{height}"
+        );
+    }
+    assert!(!Desktop::fits(narrowest - 1, 800) && !Desktop::fits(1280, lowest - 1));
+    for (width, height) in [(99_999, 1), (1, 99_999), (0, 0), (99_999, 0), (0, 99_999)] {
+        assert!(!Desktop::fits(width, height), "{width}x{height}");
+    }
+}
+
+#[test]
 fn the_wallpaper_bar_and_window_show_their_tokens() {
     let desktop = Desktop::new(1280, 800).unwrap();
     let pixels = painted(&desktop);
@@ -108,7 +135,7 @@ fn the_default_desktop_s_hash_is_pinned() {
     assert_eq!(fnv(&pixels), DEFAULT_DESKTOP_HASH, "{:#x}", fnv(&pixels));
 }
 
-const DEFAULT_DESKTOP_HASH: u64 = 0x29d1_2c5b_4a5f_d053;
+const DEFAULT_DESKTOP_HASH: u64 = 0x5c14_e486_6b22_5193;
 
 #[test]
 fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
@@ -265,6 +292,39 @@ fn the_clock_shows_uptime_and_damages_only_its_rect_when_it_changes() {
         assert_eq!(desktop.clock_text().trim(), text);
     }
     assert_eq!(desktop.clock_rect(), Rect::new(600, 6, 80, 16));
+}
+
+#[test]
+fn the_clock_shows_the_wall_clock_s_minute_pixel_centred_in_text() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut damage = Damage::new();
+    desktop.set_uptime(5, &mut damage);
+    let pixels = painted(&desktop);
+    let ink_in = |pixels: &[u32], from: u32, to: u32, ink: u32| {
+        (6..22).any(|y| (from..to).any(|x| at(pixels, x, y) == ink))
+    };
+    assert_eq!(desktop.clock_text(), "up 0:05");
+    assert!(!desktop.clock_shows_time_of_day());
+    assert!(!ink_in(&pixels, 600, 612, colour::TEXT_DIM));
+    assert!(ink_in(&pixels, 612, 620, colour::TEXT_DIM));
+    let mut damage = Damage::new();
+    assert!(desktop.set_wall_clock(1_793_282_709, &mut damage));
+    assert_eq!(damage.rects(), &[desktop.clock_rect()]);
+    assert_eq!(desktop.clock_text(), "14:05");
+    assert!(desktop.clock_shows_time_of_day());
+    let pixels = painted(&desktop);
+    assert!(!ink_in(&pixels, 600, 620, colour::TEXT));
+    assert!(ink_in(&pixels, 620, 628, colour::TEXT));
+    assert!(!ink_in(&pixels, 600, 680, colour::TEXT_DIM));
+    let mut damage = Damage::new();
+    assert!(!desktop.set_wall_clock(1_793_282_709 + 50, &mut damage));
+    assert!(damage.is_empty());
+    assert!(desktop.set_wall_clock(1_793_282_709 + 51, &mut damage));
+    assert_eq!(desktop.clock_text(), "14:06");
+    assert!(desktop.set_uptime(5, &mut damage));
+    assert!(!desktop.clock_shows_time_of_day());
+    desktop.set_wall_clock(86_400 + 59, &mut damage);
+    assert_eq!(desktop.clock_text(), "00:00");
 }
 
 #[test]

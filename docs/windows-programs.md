@@ -14,8 +14,10 @@ Part 1 (D118) brought console programs; part 2a (D121) brings what small real to
 threads and waits, locks, error codes as Windows reports them, UTF-16 strings and directory
 listing; part 2b (D124) brings all of it to ARM64 programs on aarch64; GUI programs, part 1
 (D129), bring windows: a GUI program's windows open on the desktop, it paints them with GDI,
-gets the mouse and keyboard as Win32 messages and shows message boxes. Programs built with a C
-or C++ runtime (MSVC's or MinGW's) or with Rust's standard
+gets the mouse and keyboard as Win32 messages and shows message boxes. Programs on MSVC's C
+runtime (D146) run too: C programs built with `/MD` import `vcruntime140.dll` and the
+Universal C Runtime (`ucrtbase.dll`, through the `api-ms-win-crt-*` API sets), which the layer
+provides as well. Programs that need C++ exceptions, MinGW's `msvcrt.dll` or Rust's standard
 library import more than this and are refused with the name of the first missing function.
 
 ## Add a program to the image
@@ -89,6 +91,27 @@ creates a window, paints a scene of GDI shapes and text, recolours its ellipse o
 through `GetDC`, adds a typed letter, opens a message box on Space, has a second thread open one on F2 and ends when its
 window is closed; the Windows GUI boot test drives it through QEMU's input and compares every frame with
 the host's render of the same scene (D129).
+
+## Programs on MSVC's C runtime
+
+A C program built by Microsoft's compiler with the C runtime's DLLs (`/MD`, the default) runs
+as it is, console or GUI, x64 on x86_64 and ARM64 on aarch64:
+
+```
+cl /O2 /MD hello.c                                         :: a console program
+cl /O2 /MD pad.c /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib
+```
+
+`tests/windows-crt/eggpad.c` is our own example: a small notepad with `wWinMain`, a window
+painted with `TextOutW`, typing through `WM_CHAR`, and opening and saving its file with
+`_wfopen`, `fread`, `fwrite` and `ftell`; `cargo xtask windows-programs` builds it on a Windows
+host, and the boot tests run it (docs/build.md). MSVC links the runtime's startup into the
+program; the layer gives it its arguments (`__argc`, `__argv`, `__wargv`, the line `WinMain`
+gets), its environment, `atexit`, `exit` and the rest. `printf`'s family is the same engine as
+the macOS layer's (`eggos-c-format`), with Windows' rules: `%ld` is 32-bit, `%I64d`, `%zu`,
+`%ls` and `%S` for wide strings, and in the wide functions `%s` is wide. Streams are in text
+mode unless opened with `b`: a written `\n` becomes `\r\n` in the file, and reading turns it
+back.
 
 ## GUI programs
 
@@ -172,6 +195,13 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | File pickers (comdlg32) | `GetOpenFileNameW`, `GetSaveFileNameW`, `CommDlgExtendedError` |
 | Painting (user32) | `BeginPaint`, `EndPaint`, `GetDC`, `ReleaseDC`, `InvalidateRect`, `FillRect`, `DrawTextW` (left, centre, right; top, centre, bottom on one line; `DT_WORDBREAK`, `DT_NOPREFIX`, `DT_EXPANDTABS`, `DT_NOCLIP`, `DT_CALCRECT`, `DT_END_ELLIPSIS`), `GetSysColor`, `GetSysColorBrush` |
 | GDI (gdi32) | `CreateSolidBrush`, `CreatePen` (solid or `PS_NULL`), `GetStockObject`, `SelectObject`, `DeleteObject`, `SetTextColor`, `SetBkColor`, `SetBkMode`, `MoveToEx`, `LineTo`, `Rectangle`, `Ellipse`, `SetPixel`, `TextOutW`, `GetTextExtentPoint32W` |
+| C runtime startup (kernel32) | `IsDebuggerPresent`, `IsProcessorFeaturePresent` (the baseline features, and the ARMv8.1 atomics on ARM64 processors that have them; the same table is at `0x7ffe0000` in `KUSER_SHARED_DATA`, D151), `InitializeSListHead`, `GetStartupInfoW`/`A`, `SetUnhandledExceptionFilter`, `UnhandledExceptionFilter`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlVirtualUnwind` (no unwinding yet: no function entry is found) |
+| C runtime (vcruntime140) | `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strchr`, `strrchr`, `strstr`, `wcschr`, `wcsrchr`, `wcsstr`, `__C_specific_handler`, `__current_exception`, `__current_exception_context`, `__std_type_info_destroy_list`, `_purecall` |
+| C runtime (ucrtbase, `api-ms-win-crt-*`): startup and exit | `_initterm`, `_initterm_e`, `_configure_narrow_argv`, `_configure_wide_argv`, `__p___argc`, `__p___argv`, `__p___wargv`, `_initialize_narrow_environment`, `_initialize_wide_environment`, `_get_initial_narrow_environment`, `_get_initial_wide_environment`, `__p__environ`, `__p__wenviron`, `_get_narrow_winmain_command_line`, `_get_wide_winmain_command_line`, `_set_app_type`, `__setusermatherr`, `_configthreadlocale`, `_set_new_mode`, `_query_new_mode`, `__p__commode`, `__p__fmode`, `_set_fmode`, `_get_fmode`, `_seh_filter_exe`, `_register_thread_local_exe_atexit_callback`, `_crt_atexit`, `_crt_at_quick_exit`, `_initialize_onexit_table`, `_register_onexit_function`, `_execute_onexit_table`, `exit`, `quick_exit`, `_exit`, `_Exit`, `_cexit`, `_c_exit`, `abort`, `terminate`, `_invalid_parameter_noinfo`(`_noreturn`), `_errno`, `_get_errno`, `_set_errno`, `__doserrno` |
+| C runtime: heap | `malloc`, `calloc`, `realloc`, `_recalloc`, `free`, `_msize` (the process heap) |
+| C runtime: strings and characters | `strlen`, `strnlen`, `strcmp`, `strncmp`, `_stricmp`, `_strnicmp`, `strcpy`, `strncpy`, `strcat`, `strncat`, `_strdup`, `strcpy_s`, `strcat_s`, `wcslen`, `wcsnlen`, `wcscmp`, `wcsncmp`, `_wcsicmp`, `wcscpy`, `wcsncpy`, `wcscat`, `_wcsdup`, `wcscpy_s`, `wcscat_s`, `isalpha`, `isdigit`, `isalnum`, `isspace`, `isupper`, `islower`, `isxdigit`, `ispunct`, `iscntrl`, `isprint`, `tolower`, `toupper`, `towlower`, `towupper`, `iswspace`, `iswalpha`, `iswdigit`, `strtol`, `strtoul`, `strtoll`, `strtoull`, `atoi`, `atol`, `atoll`, `wcstol`, `wcstoul`, `_wtoi`, `_wtol` (the "C" locale) |
+| C runtime: streams | `__acrt_iob_func` (`stdin`, `stdout`, `stderr`), `fopen`, `_wfopen`, `fopen_s`, `_wfopen_s`, `fclose`, `fread`, `fwrite`, `fgetc`, `getc`, `fputc`, `putc`, `ungetc`, `fgets`, `fputs`, `puts`, `fflush`, `fseek`, `_fseeki64`, `ftell`, `_ftelli64`, `rewind`, `fgetpos`, `fsetpos`, `feof`, `ferror`, `clearerr`, `_fileno`, `remove`, `_wremove`; `printf`'s family through `__stdio_common_vfprintf`(`_s`), `__stdio_common_vfwprintf`(`_s`), `__stdio_common_vsprintf`, `__stdio_common_vsprintf_s`, `__stdio_common_vsnprintf_s`, `__stdio_common_vswprintf`, `__stdio_common_vswprintf_s`, `__stdio_common_vsnwprintf_s` (`%e`, `%f` and `%g` too) |
+| C runtime: utility and time | `rand`, `srand` (our own generator), `abs`, `labs`, `llabs`, `_abs64`, `qsort`, `bsearch`, `_time64` |
 | Strings | `MultiByteToWideChar`, `WideCharToMultiByte` (`CP_UTF8`, and `CP_ACP`/`CP_OEMCP`, which are UTF-8 too; `MB_ERR_INVALID_CHARS`, `WC_ERR_INVALID_CHARS`), `lstrlenW`/`A`, `lstrcmpW`, `lstrcmpiW`, `CompareStringOrdinal`, `CompareStringW`/`Ex` (ordinal, `NORM_IGNORECASE`), `FormatMessageW` (system messages, `FORMAT_MESSAGE_ALLOCATE_BUFFER`), user32's `CharUpperW` and `CharLowerW`, shell32's `CommandLineToArgvW` |
 | Environment, more | `SetEnvironmentVariableW`/`A`; `GetEnvironmentStrings*` return a copy that reflects changes |
 | System and time, more | `GetSystemInfo`, `GetNativeSystemInfo` (`PROCESSOR_ARCHITECTURE_AMD64`, 9, on x86_64; `PROCESSOR_ARCHITECTURE_ARM64`, 12, on aarch64), `GetVersionExW`, `GetVersion`, ntdll's `RtlGetVersion` (Windows 11: 10.0, build 26100), `GetSystemTime`, `GetLocalTime` (UTC), `FileTimeToSystemTime`, `SystemTimeToFileTime`, `FileTimeToLocalFileTime`, `LocalFileTimeToFileTime`, `LocalAlloc`/`LocalFree`, `GlobalAlloc`/`GlobalFree` (fixed blocks) |
@@ -196,9 +226,14 @@ size needed, as each function documents.
 
 ## What does not work yet
 
-- **Programs on a C or C++ runtime or on Rust's std**: they import more (the CRT's own
-  start-up, exception handling, threads, synchronisation, `ProcessPrng`), which later parts
-  add. The layer names the first function it lacks.
+- **Programs on a C++ runtime, on MinGW's `msvcrt.dll` or on Rust's std**: they import more
+  (C++ exception handling, `ProcessPrng`, more of the C library), which later parts add. The
+  layer names the first function it lacks. Of MSVC's C runtime, `scanf`'s family, `getenv`,
+  `setlocale`, `signal`, `setjmp`, the math library, wide streams, low-level I/O (`_open`),
+  `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
+  function given an invalid parameter returns its documented error instead of ending the
+  program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
+  the others' stdio calls).
 - **Other processes** (`CreateProcessW`, pipes) and **UTF-16 console polish** (line endings as
   `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
 - **x64 programs on aarch64** (and ARM64 programs on x86_64): an x64 program on Arm needs its
@@ -215,9 +250,14 @@ size needed, as each function documents.
   fail with `ERROR_ACCESS_DENIED`.
 - **Time zones**: local time is UTC.
 - **Structured exception handling**: a fault ends the program as a signal would end a Linux
-  one; no `__try`/`__except`, no vectored handlers, no unwinding.
+  one, after a line on standard error naming the fault and its address as the program's
+  module and offset (D151); no `__try`/`__except`, no vectored handlers, no unwinding. The one
+  exception: on ARM64, a read of `CurrentEL`, which MSVC's atomics helpers make once and step
+  over in their own handler, reads exception level 0 and the program goes on.
+- **`KUSER_SHARED_DATA`**: the page at `0x7ffe0000` holds only `ProcessorFeatures`; its clocks,
+  version numbers and the rest read as zero.
 - **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32,
-  gdi32 and comdlg32 (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
+  gdi32, comdlg32, vcruntime140 and the Universal C Runtime (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
   own) or a function they lack is refused. Imports by ordinal are refused.
 - **GUI programs beyond parts 1 and 2** (D129, D145): multi-line edits, selection and the
   clipboard in edits, `ES_PASSWORD` and `ES_NUMBER`, radio buttons and group boxes, combo

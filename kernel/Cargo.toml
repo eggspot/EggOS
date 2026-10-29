@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-calendar = { path = "../calendar" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
 eggos-hal = { path = "../hal" }
@@ -17,14 +18,15 @@ eggos-wayland = { path = "../wayland" }
 workspace = true
 
 [features]
-default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console"]
+default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "rtc"]
 virtio = []
 virtio-gpu = ["virtio"]
 virtio-input = ["virtio"]
 virtio-rng = ["virtio"]
 virtio-blk = ["virtio"]
 virtio-console = ["virtio"]
-qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console"]
+rtc = []
+qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "rtc"]
 qemu-test-fatal-exception = ["qemu-test"]
 qemu-bench = ["qemu-test"]
 qemu-boot-clock = []

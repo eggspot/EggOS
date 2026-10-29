@@ -296,6 +296,22 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
 
 /// The early console, UART0.
 #[inline]
+fn atomics_capability() -> u64 {
+    const HWCAP_ATOMICS: u64 = 1 << 8;
+    const ATOMIC_SHIFT: u32 = 20;
+    const ATOMICS_IMPLEMENTED: u64 = 0b0010;
+    let isar0: u64;
+    // SAFETY: reading an ID register has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, id_aa64isar0_el1", out(reg) isar0, options(nomem, nostack))
+    };
+    if isar0 >> ATOMIC_SHIFT & 0xf >= ATOMICS_IMPLEMENTED {
+        HWCAP_ATOMICS
+    } else {
+        0
+    }
+}
+
 fn uart0() -> Pl011<Mmio> {
     // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page
     // tables and the kernel's own map as device memory at the direct map offset; only the early
@@ -569,7 +585,7 @@ impl Platform for Aarch64 {
         } else {
             0
         };
-        [fp | asimd, 0]
+        [fp | asimd | atomics_capability(), 0]
     }
 
     fn make_instructions_visible(start: usize, length: usize) {

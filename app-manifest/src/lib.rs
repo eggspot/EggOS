@@ -3,12 +3,15 @@
 //! then `key=value` lines. `name` (the folder's name), `source` (`windows`, `macos` or
 //! `linux`) and `run` (the program, absolute or relative to the folder) are required;
 //! `architecture`, `synonyms` (comma-separated words the launcher also matches) and `icon`
-//! (reserved) are optional. Reading is tolerant: a file of another format, longer than
-//! [`LARGEST`], missing a required key, or naming another folder is no app; lines that are no
-//! entry are skipped; the last line of a key wins. Nothing here allocates or panics: the
+//! (the app's own icon file, relative to the folder, D148: see [`icon`]) are optional. Reading
+//! is tolerant: a file of another format, longer than [`LARGEST`], missing a required key, or
+//! naming another folder is no app; lines that are no entry are skipped; an invalid optional
+//! value is ignored; the last line of a key wins. Nothing here allocates or panics: the
 //! kernel's desktop reads manifests with it and the installer writes them.
 
 #![cfg_attr(not(test), no_std)]
+
+pub mod icon;
 
 /// The folder installed apps live in, one folder each.
 pub const DIRECTORY: &str = "/Applications";
@@ -91,6 +94,8 @@ pub struct Manifest<'a> {
     pub architecture: Option<&'a str>,
     /// Words the launcher matches besides the name, separated by commas.
     pub synonyms: &'a str,
+    /// The app's own icon file ([`icon`]), relative to its folder, if it has one.
+    pub icon: Option<&'a str>,
 }
 
 impl<'a> Manifest<'a> {
@@ -145,6 +150,11 @@ pub fn is_run(run: &[u8]) -> bool {
         && !run.contains(&b'\'')
         && !run.ends_with(b"/")
         && run.split(|&byte| byte == b'/').all(|part| part != b"..")
+}
+
+/// Whether `icon` may be an app's icon file: a path [`is_run`] accepts that is relative.
+pub fn is_icon(icon: &[u8]) -> bool {
+    is_run(icon) && !icon.starts_with(b"/")
 }
 
 fn is_key(key: &[u8]) -> bool {
@@ -205,12 +215,16 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
         .filter(|value| value.len() <= SYNONYMS_CAPACITY)
         .and_then(text)
         .unwrap_or("");
+    let icon = last(file, "icon")
+        .filter(|value| is_icon(value))
+        .and_then(text);
     Some(Manifest {
         name: text(name)?,
         source,
         run: text(run)?,
         architecture,
         synonyms,
+        icon,
     })
 }
 
@@ -249,6 +263,9 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
     {
         return Err(Refused::InvalidValue);
     }
+    if manifest.icon.is_some_and(|icon| !is_icon(icon.as_bytes())) {
+        return Err(Refused::InvalidValue);
+    }
     let mut writer = Writer { out, length: 0 };
     writer.put(&[HEADER, b"\n"])?;
     writer.put(&[b"name=", manifest.name.as_bytes(), b"\n"])?;
@@ -259,6 +276,9 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
     }
     if !manifest.synonyms.is_empty() {
         writer.put(&[b"synonyms=", manifest.synonyms.as_bytes(), b"\n"])?;
+    }
+    if let Some(icon) = manifest.icon {
+        writer.put(&[b"icon=", icon.as_bytes(), b"\n"])?;
     }
     Ok(writer.length)
 }
@@ -341,6 +361,26 @@ mod tests {
         assert!(!manifest.run_is_relative());
         assert_eq!(manifest.architecture, Some("aarch64"));
         assert_eq!(manifest.synonyms().count(), 0);
+        assert_eq!(manifest.icon, Some("ignored"));
+    }
+
+    #[test]
+    fn an_icon_is_a_relative_path_and_an_invalid_one_is_ignored() {
+        let with = |icon: &str| format!("eggos-app 1\nname=A\nsource=linux\nrun=/a\nicon={icon}\n");
+        assert_eq!(
+            parse(with("app.icon").as_bytes(), b"A").unwrap().icon,
+            Some("app.icon")
+        );
+        assert_eq!(
+            parse(with("art/big.icon").as_bytes(), b"A").unwrap().icon,
+            Some("art/big.icon")
+        );
+        for bad in ["/etc/icon", "../other/app.icon", "a/../../b", "", "dir/"] {
+            let file = with(bad);
+            let manifest = parse(file.as_bytes(), b"A").unwrap();
+            assert_eq!(manifest.icon, None, "{bad}");
+        }
+        assert_eq!(parse(HELLO, b"Hello").unwrap().icon, None);
     }
 
     #[test]
@@ -368,12 +408,13 @@ mod tests {
             run: "paint.exe",
             architecture: Some("x86_64"),
             synonyms: "draw,mspaint",
+            icon: Some("app.icon"),
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
         assert_eq!(
             &out[..length],
-            b"eggos-app 1\nname=Paint\nsource=windows\nrun=paint.exe\narchitecture=x86_64\nsynonyms=draw,mspaint\n"
+            b"eggos-app 1\nname=Paint\nsource=windows\nrun=paint.exe\narchitecture=x86_64\nsynonyms=draw,mspaint\nicon=app.icon\n"
         );
         assert_eq!(parse(&out[..length], b"Paint"), Some(manifest));
     }
@@ -386,9 +427,20 @@ mod tests {
             run: "/a",
             architecture: None,
             synonyms: "",
+            icon: None,
         };
         let mut out = [0u8; LARGEST];
         let refused = |manifest: Manifest<'_>, out: &mut [u8]| write(&manifest, out);
+        assert_eq!(
+            refused(
+                Manifest {
+                    icon: Some("/abs.icon"),
+                    ..good
+                },
+                &mut out
+            ),
+            Err(Refused::InvalidValue)
+        );
         assert_eq!(
             refused(
                 Manifest {

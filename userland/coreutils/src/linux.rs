@@ -185,6 +185,10 @@ impl System for Linux {
     }
 
     fn now(&mut self) -> u64 {
+        self.now_with_nanoseconds().seconds
+    }
+
+    fn now_with_nanoseconds(&mut self) -> Duration {
         let mut time = Timespec {
             seconds: 0,
             nanoseconds: 0,
@@ -193,9 +197,27 @@ impl System for Linux {
             number::CLOCK_GETTIME,
             [CLOCK_REALTIME, &raw mut time as usize, 0, 0, 0, 0],
         ) {
-            Ok(_) => time.seconds.max(0) as u64,
-            Err(_) => 0,
+            Ok(_) if time.seconds >= 0 => Duration {
+                seconds: time.seconds as u64,
+                nanoseconds: time.nanoseconds as u32,
+            },
+            _ => Duration {
+                seconds: 0,
+                nanoseconds: 0,
+            },
         }
+    }
+
+    fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno> {
+        let time = Timespec {
+            seconds: i64::try_from(since_epoch.seconds).map_err(|_| Errno::EINVAL)?,
+            nanoseconds: i64::from(since_epoch.nanoseconds),
+        };
+        call(
+            number::CLOCK_SETTIME,
+            [CLOCK_REALTIME, &raw const time as usize, 0, 0, 0, 0],
+        )
+        .map(|_| ())
     }
 
     fn device_control(

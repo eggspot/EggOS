@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 eggos-font = { path = "../font" }
 eggos-app-manifest = { path = "../app-manifest" }
+eggos-calendar = { path = "../calendar" }
 
 [lints]
 workspace = true

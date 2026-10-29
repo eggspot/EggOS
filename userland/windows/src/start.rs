@@ -1,16 +1,20 @@
 //! Starting a Windows program: the kernel runs the layer as `windows <program> <arguments>`
 //! for a file that starts with `MZ` (D118), a console or a GUI program (D129). The layer reads the file, checks it, maps the image
 //! at its preferred base (or relocates it), binds its imports to the layer's own functions,
-//! protects each section, builds the TEB and PEB, points the thread's TEB register at the TEB
+//! protects each section, maps the page Windows shares with every process, handles the
+//! program's faults (D151), builds the TEB and PEB, points the thread's TEB register at the TEB
 //! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
 //! calls the entry point, whose return value is the exit code.
 
+use crate::fault::Image;
+use crate::fault_handler;
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::pe::{InvalidPe, Machine, Pe, Subsystem};
+use crate::user_shared_data;
 use crate::win32::{self, thread_environment};
 use eggos_runtime::errno::Errno;
-use eggos_runtime::startup::Startup;
+use eggos_runtime::startup::{Startup, auxv};
 
 const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
@@ -181,6 +185,14 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     }
     let entry = base + pe.entry as usize;
     protect(&pe, base)?;
+    share_user_data(startup);
+    fault_handler::install(
+        path.to_bytes(),
+        Image {
+            base: base as u64,
+            size: size as u64,
+        },
+    );
     // SAFETY: the file's copy is not used after this: the image holds everything it needs.
     let _ = unsafe { linux::unmap(file.as_ptr() as usize, file.len().max(1)) };
     // SAFETY: the thread's TEB register gets the TEB this process's Win32 functions read
@@ -213,6 +225,26 @@ fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {
     }
     let _ = linux::close(fd);
     Ok(&bytes[..filled])
+}
+
+fn share_user_data(startup: Startup) {
+    let capabilities = startup.auxiliary_value(auxv::HWCAP).unwrap_or(0);
+    let features = user_shared_data::processor_features(capabilities as u64);
+    win32::set_processor_features(features);
+    let read_write = PROT_READ | PROT_WRITE;
+    let Ok(page) = linux::map_anonymous(
+        user_shared_data::ADDRESS,
+        user_shared_data::SIZE,
+        read_write,
+        true,
+    ) else {
+        return;
+    };
+    // SAFETY: `page` is a new private mapping of one zeroed page that nothing else uses.
+    let bytes = unsafe { &mut *(page as *mut [u8; user_shared_data::SIZE]) };
+    user_shared_data::write_processor_features(bytes, features);
+    // SAFETY: the page is read-only from now on, as on Windows; nothing writes it again.
+    let _ = unsafe { linux::protect(page, user_shared_data::SIZE, PROT_READ) };
 }
 
 fn stack_top() -> usize {

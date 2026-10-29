@@ -1,7 +1,8 @@
 //! `/bin/files [<folder>]`, a name of the Settings program (D135): opens the Files window at
 //! `folder` (home by default) and does what it asks of the system: typing a line in the
-//! Terminal window (`/dev/window`'s `TYPE_IN_TERMINAL`), opening an installed app (`OPEN_APP`)
-//! and starting the installer's window, `/usr/libexec/app-window` (D134), as a child process.
+//! Terminal window (`/dev/window`'s `TYPE_IN_TERMINAL`), opening an installed app (`OPEN_APP`),
+//! and starting the installer's window, `/usr/libexec/app-window` (D134), or the Text Editor,
+//! `/bin/text-editor` (D149), as a child process.
 
 use crate::files_window::{DEFAULT_SIZE, FilesWindow, LINE_CAPACITY, MINIMUM_SIZE, Request, TITLE};
 use core::cell::UnsafeCell;
@@ -31,12 +32,13 @@ const MAX_VARIABLES: usize = 32;
 const NOT_RUN: i32 = 127;
 const PROFILE_WINDOWS: u32 = 0;
 const FAILED: i32 = 1;
+const EDITOR_PROGRAM: &CStr = c"/bin/text-editor";
 
 #[repr(C, align(16))]
 struct ChildStack(UnsafeCell<[u8; CHILD_STACK_SIZE]>);
 
-// SAFETY: only a child started by `start_installer` uses the stack, while this program's only
-// thread sleeps in its `CLONE_VFORK` clone, one child at a time.
+// SAFETY: only a child started by `start_child_program` uses the stack, while this program's
+// only thread sleeps in its `CLONE_VFORK` clone, one child at a time.
 unsafe impl Sync for ChildStack {}
 
 static CHILD_STACK: ChildStack = ChildStack(UnsafeCell::new([0; CHILD_STACK_SIZE]));
@@ -49,7 +51,7 @@ struct Spawn {
 }
 
 extern "C" fn start_child(spawn: usize) -> ! {
-    // SAFETY: `start_installer` passes its `Spawn`, which stays as it is while this child runs
+    // SAFETY: `start_child_program` passes its `Spawn`, which stays as it is while this child runs
     // on the program's memory: the program's thread sleeps until the child runs `execve` or
     // ends.
     let spawn = unsafe { &*(spawn as *const Spawn) };
@@ -138,8 +140,20 @@ impl Program {
             subject.as_ptr() as usize,
             0,
         ];
+        self.start_child_program(WINDOW_PROGRAM, &arguments, b"the installer's window");
+    }
+
+    fn start_editor(&self, path: &[u8]) {
+        let Some(path) = c_string(path) else {
+            return;
+        };
+        let arguments = [EDITOR_PROGRAM.as_ptr() as usize, path.as_ptr() as usize, 0];
+        self.start_child_program(EDITOR_PROGRAM, &arguments, b"the Text Editor");
+    }
+
+    fn start_child_program(&self, program: &CStr, arguments: &[usize], what: &[u8]) {
         let spawn = Spawn {
-            program: WINDOW_PROGRAM.as_ptr() as usize,
+            program: program.as_ptr() as usize,
             arguments: arguments.as_ptr() as usize,
             environment: self.environment.as_ptr() as usize,
         };
@@ -156,10 +170,9 @@ impl Program {
             )
         };
         if child < 0 {
-            write_all(
-                STANDARD_ERROR,
-                b"files: could not start the installer's window\n",
-            );
+            write_all(STANDARD_ERROR, b"files: could not start ");
+            write_all(STANDARD_ERROR, what);
+            write_all(STANDARD_ERROR, b"\n");
         }
     }
 
@@ -174,6 +187,7 @@ impl Program {
                 }
                 Request::Install(path) => self.start_installer(c"install", path.as_bytes()),
                 Request::Uninstall(name) => self.start_installer(c"uninstall", name.as_bytes()),
+                Request::OpenInEditor(path) => self.start_editor(path.as_bytes()),
             }
         }
         while let Ok(child) = call(number::WAIT4, [usize::MAX, 0, WNOHANG, 0, 0, 0]) {

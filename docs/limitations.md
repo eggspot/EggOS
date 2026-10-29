@@ -12,8 +12,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **No acceleration.** QEMU emulates the CPU (TCG), so the system runs slower than it will on
   hardware; boot to the prompt still takes about a tenth of a second.
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
-  virtio-blk (polled, for the host folder) and on test kernels virtio-rng. Nothing else is
-  driven: no network, no sound, no USB, no real-time clock (D110-D113, D130).
+  virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
+  RISC-V Goldfish, D150) and on test kernels virtio-rng. Nothing else is driven: no network,
+  no sound, no USB (D110-D113, D130).
 
 ## What the system can do
 - **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
@@ -25,14 +26,13 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   them while EggOS runs; `run` is full control, the audit log included. Agents see windows as
   pixels for now (D143); windows as structured data come after the release (item 48).
   Commands run as root (file permissions are not enforced yet). Reached only through the run
-  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB and shows times since
-  the boot until the RTC (item 29).
+  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB.
 - **One disk, and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
   `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
-  `uptime` and `ps` (D125, D137). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  `uptime`, `ps` and `driver/rtc` (D125, D137, D150). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no
   hard or symbolic links, access times or repair tool yet, searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
@@ -50,12 +50,22 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   on your computer while EggOS runs are not seen. Only one folder can be attached. A Windows or
   macOS program in it runs only on an image that has its layer, which the release images do not
   carry yet (`cargo xtask run --add` adds it with a program; D118, D120).
-- **The clock starts at the epoch.** Without an RTC driver the wall clock reads 1970 and the
-  desktop's clock shows the uptime (D73, D115).
+- **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
+  at boot (QEMU's follows the host's clock) and keeps time from it; there is no network time
+  (NTP), so a clock that drifts stays off until `date -s`, Settings or `clock_set` sets it,
+  which also sets the real-time clock. Local time is UTC everywhere: the desktop's clock,
+  `date`, file times and the Windows and macOS layers' local-time calls; there is no time zone
+  setting or database. Only a privileged process (root) may set the clock. An absolute sleep or
+  wait on `CLOCK_REALTIME` ends at the time the clock pointed to when it started, even if the
+  clock is set meanwhile (Linux wakes it). No `/dev/rtc0` (`hwclock` reads
+  `/proc/driver/rtc`), no alarms or wake-ups (`CLOCK_REALTIME_ALARM`), no UEFI or ACPI time
+  services. Without a real-time clock the wall clock starts at 1970 at boot and the desktop's
+  clock shows the uptime until the clock is set (D73). `/proc/driver/rtc` reads the hardware
+  clock at most once a second and may be up to a second behind it in between.
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
-  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime` and EggOS's own `ps`, no
+  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
@@ -84,9 +94,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
   `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124, D129):
-  threads, waits, locks, directory listing and UTF-16 strings work, and GUI programs open
-  windows, paint them with GDI, get the mouse and keyboard and show message boxes. Programs on
-  a C/C++ runtime or Rust's std, other processes, other DLLs, structured exception handling,
+  threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
+  windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
+  programs built by MSVC on its C runtime (`/MD`) run (D146). Programs on a C++ runtime,
+  MinGW's or Rust's std, `scanf`, locales, the math library, other processes, other DLLs, structured exception handling,
   the system's controls (buttons, edits), menus, dialogs from resources, timers, fonts other
   than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
   riscv64 do not run yet; names are case-sensitive and local time is UTC.
@@ -94,12 +105,17 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
   system properties (all read as unset), no `logd` or binder, no riscv64.
-- **macOS: console programs on aarch64 and x86_64 only.** Mach-O console programs (thin or
-  fat, built for macOS 13 or later) that link libSystem, and Objective-C programs that use the
-  core of Foundation, run natively, arm64 programs on aarch64 and x86_64 programs on x86_64,
-  added with `cargo xtask image --add` ([macOS programs](macos-programs.md), D120, D123, D142).
-  Swift, Objective-C blocks, `__weak` and exceptions, most of Foundation, signal handlers,
-  other libraries and frameworks, GUI apps, `.app` bundles and riscv64 do not run yet.
+- **macOS: console programs and programmatic AppKit apps, on aarch64 and x86_64 only.**
+  Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
+  Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
+  (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
+  programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
+  covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
+  alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
+  top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP tools list and choose
+  its items, except while the app shows an alert); scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
+  `__weak` and exceptions, most of Foundation, signal handlers, other frameworks and riscv64
+  do not run yet.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
   app window's content as a PNG and `wm click`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input, and drag, double-click,
@@ -151,14 +167,32 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
   chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
   <path>` installs any);
+- archives other than `.zip` (`.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`), ZIP64 (archives or
+  entries past 4 GiB or 65 535 entries), encrypted entries, methods other than stored and
+  deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); a `.zip` whose
+  files would take more than 4 GiB once extracted, or holding a file named `app.manifest`,
+  `app.manifest.tmp` or `app.icon` at its top, is refused (as is a program of one of those
+  names); the window's chooser for a `.zip` with several programs lists four (`app install
+  --entry <path>` installs any) and shows a path longer than a button's 32 bytes as `...` and
+  its end; any file starting with a zip's signature (a `.docx`, `.jar` or `.apk`) is offered
+  `Install...` in Files and refused as holding no program; every entry of a `.zip` is
+  extracted in one step of the installer, so `Cancel` waits for the entry being extracted;
+- app icons (D148): binary property lists, asset catalogues (`Assets.car`), JPEG 2000 and
+  `it32` entries of an `.icns`, interlaced PNGs, 16-bit and compressed bitmap entries of a
+  Windows icon, and images larger than 1024 pixels (256 for a bitmap entry) are not read (the
+  next image is taken, else the app wears the letter tile); icons are made at 48 and 32 pixels
+  only (2x doubles them); the title bar, Files and the installer's dialogs still show the
+  generic tile; a native EggOS app cannot name its own icon in its manifest yet beyond `icon=`
+  pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
+  tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
 - closing the terminal (its close control is disabled) and a second terminal: launching
   Terminal focuses the one console terminal, and installed console apps are typed into it, so
   they reach whatever reads the console at that moment (docs/apps.md);
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
-  key repeat and 2x come later; Windows GUI programs open windows
-  (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
+  key repeat and 2x come later; Windows GUI programs (D129), Linux Wayland apps (D140) and
+  macOS AppKit apps (D147) open windows;
 - 3D graphics;
 - a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100
   rows): the window does not fit every profile's work area, and the display then shows no
@@ -168,12 +202,21 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   to sort by), hides names starting with `.`, shows at most 512 entries (32 KiB of names) of
   a folder, and shows no free space in its status bar (no `statfs` yet); its clipboard holds
   one item inside the Files process, shared with no other program and lost when Files
-  closes; times follow the wall clock, which counts from the boot until an RTC driver lands
-  (item 29); a text file opens with `cat` in the Terminal window until the Text Editor (item
-  46); each click on the desktop's `Host share` opens another Files window; folders nest at
+  closes; a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
+  in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
   most 32 levels deep in a copy, a move across file systems or a delete; the MCP tools for
   files come with the MCP server (item 28, after the release);
 - the Trash holds only what is on the home folder's file system (`/home`): an item in `/tmp`
   or `/Applications` is deleted for good after a question, and the read-only host share's are
   neither trashed nor changed;
+- the Text Editor (D149) edits UTF-8 text of up to 4 MiB in Egg Mono, so a character beyond
+  ASCII and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
+  go-to-line, no syntax colouring and no file picker (Open and Save As take a typed path); its
+  clipboard is its own, shared with no other program; a file that is not text is refused, not
+  shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
+  it and there is no terminal editor; a file with mixed line endings is saved all CRLF once it
+  holds one `\r\n`; saving replaces a symbolic link by a regular file and breaks hard links;
+  a save cut short (power lost, the editor killed) leaves its hidden `.<name>.saving` beside the
+  file, which later saves leave alone (they write `.<name>.<n>.saving` instead);
+  Alt and Option with a letter type nothing (the keymap has no Option or AltGr layer yet);
 - copy and paste of text, and scaling for high-density displays.

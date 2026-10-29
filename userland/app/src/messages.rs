@@ -3,6 +3,7 @@
 //! command and the dialogs, written into fixed buffers.
 
 use crate::architecture::Architecture;
+use crate::archive::ArchiveError;
 use crate::installer::{Plan, Problem};
 use crate::program::{NotRunnable, Program};
 use core::fmt::Write;
@@ -117,6 +118,18 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
     };
 }
 
+fn archive_reason(error: ArchiveError) -> &'static str {
+    match error {
+        ArchiveError::NotArchive | ArchiveError::Unsupported => {
+            "cannot read it: not a zip archive EggOS can open"
+        }
+        ArchiveError::UnsafeName => "it holds a file whose name points outside its folder",
+        ArchiveError::Corrupt => "the zip archive is damaged",
+        ArchiveError::Unreadable => "cannot read it: the archive could not be read",
+        ArchiveError::Stopped => "its files could not be written",
+    }
+}
+
 /// The reason `problem` gives, as it follows `Could not install <name>: `.
 pub fn reason(problem: Problem) -> Line {
     let mut line = Line::new();
@@ -151,6 +164,19 @@ pub fn reason(problem: Problem) -> Line {
         Problem::UnsupportedEntry => {
             line.write_str("it holds a symbolic link or a device, which an app cannot")
         }
+        Problem::Archive(error) => line.write_str(archive_reason(error)),
+        Problem::NoProgramInArchive => line.write_str("it holds no program EggOS can run"),
+        Problem::SeveralPrograms(listing) => write!(
+            line,
+            "it holds several programs ({}): choose one with --entry <path>",
+            listing.as_str()
+        ),
+        Problem::NoSuchEntry => line.write_str("it holds no program at the path --entry gives"),
+        Problem::ReservedName => line.write_str(
+            "it is or holds a file named app.manifest, app.manifest.tmp or app.icon, which the \
+             installer writes itself",
+        ),
+        Problem::TooLarge => line.write_str("its files would take more than 4 GiB once extracted"),
         Problem::Failed(error) => {
             line.push_bytes(error.message());
             Ok(())
@@ -255,6 +281,16 @@ mod tests {
             architecture: Architecture::Riscv64,
         };
         assert_eq!(kind(linux).as_str(), "Linux program");
+        assert_eq!(
+            reason(Problem::TooLarge).as_str(),
+            "its files would take more than 4 GiB once extracted"
+        );
+        assert!(
+            reason(Problem::ReservedName)
+                .as_str()
+                .contains("app.manifest")
+        );
+        assert_eq!(crate::installer::MAX_EXTRACTED_BYTES, 4 << 30);
     }
 
     #[test]

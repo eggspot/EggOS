@@ -13,7 +13,7 @@ is the installer's window instead ([Apps](apps.md), D134), so the toolkit is in 
 Open it from the dock (macOS profile), the launcher (Super, Cmd+Space or Start, then type
 `settings`, `control panel` or `preferences`), its desktop icon, or type `settings` at the
 prompt (D133). The window has a sidebar with a search field and the panes
-`Appearance`, `Display`, `Keyboard`, `Mouse`, `Components` and `About`; typing in the search
+`Appearance`, `Display`, `Keyboard`, `Mouse`, `Date & time`, `Components` and `About`; typing in the search
 field keeps the panes whose name, synonyms (`Control Panel`, `Preferences`, `theme`, `HiDPI`,
 ...) or settings match. Tab moves between the search, the sidebar and the pane's controls;
 Down in the search goes to the sidebar.
@@ -34,6 +34,15 @@ power-off.`
 layout (US); **About** the version, the architecture, the CPUs, the memory and the uptime;
 **Mouse** and **Components** come in a later version. The scale is 1x in 0.3.0 (the `2x`
 choice is shown disabled).
+
+**Date & time** (D150, Claude Fable's docs/ux/date-time-v0.3.md) shows the time in UTC,
+`Thursday 29 October 2026, 14:05:09 UTC`, ticking while the pane is shown, and where it comes
+from (`From the hardware clock, read at boot.`, or `No hardware clock: ...`). `Set to` takes
+`YYYY-MM-DD HH:MM[:SS]` or `HH:MM[:SS]` (today's date), in the years 2000 to 2099, the same
+rules as `date -s` and the MCP tool `clock_set`; Enter or `Set` sets the clock and the hardware
+clock, and the line under them says how it went (`Set, and saved to the hardware clock.`, or
+why not). There are no time zones: everything is UTC. Its command-line front-ends are `date`
+and `hwclock` (docs/coreutils.md), not `settings`.
 
 ## The command
 

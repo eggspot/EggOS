@@ -1,8 +1,10 @@
-//! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--window] <path>`,
-//! `app uninstall [--window] <name>` (`remove` is the same), `app open <name>` (D137; the
-//! built-in Terminal, Files and Settings too, D141) and `app list`. Text only, the same with or without a display; `--window` shows the installer's
-//! dialogs instead. `--` ends the options, so the next word is the operand even if it starts
-//! with `-`.
+//! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--entry <path>]
+//! [--window] <path>` (a program, an `.app` or a `.zip`; `--entry` chooses the program inside a
+//! `.zip`, D148), `app uninstall [--window] <name>` (`remove` is the same), `app open <name>`
+//! (D137; the built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app
+//! list` (name, source, architecture, program and icon file, D148). Text only, the same with or
+//! without a display; `--window` shows the installer's dialogs instead. `--` ends the options,
+//! so the next word is the operand even if it starts with `-`.
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +12,7 @@ pub enum Command<'a> {
     Install {
         path: &'a [u8],
         name: Option<&'a [u8]>,
+        entry: Option<&'a [u8]>,
         window: bool,
     },
     Uninstall {
@@ -24,13 +27,14 @@ pub enum Command<'a> {
 }
 
 /// The command's usage, printed for `--help` and with a usage error.
-pub const USAGE: &str = "usage: app install [--name <name>] [--window] [--] <path>\n       \
+pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] [--window] \
+                         [--] <path>\n       \
                          app uninstall [--window] [--] <name>\n       \
                          app open [--] <name>\n       app list\n";
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
-pub const BUILT_IN_APPS: [&[u8]; 3] = [b"Terminal", b"Files", b"Settings"];
+pub const BUILT_IN_APPS: [&[u8]; 4] = [b"Terminal", b"Files", b"Settings", b"Text Editor"];
 
 /// Whether `name` is a built-in app's ([`BUILT_IN_APPS`]), which is never in `/Applications`.
 pub fn is_built_in(name: &[u8]) -> bool {
@@ -47,6 +51,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let (&verb, rest) = arguments.split_first()?;
     let mut window = false;
     let mut name = None;
+    let mut entry = None;
     let mut operand = None;
     let mut rest = rest.iter();
     let mut options_end = false;
@@ -57,6 +62,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             b"--" => options_end = true,
             b"--window" => window = true,
             b"--name" if verb == b"install" => name = Some(*rest.next()?),
+            b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
             _ if operand.is_none() => operand = Some(argument),
             _ => return None,
@@ -66,6 +72,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
         b"install" => Some(Command::Install {
             path: operand?,
             name,
+            entry,
             window,
         }),
         b"uninstall" | b"remove" => Some(Command::Uninstall {
@@ -120,12 +127,12 @@ mod program {
         unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), COPY_BUFFER) }
     }
 
-    fn install(path: &[u8], name: Option<&[u8]>) -> i32 {
+    fn install(path: &[u8], name: Option<&[u8]>, entry: Option<&[u8]>) -> i32 {
         let mut files = LinuxFiles::new();
         let machine = linux::machine();
         let mut subject = Line::new();
         subject.push_bytes(crate::files::file_name(path));
-        let plan = match installer::plan(&mut files, path, name, machine) {
+        let plan = match installer::plan_entry(&mut files, path, name, entry, machine) {
             Ok(plan) => plan,
             Err(refused) => {
                 let line = messages::install_failed(
@@ -230,6 +237,7 @@ mod program {
                 app.architecture.unwrap_or("-")
             );
             line.push_bytes(program.as_bytes());
+            let _ = write!(line, "\t{}", app.icon.unwrap_or("-"));
             say(STANDARD_OUTPUT, line.as_str());
         });
         match listed {
@@ -288,7 +296,9 @@ mod program {
             Some(
                 Command::Install { window: true, .. } | Command::Uninstall { window: true, .. },
             ) => open_window(startup, &arguments[..count]),
-            Some(Command::Install { path, name, .. }) => install(path, name),
+            Some(Command::Install {
+                path, name, entry, ..
+            }) => install(path, name, entry),
             Some(Command::Uninstall { name, .. }) => uninstall(name),
             Some(Command::Open { name }) => open(name),
             Some(Command::List) => list(),
@@ -310,6 +320,7 @@ mod tests {
     #[test]
     fn the_built_in_apps_open_by_their_exact_names() {
         assert!(is_built_in(b"Settings") && is_built_in(b"Files") && is_built_in(b"Terminal"));
+        assert!(is_built_in(b"Text Editor") && !is_built_in(b"text editor"));
         assert!(!is_built_in(b"settings") && !is_built_in(b"Paint") && !is_built_in(b""));
         assert_eq!(
             parse(&[b"open", b"Settings"]),
@@ -324,6 +335,7 @@ mod tests {
             Some(Command::Install {
                 path: b"/media/host/win-paint.exe",
                 name: None,
+                entry: None,
                 window: false
             })
         );
@@ -332,6 +344,7 @@ mod tests {
             Some(Command::Install {
                 path: b"x.exe",
                 name: Some(b"Paint"),
+                entry: None,
                 window: true
             })
         );
@@ -349,6 +362,17 @@ mod tests {
                 window: true
             })
         );
+        assert_eq!(
+            parse(&[b"install", b"--entry", b"bin/a.exe", b"--", b"tools.zip"]),
+            Some(Command::Install {
+                path: b"tools.zip",
+                name: None,
+                entry: Some(b"bin/a.exe"),
+                window: false
+            })
+        );
+        assert_eq!(parse(&[b"uninstall", b"--entry", b"a", b"b"]), None);
+        assert_eq!(parse(&[b"install", b"--entry"]), None);
         assert_eq!(parse(&[b"list"]), Some(Command::List));
         assert_eq!(parse(&[b"--help"]), Some(Command::Help));
         for wrong in [
@@ -389,6 +413,7 @@ mod tests {
             Some(Command::Install {
                 path: b"/media/host/-x.exe",
                 name: None,
+                entry: None,
                 window: false
             })
         );
@@ -397,6 +422,7 @@ mod tests {
             Some(Command::Install {
                 path: b"-",
                 name: None,
+                entry: None,
                 window: false
             })
         );

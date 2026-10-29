@@ -4,8 +4,12 @@
 //! by Apple's linker, so only on a macOS host; CI builds them on its macOS runner and hands them
 //! to the Linux job through `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here.
 //! The Objective-C program, `tests/macos-objc/main.m`, is test data our own source and Apple's
-//! clang build the same way (D142); it is never shipped.
+//! clang build the same way (D142); it is never shipped. So is the AppKit test app `mac-paint`,
+//! `tests/macos-gui/main.m` (D147), which the macOS GUI boot test installs from
+//! `mac-paint.zip` (D148), the `mac-paint.app` bundle `assemble_app` writes with the icon
+//! `test_icns` draws, archived by `archive_app`.
 
+use crate::qmp::Picture;
 use std::path::{Path, PathBuf};
 
 pub const LAYER_PACKAGE: &str = "eggos-macos";
@@ -20,8 +24,112 @@ pub const PROGRAMS: [&str; 4] = [
     "macos-std",
 ];
 
-/// The programs built from Objective-C sources with Apple's clang, each `tests/<name>/main.m`.
-pub const OBJC_PROGRAMS: [&str; 1] = ["macos-objc"];
+/// A program built from Objective-C source with Apple's clang: `tests/<folder>/main.m` linked
+/// with `frameworks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjcProgram {
+    pub name: &'static str,
+    pub folder: &'static str,
+    pub frameworks: &'static [&'static str],
+}
+
+/// The AppKit test app's name: its program, and its bundle's folder without `.app`.
+pub const GUI_APP: &str = "mac-paint";
+
+/// The programs built from Objective-C sources with Apple's clang.
+pub const OBJC_PROGRAMS: [ObjcProgram; 2] = [
+    ObjcProgram {
+        name: "macos-objc",
+        folder: "macos-objc",
+        frameworks: &["Foundation"],
+    },
+    ObjcProgram {
+        name: GUI_APP,
+        folder: "macos-gui",
+        frameworks: &["AppKit", "Foundation"],
+    },
+];
+
+const BUNDLE_SUFFIX: &str = ".app";
+/// The bundle's property list, beside an app's `main.m` and in its bundle's `Contents`.
+pub const INFO_PLIST: &str = "Info.plist";
+/// The test app's icon file in `Contents/Resources`, which its `Info.plist` names.
+pub const APP_ICON: &str = "AppIcon.icns";
+/// What the test app's archive is called after its name.
+pub const ARCHIVE_SUFFIX: &str = ".zip";
+
+const ICON_DESIGN_SIDE: u32 = 128;
+const ICON_SIDES: [(&[u8; 4], u32); 2] = [(b"ic07", 128), (b"icp5", 32)];
+const ICON_BACKGROUND: u32 = 0x0020_60c0;
+const ICON_DISC: u32 = 0x00f0_a020;
+const ICON_STRIPE: u32 = 0x00ff_ffff;
+const ICON_DISC_RADIUS: i64 = 40;
+const ICON_STRIPE_HALF_WIDTH: u32 = 10;
+
+fn test_icon_pixel(x: u32, y: u32) -> u32 {
+    let centre = i64::from(ICON_DESIGN_SIDE / 2);
+    let (dx, dy) = (i64::from(x) - centre, i64::from(y) - centre);
+    let in_disc = dx * dx + dy * dy < ICON_DISC_RADIUS * ICON_DISC_RADIUS;
+    match (x.abs_diff(y) < ICON_STRIPE_HALF_WIDTH, in_disc) {
+        (true, _) => ICON_STRIPE,
+        (false, true) => ICON_DISC,
+        (false, false) => ICON_BACKGROUND,
+    }
+}
+
+/// The test app's icon at `side` pixels as a PNG: a blue square, an amber disc and a white
+/// diagonal, drawn on a 128-pixel grid.
+pub fn test_icon_png(side: u32) -> Result<Vec<u8>, String> {
+    let pixels = (0..side * side)
+        .map(|index| {
+            let (x, y) = (index % side, index / side);
+            test_icon_pixel(x * ICON_DESIGN_SIDE / side, y * ICON_DESIGN_SIDE / side)
+        })
+        .collect();
+    crate::release::encode_png(&Picture {
+        width: side,
+        height: side,
+        pixels,
+    })
+}
+
+/// The test app's `AppIcon.icns`: a 128-pixel `ic07` and a 32-pixel `icp5`, both PNG.
+pub fn test_icns() -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    for (kind, side) in ICON_SIDES {
+        let png = test_icon_png(side)?;
+        body.extend_from_slice(kind);
+        body.extend_from_slice(&(png.len() as u32 + 8).to_be_bytes());
+        body.extend_from_slice(&png);
+    }
+    let mut file = b"icns".to_vec();
+    file.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+    file.extend_from_slice(&body);
+    Ok(file)
+}
+
+/// Writes `test_icns` into the bundle at `bundle` as `Contents/Resources/AppIcon.icns`.
+pub fn add_test_icon(bundle: &Path) -> Result<(), String> {
+    let resources = bundle.join("Contents").join("Resources");
+    std::fs::create_dir_all(&resources).map_err(|e| format!("{}: {e}", resources.display()))?;
+    let path = resources.join(APP_ICON);
+    std::fs::write(&path, test_icns()?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Writes the bundle at `bundle` (`<name>.app`) into `<name>.zip` beside it, every file stored;
+/// returns the archive's path.
+pub fn archive_app(bundle: &Path) -> Result<PathBuf, String> {
+    let file_name = bundle
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} has no name", bundle.display()))?;
+    let stem = file_name.strip_suffix(BUNDLE_SUFFIX).unwrap_or(&file_name);
+    let archive = bundle.with_file_name(format!("{stem}{ARCHIVE_SUFFIX}"));
+    let members = crate::zip::folder_members(bundle, &file_name)?;
+    std::fs::write(&archive, crate::zip::stored(&members)?)
+        .map_err(|e| format!("{}: {e}", archive.display()))?;
+    Ok(archive)
+}
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;
@@ -141,7 +249,9 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         let programs = Programs {
             directory: PathBuf::from(directory),
         };
-        for program in PROGRAMS.iter().chain(&OBJC_PROGRAMS) {
+        crate::ci_artifact::fetch_when_built("macos-programs", &programs.directory)?;
+        let objc_names = OBJC_PROGRAMS.into_iter().map(|program| program.name);
+        for program in PROGRAMS.into_iter().chain(objc_names) {
             for cpu in ["arm64", "x86_64"] {
                 let path = programs.path(program, cpu);
                 if !path.is_file() {
@@ -172,43 +282,70 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
                 .map_err(|e| format!("{}: {e}", to.display()))?;
         }
         for program in OBJC_PROGRAMS {
-            build_objc_program(program, cpu, &directory.join(format!("{program}-{cpu}")))?;
+            let output = directory.join(format!("{}-{cpu}", program.name));
+            build_objc_program(program, cpu, &output)?;
         }
     }
     Ok(Some(Programs { directory }))
 }
 
-/// The `clang` arguments that build `source` for `cpu` into `output`: ARC, Foundation,
-/// chained fixups (macOS 13 and later), optimized.
-pub fn objc_arguments(source: &Path, cpu: &str, output: &Path) -> Vec<String> {
-    [
-        "clang",
-        "-fobjc-arc",
-        "-framework",
-        "Foundation",
-        &format!("-mmacosx-version-min={DEPLOYMENT_TARGET}"),
-        "-arch",
-        cpu,
-        "-O2",
-        "-Wall",
-        "-Werror",
-        "-o",
-    ]
-    .iter()
-    .map(|argument| argument.to_string())
-    .chain([
-        output.to_string_lossy().into_owned(),
-        source.to_string_lossy().into_owned(),
-    ])
-    .collect()
+/// The `clang` arguments that build `source` for `cpu` into `output` linked with `frameworks`:
+/// ARC, chained fixups (macOS 13 and later), optimized.
+pub fn objc_arguments(source: &Path, frameworks: &[&str], cpu: &str, output: &Path) -> Vec<String> {
+    let mut arguments = vec!["clang".to_owned(), "-fobjc-arc".to_owned()];
+    for framework in frameworks {
+        arguments.push("-framework".to_owned());
+        arguments.push((*framework).to_owned());
+    }
+    arguments.push(format!("-mmacosx-version-min={DEPLOYMENT_TARGET}"));
+    arguments.extend(
+        ["-arch", cpu, "-O2", "-Wall", "-Werror", "-o"]
+            .iter()
+            .map(|argument| argument.to_string()),
+    );
+    arguments.push(output.to_string_lossy().into_owned());
+    arguments.push(source.to_string_lossy().into_owned());
+    arguments
 }
 
-fn build_objc_program(program: &str, cpu: &str, output: &Path) -> Result<(), String> {
-    let source = crate::workspace_root()
-        .join("tests")
-        .join(program)
-        .join("main.m");
-    let arguments = objc_arguments(&source, cpu, output);
+/// The folder holding `program`'s `main.m` (and an app's `Info.plist`).
+pub fn source_folder(program: &ObjcProgram) -> PathBuf {
+    crate::workspace_root().join("tests").join(program.folder)
+}
+
+/// The Objective-C program named `name`.
+pub fn objc_program(name: &str) -> Option<ObjcProgram> {
+    OBJC_PROGRAMS
+        .into_iter()
+        .find(|program| program.name == name)
+}
+
+/// Writes the `.app` bundle of the app `name` in `folder`: `<name>.app/Contents/Info.plist`
+/// copied from `info_plist` and `<name>.app/Contents/MacOS/<name>` from `program`, replacing
+/// what an earlier run wrote there. Returns the bundle's path.
+pub fn assemble_app(
+    folder: &Path,
+    name: &str,
+    info_plist: &Path,
+    program: &Path,
+) -> Result<PathBuf, String> {
+    let bundle = folder.join(format!("{name}{BUNDLE_SUFFIX}"));
+    let contents = bundle.join("Contents");
+    let programs = contents.join("MacOS");
+    std::fs::create_dir_all(&programs).map_err(|e| format!("{}: {e}", programs.display()))?;
+    for (from, to) in [
+        (info_plist, contents.join(INFO_PLIST)),
+        (program, programs.join(name)),
+    ] {
+        std::fs::copy(from, &to)
+            .map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))?;
+    }
+    Ok(bundle)
+}
+
+fn build_objc_program(program: ObjcProgram, cpu: &str, output: &Path) -> Result<(), String> {
+    let source = source_folder(&program).join("main.m");
+    let arguments = objc_arguments(&source, program.frameworks, cpu, output);
     let status = std::process::Command::new("xcrun")
         .args(&arguments)
         .status()
@@ -317,13 +454,69 @@ mod tests {
     }
 
     #[test]
-    fn objective_c_programs_build_with_arc_foundation_and_chained_fixups() {
-        let arguments = objc_arguments(Path::new("main.m"), "arm64", Path::new("out"));
+    fn objective_c_programs_build_with_arc_their_frameworks_and_chained_fixups() {
+        let arguments = objc_arguments(
+            Path::new("main.m"),
+            &["AppKit", "Foundation"],
+            "arm64",
+            Path::new("out"),
+        );
         assert_eq!(arguments[0], "clang");
         assert!(arguments.contains(&"-fobjc-arc".to_owned()));
         assert!(arguments.contains(&"-mmacosx-version-min=13.0".to_owned()));
         assert!(arguments.windows(2).any(|pair| pair == ["-arch", "arm64"]));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-framework", "AppKit"])
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-framework", "Foundation"])
+        );
+        assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 2..], ["out", "main.m"]);
-        assert_eq!(OBJC_PROGRAMS, ["macos-objc"]);
+        let names: Vec<&str> = OBJC_PROGRAMS.iter().map(|program| program.name).collect();
+        assert_eq!(names, ["macos-objc", "mac-paint"]);
+        assert_eq!(
+            objc_program("macos-objc").map(|program| program.frameworks),
+            Some(&["Foundation"][..])
+        );
+        let app = objc_program(GUI_APP).expect("mac-paint is an Objective-C program");
+        assert_eq!(app.frameworks, ["AppKit", "Foundation"]);
+        assert!(source_folder(&app).ends_with(Path::new("tests").join("macos-gui")));
+        assert!(source_folder(&app).join("main.m").is_file());
+        assert!(source_folder(&app).join(INFO_PLIST).is_file());
+    }
+
+    #[test]
+    fn an_app_bundle_holds_its_info_plist_and_its_program_under_contents() {
+        let dir =
+            std::env::temp_dir().join(format!("eggos-app-bundle-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plist = dir.join("source.plist");
+        let program = dir.join("program");
+        std::fs::write(&plist, b"<plist/>").unwrap();
+        std::fs::write(&program, thin(CPU_TYPE_ARM64, 64)).unwrap();
+        let folder = dir.join("share");
+        let bundle = assemble_app(&folder, GUI_APP, &plist, &program).unwrap();
+        assert_eq!(bundle, folder.join("mac-paint.app"));
+        let again = assemble_app(&folder, GUI_APP, &plist, &program).unwrap();
+        assert_eq!(again, bundle);
+        let contents = bundle.join("Contents");
+        assert_eq!(
+            std::fs::read(contents.join("Info.plist")).unwrap(),
+            b"<plist/>"
+        );
+        let installed = std::fs::read(contents.join("MacOS").join("mac-paint")).unwrap();
+        assert!(is_mach_o(&installed));
+        let mut entries: Vec<String> = std::fs::read_dir(&contents)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, ["Info.plist", "MacOS"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

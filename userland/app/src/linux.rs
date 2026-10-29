@@ -397,6 +397,26 @@ impl Files for LinuxFiles {
         }
     }
 
+    fn read_at(&mut self, file: Handle, offset: u64, buffer: &mut [u8]) -> Result<usize, Errno> {
+        let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        loop {
+            match call(
+                number::PREAD64,
+                [
+                    file,
+                    buffer.as_mut_ptr() as usize,
+                    buffer.len(),
+                    offset,
+                    0,
+                    0,
+                ],
+            ) {
+                Err(Errno::EINTR) => {}
+                other => return other,
+            }
+        }
+    }
+
     fn write(&mut self, file: Handle, mut bytes: &[u8]) -> Result<(), Errno> {
         while !bytes.is_empty() {
             match call(

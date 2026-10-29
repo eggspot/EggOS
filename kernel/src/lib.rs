@@ -37,6 +37,7 @@ pub mod sync;
 pub mod terminal;
 pub mod thread;
 pub mod vfs;
+pub mod wall_clock;
 pub mod window;
 
 use core::fmt::Write;
@@ -93,6 +94,13 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     P::direct_map_offset()
                 )?;
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
+                report_wall_clock(console, wall_clock::start::<P>())?;
+                if display::mode().is_none() {
+                    display::offscreen::report(
+                        console,
+                        display::offscreen::install_requested::<P>(),
+                    )?;
+                }
                 report_display(console, display::show_first_frame::<P>())?;
                 report_input(console, input::summary())?;
                 match console::enable_input::<P>() {
@@ -369,6 +377,25 @@ fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::f
         }
     });
     result
+}
+
+fn report_wall_clock<W: Write>(console: &mut W, started: wall_clock::Started) -> core::fmt::Result {
+    match started {
+        wall_clock::Started::FromClock { name, seconds } => {
+            write!(console, "clock: ")?;
+            eggos_calendar::format::iso(console, seconds as i64)?;
+            writeln!(console, " UTC from {name}")
+        }
+        wall_clock::Started::Unreadable { name, error } => writeln!(
+            console,
+            "clock: {name} could not be read ({}): the wall clock starts at 1970-01-01",
+            error.description()
+        ),
+        wall_clock::Started::NoClock => writeln!(
+            console,
+            "clock: no real-time clock: the wall clock starts at 1970-01-01"
+        ),
+    }
 }
 
 fn report_display<W: Write>(

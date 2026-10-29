@@ -3,7 +3,7 @@ use crate::colour;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::tree::{PointerShape, Response, WidgetId, WidgetTree};
-use crate::widget::{Escape, Kind, Length, Place, card_rect};
+use crate::widget::{Escape, Kind, Length, Place, card_rect, scroll_bar};
 
 const ITEMS: &[&str] = &["Appearance", "Display", "Keyboard", "Mouse", "About"];
 
@@ -617,4 +617,21 @@ fn a_progress_bar_fills_its_done_part_with_the_accent_and_a_custom_widget_gets_i
     tree.set_progress(bar, 4000);
     tree.render(&mut pixels, 120, 40, 1);
     assert_eq!(pixels[14 * 120 + 105], colour::ACCENT);
+}
+
+#[test]
+fn a_scroll_bar_over_very_tall_content_keeps_its_thumb_in_its_track() {
+    let rect = Rect::new(0, 10, 200, 680);
+    let content = 340_000 * 16;
+    let (track, thumb) = scroll_bar(rect, content, content - rect.height).unwrap();
+    assert_eq!(thumb.bottom(), track.bottom());
+    assert_eq!(thumb.height, crate::widget::MIN_THUMB);
+    let (_, top) = scroll_bar(rect, content, 0).unwrap();
+    assert_eq!(top.y, rect.y);
+    let (_, middle) = scroll_bar(rect, content, (content - rect.height) / 2).unwrap();
+    assert_eq!(
+        middle.y,
+        rect.y + (rect.height - crate::widget::MIN_THUMB) / 2
+    );
+    assert!(scroll_bar(rect, rect.height, 0).is_none());
 }

@@ -79,7 +79,7 @@ allocator does).
   else that reads them falls back or fails).
 - **Pipes.** `popen()` and anything else that needs a pipe fails; `system()` works.
 - **What [Linux programs](linux-programs.md) lack** applies too: a read-only file system, no
-  `mmap` of files, no sockets, a wall clock at 1970 without an RTC driver.
+  `mmap` of files, no sockets, a wall clock in UTC with no time zones (D150).
 - **Tagged pointers in system calls (AArch64).** `prctl(PR_SET_TAGGED_ADDR_CTRL)` fails, so a
   program must not pass a pointer with a tag in its top byte to the kernel, as on a Linux
   without the tagged-address ABI; bionic then passes none.

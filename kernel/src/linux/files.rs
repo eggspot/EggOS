@@ -243,7 +243,7 @@ pub fn openat<P: Platform>(
             if !directory && (writes || flags & open_flag::TRUNC != 0) {
                 super::file_changes::truncate_on_open::<P>(node, flags)?;
             }
-            match (directory, node.generate()) {
+            match (directory, node.generate().map_err(|_| Errno::EIO)?) {
                 (true, _) => FileKind::Directory(node),
                 (false, Some(bytes)) => FileKind::Snapshot(Snapshot { node, bytes }),
                 (false, None) => FileKind::Regular(node),

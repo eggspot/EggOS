@@ -49,7 +49,8 @@ pub const FRAME_INTERVAL_MS: u64 = 16;
 /// Who the desktop serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Session {
-    /// The user: the desktop takes the pointer and key events and the clock shows the uptime.
+    /// The user: the desktop takes the pointer and key events and the clock shows the time of
+    /// day once the wall clock is set (D150), else the uptime.
     Interactive,
     /// A self-test: no input is taken and the clock stays at `up 0:00`, so the picture is the
     /// same on every boot.
@@ -120,7 +121,9 @@ static RENDER_PENDING: AtomicBool = AtomicBool::new(false);
 static APPLICATION_CURSOR_KEYS: AtomicBool = AtomicBool::new(false);
 static DRAWER: AtomicPtr<WaitQueue> = AtomicPtr::new(core::ptr::null_mut());
 static KEYS_TO_TERMINAL: AtomicBool = AtomicBool::new(true);
-static SHOWN_SECOND: AtomicU64 = AtomicU64::new(0);
+static SHOWN_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+const WALL_CLOCK_KEY: u64 = 1 << 63;
 
 fn drawer() -> Option<&'static WaitQueue> {
     let drawer = DRAWER.load(Ordering::Acquire);
@@ -253,7 +256,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         );
     })?;
     KEYS_TO_TERMINAL.store(true, Ordering::Relaxed);
-    SHOWN_SECOND.store(0, Ordering::Relaxed);
+    SHOWN_CLOCK.store(0, Ordering::Relaxed);
     if session == Session::Interactive {
         input::subscribe();
     }
@@ -354,15 +357,32 @@ pub fn move_view<P: Platform>(change: ViewMove) {
 }
 
 /// Has the drawing thread look at the desktop when `input_queued` says input events wait for
-/// it, or when the clock's second changed since it last looked; called by the input poller.
+/// it, or when a new second started since it last looked: each second runs the desktop's timers
+/// (a close's timeout, a notice's expiry, a tooltip's delay, D144) and updates the bar's clock,
+/// which redraws only when its text changes (the wall clock's minute once it is set, else the
+/// uptime's second, D150); called by the input poller, or without one by the thread
+/// [`start_clock`] starts.
 pub fn tick<P: Platform>(input_queued: bool) {
     if !is_active() {
         return;
     }
-    let second = P::clock_ticks() / P::clock_frequency().max(1);
-    let new_second = SHOWN_SECOND.load(Ordering::Relaxed) != second;
-    if input_queued || new_second {
+    let new_clock = SHOWN_CLOCK.load(Ordering::Relaxed) != clock_key::<P>();
+    if input_queued || new_clock {
         request_render::<P>();
+    }
+}
+
+fn clock_key<P: Platform>() -> u64 {
+    clock_key_at(
+        crate::wall_clock::is_set().then(crate::wall_clock::seconds::<P>),
+        P::clock_ticks() / P::clock_frequency().max(1),
+    )
+}
+
+fn clock_key_at(set_wall_seconds: Option<u64>, uptime_seconds: u64) -> u64 {
+    match set_wall_seconds {
+        Some(seconds) => WALL_CLOCK_KEY | seconds,
+        None => uptime_seconds,
     }
 }
 
@@ -427,9 +447,12 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
         buffers.release_unused(desktop);
     }
     let sent = queues.sent();
-    let second = P::clock_ticks() / P::clock_frequency().max(1);
-    SHOWN_SECOND.store(second, Ordering::Relaxed);
-    desktop.set_uptime(second, damage);
+    let clock = clock_key::<P>();
+    SHOWN_CLOCK.store(clock, Ordering::Relaxed);
+    match clock & WALL_CLOCK_KEY != 0 {
+        true => desktop.set_wall_clock(clock & !WALL_CLOCK_KEY, damage),
+        false => desktop.set_uptime(clock, damage),
+    };
     KEYS_TO_TERMINAL.store(desktop.keys_go_to_terminal(), Ordering::Relaxed);
     Asked {
         action,
@@ -538,7 +561,8 @@ pub fn reload_catalogue<P: Platform>() {
 }
 
 /// Opens the app called `name` as a double-click on its icon does (`OPEN_APP`, D134): a
-/// built-in (Terminal, Files, Settings, D141) or an installed app, after reading the catalogue
+/// built-in (Terminal, Files, Settings, D141; Text Editor, D149) or an installed app, after
+/// reading the catalogue
 /// again; `false` when there is no such app.
 pub fn open_app<P: Platform>(name: &[u8]) -> bool {
     if !is_interactive() {
@@ -681,6 +705,31 @@ pub fn start_drawing<P: Platform>() -> Result<bool, SpawnError> {
     .map(|_| true)
 }
 
+/// Starts the thread that has the desktop look at its clock once a second ([`tick`]) when no
+/// input poller does it: a display without input devices, as an offscreen boot has (D144). It
+/// ends when the terminal stops; `Ok(false)`, and nothing started, without a terminal.
+pub fn start_clock<P: Platform>() -> Result<bool, SpawnError> {
+    if !is_active() {
+        return Ok(false);
+    }
+    thread::spawn::<P, _>(|| {
+        while is_active() {
+            thread::sleep_until::<P>(next_second(P::clock_ticks(), P::clock_frequency()));
+            tick::<P>(false);
+        }
+    })
+    .map(|_| true)
+}
+
+/// The clock tick the second after the one holding tick `now` starts at, on a clock of
+/// `frequency` ticks a second.
+pub fn next_second(now: u64, frequency: u64) -> u64 {
+    let frequency = frequency.max(1);
+    (now / frequency)
+        .saturating_add(1)
+        .saturating_mul(frequency)
+}
+
 /// What the terminal self-test writes: a prompt line and lines in SGR colours, with box
 /// drawing, blocks and an arrow.
 pub const TEST_SCREEN: &str = "eggsh:/# echo EggOS\nEggOS\n\x1b[1;31mred \x1b[32mgreen\x1b[0m \
@@ -689,12 +738,44 @@ pub const TEST_SCREEN: &str = "eggsh:/# echo EggOS\nEggOS\n\x1b[1;31mred \x1b[32
 
 /// The [`display::pixel_hash`] of a 1280x800 display after the desktop's terminal showed
 /// [`TEST_SCREEN`] in a [`Session::SelfTest`].
-pub const TEST_SCREEN_HASH_1280X800: u64 = 0xcc62_008e_3c66_4155;
+pub const TEST_SCREEN_HASH_1280X800: u64 = 0x4f80_909d_8dc5_a395;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
+    use eggos_drivers::desktop::LAUNCH_FAILED;
+
+    #[test]
+    fn the_clock_wakes_at_the_start_of_the_next_second() {
+        assert_eq!(next_second(0, 1000), 1000);
+        assert_eq!(next_second(999, 1000), 1000);
+        assert_eq!(next_second(1000, 1000), 2000);
+        assert_eq!(next_second(5, 0), 6);
+        assert_eq!(next_second(u64::MAX, 1000), u64::MAX);
+    }
+
+    #[test]
+    fn once_the_wall_clock_is_set_the_desktop_still_looks_each_second_and_a_notice_expires() {
+        let wall = 1_793_282_700;
+        let mut desktop = Desktop::new(1280, 800).unwrap();
+        let mut damage = Damage::new();
+        desktop.set_time(1000);
+        desktop.show_notice(LAUNCH_FAILED, &mut damage);
+        assert!(desktop.set_wall_clock(wall, &mut damage));
+        let mut shown = clock_key_at(Some(wall), 1);
+        for second in 1..=3 {
+            let key = clock_key_at(Some(wall + second), 1 + second);
+            assert_ne!(key, shown, "second {second}");
+            shown = key;
+            let mut damage = Damage::new();
+            desktop.tick(1000 + second as u32 * 1000, &mut damage, &mut DiscardEvents);
+            assert!(!desktop.set_wall_clock(key & !WALL_CLOCK_KEY, &mut damage));
+        }
+        assert!(desktop.notice_area().is_none());
+        assert_eq!(clock_key_at(None, 2 * 86_400), 2 * 86_400);
+        assert_eq!(clock_key_at(Some(3600), 3600), WALL_CLOCK_KEY | 3600);
+    }
 
     #[test]
     fn the_test_screen_s_hash_is_the_one_the_qemu_self_test_checks() {

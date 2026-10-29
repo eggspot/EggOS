@@ -172,22 +172,27 @@ impl Window {
             pointer: PointerShape::Arrow,
         };
         window.map(offset)?;
-        let mut set_title = [0u8; 72];
-        let mut end = title.len().min(TITLE_CAPACITY);
-        while !title.is_char_boundary(end) {
-            end -= 1;
-        }
-        let title = &title.as_bytes()[..end];
-        put(&mut set_title, 0, window.id);
-        put(&mut set_title, 4, title.len() as u32);
-        set_title[8..8 + title.len()].copy_from_slice(title);
-        window.server.ioctl(SET_TITLE, &mut set_title)?;
+        window.set_title(title)?;
         let mut minimum_size = [0u8; 12];
         put(&mut minimum_size, 0, window.id);
         put(&mut minimum_size, 4, minimum.0 * scale);
         put(&mut minimum_size, 8, minimum.1 * scale);
         window.server.ioctl(SET_MINIMUM_SIZE, &mut minimum_size)?;
         Ok(window)
+    }
+
+    /// Gives the window the title `title`, cut at 64 bytes on a character boundary.
+    pub fn set_title(&self, title: &str) -> Result<(), Errno> {
+        let mut set_title = [0u8; 72];
+        let mut end = title.len().min(TITLE_CAPACITY);
+        while !title.is_char_boundary(end) {
+            end -= 1;
+        }
+        let title = &title.as_bytes()[..end];
+        put(&mut set_title, 0, self.id);
+        put(&mut set_title, 4, title.len() as u32);
+        set_title[8..8 + title.len()].copy_from_slice(title);
+        self.server.ioctl(SET_TITLE, &mut set_title)
     }
 
     /// The connection the window was made on.

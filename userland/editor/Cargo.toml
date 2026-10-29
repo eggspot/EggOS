@@ -1,0 +1,21 @@
+[package]
+name = "eggos-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+window = ["dep:eggos-toolkit"]
+
+[dependencies]
+eggos-app = { path = "../app" }
+eggos-font = { path = "../../font" }
+eggos-runtime = { path = "../runtime" }
+eggos-toolkit = { path = "../toolkit", optional = true }
+
+[dev-dependencies]
+eggos-files = { path = "../files", features = ["memory"] }
+
+[lints]
+workspace = true

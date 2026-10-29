@@ -74,6 +74,7 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
         run: app.file,
         architecture: Some(arch.name),
         synonyms: "",
+        icon: None,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("the test app's manifest is valid");
@@ -122,7 +123,7 @@ fn first_output(arch: &Arch, app: &TestApp) -> Vec<String> {
     lines.push(format!("Installed {0} in /Applications/{0}.", app.name));
     lines.push("EGGOS-APP status 0".to_owned());
     lines.push(format!(
-        "{0}\t{1}\t{2}\t/Applications/{0}/{3}",
+        "{0}\t{1}\t{2}\t/Applications/{0}/{3}\t-",
         app.name,
         app.source.key(),
         arch.name,

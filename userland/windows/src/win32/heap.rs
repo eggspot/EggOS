@@ -61,7 +61,7 @@ pub fn allocate(size: usize) -> *mut u8 {
     allocate_with(size, true)
 }
 
-fn allocate_with(size: usize, zeroed: bool) -> *mut u8 {
+pub(super) fn allocate_with(size: usize, zeroed: bool) -> *mut u8 {
     let block = match class_of(size) {
         Some(class) => {
             let (block, recycled) = HEAP.with(|lists| take(&mut lists.0, class));
@@ -225,7 +225,11 @@ unsafe extern "efiapi" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8)
     }
 }
 
-unsafe extern "efiapi" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8) -> usize {
+pub(super) unsafe extern "efiapi" fn heap_size(
+    _heap: usize,
+    _flags: u32,
+    pointer: *mut u8,
+) -> usize {
     // SAFETY: `HeapSize`'s contract: a block `HeapAlloc` or `HeapReAlloc` returned.
     match unsafe { block_of(pointer) } {
         Some(block) => block.size,
@@ -233,7 +237,7 @@ unsafe extern "efiapi" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8)
     }
 }
 
-unsafe extern "efiapi" fn heap_realloc(
+pub(super) unsafe extern "efiapi" fn heap_realloc(
     _heap: usize,
     flags: u32,
     pointer: *mut u8,

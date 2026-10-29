@@ -6,6 +6,7 @@
 
 mod android;
 mod bench;
+mod ci_artifact;
 mod elf;
 mod image;
 mod initramfs;
@@ -15,6 +16,8 @@ mod qemu;
 mod qmp;
 mod release;
 mod sha256;
+mod windows;
+mod zip;
 
 use std::process::{Command, ExitCode};
 
@@ -75,6 +78,14 @@ commands:
   macos-programs         build the macOS programs boot test's Mach-O programs with Apple's
                          linker (macOS hosts only) into target/macos-console/programs and
                          print that folder, which EGGOS_MACOS_PROGRAMS can name elsewhere
+  windows-programs       build the Windows C runtime boot test's programs with MSVC (Windows
+                         hosts with Visual Studio's C++ tools only) into
+                         target/windows-crt/programs and print that folder, which
+                         EGGOS_WINDOWS_PROGRAMS can name elsewhere
+  windows-crt --arch <arch>
+                         run only the Windows C runtime boot test (eggpad.exe, built by MSVC
+                         here or taken from EGGOS_WINDOWS_PROGRAMS), as `qemu` runs it
+                         (<arch> may be `all`)
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -93,6 +104,9 @@ pub struct Arch {
     /// The input devices every boot with a display adds: a virtio keyboard, tablet and mouse
     /// (D113).
     pub input_args: &'static [&'static str],
+    /// What an offscreen boot (`run-eggos.sh --mcp --no-window`, D144) adds instead of the
+    /// display and input devices, so QEMU adds no display device of its own.
+    pub offscreen_args: &'static [&'static str],
     /// The virtio block device a host folder is attached as (D130).
     pub disk_device: &'static str,
     /// The virtio console device the agent channel's port sits on (D136).
@@ -118,6 +132,7 @@ pub const ARCHES: &[Arch] = &[
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
+        offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
     },
@@ -138,6 +153,7 @@ pub const ARCHES: &[Arch] = &[
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
+        offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
     },
@@ -168,6 +184,7 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-mouse-pci,disable-legacy=on",
         ],
+        offscreen_args: &["-vga", "none"],
         disk_device: "virtio-blk-pci,disable-legacy=on",
         agent_bus_device: "virtio-serial-pci,disable-legacy=on",
     },
@@ -189,6 +206,7 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-hal",
     "eggos-drivers",
     "eggos-font",
+    "eggos-calendar",
     "eggos-settings-file",
     "eggos-app-manifest",
     "eggos-wayland",
@@ -197,6 +215,7 @@ const KERNEL_CRATES: &[&str] = &[
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
     "eggos-png",
+    "eggos-c-format",
     "eggos-init",
     "eggos-eggsh",
     "eggos-coreutils",
@@ -271,6 +290,10 @@ const VAR_PATH: &str = "var";
 
 const FILES_PATH: &str = "bin/files";
 
+const TEXT_EDITOR_PATH: &str = "bin/text-editor";
+
+const EDIT_PATH: &str = "bin/edit";
+
 const PROC_PATH: &str = "proc";
 
 const DEV_PATH: &str = "dev";
@@ -287,10 +310,10 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 27] = [
-    "agentlog", "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv",
-    "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true",
-    "uname", "uptime", "wc", "wm",
+const COREUTILS: [&str; 29] = [
+    "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock",
+    "ls", "mkdir", "mv", "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch",
+    "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -379,6 +402,19 @@ fn run(args: &[String]) -> Result<(), String> {
                 "Apple's linker builds the Mach-O test programs: run this on a macOS host",
             )?;
             println!("{}", programs.directory.display());
+            Ok(())
+        }
+        Some("windows-programs") if args.len() == 1 => {
+            let programs = windows::find_or_build_programs(&target_directory())?.ok_or(
+                "MSVC builds the Windows C runtime test programs: run this on a Windows host",
+            )?;
+            println!("{}", programs.directory.display());
+            Ok(())
+        }
+        Some("windows-crt") => {
+            for arch in arch()? {
+                windows_crt_boot_test(arch)?;
+            }
             Ok(())
         }
         Some("release") if args.len() == 1 => release::run(),
@@ -625,6 +661,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Attached,
         &[],
     )?;
+    windows_crt_boot_test(arch)?;
     let kernel = build_linux_gui_test_kernel(arch)?;
     qemu::boot_test(
         arch,
@@ -658,6 +695,11 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::persistent::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
+    qemu::real_time::check(arch, &kernel)?;
+    qemu::text_editor::check(arch, &kernel)?;
+    if let Some((kernel, folder)) = build_macos_gui_test(arch)? {
+        qemu::macos_gui::check(arch, &kernel, &folder)?;
+    }
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::files::check(arch, &install_kernel, &install_folder)?;
@@ -668,13 +710,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         &install_folder,
         std::path::Path::new(&linux_gui_program),
     )?;
+    let offscreen_asked = qemu::command_line_args(qemu::OFFSCREEN_WORD);
+    let offscreen_asked: Vec<&str> = offscreen_asked.iter().map(String::as_str).collect();
     qemu::boot_test(
         arch,
         &kernel,
         qemu::Expect::BootToPrompt,
         qemu::TEST_CPUS,
         qemu::Display::Attached,
-        &[],
+        &offscreen_asked,
     )?;
     Ok(())
 }
@@ -1019,6 +1063,75 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
     build_release_kernel(arch, &initramfs)
 }
 
+const EGGPAD: (&str, &str) = ("eggpad", "bin/eggpad.exe");
+
+fn windows_crt_boot_test(arch: &Arch) -> Result<(), String> {
+    let Some(kernel) = build_windows_crt_test_kernel(arch)? else {
+        return Ok(());
+    };
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::WindowsCrt,
+        qemu::TEST_CPUS,
+        qemu::Display::Attached,
+        &[],
+    )
+    .map(drop)
+}
+
+fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(target) = windows::msvc_target(arch.name) else {
+        return Ok(None);
+    };
+    if windows::not_built_for_this_run(std::env::var_os(windows::PROGRAMS_VARIABLE).as_deref()) {
+        eprintln!(
+            "xtask: {}: Windows C runtime boot test skipped: {} is empty, so this CI run built \
+             no MSVC programs (pull requests that change code build them)",
+            arch.name,
+            windows::PROGRAMS_VARIABLE
+        );
+        return Ok(None);
+    }
+    let Some(programs) = windows::find_or_build_programs(&target_directory())? else {
+        if std::env::var_os("CI").is_some() {
+            return Err(format!(
+                "{}: the Windows C runtime boot test needs the MSVC test programs in CI: set {}",
+                arch.name,
+                windows::PROGRAMS_VARIABLE
+            ));
+        }
+        eprintln!(
+            "xtask: {}: Windows C runtime boot test skipped: MSVC builds its programs, so it \
+             runs on a Windows host or with {} naming a folder of them; CI runs it",
+            arch.name,
+            windows::PROGRAMS_VARIABLE
+        );
+        return Ok(None);
+    };
+    let (program, path) = EGGPAD;
+    let added = [image::AddedFile {
+        host: programs
+            .path(program, target)
+            .to_string_lossy()
+            .into_owned(),
+        path: path.to_owned(),
+    }];
+    let layer = windows_layer_for(arch, &added)?;
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    extra.extend(layer.iter().map(|layer| layer.member()));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-windows-crt-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs).map(Some)
+}
+
 fn release_initramfs(
     arch: &Arch,
     extra: &[(&str, initramfs::Content)],
@@ -1039,6 +1152,11 @@ fn release_initramfs(
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (
+            TEXT_EDITOR_PATH,
+            initramfs::Content::HardLink(SETTINGS_PATH),
+        ),
+        (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (
@@ -1407,11 +1525,11 @@ fn macos_layer_for(arch: &Arch, added: &[image::AddedFile]) -> Result<Option<Mac
 
 const MACOS_FAT_PROGRAM: &str = "macos-fat";
 
-fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+fn macos_test_programs(arch: &Arch, test: &str) -> Result<Option<macos::Programs>, String> {
     if macos::not_built_for_this_run(std::env::var_os(macos::PROGRAMS_VARIABLE).as_deref()) {
         eprintln!(
-            "xtask: {}: macOS programs boot test skipped: {} is empty, so this CI run built no \
-             Mach-O programs (pull requests that change code build them)",
+            "xtask: {}: {test} skipped: {} is empty, so this CI run built no Mach-O programs \
+             (pull requests that change code build them)",
             arch.name,
             macos::PROGRAMS_VARIABLE
         );
@@ -1420,17 +1538,62 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
     let Some(programs) = macos::find_or_build_programs(&target_directory())? else {
         if std::env::var_os("CI").is_some() {
             return Err(format!(
-                "{}: the macOS programs boot test needs the Mach-O test programs in CI: set {}",
+                "{}: the {test} needs the Mach-O test programs in CI: set {}",
                 arch.name,
                 macos::PROGRAMS_VARIABLE
             ));
         }
         eprintln!(
-            "xtask: {}: macOS programs boot test skipped: Apple's linker builds its programs, \
-             so it runs on a macOS host or with {} naming a folder of them; CI runs it",
+            "xtask: {}: {test} skipped: Apple's linker builds its programs, so it runs on a \
+             macOS host or with {} naming a folder of them; CI runs it",
             arch.name,
             macos::PROGRAMS_VARIABLE
         );
+        return Ok(None);
+    };
+    Ok(Some(programs))
+}
+
+fn build_macos_gui_test(
+    arch: &Arch,
+) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, String> {
+    let Some((cpu, _)) = macos::target(arch.name) else {
+        return Ok(None);
+    };
+    let Some(programs) = macos_test_programs(arch, "macOS GUI boot test")? else {
+        return Ok(None);
+    };
+    let app = macos::objc_program(macos::GUI_APP)
+        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::GUI_APP))?;
+    let folder = target_directory().join(format!("macos-gui-folder-{}", arch.name));
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let program = programs.path(macos::GUI_APP, cpu);
+    let bundle = macos::assemble_app(
+        &folder,
+        macos::GUI_APP,
+        &macos::source_folder(&app).join(macos::INFO_PLIST),
+        &program,
+    )?;
+    macos::add_test_icon(&bundle)?;
+    macos::archive_app(&bundle)?;
+    let detected = [image::AddedFile {
+        host: program.to_string_lossy().into_owned(),
+        path: String::new(),
+    }];
+    let layer = macos_layer_for(arch, &detected)?;
+    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-macos-gui-{}.cpio", arch.user_target),
+    )?;
+    let kernel = build_release_kernel(arch, &initramfs)?;
+    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
+    Ok(Some((kernel, folder)))
+}
+
+fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(programs) = macos_test_programs(arch, "macOS programs boot test")? else {
         return Ok(None);
     };
     let (own, other) = match arch.name {
@@ -1742,7 +1905,8 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, arch_option, host_folder, json_string_field, with_value, without_flag,
+        APP_PATH, COREUTILS, EDIT_PATH, arch_option, host_folder, json_string_field, with_value,
+        without_flag,
     };
 
     #[test]
@@ -1750,7 +1914,7 @@ mod tests {
         let programs: Vec<String> = COREUTILS
             .iter()
             .map(|name| format!("/bin/{name}"))
-            .chain([format!("/{APP_PATH}")])
+            .chain([format!("/{APP_PATH}"), format!("/{EDIT_PATH}")])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {
             match tool.twin.program {

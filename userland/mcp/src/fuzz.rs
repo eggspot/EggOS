@@ -15,7 +15,7 @@ use crate::server::{
 use crate::system::{CaptureFile, Ended, FileState, Invocation, RunOutcome, System};
 use eggos_runtime::errno::Errno;
 
-const CORPUS: [&str; 28] = [
+const CORPUS: [&str; 30] = [
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tee","arguments":{"path":"/home/root/a","content":"x\u0000y","append":true}}}"#,
@@ -44,6 +44,8 @@ const CORPUS: [&str; 28] = [
     r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"wm_scroll","arguments":{"window":-1,"dy":-9223372036854775808,"x":1}}}"#,
     r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"wm_type","arguments":{"window":129,"text":"typed text"}}}"#,
     r#"{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"wm_scroll","arguments":{"window":129,"dy":3,"x":5,"y":6}}}"#,
+    r#"{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"wm_menu_list","arguments":{"window":129}}}"#,
+    r#"{"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"wm_menu_choose","arguments":{"window":129,"menu":-1,"entry":1e3}}}"#,
 ];
 
 const SPLICES: [&str; 14] = [

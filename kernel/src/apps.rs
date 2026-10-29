@@ -1,5 +1,7 @@
 //! The desktop shell's side in the kernel (D133, D134): the app catalogue read from the file
-//! systems, and the programs the launcher starts. The catalogue is read when the desktop
+//! systems, with each app's own icon its manifest names (D148, the installer's `app.icon`,
+//! taken only when it is exactly the size the format has), and the programs the launcher
+//! starts. The catalogue is read when the desktop
 //! starts, each time the launcher opens and when the installer says the apps changed, never
 //! otherwise; an app starts as a process of its own, beside init, as the user's.
 
@@ -18,6 +20,8 @@ use eggos_hal::Platform;
 pub const HOST_SHARE: &[u8] = b"/media/host";
 /// The Files app's program, when the build has it.
 pub const FILES_PROGRAM: &[u8] = b"/bin/files";
+/// The Text Editor's program, when the build has it (D149).
+pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
 
 const ENVIRONMENT: [&[u8]; 4] = [
     b"HOME=/",
@@ -40,12 +44,14 @@ fn read_small_file(node: vfs::Node, largest: usize) -> Option<Vec<u8>> {
 }
 
 /// The catalogue as the file systems hold it now: every app under `/Applications` whose
-/// manifest is valid, whether the host share is mounted and whether the build has Files.
+/// manifest is valid, whether the host share is mounted and whether the build has Files and
+/// the Text Editor.
 pub fn catalogue() -> Catalogue {
     let mut catalogue = Catalogue::new();
     let root = vfs::root();
     catalogue.set_host_share(vfs::is_mount_point(HOST_SHARE));
     catalogue.set_files_present(vfs::resolve(root, root, FILES_PROGRAM).is_ok());
+    catalogue.set_text_editor_present(vfs::resolve(root, root, TEXT_EDITOR_PROGRAM).is_ok());
     let Ok(directory) = vfs::resolve(root, root, manifest::DIRECTORY.as_bytes()) else {
         return catalogue;
     };
@@ -65,7 +71,14 @@ pub fn catalogue() -> Catalogue {
         else {
             continue;
         };
-        catalogue.add_installed(name.as_bytes(), &file);
+        if catalogue.add_installed(name.as_bytes(), &file)
+            && let Some(icon) = manifest::parse(&file, name.as_bytes()).and_then(|app| app.icon)
+            && let Some(bytes) = vfs::resolve(root, node, icon.as_bytes())
+                .ok()
+                .and_then(|icon| read_small_file(icon, manifest::icon::FILE_BYTES))
+        {
+            catalogue.set_icon(name.as_bytes(), &bytes);
+        }
         if catalogue.installed_count() == eggos_drivers::desktop::MAX_INSTALLED {
             break;
         }

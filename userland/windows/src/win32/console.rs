@@ -27,7 +27,7 @@ pub fn set_gui_program() {
     GUI_PROGRAM.store(true, Ordering::Relaxed);
 }
 
-fn standard_handle(fd: usize) -> usize {
+pub(super) fn standard_handle(fd: usize) -> usize {
     match GUI_PROGRAM.load(Ordering::Relaxed) && linux::is_terminal(fd) {
         true => 0,
         false => handle_of(fd),

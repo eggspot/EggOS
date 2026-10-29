@@ -1,9 +1,11 @@
 use crate::agentlog::agentlog;
 use crate::cat::cat;
+use crate::date::date;
 use crate::echo::echo;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
 use crate::grep::grep;
 use crate::head::{head, tail};
+use crate::hwclock::hwclock;
 use crate::ls::{Listing, ls};
 use crate::output::{FAILURE, Output};
 use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
@@ -28,12 +30,14 @@ pub enum Utility {
     Agentlog,
     Cat,
     Cp,
+    Date,
     Echo,
     False,
     Free,
     Grep,
     Halt,
     Head,
+    Hwclock,
     Ls,
     Mkdir,
     Mv,
@@ -55,16 +59,18 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 29] = [
         Self::Agentlog,
         Self::Cat,
         Self::Cp,
+        Self::Date,
         Self::Echo,
         Self::False,
         Self::Free,
         Self::Grep,
         Self::Halt,
         Self::Head,
+        Self::Hwclock,
         Self::Ls,
         Self::Mkdir,
         Self::Mv,
@@ -90,12 +96,14 @@ impl Utility {
             Self::Agentlog => b"agentlog",
             Self::Cat => b"cat",
             Self::Cp => b"cp",
+            Self::Date => b"date",
             Self::Echo => b"echo",
             Self::False => b"false",
             Self::Free => b"free",
             Self::Grep => b"grep",
             Self::Halt => b"halt",
             Self::Head => b"head",
+            Self::Hwclock => b"hwclock",
             Self::Ls => b"ls",
             Self::Mkdir => b"mkdir",
             Self::Mv => b"mv",
@@ -126,12 +134,14 @@ impl Utility {
             Self::Agentlog => agentlog(output, arguments),
             Self::Cat => cat(output, arguments),
             Self::Cp => cp(output, arguments),
+            Self::Date => date(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
             Self::Free => free(output, arguments),
             Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
+            Self::Hwclock => hwclock(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
             Self::Mkdir => mkdir(output, arguments),
             Self::Mv => mv(output, arguments),

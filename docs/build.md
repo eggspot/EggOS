@@ -112,6 +112,21 @@ holds what used to be written in them.
   as the window appears, after a click on its ellipse, a key, Space (the message box), Enter,
   F2 (a second thread's message box), Enter and a click on the close control, then checks `WIN-PAINT status 0` and the program's lines
   in the file; on riscv64, `Exec format error` and 126 (D129).
+- **The Windows C runtime boot test** (x86_64 and aarch64) adds `tests/windows-crt`'s
+  `eggpad.exe`, our own C notepad built by MSVC's `cl.exe` as a `/MD` program (x64's on x86_64,
+  ARM64's on aarch64), as `/bin/eggpad.exe` with the Windows layer, boots with the display,
+  writes `/tmp/note.txt` from the shell and runs `eggpad.exe 'C:\tmp\note.txt'` with its output
+  redirected to `/tmp/eggpad.log`. It compares the display with the host's render (eggpad's
+  lines and status painted by `eggos-windows-gui`'s text) as the file appears, after typing
+  `abc` and Enter, after Ctrl+S (`Saved 27 bytes`) and after a click on the close control, then
+  checks `EGGPAD status 0`, eggpad's lines in the log and the saved file's two lines. The
+  programs come from `EGGOS_WINDOWS_PROGRAMS` (a folder of `<program>-<x64|arm64>.exe` files)
+  or, on a Windows host with Visual Studio's C++ tools, `cargo xtask windows-programs` builds
+  them (`vswhere`, `vcvarsall.bat`, `cl /MD /O2 /W3 /WX`); otherwise the test is skipped with a
+  message, but fails when `CI` is set. CI builds them in its `windows-programs` job; in the
+  `qemu` jobs xtask waits for that artifact (up to 25 minutes, `xtask/src/ci_artifact.rs`) just
+  before this boot test, so the MSVC build overlaps the kernels' build and the earlier boot tests
+  (D146).
 - **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
   `no_std` static library defining `main`, for `aarch64-linux-android` or
   `x86_64-linux-android`, links it with the Android NDK's clang (`--target=<triple>29 -static`,
@@ -132,8 +147,32 @@ holds what used to be written in them.
   `Exec format error` and 126. The programs come from `EGGOS_MACOS_PROGRAMS` (a folder of
   `<program>-<cpu>` files) or, on a macOS host, `cargo xtask macos-programs` builds them;
   otherwise the test is skipped with a message, but fails when `CI` is set. CI builds them in
-  its `macos-programs` job, and the `qemu` jobs wait for that artifact before their boot tests
-  (D120).
+  its `macos-programs` job; in the `qemu` jobs xtask waits for that artifact just before the
+  first boot test that needs it (D120, D146).
+- **The macOS GUI boot test** (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64) takes
+  `mac-paint`, our AppKit test app built from `tests/macos-gui/main.m` with the other macOS
+  programs (`-framework AppKit -framework Foundation`), writes `mac-paint.app` (its
+  `Info.plist` and this CPU's slice as `Contents/MacOS/mac-paint`) in a host folder, and boots
+  the release kernel with the macOS layer on a blank disk with that folder attached. It installs
+  the bundle with `app install /media/host/mac-paint.app`, opens it from the launcher, then
+  compares the display with the host's render (the desktop, and the window and alert painted by
+  `eggos-macos-gui-tests`) after each step: the window with its menu in the top bar, `Hello` and
+  Enter, clicks in the paint view, `c`, `Clear`, `Info` and Esc, the `File` menu and Esc, and
+  Cmd+Q, which must end the app with status 0. It is skipped like the macOS programs boot test
+  (D147).
+- **The Text Editor boot test** (`xtask/src/qemu/text_editor.rs`, every architecture) boots
+  the release kernel with no disk, writes `/tmp/notes.txt` at the prompt and opens it with
+  `edit`, then compares the display with the host's render (the desktop, and the editor's
+  window drawn by `eggos-editor` over a file system in memory holding the same file, with the
+  caret shown or hidden) after typing, Ctrl+F and `egg`, Esc, Ctrl+S and the close control;
+  `cat` must then print the saved text (D149).
+- **The real-time clock boot test** (`xtask/src/qemu/real_time.rs`, every architecture) boots
+  the release kernel, whose real-time clock follows the host's (QEMU's `-rtc base=utc`), and
+  checks that the boot log names the expected driver (`rtc-cmos`, `rtc-pl031`, `rtc-goldfish`),
+  that `date +%s` is within 5 minutes of the host's clock, that a file made in `/tmp` has that
+  time (`date -r`), that `hwclock -r` agrees, and that `date -s` reaches both `date` and the
+  hardware clock (D150). Every desktop frame check accepts the bar's clock at the uptime or at
+  the host's time give or take a few minutes.
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
@@ -235,12 +274,15 @@ holds what used to be written in them.
   PowerShell), with the folder made absolute and its commas doubled, and `qemu::disk_args`
   for the disk image; with `--mcp` (`-Mcp`) `qemu::mcp_args`: the agent channel on the
   script's standard input and output (`qemu::agent_channel_args`), the console in
-  `eggos-<arch>-serial.log`, no monitor, and `-display none` with `--no-window`
-  (`-NoWindow`), every script message on standard error, and the disk image checked with
-  `qemu-io` for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>`
-  (`-McpAllow`, `--mcp` only) `qemu::grant_args`: `-append eggos.mcp_allow=<list>` once each
-  name is checked as `write`, `run` or `install` (D137); a host test checks they
-  match. Each script picks the host's architecture
+  `eggos-<arch>-serial.log`, no monitor, and with `--no-window` (`-NoWindow`) no display or
+  input device (`Arch::offscreen_args`, `-display none`) and the kernel command line word
+  `qemu::OFFSCREEN_WORD`, `eggos.display=offscreen`, so EggOS draws its desktop in memory
+  (D144), every script message on standard error, and the disk image checked with `qemu-io`
+  for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>` (`-McpAllow`,
+  `--mcp` only) the word `qemu::grant_word`, `eggos.mcp_allow=<list>`, once each name is
+  checked as `view`, `write`, `run` or `install` (D137, D143). The words go in one `-append`
+  (`qemu::command_line_args`), since QEMU keeps only the last; host tests check the scripts'
+  text. Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
   `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one
@@ -258,8 +300,8 @@ holds what used to be written in them.
 - **Parallel jobs, a final `check`.** `changes` detects a docs-only change; then, at the same time:
   `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
-  architecture), `macos-programs` (the Mach-O test programs) and, on PRs, `hosts` (macOS and
-  Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
+  architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
+  programs, D146) and, on PRs, `hosts` (macOS and Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other
   job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
@@ -270,8 +312,10 @@ holds what used to be written in them.
 - **Jobs run in the CI image** (below), with QEMU, OpenSBI and the pinned toolchain preinstalled
   (`packages: read` to pull it). CI always runs in `main`'s image, so a change that needs something
   new in the image lands in its own PR first. The `qemu` jobs mount the runner's Android NDKs for
-  the Android programs boot test (D119) and, on PRs, wait for the `macos-programs` artifact before
-  their boot tests (D120).
+  the Android programs boot test (D119) and, on PRs, fetch the `macos-programs` and
+  `windows-programs` artifacts through xtask just before the boot tests that run them, waiting
+  for them when their jobs are still building (D120, D146); their 40-minute timeout covers the
+  boot tests plus a Windows job that takes its whole 15 minutes.
 - **Benchmarks are report-only (D122).** Each `bench` job runs `cargo xtask bench --arch <arch>
   --report-only`: every result is compared with `benchmarks/baseline.txt` and written to the job
   summary and to `target/bench/report.json` and `report.md`; the job fails only for a result more

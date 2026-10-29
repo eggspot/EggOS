@@ -25,9 +25,10 @@ use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::{MemoryMap, PhysicalRange};
 use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, Platform};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use eggos_drivers::pci::ecam::ecam_length;
 use eggos_drivers::pci::mcfg;
+use eggos_drivers::rtc::{Cmos, RealTimeClock, cmos};
 use eggos_drivers::serial::{Ns16550, Uart};
 use port::PortIo;
 
@@ -475,6 +476,24 @@ fn wait_until_taken(microseconds: u64) -> bool {
 /// COM1's I/O ports.
 const COM1_PORT: u16 = 0x3f8;
 
+const CMOS_CLOCK_PORT: u16 = 0x70;
+
+static CMOS_CLOCK: AtomicU16 = AtomicU16::new(0);
+
+fn cmos_clock() -> acpi::CmosClock {
+    if let Some(known) = acpi::CmosClock::from_bits(CMOS_CLOCK.load(Ordering::Relaxed)) {
+        return known;
+    }
+    let found = acpi_table(b"FACP").map_or(
+        acpi::CmosClock::Present {
+            century_register: None,
+        },
+        acpi::cmos_clock,
+    );
+    CMOS_CLOCK.store(found.to_bits(), Ordering::Relaxed);
+    found
+}
+
 /// The legacy BIOS area the ACPI spec says to search for the RSDP when the loader does not
 /// pass its address.
 const BIOS_AREA: core::ops::Range<usize> = 0xe_0000..0x10_0000;
@@ -683,6 +702,23 @@ impl Platform for X86_64 {
 
     fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
         acpi_table(signature)
+    }
+
+    unsafe fn platform_clock(wait_duty: fn(), clock: &mut dyn FnMut(&dyn RealTimeClock)) {
+        let acpi::CmosClock::Present { century_register } = cmos_clock() else {
+            return;
+        };
+        // SAFETY: ports 0x70 and 0x71 are the PC real-time clock's index and data ports, which
+        // nothing but this driver uses, and the caller holds the one lock every call of this
+        // function and every use of its clock is made under (its safety contract), so the
+        // ports' accesses never interleave.
+        let ports = unsafe { PortIo::new(CMOS_CLOCK_PORT, cmos::REGISTER_BLOCK_SIZE) };
+        let monotonic = cmos::MonotonicClock {
+            ticks: timer::now,
+            frequency: timer::frequency(),
+            wait_duty,
+        };
+        clock(&Cmos::new(ports, century_register, monotonic));
     }
 
     fn device_apertures(aperture: &mut dyn FnMut(PhysicalRange)) {

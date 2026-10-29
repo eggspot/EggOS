@@ -102,6 +102,18 @@ pub fn set_wait_duty(duty: fn()) {
     WAIT_DUTY.store(duty as *mut (), Ordering::Release);
 }
 
+/// Does the wait duty once, as a waiter for a contended [`SpinLock`] does: for code that
+/// busy-waits on hardware with interrupts masked (the CMOS clock's update, D150), so another
+/// CPU waiting for this one is answered meanwhile.
+pub fn do_wait_duty() {
+    let duty = WAIT_DUTY.load(Ordering::Acquire);
+    if !duty.is_null() {
+        // SAFETY: only `set_wait_duty` stores a non-null value, and it stores a `fn()`.
+        let duty: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(duty) };
+        duty();
+    }
+}
+
 /// Waits until `locked` reads false, with plain loads, so a waiting CPU does not keep taking
 /// the cache line from the holder; inlined, and laid out away from the free case
 /// (`cold_path` before it), which then falls straight through.

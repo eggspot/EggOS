@@ -21,6 +21,8 @@ pub const MAX_WORDS: usize = 32;
 pub const WORDS_BYTES: usize = 4096;
 /// The longest app name.
 pub const MAX_NAME_BYTES: usize = 64;
+/// The longest path inside a `.zip` `app_install`'s `entry` takes (a `.zip` entry's name).
+pub const MAX_ARCHIVE_ENTRY_BYTES: usize = 255;
 /// `run`'s time limit when the agent gives none.
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 10_000;
 /// `run`'s longest time limit, in seconds.
@@ -37,6 +39,18 @@ pub const MAX_WINDOW_ID: u64 = 999_999_999;
 pub const MAX_COORDINATE: u64 = 65_535;
 /// The most wheel notches one scroll turns, either way (the window server's own limit).
 pub const MAX_NOTCHES: u64 = 16;
+/// The largest menu number of a main menu (the window server holds 6 menus).
+pub const MAX_MENU_INDEX: u64 = 5;
+/// The largest entry number in one menu (the window server holds 16 entries a menu).
+pub const MAX_ENTRY_INDEX: u64 = 15;
+/// The most bytes of `wm_menu_choose`'s `label`, so the audit record keeps it whole as it keeps
+/// `wm_type`'s text.
+pub const MAX_MENU_LABEL_BYTES: usize = 64;
+
+/// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
+pub const TIME_BYTES: usize = 20;
+
+const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
 /// Why a call's arguments are refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +76,9 @@ pub enum ArgumentProblem {
     BadBase64,
     /// An app name is empty, too long, or holds `/`, NUL, or is `.` or `..`.
     BadName,
+    /// `app_install`'s `entry` is not a string of 1 to [`MAX_ARCHIVE_ENTRY_BYTES`] bytes
+    /// without NUL.
+    BadArchiveEntry,
     /// Too many arguments for `run`, too long, or one holds a NUL.
     BadWords,
     /// `timeout_seconds` is not 1 to 60.
@@ -81,6 +98,12 @@ pub enum ArgumentProblem {
     BadNotches,
     /// `max_width` is outside [`MIN_IMAGE_WIDTH`] to [`MAX_IMAGE_WIDTH`].
     BadImageWidth,
+    /// `time` is not `YYYY-MM-DDTHH:MM:SSZ`.
+    BadTime,
+    /// `menu` is not 0 to [`MAX_MENU_INDEX`] or `entry` not 0 to [`MAX_ENTRY_INDEX`].
+    BadMenuItem,
+    /// `label` is longer than [`MAX_MENU_LABEL_BYTES`] or holds a control character.
+    BadMenuLabel,
 }
 
 impl ArgumentProblem {
@@ -98,6 +121,10 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("text") => "text is required",
             ArgumentProblem::Missing("keys") => "keys is required",
             ArgumentProblem::Missing("dy") => "dy is required",
+            ArgumentProblem::Missing("menu") => {
+                "menu and entry are required: the numbers wm_menu_list shows"
+            }
+            ArgumentProblem::Missing("time") => "time is required: YYYY-MM-DDTHH:MM:SSZ, in UTC",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
@@ -111,6 +138,9 @@ impl ArgumentProblem {
             ArgumentProblem::BadBase64 => "content_base64 is not base64",
             ArgumentProblem::BadName => {
                 "the name must be 1 to 64 bytes, without / or NUL, and not . or .."
+            }
+            ArgumentProblem::BadArchiveEntry => {
+                "entry must be a path inside the .zip of 1 to 255 bytes, without NUL"
             }
             ArgumentProblem::BadWords => {
                 "at most 32 arguments, 4096 bytes in all, none holding a NUL"
@@ -136,7 +166,47 @@ impl ArgumentProblem {
                 "dy must be a whole number of notches from -16 to 16, not 0"
             }
             ArgumentProblem::BadImageWidth => "max_width must be a whole number from 16 to 1568",
+            ArgumentProblem::BadTime => {
+                "time must be a date and time in UTC as YYYY-MM-DDTHH:MM:SSZ, such as \
+                 2026-10-29T14:05:09Z"
+            }
+            ArgumentProblem::BadMenuItem => {
+                "menu (0 to 5) and entry (0 to 15) are whole numbers as wm_menu_list shows them"
+            }
+            ArgumentProblem::BadMenuLabel => {
+                "label is the item's label as wm_menu_list shows it: at most 64 bytes, without \
+                 control characters"
+            }
         }
+    }
+}
+
+/// `clock_set`'s `time`, kept whole: checked to have the form `YYYY-MM-DDTHH:MM:SSZ`, digits
+/// where it has them; whether it is a real moment in range is for `date -s`, its twin, to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TimeText([u8; TIME_BYTES]);
+
+impl TimeText {
+    /// `text` as a time, if it has the form.
+    pub fn of(text: &[u8]) -> Result<Self, ArgumentProblem> {
+        let shaped = text.len() == TIME_BYTES
+            && text.iter().zip(TIME_FORM).all(|(&byte, &form)| match form {
+                b'0' => byte.is_ascii_digit(),
+                _ => byte == form,
+            });
+        let mut bytes = [0u8; TIME_BYTES];
+        match shaped {
+            true => {
+                bytes.copy_from_slice(text);
+                Ok(Self(bytes))
+            }
+            false => Err(ArgumentProblem::BadTime),
+        }
+    }
+
+    /// The time's text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.0).unwrap_or("")
     }
 }
 
@@ -250,6 +320,8 @@ pub struct Checked {
     pub content: Option<usize>,
     /// The app name.
     pub name: Option<AppName>,
+    /// `app_install`'s entry's length, in the words buffer.
+    pub archive_entry: Option<usize>,
     /// `append`.
     pub append: bool,
     /// `confirm`.
@@ -272,6 +344,12 @@ pub struct Checked {
     pub notches: Option<i32>,
     /// `wm_capture`'s widest image, in pixels.
     pub max_width: Option<u32>,
+    /// `clock_set`'s time.
+    pub time: Option<TimeText>,
+    /// `wm_menu_choose`'s menu and entry numbers.
+    pub menu_item: Option<(u32, u32)>,
+    /// `wm_menu_choose`'s label's length, in the words buffer.
+    pub menu_label: Option<usize>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -352,6 +430,9 @@ pub fn check(
             None => return Err(ArgumentProblem::Missing("name")),
         });
     }
+    if tool.kind == Kind::AppInstall {
+        checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
+    }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
         checked.time_limit_ms = match get("timeout_seconds") {
@@ -367,7 +448,41 @@ pub fn check(
     if tool.twin.operand == Operand::Window {
         window_arguments(tool.kind, &get, decoded.words, &mut checked)?;
     }
+    if tool.kind == Kind::ClockSet {
+        checked.time = Some(match get("time") {
+            Some(Value::Str(text)) => {
+                let mut bytes = [0u8; TIME_BYTES];
+                let decoded = text
+                    .decode_into(&mut bytes)
+                    .ok_or(ArgumentProblem::BadTime)?;
+                TimeText::of(decoded.as_bytes())?
+            }
+            Some(_) => return Err(ArgumentProblem::BadTime),
+            None => return Err(ArgumentProblem::Missing("time")),
+        });
+    }
     Ok(checked)
+}
+
+fn archive_entry(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadArchiveEntry),
+    };
+    let room = words
+        .get_mut(..MAX_ARCHIVE_ENTRY_BYTES)
+        .ok_or(ArgumentProblem::BadArchiveEntry)?;
+    let entry = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadArchiveEntry)?;
+    match !entry.is_empty() && !entry.contains('\0') {
+        true => Ok(Some(entry.len())),
+        false => Err(ArgumentProblem::BadArchiveEntry),
+    }
 }
 
 fn whole(
@@ -485,9 +600,39 @@ fn window_arguments<'a>(
             checked.notches = Some(notches as i32);
             checked.point = point(get("x"), get("y"))?;
         }
+        Kind::WmMenuChoose => {
+            let menu = whole(get("menu"), MAX_MENU_INDEX, ArgumentProblem::BadMenuItem)?;
+            let entry = whole(get("entry"), MAX_ENTRY_INDEX, ArgumentProblem::BadMenuItem)?;
+            let (Some(menu), Some(entry)) = (menu, entry) else {
+                return Err(ArgumentProblem::Missing("menu"));
+            };
+            checked.menu_item = Some((menu as u32, entry as u32));
+            checked.menu_label = menu_label(get("label"), words)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn menu_label(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadMenuLabel),
+    };
+    let room = words
+        .get_mut(..MAX_MENU_LABEL_BYTES)
+        .ok_or(ArgumentProblem::BadMenuLabel)?;
+    let label = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadMenuLabel)?;
+    match label.chars().any(char::is_control) {
+        true => Err(ArgumentProblem::BadMenuLabel),
+        false => Ok(Some(label.len())),
+    }
 }
 
 fn flag(value: Option<Value<'_>>, name: &'static str) -> Result<bool, ArgumentProblem> {
@@ -638,9 +783,21 @@ pub fn typed_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.text?)?).ok()
 }
 
+/// `wm_menu_choose`'s label in `buffer`, the words buffer, that [`Checked::menu_label`]
+/// measures.
+pub fn menu_label_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.menu_label?)?).ok()
+}
+
 /// `wm_press`'s keys in `buffer`, the words buffer, that [`Checked::keys`] measures.
 pub fn keys_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.keys?)?).ok()
+}
+
+/// `app_install`'s entry in `buffer`, the words buffer, that [`Checked::archive_entry`]
+/// measures.
+pub fn archive_entry_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.archive_entry?)?).ok()
 }
 
 /// The path or program in `buffer` that [`Checked::path`] measures.
@@ -860,6 +1017,33 @@ mod tests {
                 .path,
             Some(17)
         );
+        let (result, buffers) = checked(
+            "app_install",
+            r#"{"path":"/media/host/tools.zip","entry":"bin/a.exe"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(
+            archive_entry_text(&result, &buffers.words),
+            Some("bin/a.exe")
+        );
+        let (result, _) = checked("app_install", r#"{"path":"/media/host/x.exe"}"#);
+        assert_eq!(result.unwrap().archive_entry, None);
+        let long = format!(
+            r#"{{"path":"/media/host/t.zip","entry":"{}"}}"#,
+            "e".repeat(MAX_ARCHIVE_ENTRY_BYTES + 1)
+        );
+        for arguments in [
+            r#"{"path":"/media/host/t.zip","entry":""}"#,
+            r#"{"path":"/media/host/t.zip","entry":1}"#,
+            r#"{"path":"/media/host/t.zip","entry":"a\u0000b"}"#,
+            long.as_str(),
+        ] {
+            assert_eq!(
+                checked("app_install", arguments).0,
+                Err(ArgumentProblem::BadArchiveEntry),
+                "{arguments}"
+            );
+        }
     }
 
     #[test]
@@ -955,6 +1139,72 @@ mod tests {
             checked("wm_type", &exact).0.unwrap().text,
             Some(MAX_TYPED_TEXT_BYTES)
         );
+        let (result, _) = checked("wm_menu_choose", r#"{"window":5,"menu":5,"entry":15}"#);
+        let result = result.unwrap();
+        assert_eq!((result.menu_item, result.menu_label), (Some((5, 15)), None));
+        let (result, buffers) = checked(
+            "wm_menu_choose",
+            r#"{"window":5,"menu":1,"entry":0,"label":"Save\u2026"}"#,
+        );
+        assert_eq!(
+            menu_label_text(&result.unwrap(), &buffers.words),
+            Some("Save\u{2026}")
+        );
+        let (result, _) = checked("wm_menu_list", r#"{"window":5}"#);
+        assert_eq!(result.unwrap().menu_item, None);
+        let longest = format!(
+            r#"{{"window":1,"menu":0,"entry":0,"label":"{}"}}"#,
+            "x".repeat(MAX_MENU_LABEL_BYTES)
+        );
+        assert_eq!(
+            checked("wm_menu_choose", &longest).0.unwrap().menu_label,
+            Some(MAX_MENU_LABEL_BYTES)
+        );
+        let too_long = format!(
+            r#"{{"window":1,"menu":0,"entry":0,"label":"{}"}}"#,
+            "x".repeat(MAX_MENU_LABEL_BYTES + 1)
+        );
+        assert_eq!(
+            checked("wm_menu_choose", &too_long).0,
+            Err(ArgumentProblem::BadMenuLabel)
+        );
+        for (arguments, problem) in [
+            (
+                r#"{"window":1,"menu":6,"entry":0}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (
+                r#"{"window":1,"menu":0,"entry":16}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (
+                r#"{"window":1,"menu":-1,"entry":0}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (
+                r#"{"window":1,"menu":"File","entry":0}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (r#"{"window":1,"menu":0}"#, ArgumentProblem::Missing("menu")),
+            (
+                r#"{"window":1,"entry":0}"#,
+                ArgumentProblem::Missing("menu"),
+            ),
+            (
+                r#"{"window":1,"menu":0,"entry":0,"label":"a\tb"}"#,
+                ArgumentProblem::BadMenuLabel,
+            ),
+            (
+                r#"{"window":1,"menu":0,"entry":0,"label":7}"#,
+                ArgumentProblem::BadMenuLabel,
+            ),
+        ] {
+            assert_eq!(
+                checked("wm_menu_choose", arguments).0,
+                Err(problem),
+                "{arguments}"
+            );
+        }
         let exact = format!(r#"{{"window":1,"keys":"{}"}}"#, "x".repeat(MAX_KEYS_BYTES));
         assert_eq!(
             checked("wm_press", &exact).0.unwrap().keys,

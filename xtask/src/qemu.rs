@@ -5,11 +5,15 @@
 pub mod files;
 pub mod install;
 mod linux_gui;
+pub mod macos_gui;
 pub mod mcp;
 pub mod persistent;
+pub mod real_time;
 pub mod settings;
 pub mod shell;
+pub mod text_editor;
 mod win_controls;
+mod windows_crt;
 mod windows_gui;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
@@ -184,6 +188,16 @@ pub enum Expect {
     /// the close control closes the window (D129); then the program's lines in the file, its
     /// status 0, and on riscv64 `ENOEXEC`.
     WindowsGui,
+    /// The release kernel with `eggpad.exe`, our own C notepad built by MSVC as a `/MD` program
+    /// on the C runtime's DLLs for this CPU (x86_64 and aarch64 only), added with the Windows
+    /// layer as `cargo xtask image --add` adds it, boots to the shell's prompt; the test writes
+    /// a file from the shell and runs eggpad on it with its standard output redirected to a
+    /// file, checks the display against the host's render as the window shows the file, three
+    /// typed letters and Enter appear, Ctrl+S saves (its status line says so) and the close
+    /// control closes it (D146); then the program's lines in the file (its arguments, the bytes
+    /// it opened and saved, the keys it took and its `atexit` handler), the saved file read
+    /// back by `cat`, and its status 0.
+    WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
     /// with `eggway` started by init; the test runs it with its standard output redirected to a
@@ -440,6 +454,36 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT destroyed",
     "WIN-PAINT quit 0",
 ];
+
+const WINDOWS_CRT_SESSION: [&[u8]; 4] = [
+    b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
+    b"cat /tmp/eggpad.log\r",
+    b"cat /tmp/note.txt\r",
+    b"exit 7\r",
+];
+
+const EGGPAD_LINES: [&str; 5] = [
+    "EGGPAD arguments 2 C:\\tmp\\note.txt",
+    "EGGPAD opened 21 bytes",
+    "EGGPAD saved 27 bytes",
+    "EGGPAD closed typed 4",
+    "EGGPAD exit",
+];
+
+fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
+    let whole = |lines: &[&str]| -> Vec<Line> {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    [
+        whole(&["EGGPAD status 0"]),
+        whole(&EGGPAD_LINES),
+        whole(&["Hello from the shell", "abc"]),
+        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
+    ]
+}
 
 const WIN_CONTROLS_LINES: [&str; 13] = [
     "WIN-CONTROLS folder made 1",
@@ -1111,7 +1155,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "var",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 28 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 30 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -1136,7 +1180,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
         whole(&[
-            "cmdline", "meminfo", "net", "ps", "uptime", "/proc", "/", "3",
+            "cmdline", "driver", "meminfo", "net", "ps", "uptime", "/proc", "/", "3",
         ]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
@@ -1229,6 +1273,18 @@ pub enum Display {
 const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
 const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
+
+/// What the kernel says when it shows its display at 1280x800, the default mode.
+pub const DISPLAY_LINE_1280X800: &str = "boot: display 1280x800";
+
+/// How the kernel's line about an offscreen display it made starts (D144).
+pub const OFFSCREEN_LINE_PREFIX: &str = "boot: offscreen display ";
+
+/// What the kernel says when it made an offscreen display at the default mode (D144).
+pub const OFFSCREEN_LINE_1280X800: &str = "boot: offscreen display 1280x800";
+
+/// What the kernel says when it found no input device.
+pub const NO_INPUT_LINE: &str = "boot: no input";
 
 const TERMINAL_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -1431,6 +1487,25 @@ fn boot(
                 shell_scripts_to_type(
                     &String::from_utf8_lossy(&console),
                     &WINDOWS_GUI_SESSION,
+                    &mut shell_typed,
+                )
+            }
+            Expect::WindowsCrt => {
+                if let Some(port) = qmp_port
+                    && shell_typed.lines >= 1
+                    && terminal_frames.is_empty()
+                {
+                    let checked = windows_crt::check(arch, port, &mut console, &rx);
+                    if let Err(error) = checked {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    terminal_frames.push(Ok(()));
+                }
+                shell_scripts_to_type(
+                    &String::from_utf8_lossy(&console),
+                    &WINDOWS_CRT_SESSION,
                     &mut shell_typed,
                 )
             }
@@ -1764,6 +1839,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 "Windows GUI",
             );
         }
+        Expect::WindowsCrt => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &WINDOWS_CRT_SESSION,
+                windows_crt_output(),
+                "Windows C runtime",
+            );
+        }
         Expect::LinuxGui => {
             return session_verdict(
                 arch,
@@ -1975,6 +2060,19 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
         ));
     }
+    if !lines.contains(&DISPLAY_LINE_1280X800) {
+        return Err(format!(
+            "{arch}: no `{DISPLAY_LINE_1280X800}`: the virtio GPU was not shown"
+        ));
+    }
+    if let Some(line) = lines
+        .iter()
+        .find(|line| line.starts_with(OFFSCREEN_LINE_PREFIX))
+    {
+        return Err(format!(
+            "{arch}: `{line}` with a virtio GPU: the GPU must win over eggos.display"
+        ));
+    }
     let mut from = 0;
     for (index, expected) in prompt_session_output(arch).into_iter().enumerate() {
         let command = shown_command(&PROMPT_SESSION, index);
@@ -2118,10 +2216,36 @@ pub fn desktop_picture(
     })
 }
 
-fn with_uptime(desktop: &Desktop, picture: &mut Picture, seconds: u64) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockFace {
+    Uptime(u64),
+    WallClock(u64),
+}
+
+const WALL_CLOCK_MINUTES_ACCEPTED: std::ops::RangeInclusive<i64> = -5..=1;
+
+/// The seconds since the epoch on the host's clock, which QEMU's real-time clocks follow
+/// (`-rtc base=utc`, D150).
+pub fn host_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+fn clock_faces(host: u64) -> impl Iterator<Item = ClockFace> {
+    (0..CLOCK_SECONDS_ACCEPTED).map(ClockFace::Uptime).chain(
+        WALL_CLOCK_MINUTES_ACCEPTED
+            .map(move |minutes| ClockFace::WallClock(host.saturating_add_signed(minutes * 60))),
+    )
+}
+
+fn with_clock(desktop: &Desktop, picture: &mut Picture, face: ClockFace) {
     let mut desktop_then = Desktop::new(picture.width, picture.height).expect("the desktop fits");
     desktop_then.set_profile(desktop.profile(), &mut Damage::new(), &mut DiscardEvents);
-    desktop_then.set_uptime(seconds, &mut Damage::new());
+    match face {
+        ClockFace::Uptime(seconds) => desktop_then.set_uptime(seconds, &mut Damage::new()),
+        ClockFace::WallClock(seconds) => desktop_then.set_wall_clock(seconds, &mut Damage::new()),
+    };
     let clock = desktop.clock_rect();
     let contents = HostContents {
         terminal: desktop_then.terminal_window(),
@@ -2809,10 +2933,11 @@ fn check_desktop_frame_masked(
                     .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
             );
         }
+        let host = host_seconds();
         let matched = candidates.iter_mut().any(|expected| {
             copy_masked(&picture, expected, masks);
-            (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
-                with_uptime(desktop, expected, seconds);
+            clock_faces(host).any(|face| {
+                with_clock(desktop, expected, face);
                 picture == *expected
             })
         });
@@ -2830,13 +2955,13 @@ fn check_desktop_frame_masked(
             let Some(expected) = candidates.first_mut() else {
                 return Err(format!("{}: no expected picture at {at}", arch.name));
             };
-            with_uptime(desktop, expected, 0);
+            with_clock(desktop, expected, ClockFace::WallClock(host_seconds()));
             let expected_path = screendump_path(arch, "-expected")?;
             std::fs::write(&expected_path, expected.to_ppm())
                 .map_err(|e| format!("{}: {e}", expected_path.display()))?;
             return Err(format!(
                 "{}: at {at} the display shows a picture with hash {:#x}, not the desktop the \
-                 host renders ({:#x} with the clock at up 0:00); compare {} with {}",
+                 host renders ({:#x} with the clock at the host's time); compare {} with {}",
                 arch.name,
                 picture.hash(),
                 expected.hash(),
@@ -2906,6 +3031,10 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
     ]
 }
 
+/// The kernel command line's word that asks for the offscreen display, which `--no-window`
+/// passes (D144).
+pub const OFFSCREEN_WORD: &str = "eggos.display=offscreen";
+
 /// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
 pub const GRANT_NAMES: [&str; 4] = ["view", "write", "run", "install"];
 
@@ -2922,26 +3051,43 @@ pub fn check_grants(list: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// QEMU's arguments that hand the grants `list` (checked, or a script's variable holding it)
-/// to EggOS's built-in MCP server on the kernel command line, which only the host sets and the
-/// server reads in `/proc/cmdline` (D137). `-append` takes a plain string: commas stay single.
-pub fn grant_args(list: &str) -> Vec<String> {
-    vec!["-append".into(), format!("eggos.mcp_allow={list}")]
+/// The kernel command line's word that hands the grants `list` (checked, or a script's
+/// variable holding it) to EggOS's built-in MCP server, which only the host sets and the server
+/// reads in `/proc/cmdline` (D137).
+pub fn grant_word(list: &str) -> String {
+    format!("eggos.mcp_allow={list}")
+}
+
+/// QEMU's arguments that make `line` (words separated by spaces) the kernel command line. QEMU
+/// keeps only the last `-append`, so a boot passes every word in this one (D144). `-append`
+/// takes a plain string: commas stay single.
+pub fn command_line_args(line: &str) -> Vec<String> {
+    vec!["-append".into(), line.into()]
 }
 
 /// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
 /// agent channel on QEMU's standard input and output, which then carry nothing else, the
-/// console in the file `console_log` (commas doubled), no monitor, and the display in a window
-/// when `window` says so.
+/// console in the file `console_log` (commas doubled), no monitor, and the display and input
+/// devices with the display in a window when `window` says so; otherwise none of them
+/// ([`Arch::offscreen_args`]), for a boot whose command line asks for the offscreen display
+/// ([`OFFSCREEN_WORD`], D144).
 pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
     let cpus = TEST_CPUS.to_string();
+    let devices: Vec<&str> = match window {
+        true => arch
+            .display_args
+            .iter()
+            .chain(arch.input_args)
+            .copied()
+            .collect(),
+        false => arch.offscreen_args.to_vec(),
+    };
     let mut args: Vec<String> = arch
         .machine_args
         .iter()
-        .chain(arch.display_args)
-        .chain(arch.input_args)
-        .chain(COMMON_ARGS)
         .copied()
+        .chain(devices)
+        .chain(COMMON_ARGS.iter().copied())
         .chain(["-smp", cpus.as_str(), "-no-reboot"])
         .map(str::to_owned)
         .collect();
@@ -3048,6 +3194,69 @@ fn screenshot_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_virtio_gpu_and_the_offscreen_display_share_the_default_mode() {
+        use eggos_drivers::display::DEFAULT_MODE;
+        let size = format!("xres={},yres={}", DEFAULT_MODE.width, DEFAULT_MODE.height);
+        for arch in crate::ARCHES {
+            assert!(
+                arch.display_args.iter().any(|arg| arg.ends_with(&size)),
+                "{}",
+                arch.name
+            );
+        }
+        let mode = format!("{}x{}", DEFAULT_MODE.width, DEFAULT_MODE.height);
+        assert_eq!(
+            OFFSCREEN_LINE_1280X800,
+            format!("{OFFSCREEN_LINE_PREFIX}{mode}")
+        );
+        assert_eq!(DISPLAY_LINE_1280X800, format!("boot: display {mode}"));
+    }
+
+    #[test]
+    fn an_offscreen_mcp_boot_has_no_display_or_input_device_but_keeps_its_channels() {
+        for arch in crate::ARCHES {
+            let args = mcp_args(arch, false, "/tmp/serial.log");
+            let joined = args.join(" ");
+            for device in [
+                "virtio-gpu",
+                "virtio-keyboard",
+                "virtio-tablet",
+                "virtio-mouse",
+            ] {
+                assert!(!joined.contains(device), "{}: {joined}", arch.name);
+            }
+            assert!(joined.contains("-display none"), "{joined}");
+            assert_eq!(
+                joined.contains("-vga none"),
+                arch.name == "x86_64",
+                "{joined}"
+            );
+            assert!(joined.contains("-chardev file,id=console,path=/tmp/serial.log"));
+            assert!(joined.contains("-serial chardev:console"));
+            assert!(joined.contains("-chardev stdio,id=mcp,signal=off"));
+            assert!(joined.ends_with(&agent_channel_args(arch, "mcp").join(" ")));
+            assert!(!joined.contains("-append"));
+            let windowed = mcp_args(arch, true, "/tmp/serial.log").join(" ");
+            for part in arch.display_args.iter().chain(arch.input_args) {
+                assert!(windowed.contains(part), "{}: {part}", arch.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_command_line_is_one_append_with_the_words_as_given() {
+        assert_eq!(
+            command_line_args("eggos.display=offscreen eggos.mcp_allow=write,run"),
+            [
+                "-append",
+                "eggos.display=offscreen eggos.mcp_allow=write,run"
+            ]
+        );
+        assert_eq!(OFFSCREEN_WORD, "eggos.display=offscreen");
+        assert_eq!(grant_word("view,run"), "eggos.mcp_allow=view,run");
+    }
 
     #[test]
     fn interactive_args_are_the_machine_s_display_input_and_console() {
@@ -3301,6 +3510,45 @@ mod tests {
         let arm = windows_programs_console("aarch64");
         assert!(arm.contains("system arch 12 "));
         assert!(arm.contains("other-cpu.exe: an x64 program"));
+    }
+
+    fn windows_crt_console() -> String {
+        let mut console = "EggOS 0.2.0 (x86_64)\r\n".to_owned();
+        for (typed, output) in WINDOWS_CRT_SESSION.iter().zip(windows_crt_output()) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                if let Line::Whole(whole) = line {
+                    console.push_str(&format!("{whole}\r\n"));
+                }
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_eggpad_s_lines_and_the_saved_file() {
+        let ok = windows_crt_console();
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &ok).is_ok());
+        assert!(verdict("x86_64", Expect::WindowsCrt, false, &ok).is_err());
+        let unsaved = ok.replace("EGGPAD saved 27 bytes\r\n", "");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &unsaved).is_err());
+        let lost = ok.replace("abc\r\n", "");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &lost).is_err());
+        let failed = ok.replace("EGGPAD status 0", "EGGPAD status 126");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+    }
+
+    #[test]
+    fn the_windows_crt_session_matches_the_display_check() {
+        let typed = String::from_utf8_lossy(WINDOWS_CRT_SESSION[0]);
+        let seeded = windows_crt::SEEDED_TEXT.trim_end();
+        assert!(typed.starts_with(&format!("echo {seeded} > /tmp/note.txt; ")));
+        let saved = format!("EGGPAD {}", windows_crt::SAVED_STATUS.to_lowercase());
+        assert!(EGGPAD_LINES.contains(&saved.as_str()));
+        assert!(
+            EGGPAD_LINES.contains(&format!("EGGPAD opened {} bytes", seeded.len() + 1).as_str())
+        );
     }
 
     fn windows_gui_console(arch: &str) -> String {
@@ -3566,7 +3814,7 @@ mod tests {
 
     fn prompt_console(arch: &str) -> String {
         let mut console = format!(
-            "EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
         for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
             let command = shown_command(&PROMPT_SESSION, index);
@@ -3603,7 +3851,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 28 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 30 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
@@ -3615,6 +3863,13 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
         let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_terminal).is_err());
+        let no_display = ok.replace(DISPLAY_LINE_1280X800, "boot: no display");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_display).is_err());
+        let offscreen = ok.replace(
+            DISPLAY_LINE_1280X800,
+            &format!("{OFFSCREEN_LINE_1280X800}\r\n{DISPLAY_LINE_1280X800}"),
+        );
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &offscreen).is_err());
     }
 
     #[test]

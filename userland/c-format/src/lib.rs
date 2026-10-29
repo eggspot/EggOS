@@ -1,8 +1,14 @@
-//! `printf`'s formatting: flags, width, precision and length modifiers and the conversions
-//! `d i u o x X c s p f F e E g G %`, plus Foundation's `%@` (an object's description, which the
-//! [`Output`] writes) and `%C` (a character: a UTF-16 unit or a `wint_t`), reading each argument
-//! from an [`Arguments`] source and writing to an [`Output`]. `%n` writes nothing: it is skipped with its argument, so
-//! a format string cannot write to memory.
+//! `printf`'s formatting, shared by the macOS layer's libSystem and the Windows layer's C
+//! runtime (D146): flags, width, precision and length modifiers and the conversions
+//! `d i u o x X c s p f F e E g G %`, reading each argument from an [`Arguments`] source and
+//! writing UTF-8 to an [`Output`]. Where the two C libraries differ, a [`Dialect`] says whose
+//! rules apply: Darwin's adds Foundation's `%@` (an object's description, which the [`Output`]
+//! writes) and `%C` (a character: a UTF-16 unit or a `wint_t`); Windows' has a 32-bit `l`,
+//! `I64`, `I32` and `I`, wide (UTF-16) strings and characters through `%S`, `%C`, `%ls`, `%ws`
+//! and `%lc` (narrow ones through `%hs` and `%hc`), and `%p` as 16 upper-case hex digits. `%n`
+//! writes nothing: it is skipped with its argument, so a format string cannot write to memory.
+
+#![cfg_attr(not(test), no_std)]
 
 /// Where the variadic arguments come from.
 pub trait Arguments {
@@ -27,12 +33,42 @@ pub trait Output {
     }
 }
 
-/// Formats `format` with `arguments` into `output` and returns how many bytes it wrote.
+/// Whose C library's rules the formatting follows where they differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    /// Darwin's libSystem, with Foundation's `%@`.
+    Darwin,
+    /// Microsoft's C runtime. `wide_strings` is true for the wide functions (`swprintf` and its
+    /// family) with Microsoft's own specifiers, the default: there `%s` and `%c` take wide
+    /// strings and characters and `%S` and `%C` narrow ones; otherwise it is the other way
+    /// round.
+    Windows { wide_strings: bool },
+}
+
+/// Formats `format` with `arguments` into `output` by Darwin's rules and returns how many bytes
+/// it wrote.
 ///
 /// # Safety
 /// Each `%s` argument must be null or point to a NUL-terminated string (or, with a precision,
 /// to at least that many readable bytes).
 pub unsafe fn format(
+    format: &[u8],
+    arguments: &mut impl Arguments,
+    output: &mut impl Output,
+) -> usize {
+    // SAFETY: the caller's promise.
+    unsafe { format_in(Dialect::Darwin, format, arguments, output) }
+}
+
+/// Formats `format` with `arguments` into `output` by `dialect`'s rules and returns how many
+/// bytes it wrote.
+///
+/// # Safety
+/// Each string argument must be null or point to a NUL-terminated string of its width (bytes,
+/// or UTF-16 units for a wide one), or, with a precision, to at least that many readable
+/// elements.
+pub unsafe fn format_in(
+    dialect: Dialect,
     format: &[u8],
     arguments: &mut impl Arguments,
     output: &mut impl Output,
@@ -49,9 +85,9 @@ pub unsafe fn format(
         if at >= format.len() {
             break;
         }
-        let (spec, next) = Spec::parse(format, at + 1, arguments);
+        let (spec, next) = Spec::parse(dialect, format, at + 1, arguments);
         at = next;
-        // SAFETY: the caller's promise about `%s` arguments.
+        // SAFETY: the caller's promise about string arguments.
         unsafe { spec.convert(arguments, &mut counter) };
     }
     counter.count
@@ -90,6 +126,8 @@ enum Length {
 }
 
 struct Spec {
+    dialect: Dialect,
+    wide: Option<bool>,
     left: bool,
     plus: bool,
     space: bool,
@@ -103,10 +141,18 @@ struct Spec {
 }
 
 const MAX_WIDTH: usize = 4096;
+const MAX_PRECISION: usize = i32::MAX as usize;
 
 impl Spec {
-    fn parse(format: &[u8], mut at: usize, arguments: &mut impl Arguments) -> (Self, usize) {
+    fn parse(
+        dialect: Dialect,
+        format: &[u8],
+        mut at: usize,
+        arguments: &mut impl Arguments,
+    ) -> (Self, usize) {
         let mut spec = Self {
+            dialect,
+            wide: None,
             left: false,
             plus: false,
             space: false,
@@ -136,23 +182,32 @@ impl Spec {
             spec.width = (width.unsigned_abs() as usize).min(MAX_WIDTH);
             at += 1;
         } else {
-            (spec.width, at) = number(format, at);
+            (spec.width, at) = number(format, at, MAX_WIDTH);
         }
         if format.get(at) == Some(&b'.') {
             at += 1;
             if format.get(at) == Some(&b'*') {
                 let precision = arguments.integer() as i32;
-                spec.precision = (precision >= 0).then_some((precision as usize).min(MAX_WIDTH));
+                spec.precision = (precision >= 0).then_some(precision as usize);
                 at += 1;
             } else {
-                let (precision, next) = number(format, at);
+                let (precision, next) = number(format, at, MAX_PRECISION);
                 spec.precision = Some(precision);
                 at = next;
             }
         }
+        at = match dialect {
+            Dialect::Darwin => spec.darwin_modifiers(format, at),
+            Dialect::Windows { .. } => spec.windows_modifiers(format, at),
+        };
+        spec.conversion = format.get(at).copied().unwrap_or(0);
+        (spec, (at + 1).min(format.len()))
+    }
+
+    fn darwin_modifiers(&mut self, format: &[u8], mut at: usize) -> usize {
         while let Some(&modifier) = format.get(at) {
-            spec.long_double |= modifier == b'L';
-            spec.length = match (modifier, spec.length) {
+            self.long_double |= modifier == b'L';
+            self.length = match (modifier, self.length) {
                 (b'h', Length::Short) => Length::Char,
                 (b'h', _) => Length::Short,
                 (b'l' | b'q' | b'j' | b'z' | b't' | b'L', _) => Length::Long,
@@ -160,8 +215,53 @@ impl Spec {
             };
             at += 1;
         }
-        spec.conversion = format.get(at).copied().unwrap_or(0);
-        (spec, (at + 1).min(format.len()))
+        at
+    }
+
+    fn windows_modifiers(&mut self, format: &[u8], mut at: usize) -> usize {
+        let mut ells = 0;
+        while let Some(&modifier) = format.get(at) {
+            at += 1;
+            match modifier {
+                b'h' => {
+                    self.wide = Some(false);
+                    self.length = match self.length {
+                        Length::Short => Length::Char,
+                        _ => Length::Short,
+                    };
+                }
+                b'l' => {
+                    ells += 1;
+                    self.wide = Some(true);
+                    self.length = if ells > 1 { Length::Long } else { Length::Int };
+                }
+                b'w' => self.wide = Some(true),
+                b'j' | b'z' | b't' => self.length = Length::Long,
+                b'L' => self.long_double = true,
+                b'I' => match format.get(at..at + 2) {
+                    Some(b"64") => {
+                        self.length = Length::Long;
+                        at += 2;
+                    }
+                    Some(b"32") => {
+                        self.length = Length::Int;
+                        at += 2;
+                    }
+                    _ => self.length = Length::Long,
+                },
+                _ => return at - 1,
+            }
+        }
+        at
+    }
+
+    fn wide_by_default(&self) -> bool {
+        match self.dialect {
+            Dialect::Windows { wide_strings } => {
+                wide_strings == self.conversion.is_ascii_lowercase()
+            }
+            Dialect::Darwin => false,
+        }
     }
 
     unsafe fn convert<O: Output>(&self, arguments: &mut impl Arguments, out: &mut Counting<'_, O>) {
@@ -180,6 +280,13 @@ impl Spec {
                     b""
                 };
                 self.integer(sign, b"", text, out);
+            }
+            b'p' if matches!(self.dialect, Dialect::Windows { .. }) => {
+                let mut digits = [0u8; 24];
+                let text = radix(arguments.integer(), 16, true, &mut digits);
+                let mut padded = [b'0'; POINTER_DIGITS];
+                padded[POINTER_DIGITS - text.len()..].copy_from_slice(text);
+                self.pad(&padded, out);
             }
             b'u' | b'o' | b'x' | b'X' | b'p' => {
                 let value = if self.conversion == b'p' {
@@ -218,21 +325,40 @@ impl Spec {
                 };
                 self.integer(b"", prefix, text, out);
             }
+            b'c' | b'C' | b's' | b'S'
+                if matches!(self.dialect, Dialect::Windows { .. })
+                    && self.wide.unwrap_or_else(|| self.wide_by_default()) =>
+            {
+                let value = arguments.integer();
+                match self.conversion.to_ascii_lowercase() {
+                    b'c' => {
+                        let unit = [value as u16];
+                        // SAFETY: one unit, read from this array.
+                        unsafe { self.wide_text(unit.as_ptr(), Some(1), out) };
+                    }
+                    _ => {
+                        let text = value as usize as *const u16;
+                        // SAFETY: the caller's promise: a NUL-terminated UTF-16 string, or one
+                        // with at least `precision` readable units.
+                        unsafe { self.wide_text(text, self.precision, out) };
+                    }
+                }
+            }
+            b'c' | b'C' if matches!(self.dialect, Dialect::Windows { .. }) => {
+                let byte = [arguments.integer() as u8];
+                self.pad(&byte, out);
+            }
+            b'S' if matches!(self.dialect, Dialect::Windows { .. }) => {
+                // SAFETY: the caller's promise about narrow strings.
+                unsafe { self.narrow_text(arguments, out) };
+            }
             b'c' => {
                 let byte = [arguments.integer() as u8];
                 self.pad(&byte, out);
             }
             b's' => {
-                let pointer = arguments.integer() as usize as *const u8;
-                let text: &[u8] = if pointer.is_null() {
-                    b"(null)"
-                } else {
-                    // SAFETY: the caller's promise: a NUL-terminated string, or one with at least
-                    // `precision` readable bytes.
-                    unsafe { c_string(pointer, self.precision) }
-                };
-                let text = &text[..self.precision.map_or(text.len(), |p| p.min(text.len()))];
-                self.pad(text, out);
+                // SAFETY: the caller's promise about narrow strings.
+                unsafe { self.narrow_text(arguments, out) };
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
                 let value = if self.long_double {
@@ -264,6 +390,57 @@ impl Spec {
             b'%' => out.write(b"%"),
             0 => {}
             other => out.write(&[b'%', other]),
+        }
+    }
+
+    unsafe fn narrow_text<O: Output>(
+        &self,
+        arguments: &mut impl Arguments,
+        out: &mut Counting<'_, O>,
+    ) {
+        let pointer = arguments.integer() as usize as *const u8;
+        let text: &[u8] = if pointer.is_null() {
+            b"(null)"
+        } else {
+            // SAFETY: the caller's promise: a NUL-terminated string, or one with at least
+            // `precision` readable bytes.
+            unsafe { c_string(pointer, self.precision) }
+        };
+        let text = &text[..self.precision.map_or(text.len(), |p| p.min(text.len()))];
+        self.pad(text, out);
+    }
+
+    unsafe fn wide_text<O: Output>(
+        &self,
+        pointer: *const u16,
+        limit: Option<usize>,
+        out: &mut Counting<'_, O>,
+    ) {
+        let units: &[u16] = if pointer.is_null() {
+            &WIDE_NULL
+        } else {
+            // SAFETY: the caller's promise: a NUL-terminated string, or one with at least
+            // `limit` readable units.
+            unsafe { wide_c_string(pointer, limit) }
+        };
+        let units = &units[..limit.map_or(units.len(), |limit| limit.min(units.len()))];
+        let fill = self.width.saturating_sub(units.len());
+        if !self.left {
+            out.repeat(b' ', fill);
+        }
+        let mut bytes = [0u8; 64];
+        let mut length = 0;
+        for character in char::decode_utf16(units.iter().copied()) {
+            if length + 4 > bytes.len() {
+                out.write(&bytes[..length]);
+                length = 0;
+            }
+            let character = character.unwrap_or(char::REPLACEMENT_CHARACTER);
+            length += character.encode_utf8(&mut bytes[length..]).len();
+        }
+        out.write(&bytes[..length]);
+        if self.left {
+            out.repeat(b' ', fill);
         }
     }
 
@@ -308,7 +485,9 @@ impl Spec {
         } else {
             digits
         };
-        let precision_zeros = self.precision.map_or(0, |p| p.saturating_sub(digits.len()));
+        let precision_zeros = self
+            .precision
+            .map_or(0, |p| p.min(MAX_WIDTH).saturating_sub(digits.len()));
         let body = sign.len() + prefix.len() + precision_zeros + digits.len();
         let fill = self.width.saturating_sub(body);
         let zero_fill = self.zero && !self.left && self.precision.is_none();
@@ -408,6 +587,15 @@ impl Spec {
 }
 
 const MAX_FLOAT_PRECISION: usize = 40;
+const POINTER_DIGITS: usize = 16;
+const WIDE_NULL: [u16; 6] = [
+    b'(' as u16,
+    b'n' as u16,
+    b'u' as u16,
+    b'l' as u16,
+    b'l' as u16,
+    b')' as u16,
+];
 
 fn utf8(code: u32, buffer: &mut [u8; 4]) -> &[u8] {
     if code < 0x80 {
@@ -632,10 +820,13 @@ fn exponential(
     writer.push(text);
 }
 
-fn number(format: &[u8], mut at: usize) -> (usize, usize) {
+fn number(format: &[u8], mut at: usize, cap: usize) -> (usize, usize) {
     let mut value: usize = 0;
     while let Some(&digit) = format.get(at).filter(|b| b.is_ascii_digit()) {
-        value = (value * 10 + usize::from(digit - b'0')).min(MAX_WIDTH);
+        value = value
+            .saturating_mul(10)
+            .saturating_add(usize::from(digit - b'0'))
+            .min(cap);
         at += 1;
     }
     (value, at)
@@ -673,6 +864,19 @@ unsafe fn c_string<'a>(pointer: *const u8, limit: Option<usize>) -> &'a [u8] {
         length += 1;
     }
     // SAFETY: the `length` bytes just read.
+    unsafe { core::slice::from_raw_parts(pointer, length) }
+}
+
+unsafe fn wide_c_string<'a>(pointer: *const u16, limit: Option<usize>) -> &'a [u16] {
+    let mut length = 0;
+    while limit.is_none_or(|limit| length < limit) {
+        // SAFETY: the caller's promise: every unit up to the NUL (or the limit) is readable.
+        if unsafe { pointer.wrapping_add(length).read() } == 0 {
+            break;
+        }
+        length += 1;
+    }
+    // SAFETY: the `length` units just read.
     unsafe { core::slice::from_raw_parts(pointer, length) }
 }
 
@@ -902,6 +1106,114 @@ mod tests {
         assert_eq!(
             formatted("%.*s", &[Int(-1i64 as u64), Int(c"ab".as_ptr() as u64)]),
             "ab"
+        );
+    }
+
+    #[test]
+    fn a_string_s_precision_is_not_capped_like_a_width() {
+        let long = std::ffi::CString::new("s".repeat(6000)).unwrap();
+        let pointer = long.as_ptr() as u64;
+        assert_eq!(formatted("%.5000s", &[Int(pointer)]).len(), 5000);
+        assert_eq!(formatted("%.*s", &[Int(10_000), Int(pointer)]).len(), 6000);
+        assert_eq!(windows("%.5000s", false, &[Int(pointer)]).len(), 5000);
+        assert_eq!(
+            windows("%.*s", false, &[Int(10_000), Int(pointer)]).len(),
+            6000
+        );
+        let units = wide(&"w".repeat(6000));
+        let units = units.as_ptr() as u64;
+        assert_eq!(windows("%.5000ls", false, &[Int(units)]).len(), 5000);
+        assert_eq!(windows("%.5000s", true, &[Int(units)]).len(), 5000);
+        assert_eq!(formatted("%.5000d", &[Int(7)]).len(), MAX_WIDTH);
+    }
+
+    fn windows(text: &str, wide_strings: bool, values: &[Value]) -> String {
+        let mut out = Vec::new();
+        let dialect = Dialect::Windows { wide_strings };
+        // SAFETY: the tests pass string arguments that are NUL-terminated literals.
+        let count = unsafe { format_in(dialect, text.as_bytes(), &mut List(values, 0), &mut out) };
+        assert_eq!(count, out.len());
+        String::from_utf8(out).unwrap()
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain([0]).collect()
+    }
+
+    #[test]
+    fn windows_lengths_are_its_own() {
+        assert_eq!(
+            windows(
+                "%ld %lu %lld %I64d %I32d %Id %zu %hd",
+                false,
+                &[
+                    Int(0xffff_ffff),
+                    Int(0x1_0000_0002),
+                    Int(-5i64 as u64),
+                    Int(-6i64 as u64),
+                    Int(0x1_0000_0007),
+                    Int(1 << 40),
+                    Int(9),
+                    Int(0x1_ffff),
+                ]
+            ),
+            "-1 2 -5 -6 7 1099511627776 9 -1"
+        );
+        assert_eq!(
+            windows("%p|%p", false, &[Int(0xabc), Int(0)]),
+            "0000000000000ABC|0000000000000000"
+        );
+    }
+
+    #[test]
+    fn windows_strings_take_their_width_from_the_dialect_and_the_modifiers() {
+        let narrow = c"caf\u{e9}".as_ptr() as u64;
+        let unicode = wide("caf\u{e9} \u{1f95a}");
+        let unicode = unicode.as_ptr() as u64;
+        assert_eq!(
+            windows(
+                "%s|%S|%ls|%ws|%hs|%c|%C|%lc",
+                false,
+                &[
+                    Int(narrow),
+                    Int(unicode),
+                    Int(unicode),
+                    Int(unicode),
+                    Int(narrow),
+                    Int(u64::from(b'x')),
+                    Int(0xe9),
+                    Int(0x263a),
+                ]
+            ),
+            "caf\u{e9}|caf\u{e9} \u{1f95a}|caf\u{e9} \u{1f95a}|caf\u{e9} \u{1f95a}|caf\u{e9}|x|\u{e9}|\u{263a}"
+        );
+        assert_eq!(
+            windows(
+                "%s|%S|%hs|%c|%C",
+                true,
+                &[
+                    Int(unicode),
+                    Int(narrow),
+                    Int(narrow),
+                    Int(0x263a),
+                    Int(u64::from(b'y')),
+                ]
+            ),
+            "caf\u{e9} \u{1f95a}|caf\u{e9}|caf\u{e9}|\u{263a}|y"
+        );
+    }
+
+    #[test]
+    fn windows_wide_strings_pad_and_cut_by_units() {
+        let text = wide("abcdef");
+        let text = text.as_ptr() as u64;
+        assert_eq!(
+            windows(
+                "[%8ls] [%-8ls] [%.3ls] [%ls]",
+                false,
+                &[Int(text), Int(text), Int(text), Int(0)]
+            ),
+            "[  abcdef] [abcdef  ] [abc] [(null)]"
         );
     }
 }

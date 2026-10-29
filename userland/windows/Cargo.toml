@@ -10,6 +10,7 @@ name = "windows"
 path = "src/main.rs"
 
 [dependencies]
+eggos-c-format = { path = "../c-format" }
 eggos-runtime = { path = "../runtime" }
 eggos-windows-gui = { path = "../windows-gui" }
 

@@ -187,9 +187,10 @@ pub trait FileSystem: Sync + Send {
     /// any are there: fewer than asked at its end, or where the file system's storage breaks.
     fn read(&self, node: u64, offset: u64, length: usize) -> &[u8];
     /// The contents of regular file `node` made now, for a file system whose files are made
-    /// when they are opened (`/proc`); `None` for one whose contents [`Self::read`] gives.
-    fn generate(&self, _node: u64) -> Option<alloc::vec::Vec<u8>> {
-        None
+    /// when they are opened (`/proc`); `None` for one whose contents [`Self::read`] gives;
+    /// [`StorageError`] if the device a file reports on did not answer (`/proc/driver/rtc`).
+    fn generate(&self, _node: u64) -> Result<Option<alloc::vec::Vec<u8>>, StorageError> {
+        Ok(None)
     }
     /// Whether reads go through [`Self::read_into`], for contents that may change, rather than
     /// [`Self::read`].
@@ -355,7 +356,7 @@ impl Node {
     }
 
     /// The contents of a regular file made when it is opened ([`FileSystem::generate`]).
-    pub fn generate(&self) -> Option<alloc::vec::Vec<u8>> {
+    pub fn generate(&self) -> Result<Option<alloc::vec::Vec<u8>>, StorageError> {
         self.file_system.generate(self.id)
     }
 

@@ -53,7 +53,7 @@ kernel/src/linux/stat.rs 1
 kernel/src/linux/terminal.rs 8
 kernel/src/linux/thread.rs 2
 kernel/src/linux/thread_pointer.rs 5
-kernel/src/linux/time.rs 28
+kernel/src/linux/time.rs 19
 kernel/src/linux/trampoline.rs 10
 kernel/src/main.rs 18
 kernel/src/memory.rs 65

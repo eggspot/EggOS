@@ -201,6 +201,19 @@ impl Files for FakeFiles {
         Ok(count)
     }
 
+    fn read_at(&mut self, file: Handle, offset: u64, buffer: &mut [u8]) -> Result<usize, Errno> {
+        let Some(Some((path, _, false))) = self.open.get(file).cloned() else {
+            return Err(Errno(9));
+        };
+        let Some(Node::File(bytes, _)) = self.node(&path) else {
+            return Err(Errno::EIO);
+        };
+        let start = (offset as usize).min(bytes.len());
+        let count = (bytes.len() - start).min(buffer.len());
+        buffer[..count].copy_from_slice(&bytes[start..start + count]);
+        Ok(count)
+    }
+
     fn write(&mut self, file: Handle, bytes: &[u8]) -> Result<(), Errno> {
         let Some(Some((path, _, true))) = self.open.get(file).cloned() else {
             return Err(Errno(9));

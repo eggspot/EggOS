@@ -16,6 +16,15 @@ pub const QUEUE_CAPACITY: usize = 256;
 pub const TITLE_CAPACITY: usize = 64;
 /// The most rectangles one commit names.
 pub const MAX_COMMIT_RECTS: usize = 8;
+/// The longest pool of labels `SetMenu` carries, in bytes.
+pub const MENU_POOL_CAPACITY: usize = 248;
+/// The most menus one window's main menu holds.
+pub const MAX_MENUS: usize = 6;
+/// The most entries, items and separators, one menu holds.
+pub const MAX_MENU_ENTRIES: usize = 16;
+/// The longest item label `ChooseMenu` carries, in bytes: room for the longest a pool holds
+/// (the pool less an empty menu's `M\n` and the item's `I`, tab and `\n`), the argument 260.
+pub const MENU_LABEL_CAPACITY: usize = 244;
 /// The size of one event record.
 pub const EVENT_SIZE: usize = 32;
 /// The `ioctl` type byte of every request (`_IOC_TYPE`).
@@ -50,6 +59,9 @@ pub mod size {
     pub const START_MOVE_OR_RESIZE: usize = 12;
     pub const CAPTURE_WINDOW: usize = 40;
     pub const SEND_INPUT: usize = 24;
+    pub const SET_MENU: usize = 256;
+    pub const GET_MENU: usize = 256;
+    pub const CHOOSE_MENU: usize = super::choose_menu_request::LABEL + super::MENU_LABEL_CAPACITY;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -79,6 +91,9 @@ pub mod request {
     pub const START_MOVE_OR_RESIZE: u32 = encode(WRITE, 18, size::START_MOVE_OR_RESIZE);
     pub const CAPTURE_WINDOW: u32 = encode(READ | WRITE, 19, size::CAPTURE_WINDOW);
     pub const SEND_INPUT: u32 = encode(WRITE, 20, size::SEND_INPUT);
+    pub const SET_MENU: u32 = encode(WRITE, 21, size::SET_MENU);
+    pub const GET_MENU: u32 = encode(READ | WRITE, 22, size::GET_MENU);
+    pub const CHOOSE_MENU: u32 = encode(WRITE, 23, size::CHOOSE_MENU);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -136,6 +151,7 @@ pub mod event {
     pub const STATE_CHANGED: u16 = 11;
     pub const SCALE: u16 = 12;
     pub const OVERFLOW: u16 = 13;
+    pub const MENU_CHOSEN: u16 = 14;
 }
 
 /// The modifier bits of a `Key` record's `c`.
@@ -331,6 +347,21 @@ pub enum Request {
         code: u32,
         value: u32,
     },
+    SetMenu {
+        window: u32,
+        length: u32,
+        pool: [u8; MENU_POOL_CAPACITY],
+    },
+    GetMenu {
+        window: u32,
+    },
+    ChooseMenu {
+        window: u32,
+        menu: u32,
+        entry: u32,
+        label_length: u32,
+        label: [u8; MENU_LABEL_CAPACITY],
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -379,6 +410,9 @@ impl Request {
             request::START_MOVE_OR_RESIZE => size::START_MOVE_OR_RESIZE,
             request::CAPTURE_WINDOW => size::CAPTURE_WINDOW,
             request::SEND_INPUT => size::SEND_INPUT,
+            request::SET_MENU => size::SET_MENU,
+            request::GET_MENU => size::GET_MENU,
+            request::CHOOSE_MENU => size::CHOOSE_MENU,
             _ => return None,
         })
     }
@@ -490,6 +524,27 @@ impl Request {
                 code: at(16),
                 value: at(20),
             },
+            request::SET_MENU => {
+                let mut pool = [0; MENU_POOL_CAPACITY];
+                pool.copy_from_slice(&bytes[8..8 + MENU_POOL_CAPACITY]);
+                Self::SetMenu {
+                    window: at(0),
+                    length: at(4),
+                    pool,
+                }
+            }
+            request::GET_MENU => Self::GetMenu { window: at(0) },
+            request::CHOOSE_MENU => {
+                let mut label = [0; MENU_LABEL_CAPACITY];
+                label.copy_from_slice(&bytes[choose_menu_request::LABEL..]);
+                Self::ChooseMenu {
+                    window: at(0),
+                    menu: at(4),
+                    entry: at(8),
+                    label_length: at(choose_menu_request::LABEL_LENGTH),
+                    label,
+                }
+            }
             _ => Self::GetWorkArea,
         })
     }
@@ -517,6 +572,20 @@ pub mod capture_reply {
     pub const WIDTH: usize = 12;
     pub const HEIGHT: usize = 16;
     pub const ROWS: usize = 20;
+}
+
+/// Where `GetMenu` writes the length of the window's menu pool and the pool back into its
+/// argument.
+pub mod get_menu_reply {
+    pub const LENGTH: usize = 4;
+    pub const POOL: usize = 8;
+}
+
+/// Where `ChooseMenu`'s argument holds, after the window, the menu and the entry, the length of
+/// the label the caller expects the entry to have and the label itself.
+pub mod choose_menu_request {
+    pub const LABEL_LENGTH: usize = 12;
+    pub const LABEL: usize = 16;
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside

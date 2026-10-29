@@ -10,7 +10,8 @@ use eggos_runtime::syscall::{call, number, write_all};
 use eggos_settings::facts::Facts;
 use eggos_settings::keys::{self, Change, Key, PROFILE_CHOICES, Refusal};
 use eggos_settings::settings_window::{
-    CAPACITY, DEFAULT_SIZE, MINIMUM_SIZE, Request, SettingsWindow, TITLE,
+    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, MINIMUM_SIZE, Request, SetOutcome,
+    SettingsWindow, TITLE,
 };
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
@@ -45,6 +46,12 @@ const DIRENT_LENGTH: usize = 16;
 const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
 const FILES_PROGRAM_NAME: &[u8] = b"files";
+const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
+const EDIT_COMMAND_NAME: &[u8] = b"edit";
+const CLOCK_REALTIME: usize = 0;
+const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
+const SAVED_WITHIN_S: u64 = 2;
+const NANOSECONDS_PER_MS: u32 = 1_000_000;
 
 fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     // SAFETY: every caller passes buffers it owns and borrows for the call, sized as the call
@@ -258,6 +265,39 @@ fn uptime_s() -> u64 {
     first_number(&uptime[..length]).unwrap_or(0)
 }
 
+fn wall_clock() -> (u64, u32) {
+    let mut time = [0u64; 2];
+    match syscall(
+        number::CLOCK_GETTIME,
+        [CLOCK_REALTIME, time.as_mut_ptr() as usize, 0, 0, 0, 0],
+    ) {
+        Ok(_) => (time[0], time[1] as u32),
+        Err(_) => (0, 0),
+    }
+}
+
+fn hardware_clock_s() -> Option<u64> {
+    let mut text = [0u8; 256];
+    let length = read_file(HARDWARE_CLOCK, &mut text).ok()?;
+    let seconds = eggos_calendar::parse_proc_driver_rtc(&text[..length])?;
+    u64::try_from(seconds).ok()
+}
+
+fn set_clock(seconds: u64) -> SetOutcome {
+    let time = [seconds, 0u64];
+    match syscall(
+        number::CLOCK_SETTIME,
+        [CLOCK_REALTIME, time.as_ptr() as usize, 0, 0, 0, 0],
+    ) {
+        Ok(_) => match hardware_clock_s() {
+            Some(hardware) if hardware.abs_diff(seconds) <= SAVED_WITHIN_S => SetOutcome::Saved,
+            _ => SetOutcome::NoHardwareClock,
+        },
+        Err(Errno::EPERM) => SetOutcome::NotAllowed,
+        Err(_) => SetOutcome::Failed,
+    }
+}
+
 fn cpus() -> u32 {
     let mut mask = [0u8; AFFINITY_BYTES];
     match syscall(
@@ -331,6 +371,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         scale: area.map_or(1, |area| area.scale),
         profile,
         on_disk: home_is_on_a_disk(),
+        now_s: wall_clock().0,
+        hardware_clock: hardware_clock_s().is_some(),
     }
 }
 
@@ -448,7 +490,6 @@ struct Settings {
     unsaved_profile: Option<usize>,
 }
 
-const ABOUT_PANE: usize = 5;
 const SECOND_MS: u32 = 1000;
 
 impl Application<CAPACITY> for Settings {
@@ -462,11 +503,12 @@ impl Application<CAPACITY> for Settings {
                 apply_profile(index, self.server.as_ref());
                 self.unsaved_profile = Some(index);
             }
-            None => {
-                if self.window.pane() == ABOUT_PANE {
-                    self.show_uptime(now_ms);
-                }
+            Some(Request::SetTime(seconds)) => {
+                let outcome = set_clock(seconds);
+                self.window.show_set_outcome(outcome, now_ms);
+                self.window.show_time(wall_clock().0);
             }
+            None => self.show_clock(now_ms),
         }
     }
 
@@ -474,18 +516,22 @@ impl Application<CAPACITY> for Settings {
         if self.unsaved_profile.is_some() {
             return Some(now_ms);
         }
-        if self.window.pane() != ABOUT_PANE {
-            return None;
+        match self.window.pane() {
+            ABOUT => {
+                let elapsed = now_ms.wrapping_sub(self.uptime_from_ms);
+                Some(now_ms.wrapping_add(SECOND_MS - elapsed % SECOND_MS))
+            }
+            DATE_AND_TIME => {
+                let (_, nanoseconds) = wall_clock();
+                Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS))
+            }
+            _ => None,
         }
-        let elapsed = now_ms.wrapping_sub(self.uptime_from_ms);
-        Some(now_ms.wrapping_add(SECOND_MS - elapsed % SECOND_MS))
     }
 
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
-        if self.window.pane() == ABOUT_PANE {
-            self.show_uptime(now_ms);
-        }
+        self.show_clock(now_ms);
     }
 
     fn focused(&mut self, _now_ms: u32) {
@@ -508,6 +554,14 @@ impl Settings {
     fn save_unsaved(&mut self) {
         if let Some(index) = self.unsaved_profile.take() {
             save_profile(index);
+        }
+    }
+
+    fn show_clock(&mut self, now_ms: u32) {
+        match self.window.pane() {
+            ABOUT => self.show_uptime(now_ms),
+            DATE_AND_TIME => self.window.show_time(wall_clock().0),
+            _ => {}
         }
     }
 
@@ -546,12 +600,15 @@ fn open_window() -> i32 {
 }
 
 /// The program: see the crate's documentation. Started as `app-window`, it is the
-/// installer's window instead (D134).
+/// installer's window instead (D134); as `files` the Files window (D135); as `text-editor` the
+/// Text Editor and as `edit` its command (D149).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {
         WINDOW_PROGRAM_NAME => return eggos_app::window_program::run(startup),
         FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
+        EDITOR_PROGRAM_NAME => return eggos_editor::program::run(startup),
+        EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
         _ => {}
     }
     let mut arguments = [""; 4];

@@ -8,10 +8,14 @@ pub const LIST_WINDOW: u32 = 0xc060_770b;
 pub const MANAGE_WINDOW: u32 = 0x4010_770c;
 pub const CAPTURE_WINDOW: u32 = 0xc028_7713;
 pub const SEND_INPUT: u32 = 0x4018_7714;
+pub const GET_MENU: u32 = 0xc100_7716;
+pub const CHOOSE_MENU: u32 = 0x4104_7717;
 pub const LIST_SIZE: usize = 96;
 pub const MANAGE_SIZE: usize = 16;
 pub const CAPTURE_SIZE: usize = 40;
 pub const SEND_INPUT_SIZE: usize = 24;
+pub const GET_MENU_SIZE: usize = 256;
+pub const CHOOSE_MENU_SIZE: usize = 260;
 pub const KERNEL_CLIENT: u32 = 0xffff;
 pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
@@ -21,7 +25,9 @@ const USAGE: &[u8] = b"usage: wm list | wm focus|minimise|maximise|restore|close
       wm move <id> <x> <y> | wm size <id> <width> <height> | \
       wm capture [-o <file.png>] [--max-width <n>] [--max-bytes <n>] [--] <id> | \
       wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
-      wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | wm help";
+      wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | \
+      wm menu [--] <id> | wm menu --choose [--label <label>] [--] <id> <menu> <entry> | \
+      wm help";
 const TITLE_AT: usize = 32;
 const TITLE_CAPACITY: usize = 64;
 
@@ -143,10 +149,12 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(verb @ (b"click" | b"type" | b"press" | b"scroll")) => {
             return crate::window_input::send(output, verb, &arguments[1..]);
         }
+        Some(b"menu") => return crate::window_menu::menu(output, &arguments[1..]),
         Some(b"help") if arguments.len() == 1 => {
             output.write(USAGE);
             output.write(b"\n");
             output.write(crate::window_input::HELP);
+            output.write(crate::window_menu::HELP);
             return 0;
         }
         _ => {}

@@ -46,11 +46,17 @@ pub struct Fake {
     pub reboot_error: Option<Errno>,
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
+    pub now_nanoseconds: u32,
+    pub set_times: Vec<Duration>,
+    pub set_time_error: Option<Errno>,
     pub windows: Vec<FakeWindow>,
     pub managed: Vec<[u32; 4]>,
     pub window_pixels: BTreeMap<u32, (u32, u32, Vec<u32>)>,
     pub sent_input: Vec<[u32; 6]>,
     pub input_results: Vec<Option<Errno>>,
+    pub menus: BTreeMap<u32, Vec<u8>>,
+    pub chosen_menus: Vec<[u32; 3]>,
+    pub chosen_labels: Vec<Vec<u8>>,
     pub capture_calls: usize,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
@@ -90,11 +96,17 @@ impl Default for Fake {
             reboot_error: Some(Errno::EPERM),
             cross_device: Vec::new(),
             now: 1_700_000_000,
+            now_nanoseconds: 0,
+            set_times: Vec::new(),
+            set_time_error: None,
             windows: Vec::new(),
             managed: Vec::new(),
             window_pixels: BTreeMap::new(),
             sent_input: Vec::new(),
             input_results: Vec::new(),
+            menus: BTreeMap::new(),
+            chosen_menus: Vec::new(),
+            chosen_labels: Vec::new(),
             capture_calls: 0,
             capture_fails_at: None,
             resized_at: None,
@@ -440,6 +452,23 @@ impl System for Fake {
         self.now.max(0) as u64
     }
 
+    fn now_with_nanoseconds(&mut self) -> Duration {
+        Duration {
+            seconds: self.now(),
+            nanoseconds: self.now_nanoseconds,
+        }
+    }
+
+    fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno> {
+        if let Some(errno) = self.set_time_error {
+            return Err(errno);
+        }
+        self.set_times.push(since_epoch);
+        self.now = since_epoch.seconds as i64;
+        self.now_nanoseconds = since_epoch.nanoseconds;
+        Ok(())
+    }
+
     fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
         let directory = self.working_directory.as_bytes();
         let held = out.get_mut(..directory.len()).ok_or(Errno(34))?;
@@ -505,6 +534,31 @@ impl System for Fake {
                     return Err(errno);
                 }
                 self.sent_input.push(request);
+                Ok(())
+            }
+            (crate::wm::GET_MENU, crate::wm::GET_MENU_SIZE) => {
+                let window = word(argument, 0);
+                if !self.windows.iter().any(|known| known.id == window) {
+                    return Err(Errno::ENOENT);
+                }
+                let pool = self.menus.get(&window).map_or(&[][..], Vec::as_slice);
+                argument[4..8].copy_from_slice(&(pool.len() as u32).to_ne_bytes());
+                argument[8..8 + pool.len()].copy_from_slice(pool);
+                Ok(())
+            }
+            (crate::wm::CHOOSE_MENU, crate::wm::CHOOSE_MENU_SIZE) => {
+                let request = [0, 4, 8].map(|at| word(argument, at));
+                if !self.windows.iter().any(|known| known.id == request[0]) {
+                    return Err(Errno::ENOENT);
+                }
+                if !self.input_results.is_empty()
+                    && let Some(errno) = self.input_results.remove(0)
+                {
+                    return Err(errno);
+                }
+                self.chosen_menus.push(request);
+                let length = word(argument, 12) as usize;
+                self.chosen_labels.push(argument[16..16 + length].to_vec());
                 Ok(())
             }
             _ => Err(Errno::ENOTTY),

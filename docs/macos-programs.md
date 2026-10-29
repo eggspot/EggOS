@@ -1,8 +1,8 @@
 # Running macOS programs
 
-EggOS runs macOS console programs natively: arm64 programs on aarch64 and x86_64 programs on
-x86_64. The program's own machine code runs directly on the CPU, with no emulator, no virtual
-machine and no translation (D17). The macOS layer (D120), an optional component at
+EggOS runs macOS programs natively, console programs and AppKit apps: arm64 programs on
+aarch64 and x86_64 programs on x86_64. The program's own machine code runs directly on the
+CPU, with no emulator, no virtual machine and no translation (D17). The macOS layer (D120), an optional component at
 `/usr/lib/eggos/macos`, does what dyld does on a Mac: it reads the program's Mach-O file
 (thin, or fat/universal with a slice per CPU), maps its segments, binds the functions it imports
 from libSystem to its own implementations, written in Rust on EggOS's system calls, applies the
@@ -14,8 +14,9 @@ Part 1 (D120) runs console programs that use the libSystem functions listed belo
 (D123) adds what small real tools and Rust's standard library need: threads, thread-local
 variables, locks, `getopt`, calendar time, `errno` per thread and the C locale. Part 3 (D142)
 runs Objective-C console programs: the layer has its own Objective-C runtime (libobjc) and the
-core of Foundation (see "Objective-C programs"). Swift, C++'s runtime and programs that need
-other libraries do not run yet (see below).
+core of Foundation (see "Objective-C programs"). Part 4 (D147) runs GUI apps built in code on
+AppKit's core, in an `.app` bundle or not (see "GUI apps"). Swift, C++'s runtime and programs
+that need other libraries do not run yet (see below).
 
 ## Add a program to the image
 
@@ -199,6 +200,57 @@ A Foundation class the layer lacks stops the program only when it is first used:
 `eggos-macos: unimplemented CoreFoundation class NSDate`, status 127; a missing function
 names its library the same way (`unimplemented libobjc function objc_storeWeak`).
 
+## GUI apps
+
+A program that links AppKit (`-framework AppKit`) gets the layer's own AppKit (D147,
+`userland/macos/src/appkit/`), drawn as `docs/ux/macos-gui-v0.3.md` designs it: a macOS app in
+Dark Mode on the EggOS desktop. Install an `.app` folder with `app install` (docs/apps.md) and
+open it from the launcher, the dock or the desktop; its windows are windows of the window
+server (docs/windows.md) with EggOS's chrome, and its main menu shows in the macOS profile's top
+bar while one of its windows is focused.
+
+- **NSApplication**: `sharedApplication`, `NSApp`, `setDelegate:` (retained),
+  `setActivationPolicy:`, `run` (the delegate's `applicationWillFinishLaunching:` and
+  `applicationDidFinishLaunching:`, then the event loop), `stop:`, `terminate:` (asks
+  `applicationShouldTerminate:`, tells `applicationWillTerminate:`), `setMainMenu:`,
+  `keyWindow`, `windows`, `sendAction:to:from:` (to the target, or the key window's first
+  responder, its superviews, the window, its delegate, the application and its delegate),
+  `sendEvent:`. The last window closed ends the app; Cmd+Q always quits.
+- **NSWindow**: `initWithContentRect:styleMask:backing:defer:` (resizable or not), `title`,
+  `contentView`, `makeKeyAndOrderFront:`, `close`, `performClose:` (`windowShouldClose:`),
+  `delegate` (`windowWillClose:`), `makeFirstResponder:`, `initialFirstResponder`,
+  `backgroundColor`, `setContentSize:`, `display`, `sendEvent:`.
+- **NSView and NSResponder**: `initWithFrame:`, `frame`, `bounds`, `setFrame:`, `addSubview:`,
+  `removeFromSuperview`, `subviews`, `superview`, `window`, `setNeedsDisplay:`, `drawRect:`,
+  `hidden`, `convertPoint:fromView:` and `toView:`, `hitTest:`, `acceptsFirstResponder`,
+  `mouseDown:`, `mouseUp:`, `mouseDragged:`, `rightMouseDown:`, `scrollWheel:`, `keyDown:`,
+  `keyUp:`, `flagsChanged:`.
+- **NSEvent**: `type`, `locationInWindow`, `modifierFlags`, `characters`,
+  `charactersIgnoringModifiers`, `keyCode` (Apple's virtual key codes), `buttonNumber`,
+  `clickCount`, `timestamp`, `window`.
+- **Drawing**: NSColor's fixed and semantic colours (the desktop's dark tokens) and
+  `colorWithRed:green:blue:alpha:`, `set`, `setFill`, `setStroke`; `NSRectFill`,
+  `NSFrameRect`, `NSEraseRect`; NSBezierPath (`bezierPathWithRect:`,
+  `bezierPathWithOvalInRect:`, `moveToPoint:`, `lineToPoint:`, `closePath`, `fill`, `stroke`,
+  `fillRect:`, `strokeRect:`); NSString's `drawAtPoint:withAttributes:`,
+  `drawInRect:withAttributes:` and `sizeWithAttributes:` with `NSForegroundColorAttributeName`
+  and `NSFontAttributeName`; NSFont, which is Egg Sans at every size.
+- **Controls**: NSButton (`buttonWithTitle:target:action:`, `title`, `keyEquivalent` (Return
+  makes the default button), `enabled`, `performClick:`), NSTextField
+  (`textFieldWithString:`, `labelWithString:`, `stringValue`, `placeholderString`,
+  `editable`, `bezeled`, `textColor`, `alignment`; Enter sends the action, Tab moves between
+  fields), NSControl's `target`, `action` and `tag`.
+- **NSAlert**: `messageText`, `informativeText`, `addButtonWithTitle:` (up to three),
+  `runModal` (1000, 1001, 1002).
+- **NSMenu and NSMenuItem**: `initWithTitle:`, `addItem:`,
+  `addItemWithTitle:action:keyEquivalent:`, `separatorItem`, `submenu`, `enabled`,
+  `keyEquivalentModifierMask`; the top level's submenus are the top bar's menus.
+- **NSBundle** in an `.app`: `bundlePath`, `resourcePath`, `infoDictionary`,
+  `objectForInfoDictionaryKey:` and `bundleIdentifier` from `Contents/Info.plist`.
+
+`tests/macos-gui/main.m` (`mac-paint.app`) is a complete example. An AppKit class the layer
+lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit class NSImage`).
+
 ## What does not work yet
 
 - **Objective-C beyond the core**: blocks (`^{ }`, `_NSConcreteStackBlock`, `Block_copy`),
@@ -224,9 +276,14 @@ names its library the same way (`unimplemented libobjc function objc_storeWeak`)
   streams shared between threads (each stream assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
   does, so options after an operand stay operands; `getopt_long_only` is missing.
-- **Other libraries and frameworks**: no libc++, no Cocoa or AppKit, only the core of
-  Foundation and CoreFoundation (above), no `dlopen`, no dyld shared cache; a program that links
-  any library other than libSystem, libobjc, Foundation and CoreFoundation is refused. Weak libraries are allowed and their imports are missing. Imports a program makes
+- **AppKit beyond its core** (D147's "Not yet"): nibs and storyboards, flipped views, layers,
+  Auto Layout, scroll views, tables, images, cursors, timers, sheets and panels, checkboxes and
+  other button types, submenus below the top bar's, the menu in the Windows and Linux profiles,
+  alpha and anti-aliasing, and fonts other than Egg Sans.
+- **Other libraries and frameworks**: no libc++, no Cocoa umbrella, only the core of
+  Foundation, CoreFoundation and AppKit (above), no `dlopen`, no dyld shared cache; a program
+  that links any library other than libSystem, libobjc, Foundation, CoreFoundation and AppKit
+  is refused. Weak libraries are allowed and their imports are missing. Imports a program makes
   from itself (C++'s weak definitions, through its export trie) are missing too.
 - **Older programs**: files without chained fixups, which use `LC_DYLD_INFO` opcodes (arm64
   programs built for macOS 11, x86_64 ones built for macOS 12 or earlier), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e

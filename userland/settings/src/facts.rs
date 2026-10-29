@@ -24,11 +24,16 @@ pub struct Facts {
     pub profile: usize,
     /// Whether `/home` is on a disk, so a choice survives a power-off.
     pub on_disk: bool,
+    /// The wall clock: seconds since 1970-01-01 00:00:00 UTC (D150).
+    pub now_s: u64,
+    /// Whether the machine has a hardware clock (`/proc/driver/rtc`), which keeps a set time.
+    pub hardware_clock: bool,
 }
 
 impl Facts {
     /// The facts of a 1280x800 aarch64 machine with 4 CPUs and 1 GiB, up 1:02:05, in the
-    /// macOS profile with a disk: what tests show.
+    /// macOS profile with a disk and a hardware clock reading Thursday 29 October 2026,
+    /// 14:05:09 UTC: what tests show.
     pub fn example() -> Self {
         Self {
             version: "0.2.0",
@@ -40,6 +45,8 @@ impl Facts {
             scale: 1,
             profile: 1,
             on_disk: true,
+            now_s: 1_793_282_709,
+            hardware_clock: true,
         }
     }
 }

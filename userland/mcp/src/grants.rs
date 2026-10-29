@@ -24,14 +24,16 @@ pub const MAX_UNKNOWN_BYTES: usize = 128;
 /// One thing the user can let agents do beyond reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grant {
-    /// See window contents (`wm_capture`).
+    /// See window contents and menus (`wm_capture`, `wm_menu_list`).
     View,
     /// Write and delete files below `/home/root` (`tee`, `trash`).
     Write,
-    /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`).
+    /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), and open
+    /// a text file in the Text Editor (`edit_open`).
     Install,
-    /// Run any program (`run`) and operate any window (`wm_click`, `wm_type`, `wm_press`,
-    /// `wm_scroll`): full control of the machine.
+    /// Run any program (`run`), operate any window (`wm_click`, `wm_type`, `wm_press`,
+    /// `wm_scroll`, `wm_menu_choose`) and set the clock (`clock_set`, D150): full control of
+    /// the machine.
     Run,
 }
 
@@ -219,6 +221,21 @@ mod tests {
         assert!(Grants::NONE.with(Grant::Run).allows(Grant::View));
         let (grants, _) = from_command_line(b"eggos.mcp_allow=view,write,run,install");
         assert_eq!(grants, Grants::ALL);
+    }
+
+    #[test]
+    fn the_grants_are_found_beside_the_offscreen_display_in_either_order() {
+        for line in [
+            &b"eggos.display=offscreen eggos.mcp_allow=view,write,run,install"[..],
+            b"eggos.mcp_allow=view,write,run,install eggos.display=offscreen",
+            b"eggos.display=offscreen\teggos.mcp_allow=run\n",
+        ] {
+            let (grants, unknown) = from_command_line(line);
+            assert_eq!(grants, Grants::ALL, "{line:?}");
+            assert_eq!(unknown.as_bytes(), b"");
+        }
+        let (grants, _) = from_command_line(b"eggos.display=offscreen");
+        assert_eq!(grants, Grants::NONE);
     }
 
     #[test]

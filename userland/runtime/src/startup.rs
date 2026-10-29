@@ -13,6 +13,7 @@ pub mod auxv {
     pub const PAGESZ: usize = 6;
     pub const BASE: usize = 7;
     pub const ENTRY: usize = 9;
+    pub const HWCAP: usize = 16;
     pub const UID: usize = 11;
     pub const EUID: usize = 12;
     pub const GID: usize = 13;

@@ -9008,6 +9008,77 @@ the license, by an explicit instruction recorded here.
   typing (D141). A window whose client stopped reading its events answers `EAGAIN` until
   `wm`'s 3-second retry budget runs out, then the tool fails.
 
+## D144 Running with no screen: `eggos.display=offscreen[:WxH]`, a framebuffer in memory, and one `-append` built by the run scripts (v0.3.0 item 47b; extends D112, D116, D136, D137, D141, D143) — Decided (owner, 2026-10-28: "our os could also run with no gui mode, but could open the windows/mac in gui mode then allow the ai work with it"); the design decided by the build loop and its two plan reviews
+- **What.** `run-eggos.sh --mcp --no-window` (`run-eggos.ps1 -Mcp -NoWindow`) boots EggOS with
+  no screen at all: QEMU gets no virtio GPU and no virtio keyboard, tablet or mouse
+  (`Arch::offscreen_args`: `-vga none` on q35, so it adds no standard VGA, nothing on the virt
+  machines; `-display none` stays), and the kernel draws the desktop into memory. Windows, macOS
+  and Linux apps still open, and D143's tools work unchanged at the same geometry. Before this,
+  `--no-window` only hid QEMU's window; it never shipped in a release (v0.1.0 and v0.2.0 have
+  none), so no user breaks. `--no-window` still needs `--mcp`; `--serial` and the windowed boot
+  are unchanged. This is D23's headless server or embedded machine, now able to open GUI apps
+  for an agent.
+- **The parameter.** `eggos.display=offscreen` asks for the offscreen display at
+  `eggos_drivers::display::DEFAULT_MODE`, 1280x800, the mode xtask asks the virtio GPU for (a
+  host test ties the two), so windows sit where they do with a screen;
+  `eggos.display=offscreen:<width>x<height>` names a size. The first word starting with
+  `eggos.display=` decides, words split on ASCII whitespace, as eggmcpd reads
+  `eggos.mcp_allow=` (D137). The value is strict: 1 to 5 digits each, no sign, no leading zero
+  (one spelling per size), else refused. Checked in this order, so the desktop's layout only
+  sees bounded sizes: parsing; more than `FRAME_SIZE << MAX_ORDER` bytes (4 MiB, the largest
+  block the kernel heap hands out and the virtio GPU framebuffer's ceiling too) is too large;
+  a screen the desktop does not fit on (`Desktop::fits`, the rule `Desktop::new` uses) is too
+  small. A refused value gives no display (fail closed, no fallback) and the console line
+  `boot: eggos.display refused: <reason>` with a fixed reason: the host's value is never
+  echoed, since the console is mirrored to the graphical terminal.
+- **The kernel** (`kernel/src/display/offscreen.rs`). `OffscreenScanout` implements D112's
+  `Scanout` over a `Box<[u32]>` allocated with `try_reserve_exact` (no panic when memory is
+  short); its flush shows nothing and reports every rectangle shown. `boot` reads the command
+  line only after device probing found no display, so a GPU wins over the word, and every boot
+  with a display (every windowed boot and every test and benchmark boot with the GPU) pays
+  nothing; then it says `boot: offscreen display 1280x800`, and the first frame, the desktop,
+  the terminal's window, `/dev/window` and eggway (D140) follow as with a GPU. No `unsafe`.
+  This is the first kernel command line key the kernel itself reads (D116 noted it read none;
+  eggmcpd reads its own, D137).
+- **No input, no person.** Without input devices no poller runs, `person_holds_input` and the
+  input queue stay empty and the desktop's 500 ms rule (D141) never starts: injected input is
+  never `EBUSY` because of a person, which is the point, since the agent is the only one at the
+  machine (with `--mcp` the console is a file, so the serial line has no keyboard either). Capture
+  reads a window's own buffer and `SEND_INPUT` goes to its queue, so neither needs a screen. The
+  input poller was also what ticked the desktop once a second (its clock, notices, tooltips and
+  the close timeout of a window that stopped answering): with a display and no input devices,
+  init now starts `terminal::start_clock`, a thread that does only that, waking at each second.
+- **One `-append`.** QEMU keeps only the last `-append`, so the scripts build one line at run
+  time: `eggos.display=offscreen` first (only in the `mcp-headless` mode, `$Mcp -and
+  $NoWindow` in PowerShell), then `eggos.mcp_allow=<list>`, after the list is checked and,
+  in sh, after `IFS` is restored; `set -- "$@" "-append" "$command_line"` stays where the grant's
+  `set --` was, after the mode's `set --`. The display word is a constant and the grant names are
+  checked lowercase words joined by commas, so no host input can add a word. xtask's helpers
+  are now `qemu::OFFSCREEN_WORD`, `qemu::grant_word` and `qemu::command_line_args`: **this
+  supersedes D137's sentence that `qemu::grant_args` is shared by the scripts and xtask.**
+  PowerShell joins the words with a space; the value has no quote or backslash, and both Windows
+  PowerShell 5.1 and PowerShell 7.3 and later wrap a native argument holding a space in double
+  quotes, so QEMU receives one argument. Both readers (the kernel's and eggmcpd's) are tested on
+  the combined line in either order.
+- **Why `offscreen_args` and not `-vga none` in x86_64's `machine_args`** (plan review 1
+  preferred the move). The move would change every x86_64 boot without a display, the gated
+  `boot_to_prompt` benchmark boot included, which this item otherwise leaves unchanged.
+- **Testing.** Host: the parser (no word, the default, sizes at and over the ceiling, too small
+  without a panic, every malformed spelling, the first word, the combined line both ways), the
+  scanout and a `Display` over it reaching `FIRST_FRAME_HASH_1280X800`, the console lines
+  (fixed reasons only), a display in use, `Desktop::fits` against `Desktop::new`, the clock's
+  next second, eggmcpd's grants on combined lines, `mcp_args` without a window (no GPU or input
+  device, `-vga none` on x86_64, the channel and console kept), and the scripts' text (one
+  `-append`, the order, the gates). QEMU on aarch64, riscv64 and x86_64: the MCP check's two
+  boots (already `--no-window`) now run offscreen, and each boot's console must show `boot:
+  offscreen display 1280x800`, `boot: display 1280x800` and `boot: no input`; the granted boot's
+  `/proc/cmdline` must hold `eggos.display=offscreen eggos.mcp_allow=view,write,run,install`;
+  the release boot-to-prompt test passes `-append eggos.display=offscreen` with its GPU and
+  must show `boot: display 1280x800` and no `boot: offscreen` line. No new boot.
+- **Not yet.** A size option in the scripts; `cargo xtask run` with no screen; showing an
+  offscreen desktop on demand; changing the size while EggOS runs; the PowerShell script run on
+  CI (D116's follow-up; its text is tested).
+
 ## D145 The Windows layer, part 4: child windows, the system's controls, menus, timers and the file picker (v0.3.0 item 42) — Decided by EggAgentCode (the design is Claude Fable's, D16; the points below marked so decided by research or by the plan reviews)
 - **What.** Users can now run Windows programs built from the system's controls: child windows
   (`WS_CHILD`), the `BUTTON` (push, default push, check box), `EDIT` (single line), `STATIC`
@@ -9103,3 +9174,703 @@ the license, by an explicit instruction recorded here.
   windows of another thread holding a tree's commit (they never do; a cross-thread child's
   paint commits on its own), a picker opened from a thread with a small stack (the picker
   uses about 40 KiB of it).
+
+## D146 Windows programs on the C runtime: `vcruntime140` and the Universal C Runtime (`ucrtbase`, the `api-ms-win-crt-*` API sets) in the Windows layer, printf shared with the macOS layer, and `eggpad.exe` built by MSVC (v0.3.0 item 43; extends D118, D121, D124, D129) — Decided by the build loop
+- **What.** Programs MSVC builds with `/MD`, the default for C and C++ projects, link the C
+  runtime's startup code into themselves and import the rest from `vcruntime140.dll` and the
+  Universal C Runtime through its API sets (`api-ms-win-crt-runtime-l1-1-0.dll`, `-stdio-`,
+  `-heap-`, `-string-`, `-convert-`, `-utility-`, `-time-`, `-locale-`, `-math-`). The Windows
+  layer now provides both, so such programs, console or GUI, run on x86_64 (x64) and aarch64
+  (ARM64). The startup's own kernel32 imports (`IsDebuggerPresent`,
+  `IsProcessorFeaturePresent`, `InitializeSListHead`, `GetStartupInfoW`, the
+  unhandled-exception filter and `RtlCaptureContext`, `RtlLookupFunctionEntry`,
+  `RtlVirtualUnwind`) are added to kernel32. Lists: docs/windows-programs.md.
+- **Where.** `userland/windows/src/win32/crt/`, one module per area (runtime, startup, heap,
+  string, stdio, utility), in the same export-table style as kernel32 and user32: `library.rs`
+  gains `Library::VcRuntime` (`vcruntime140`, `vcruntime140_1`) and `Library::Ucrt`
+  (`ucrtbase` and every `api-ms-win-crt-*` name, as `api-ms-win-core-*` maps to kernel32).
+  Logic that needs no system is pure with host tests: `stream.rs` (a `FILE`'s buffer, text
+  mode and positions over a `Backing`) and `c_text.rs` (`strtol`'s family). It stays inside the
+  Windows layer, so it costs nothing until a Windows program runs (D18).
+- **printf is shared.** The macOS layer's `printf` engine (D120) moves unchanged into a new
+  `no_std` crate, `userland/c-format` (`eggos-c-format`), used by both layers instead of a
+  second copy. A `Dialect` holds where the two C libraries differ: `Darwin` keeps `%@`, `%C`
+  and a 64-bit `l`; `Windows` has a 32-bit `l` (LLP64), `I64`, `I32` and `I`, wide strings and
+  characters (`%S`, `%C`, `%ls`, `%ws`, `%lc`; `%hs`, `%hc` narrow) read as UTF-16, `%p` as 16
+  upper-case hex digits, and, for the wide functions with Microsoft's own specifiers (the
+  default `_CRT_INTERNAL_PRINTF_LEGACY_WIDE_SPECIFIERS`), `%s` and `%c` wide. `printf` itself
+  is inline in Microsoft's headers; programs import `__stdio_common_vfprintf` and its family,
+  whose `va_list` is a pointer to 8-byte slots on x64 and ARM64 alike. The wide functions
+  format UTF-8: `swprintf` and its family convert it to UTF-16 in the caller's buffer (an
+  output that ends inside a UTF-8 sequence, from a narrow `%hs` argument, ends with U+FFFD),
+  while `fwprintf` and `wprintf` write the UTF-8 bytes to the stream (streams are byte streams;
+  wide streams are in "Not yet") and return the count of UTF-16 units. The counted functions
+  follow the options word's convention, as Microsoft documents each (`counted_print.rs`, host
+  tests): `snprintf` (`STANDARD_SNPRINTF_BEHAVIOR`) always ends the buffer at `count - 1` at
+  most and returns the whole length; `_snprintf`, `_vsnwprintf` and `sprintf`
+  (`LEGACY_VSPRINTF_NULL_TERMINATION`) end it only when the output is shorter than `count`,
+  return `count` for an exact fit and -1 for a longer output, and -1 with `ERANGE` for a buffer
+  with a count of 0; ISO `swprintf` and `vswprintf` (neither bit) always end it at `count - 1`
+  at most and return -1 when the output takes `count` units or more. A null buffer with a count
+  of 0 measures; with a count it is `EINVAL`. A width and a number's
+  precision are capped at 4096 characters of padding, but a string's precision only bounds
+  how much is read, so `%.*s` with 10000 writes all 10000 bytes; this holds for the macOS
+  layer's `printf` too.
+- **Streams.** A `FILE *` is a stream in a table of 64 (a pointer not from `fopen` is `EBADF`),
+  with a 4 KiB buffer; one lock covers the table and every operation. Text mode, Windows'
+  default without `b` (and `_fmode`), writes `\n` as `\r\n`, reads `\r\n` as `\n` and stops at
+  Ctrl+Z, as Microsoft documents for `fopen`; `ftell` and `fseek` count the file's own bytes in
+  either mode. `stdin`, `stdout` and `stderr` are descriptors 0 to 2, made on first use: a GUI
+  program's are missing where they would be the terminal, as its standard handles are (D129);
+  a terminal's `stdout` is line buffered, `stderr` unbuffered. Once the program closes one with
+  `fclose`, it stays closed (`EINVAL` from then on), so a later `fopen` that gets descriptor 1
+  does not become `stdout`. `exit` runs the `atexit` table, then flushes every stream;
+  `ExitProcess` flushes them too, as the Universal C Runtime does when the process detaches it.
+  Both wait at most 100 ms (by the monotonic clock) for the streams' lock: when another thread
+  keeps it longer, say blocked reading `stdin`, the process ends without flushing rather than
+  waiting for a line. `fflush(NULL)` writes out only
+  streams whose last operation was a write, as C11 and Microsoft define it; `fflush` on a
+  reading stream gives back what it read ahead when the file can seek and otherwise keeps it
+  for the next read (a pipe or terminal loses no input), dropping only an `ungetc` byte.
+  `fopen`'s `D` (temporary) removes the file's name right after opening, so the file goes when
+  the stream closes, and refuses the open with the removal's error when the name cannot be
+  removed; other programs cannot open it by name meanwhile, as they could on Windows until the
+  close.
+- **`errno`** lives in each thread's TEB, past the documented part (after the thread object,
+  at `teb::ERRNO`, with `_doserrno` at `teb::DOS_ERRNO`), so threads have their own without a
+  TLS slot. Linux's numbers up to `ERANGE` (34) are Windows' too; others become `EINVAL`.
+- **Invalid parameters.** Microsoft documents both the default handler, which ends the
+  program, and what each function returns when a handler lets it go on. The
+  layer's functions return that documented error (`EINVAL`, `ERANGE`, an emptied destination
+  for the `_s` functions) instead of ending the program, since no handler can be installed yet
+  and a program that checks its results keeps working; `_invalid_parameter_noinfo` itself,
+  which programs and headers call when they decided to stop, ends the program with
+  `STATUS_INVALID_CRUNTIME_PARAMETER`. `abort` and `terminate` end it with status 3, with a line
+  on standard error.
+- **Exceptions.** `__C_specific_handler`, `__current_exception` and the unwinding functions
+  exist because every program's startup imports them; with no exception dispatch yet (D121's
+  "Not yet"), they are never reached: `RtlLookupFunctionEntry` finds no entry, so the startup's
+  failure path ends the process. `IsProcessorFeaturePresent` answers the baseline features
+  only (SSE, SSE2, RDTSC and NX on x86_64; NX, NEON and ARMv8 on aarch64) and not
+  `PF_FASTFAIL_AVAILABLE`, so a failed security check takes the documented path through the
+  filter to `TerminateProcess` rather than a trap.
+- **`rand`** is our own xorshift generator (values in `0..=RAND_MAX`), not Microsoft's sequence;
+  no program may rely on a sequence across C libraries.
+- **The test program is C, and test data** (as D142 decided for Objective-C): item 43's check is "our own C notepad built with MSVC", and only a real MSVC
+  build shows what MSVC's startup imports and how it calls them. `tests/windows-crt/eggpad.c`
+  is our own source, never shipped; the repository's "all Rust" rule covers EggOS, not the
+  foreign programs it runs. `cargo xtask windows-programs` builds it on a Windows host with
+  `cl.exe /MD /O2 /W3 /WX` for x64 and ARM64, found through `vswhere` and set up by
+  `vcvarsall.bat`; CI's new `windows-programs` job (windows-latest, pull requests only, like
+  `macos-programs`) uploads them and the x86_64 and aarch64 QEMU jobs get them through
+  `EGGOS_WINDOWS_PROGRAMS`: xtask (`ci_artifact.rs`) waits for the artifact, up to 25 minutes,
+  just before the boot test that runs them, and the Mach-O programs' likewise, so their builds
+  overlap the kernels' build and the earlier boot tests (the QEMU jobs' timeout is 40 minutes); without them (a push to `main`, a host that is not Windows) the boot
+  test is skipped and says so, and in CI a missing set fails.
+- **Check.** `WindowsCrt` boot test on x86_64 and aarch64: the shell writes
+  `/tmp/note.txt`, runs `eggpad.exe 'C:\tmp\note.txt'`; the display is compared with the host's
+  render as eggpad shows the file and its size (`swprintf`), three typed letters and Enter
+  appear, Ctrl+S (`WM_CHAR` 0x13) saves through `_wfopen`, `fwrite` and `ftell` and the status
+  line says `Saved 27 bytes` (two line feeds became CRLF), and the close control closes it;
+  then its standard output (`printf`, `%zu`, `%ld`, `%ls`, the `atexit` handler) and `cat` of
+  the saved file. eggpad uses only item 32's window, GDI, key and char messages, so it does not
+  depend on item 42.
+- **Not yet.** `scanf` and its family, `getenv`, `setlocale` and locales other than "C",
+  `signal`, `setjmp`/`longjmp`, the math library, `fgetwc`/`fputwc` and wide streams
+  (`_setmode`), low-level I/O (`_open`, `_read`), `rename`, `tmpfile`, `_set_invalid_parameter_handler`,
+  C++ (`__CxxFrameHandler`, `_CxxThrowException`, `operator new` comes from the program but its
+  exceptions do not), `vcruntime140_1`'s functions, static CRT (`/MT`) programs' extra imports
+  (most are the same kernel32 functions), MinGW's `msvcrt.dll`; per-stream locks (one lock
+  serialises all stdio, so a thread blocked reading `stdin` holds up the others, and they spin
+  on it, yielding every 128 tries, which burns CPU while they wait: a per-stream lock that
+  `fclose` can take safely, and a lock that sleeps, are a later part); caching `target` in CI's
+  `windows-programs` job (it runs on pull requests only, whose caches other pull requests
+  cannot restore, so it would need a save from `main` first); the wide `printf` functions
+  convert their format to UTF-8 in a heap block per call (`Utf8Format::of`), where a stack
+  buffer for short formats would save the allocation.
+
+## D147 macOS GUI apps: AppKit in the macOS layer on the window server, `.app` bundles, controls, alerts and the main menu in the top bar (v0.3.0 items 41 and 44; extends D120, D127, D133, D134, D142) — Decided by the build loop (design by Claude Fable, `docs/ux/macos-gui-v0.3.md`)
+- **What.** Item 41 (macOS GUI apps, part 1, moved after the release on 2026-10-28 and brought
+  back into the release batch on 2026-10-29 because item 44 builds on it): "`.app` bundles
+  (Info.plist), NSApplication run loop and delegate, NSWindow, NSView `drawRect:`, NSColor,
+  NSRectFill, NSBezierPath, NSString `drawAtPoint:`, mouseDown and keyDown; programmatic apps
+  (no nib files). Check: `mac-paint.app` installed and opened from the launcher." Item 44
+  (part 2): "NSButton target/action, NSTextField, NSAlert, NSMenu in the top bar with Cmd+Q."
+  Both land as one part: programmatic Objective-C AppKit apps, arm64 on aarch64 and x86_64 on
+  x86_64, open windows on the EggOS desktop, draw, take clicks and keys, use push buttons, text
+  fields and labels, show alerts, and put their main menu in the top bar.
+- **Where.** AppKit is Rust inside the macOS layer, `userland/macos/src/appkit/`, as classes of
+  the layer's own Objective-C runtime defined the way Foundation's are (D142): `application.rs`
+  (NSApplication, `NSApp`, the event loop, actions), `window.rs`, `view.rs` (NSResponder,
+  NSView), `control.rs` (NSControl, NSButton, NSTextField), `event.rs`, `drawing.rs` (the
+  drawing context, NSColor, NSFont, NSBezierPath, `NSRectFill` and its kin, NSString's drawing
+  methods, the attribute names), `alert.rs`, `menu.rs` and `server.rs` (the `/dev/window`
+  connection). The loader accepts `AppKit.framework` and sets AppKit up only for a program that
+  links it (D18): a console program pays nothing. What has no system in it is a new pure crate
+  with host tests, `userland/macos-gui` (`eggos-macos-gui`), as `eggos-windows-gui` is for the
+  Windows layer: AppKit's bottom-left coordinates as buffer pixels, the colours, the primitives
+  (1 px, no anti-aliasing), the push button, text field and label drawn by the toolkit
+  (`eggos-toolkit`) inside the app's frame, the alert as the toolkit's dialog panel, the menu
+  pool and key labels, and the key records as `NSEvent`'s key codes, characters and flags.
+- **Look.** Claude Fable's design (D16), `docs/ux/macos-gui-v0.3.md`: an AppKit app is a macOS
+  app in Dark Mode; semantic colours are the desktop's tokens; text is Egg Sans 16 (2x from 28
+  points); controls are the toolkit's, 28 px tall centred in the app's frame; an alert is the
+  toolkit's panel in a dialog window titled with the app's name, buttons in macOS's order.
+- **The window server shows the main menu.** A new request `SET_MENU` (`0x41007715`, 256 bytes:
+  window, pool length, a pool of `M<title>`, `I<label>\t<key>`, `D<label>\t<key>` and `-`
+  lines, at most 6 menus of 16 entries and 248 bytes) gives a Normal window its menu, and a new
+  event `MenuChosen` (kind 14: menu, entry) reports a choice (docs/windows.md). In the macOS
+  profile the top bar shows the focused window's menu after the system item, in the bar's font,
+  the first titled with the app's name; a click opens it in the popup chrome, Up, Down, Left,
+  Right, Enter and Esc work, and the titles dim while a dialog of the window is focused. The
+  Windows and Linux profiles show no menu in 0.3.0; key equivalents still work there.
+- **The main menu for commands and agents (D22, notes 4 and 6; review round 1).** A person's
+  pointer and keys were the only way to choose an item, so an agent could not reach "About" or
+  "Clear". Two new requests, added as D141 added `CAPTURE_WINDOW` and `SEND_INPUT`: `GET_MENU`
+  (`0xc1007716`, 256 bytes, root only) reads any window's pool as `SET_MENU` last set it, and
+  `CHOOSE_MENU` (`0x41047717`, 260 bytes: window, menu, entry and the entry's label as the
+  caller read it; root only) chooses an enabled item of any window's menu exactly as a person's
+  choice does (the open menu closes, the window gets `MenuChosen`), on a covered, minimised or
+  unfocused window, in every profile, under D141's "a person wins" (`EBUSY`) and queue room
+  (`EAGAIN`) rules; `EINVAL` for no such menu or item, a separator, a disabled item, another
+  label, or while the window's client has a dialog open. `wm menu <id>` lists the menus and entries with
+  their numbers, key labels and `[disabled]`; `wm menu --choose <id> <menu> <entry>` takes the
+  numbers or a title and a label (a word of digits is always a number). The MCP tools are
+  `wm_menu_list` (the `view` grant, read-only: a menu shows what an app offers, as its window
+  does) and `wm_menu_choose` (the `run` grant, audited with its window, menu and entry, as
+  `wm_click`), extending D143's list.
+- **Events.** One connection, blocking reads; each record becomes an NSEvent sent through
+  `-[NSApplication sendEvent:]`: a key press first goes to the main menu's key equivalents
+  (exact modifiers; an upper-case key asks for Shift), and Cmd+Q (Super, which the server lets
+  through) quits even without a menu; then `-[NSWindow sendEvent:]` sends a click to the view
+  under it (made first responder when it accepts), the drags and release to that same view,
+  Tab and Shift+Tab between editable text fields, Enter to the focused text field or else to the
+  default button (key equivalent Return), and other keys to the first responder. Modifier keys
+  make `flagsChanged:`. Cmd+W stays the server's close shortcut: the window gets
+  `CloseRequest`, the layer runs `performClose:`. The last window closed ends the app.
+- **Drawing.** A window is drawn whole when anything in it changed, before the next read: its
+  background, then each view's `drawRect:` with its bounds, clipped to its frame (a control to
+  its 28 px too), superviews first and subviews in the order added, then one `COMMIT`.
+- **`.app` bundles.** A program at `X.app/Contents/MacOS/<name>` belongs to the bundle
+  `X.app`: NSBundle's `bundlePath`, `resourcePath` (`Contents/Resources`), `infoDictionary`
+  and `objectForInfoDictionaryKey:` read `Contents/Info.plist`'s string values (an XML property
+  list, `info_plist.rs`, host-tested), `bundleIdentifier` is `CFBundleIdentifier`, and the
+  app's name (`CFBundleName`, else the executable's) titles the first menu and untitled
+  windows. The installer already copies an `.app` whole and runs `Contents/MacOS/<stem>` or its
+  only program (D134); reading `CFBundleExecutable` there is left for later.
+- **Points decided by the build loop.** Buttons and fields draw no hover look (the toolkit's
+  pressed and focused looks stay): hover makes screen checks depend on where a test leaves the
+  pointer, and macOS controls barely show hover anyway. Enter in a focused text field sends the
+  field's action and does not also press the default button. `setDelegate:` retains the
+  delegate (Apple's is weak), so an app that drops its own reference after `setDelegate:`, as ARC
+  may in `main`, keeps working. Windows the app showed are kept until it ends. `drawInRect:`
+  draws one line at the rect's bottom-left, clipped (the design's rule), not from its top.
+  Notifications pass nil (no NSNotification yet).
+- **The test app is Objective-C and test data** (as D142): `tests/macos-gui/main.m`, our own
+  source with `tests/macos-gui/Info.plist`, built by clang on CI's macOS runner (`cargo xtask
+  macos-programs`, `-framework AppKit -framework Foundation`, arm64 and x86_64) and assembled as
+  `mac-paint.app`; its host model is `tests/macos-gui` (`eggos-macos-gui-tests`), drawn with
+  the same `eggos-macos-gui` functions, so every frame is compared exactly.
+- **Review round 1 fixes.** Removing a view now forgets a first responder, tracked view or
+  initial first responder anywhere in the removed tree (the window becomes the first
+  responder), and `setContentView:` forgets the initial one too: before, a field inside a
+  removed panel stayed first responder and its next key walked freed memory. NSView, NSButton
+  and NSTextField have `dealloc` (subviews let go of, their strings released). `addSubview:`
+  and `setContentView:` refuse what is not a view, and `addSubview:` an ancestor (a cycle).
+  `setPlaceholderString:` keeps one copy the field owns instead of a new permanent one per call.
+  A window shown again after `orderOut:` or `close` is listed once. The modal alert's loop
+  follows the focus (the key window too), resizes the other windows, carries out a close asked
+  of them after the answer, and drains an autorelease pool per pass. Lines and ovals are cut
+  to the canvas first, so far-away coordinates cost nothing and cannot overflow. A C1 control
+  character in a menu label is a space, as the ASCII ones are (the server refuses every
+  control character). `performClose:` does nothing for a window without the closable mask;
+  the last window closed asks `applicationShouldTerminateAfterLastWindowClosed:` when the
+  delegate has it (an app without it still ends: it would have no menu to quit from); a
+  disabled field takes no typing; `setDelegate:` on NSApplication releases the old delegate;
+  menu edits are sent once per event-loop pass; `NSApplicationMain` with `NSMainNibFile` or
+  `NSMainStoryboardFile` in Info.plist says it cannot load the interface and exits 1 instead
+  of waiting with nothing on screen.
+- **Review round 2 fixes.** A menu choice acts in the window whose menu it was: `MenuChosen`
+  names the window, and the item's action (nil target) goes along that window's responder
+  chain, not the key window's, so `wm menu --choose <B> File Close` closes B while A has the
+  keyboard (a key equivalent uses the window the key went to). `CHOOSE_MENU` carries the
+  entry's label as `GET_MENU` showed it, compared under the desktop's lock: a menu the app set
+  again in between with another item at those numbers is refused (`EINVAL`) instead of choosing
+  that item; `wm menu --choose` always sends the label it resolved and takes `--label <label>`
+  to check numbers read earlier, and `wm_menu_choose` takes an optional `label` (at most 64
+  bytes) that becomes `--label`. While the window's client has a dialog open the choice is
+  refused (`EINVAL`): an NSAlert is app-modal, and its loop would only act on the choice after
+  the answer, which the command would have reported as done; `EINVAL` rather than `EBUSY`,
+  which the CLI and the tool read as "a person is using the machine, retry". A choice that
+  reaches the app while its alert is open anyway (a person's click on another window's menu, or
+  one sent as the alert opened) is carried out once the alert is answered, as a close is.
+  `setContentView:` takes the new content view out of its old superview or window first, and
+  `addSubview:` a view out of the window whose content view it is: before, the old parent kept
+  it in its subviews and its later `dealloc` cut the view out of its new window.
+  `makeFirstResponder:` and `setInitialFirstResponder:` take only views in that window (or the
+  window itself, or nil); anything else is refused, as a responder outside the window would be
+  walked as a view and never forgotten when freed. `-[NSWindow init]` gives the standard style
+  (titled, closable, miniaturizable, resizable, as GNUstep's), so its window's close button
+  and Cmd+W work, as the server draws them.
+- **Check.** The macOS GUI boot test (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64): `app
+  install /media/host/mac-paint.app`, open it from the launcher (Cmd+Space, its name, Enter),
+  then compare each frame with the host's render: the window with its field focused and the
+  menu titles in the top bar; `Hello` typed and Enter renaming the window; a click painting a
+  square; `c` clearing it (keyDown); another square and the `Clear` button (target/action); the
+  `Info` button's alert and Esc; the `File` menu opened in the top bar and closed; Cmd+Q ending
+  the app with status 0; then the terminal runs mac-paint again as the last command of a
+  pipeline whose first command waits for a console line before `wm menu --choose <id> File
+  Clear` (the shell has no `&`), a click paints a square, the line (1.5 s after the click, so
+  a person no longer wins) clears it through the menu, and after Cmd+Q the command's saved
+  output says `chose File > Clear in window <id>` with status 0. Host tests cover `GET_MENU`
+  and `CHOOSE_MENU` in the desktop model (encoding, any window, disabled items and separators,
+  busy, a full queue, the open menu closing), `wm menu` against the fake, and the two tools'
+  grants, command lines, arguments and audit. Skipped, as the console test is, without the
+  macOS programs.
+- **Not yet.** Nib and storyboard files, Swift apps, views nested below the content view's
+  subviews are drawn but not tested, flipped views (`isFlipped` is NO), layers and Core
+  Animation, Auto Layout (constraints are ignored; frames are what the app sets), resizing a
+  window's content with its autoresizing mask, scroll views, tables, images (`NSImage`), cursors
+  (`NSCursor`), timers and run-loop sources (`NSTimer`, `performSelector:afterDelay:`), sheets,
+  panels (`NSOpenPanel`, `NSSavePanel`), checkboxes, radio buttons, pop-up buttons, sliders,
+  more than one line in a label or `drawInRect:`, selection and the clipboard in text fields,
+  submenus below the top level, a menu inside the window in the Windows and Linux profiles,
+  alpha blending, anti-aliasing, fonts other than Egg Sans, text beyond the font's glyphs,
+  `NSApplicationMain` loading a main nib, windowless apps, and NSNotification objects. From
+  review round 1: the pool's 248 bytes and 6 menus are too small for a typical app's App,
+  File, Edit, View, Window and Help menus (what does not fit is left out; the plan is a
+  request that carries a pointer and a length, as `CAPTURE_WINDOW` does); `dealloc` for
+  NSWindow, NSMenu, NSMenuItem and NSAlert (they leak, as before); opening the menu from the
+  keyboard (an F10-like key, note 7); the MCP check choosing a menu item (no macOS app runs
+  there; the CLI twin is checked in the macOS GUI test); selectors apps commonly use that
+  are not there yet: NSWindow `setFrame:display:` and `backingScaleFactor`, NSEvent `deltaX`
+  and `scrollingDeltaX`, NSMenu `insertItem:atIndex:` and `removeItem:`, NSMenuItem
+  `setHidden:`, NSApplication `nextEventMatchingMask:untilDate:inMode:dequeue:`, NSView
+  `addTrackingArea:`. From review round 2: an app whose delegate answers NO to
+  `applicationShouldTerminateAfterLastWindowClosed:` keeps running with no window and so no
+  menu to quit from (a Dock-like way back, or a menu without a window, comes with windowless
+  apps); a window made without `NSWindowStyleMaskClosable` still shows the server's close
+  button and takes Cmd+W, which do nothing (`CREATE` has no not-closable flag yet); the top bar
+  stays live for another window of an app whose alert is open (the choice waits for the
+  answer; dimming it needs the bar redrawn when a dialog comes and goes without a focus
+  change); responders that are not views (`NSWindowController`, an NSResponder subclass) as
+  first responder; choosing an item on a window other than the key window is checked by host
+  tests of the record and the label, not yet by a second window in the macOS GUI test.
+
+## D148 Real icons and archives: installing from a `.zip`, our own inflate and PNG decoder, and each installed app's own icon (v0.3.0 item 45; extends D133, D134, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/app-icons-v0.3.md`)
+- **What.** Item 45: "PE icon resources, `.icns`, PNG with our own inflate, installing from
+  `.zip`. Check: an installed app shows its own icon." Users install a downloaded app archive
+  the way they install a program, and the shell shows the icon its vendor drew instead of the
+  letter tile.
+- **Inflate, once, in `eggos-png`.** `png/src/inflate.rs` is RFC 1951 in full: stored,
+  fixed-Huffman and dynamic-Huffman blocks, codes decoded bit by bit through their canonical
+  counts (608 bytes a table, no allocation), into one slice holding the whole output or
+  through a 32 KiB window to a sink in pieces, so a stream of any length costs the window.
+  The zip reader and both PNG decoders use it; the encoder is unchanged. `decode` (8-bit RGB,
+  for tests and xtask) now takes any block type; the new `rows` module decodes any
+  non-interlaced PNG (every colour type and depth, `PLTE`, `tRNS`, the five filters) row by
+  row from a byte source, each row straight-alpha `0xAARRGGBB`, with every CRC and the zlib
+  checksum checked, in a caller's `RowWorkspace` (about 113 KiB) whatever the height.
+- **`.zip` in the installer.** `userland/app/src/archive.rs` reads the end record (behind a
+  comment of up to 64 KiB), the central directory and the local headers; stored and deflated
+  entries, CRC-32 and size checked; no ZIP64, encryption, multi-disk or other methods. A name
+  that is absolute or holds an empty, `.` or `..` part, a backslash, a colon or a NUL is
+  refused (`it holds a file whose name points outside its folder`), so extraction never leaves
+  the app's folder; symbolic links and devices are refused; `__MACOSX/` is skipped. A `.zip` is
+  told by its first bytes (`PK\3\4` or an empty archive's end record), as programs are (D134).
+  Its program is its one `.exe`, a bundle's program (the file in `X.app/Contents/MacOS/` that
+  `CFBundleExecutable` in the bundle's XML `Info.plist` names, else `X.app/Contents/MacOS/X`,
+  else the only file there, as for an `.app` folder since review round 2),
+  or extensionless ELF outside any bundle's `Contents`; several need `--entry <path>` (`app
+  install --entry`), none is `it holds no program EggOS can run`. An archive with an entry whose
+  first part is `app.manifest`, `app.manifest.tmp` or `app.icon` (any case) is refused, at plan
+  time and again while extracting, so it can never plant the manifest or the icon the installer
+  writes (D133's "a half-installed app has no manifest" holds); one whose files add up to more
+  than 4 GiB once extracted is refused too. The whole archive is extracted into
+  `/Applications/<name>/`, an entry a step, parent folders made as needed, the program
+  `0o755`, other files their Unix mode or `0o644`; the name comes from the program's stem.
+  The `Files` trait gains `read_at`
+  (`pread64` on Linux; other implementations say `EOPNOTSUPP`), and `reader.rs` gives one
+  random-access `Reader` over files and bytes, so the same code reads archives, programs,
+  `.icns` files and test bytes. Files offers `Install...` on a `.zip` (a new `Kind::Archive`).
+- **The app's own icon.** After the copy, a new installation stage makes it from what was
+  installed (`userland/app/src/icon.rs`, with `pe.rs`, `bitmap.rs`, `icns.rs` and `scale.rs`):
+  a Windows program's first `RT_GROUP_ICON` and its `RT_ICON` images (PNG, or bitmap entries at
+  1, 4, 8, 24 and 32 bits with their AND mask; a 32-bit entry with no alpha at all takes the
+  mask), mapped through the section table; a bundle's `.icns` named by `CFBundleIconFile` in an
+  XML `Info.plist`, else `AppIcon.icns`, else `<bundle>.icns`, else the only one (PNG entries
+  at their own size, `is32`/`il32`/`ih32` planes with `s8mk`/`l8mk`/`h8mk`, `ic04`/`ic05`
+  `ARGB`); else `<stem>.png` beside the program or bundle, installed or installed from. For each
+  size (48, 32) the exact size of the best kind wins, else the smallest larger (area average in
+  premultiplied integers), else the largest smaller (nearest by a whole factor, centred); an
+  image that fails to decode gives way to the next. The result is `app.icon` (13 312 bytes, the
+  48x48 then the 32x32 image, premultiplied `0xAARRGGBB`, `eggos-app-manifest`'s `icon`
+  module) and the manifest's `icon=app.icon`; an app with none, or whose icon file could not be
+  written, installs the same with the tile. The work happens on the installer's stack (about
+  180 KiB, only during that step); no image larger than 1024 pixels is decoded.
+- **The shell.** The kernel reads `app.icon` with the manifest when it reads the catalogue; a
+  file of exactly the right length becomes the app's `IconPixels` (each channel clamped to its
+  alpha), and `Icon::Own` draws it wherever the app's icon shows (dock, desktop, launcher rows,
+  taskbar, switcher), blended `s + (d * (255 - a) + 127) / 255` over what is beneath, with no
+  badge. Everything else about icons is unchanged.
+- **Three front ends (D22).** GUI: the shell's icons, Files' `Install...` on a `.zip`, the
+  installer window's `Inside:` line, and for a `.zip` holding several programs the window's
+  chooser listing them by their paths inside it (four at most, `and N more not listed`), each
+  giving its prompt; `app install --window --entry <path>` goes straight to that program's
+  prompt. CLI: `app install [--entry <path>] <file>.zip`, `app list`'s fifth column (`app.icon`
+  or `-`). MCP: `app_install` takes a `.zip` and an optional `entry` (its twin `app install
+  --entry <entry> -- <path>`), and `app_list` answers `app list`'s lines, the icon column
+  included.
+- **Points decided by the build loop.** The shell keeps an own icon on the kernel's heap in the
+  app's catalogue entry, allocated only for an app that has one, instead of Fable's 416 KiB
+  static pool: an unused feature costs nothing (CLAUDE.md notes 3 and 8). The icon is made after
+  the copy from what was installed, so one code path serves programs, bundles and archives; the
+  installer's dialogs keep the tile for now. The zip extracts one entry per step (a large
+  deflated entry finishes before `Cancel` is seen). Listing names in the several-programs
+  message stops at 120 bytes with `...`. Fable's `app icon` export and `app_icon` MCP tool wait:
+  they need an RGBA mode in the PNG encoder. The QEMU check uses the macOS GUI test (D147),
+  where the bundle is ours: `mac-paint.zip`, archived by xtask's own stored-zip writer
+  (`xtask/src/zip.rs`), whose `AppIcon.icns` holds a 128-pixel `ic07` and a 32-pixel `icp5`
+  drawn by xtask; the host computes the expected `app.icon` with the installer's own code and
+  compares the desktop's and the launcher's frames. `win-paint.exe` stays without icon
+  resources (no resource compiler in the build); PE icons are host-tested on hand-built
+  resource trees.
+- **Review round 1 (build loop).** Reserved names and the 4 GiB limit above; `CFBundleExecutable`
+  for zipped bundles (Firefox's `Contents/MacOS/firefox`, Electron's); the chooser and the MCP
+  `entry` above. A Windows program's icon search reads the section table once, looks at 64 of
+  a group's entries at most and stops once 32 candidates are found, so a crafted `.exe` cannot
+  hold the installer at its uncancellable icon step; an `.icns` `ic04`/`ic05` entry shorter than
+  its `ARGB` mark is skipped. The kernel reads `app.icon` through `vfs::resolve`, which cannot
+  follow a symbolic link: the kernel's VFS has none (`NodeKind`), and EggFS stores none (D131).
+- **Review round 2 (build loop).** A program (a plain file, a bundle's or a zip's) whose path
+  in the app's folder starts with a reserved name is refused at plan time too (`app install
+  /media/host/app.manifest` used to copy the program and then rename the manifest over it); the
+  message reads `it is or holds a file named app.manifest, ...`. The window's chooser keeps
+  each zip program's whole path (up to the archive's 255 bytes) for `--entry`, so long paths
+  are offered instead of counted as `more`, and a button shows `...` and the path's end when it
+  is longer than a button's 32 bytes (two programs in one long folder used to show the same
+  cut label); a chooser with no names but some not listed no longer says it holds no program.
+  `app install --window --entry` longer than 512 bytes is kept cut to 512, so it matches no
+  entry (the archive's names are at most 255 bytes) and is refused as the CLI refuses it
+  instead of being dropped; a chosen entry that is still several programs (duplicate names in
+  the archive) shows the refusal instead of the chooser again. Folder and zipped bundles find
+  their program alike: `CFBundleExecutable`, then the bundle's stem, then the only file in
+  `Contents/MacOS` (a folder used to ignore `CFBundleExecutable`, a zip had no only-file
+  fallback, and a declared file missing from the zip left the bundle without a program). The
+  `Info.plist` reader decodes the five XML entities (`Paint &amp; Draw`) and refuses `.`, as
+  the macOS layer's `info_plist.rs` does. Tests for the extraction-time reserved-name and size
+  rechecks and for a zip whose first entry is the folder `app.manifest/`.
+- **Not yet.** `app icon` and `app_icon`; icons in the installer's dialogs, title bars and
+  Files; native 2x images; binary property lists, asset catalogues, JPEG 2000 and `it32`;
+  interlaced PNGs; 16-bit and compressed bitmap entries; `.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`;
+  ZIP64 and encrypted entries; extracting into a temporary folder renamed into place before the
+  manifest (refusing the reserved names keeps the manifest the installer's own); checking a
+  `.zip`'s size against the disk's free space (the `Files` trait has no free-space call; the
+  4 GiB limit stands in) and refusing entries whose data overlap; extracting a large entry over
+  several steps so `Cancel` answers during it (inflate is not resumable yet); decoding a PNG
+  icon once for both sizes (it is decoded once per size) and a table-driven inflate (it decodes
+  bit by bit), for the weekly performance pass; a bundle program found from a binary
+  `Info.plist`. From review round 2: one `Info.plist` reader shared by the installer and the
+  macOS layer (the layer's `info_plist.rs` lives in the `eggos-macos` program, so sharing it
+  needs a crate of its own; the installer's reader now behaves the same: entities decoded, `.`
+  and `..` refused); telling a `.zip` from other files that start with its signature (`.docx`,
+  `.jar`, `.apk`), which Files offers to install and the installer refuses as holding no
+  program.
+
+## D149 The Text Editor: a native GUI editor that Files opens text in, `edit`, `app open "Text Editor"` and `edit_open` (v0.3.0 item 46; replaces old item 24, the terminal `edit`; extends D133, D135, D137, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/text-editor-v0.3.md`; the command's shape, headless installs, the MCP tool and the built-in name decided by research)
+- **What.** Item 46: "a native GUI editor (open, save, find) that Files uses for text; it
+  replaces old item 24, the terminal `edit`." Users open a text file from Files (double-click,
+  Enter, `Open`), from the launcher (`Text Editor`, found as Notepad, TextEdit, gedit, Kate,
+  editor, notes), from the terminal (`edit notes.txt`) or from an agent (`edit_open`), and
+  edit it as in Notepad, TextEdit or gedit: type, select, cut, copy and paste, undo and redo,
+  find, save and save as, new and open.
+- **Design (Claude Fable, D16).** `docs/ux/text-editor-v0.3.md`: one window per document,
+  720x480 (480x300 at least); a toolbar of `New`, `Open`, `Save`, `Save As` and `Find`; a bar
+  slot under it for the find bar (field, `<`, `>`, `Match case`, the result `<n> of <m>`, `,
+  from top`, `, from end` or `Not found`, `×`) or the path bar of Open and Save As (there is no
+  file picker yet); the text view in Egg Mono 8x16 on `field.bg` with a gutter of line
+  numbers (`16 + 8 x digits`, two digits at least), tabs to the next multiple of 8, a
+  character Egg Mono lacks drawn `?`, word wrap off and both scroll bars; a status bar with
+  `Ln <l>, Col <c>`, ` · <n> selected`, `Modified` or `New file`, and `LF` or `CRLF`; the title
+  `*<name> - Text Editor`, a name over 49 bytes cut to 46 and `...`, so the title fits 64
+  bytes; in-window panels (`Save changes to <name>?` with `Don't Save`, `Cancel`, `Save`;
+  `Replace <name>?`) and notices; one key map with both Ctrl and Cmd in every profile, as Files
+  has; a context menu (Undo, Redo, Cut, Copy, Paste, Select All); the shell lists it in the
+  launcher only (Notepad, TextEdit and gedit are not pinned on their systems), and its windows
+  show in the dock and the taskbar with a drawn icon, an off-white page with grey lines and the
+  yolk caret (three tokens with values already in the set).
+- **The logic, host-tested.** A new `no_std` crate, `eggos-editor` (`userland/editor`): the
+  document (`document.rs`) is UTF-8 with `\n` breaks in one piece of caller memory, so drawing
+  and finding read plain slices, with an index of line starts kept by every edit (an edit
+  moves the text after it; a gap buffer can follow if the weekly performance pass finds typing
+  in a large file slow); loading takes a byte-order mark and CRLF out and saving puts them
+  back, so a Windows file stays one; `history.rs` keeps undo steps one after another in one
+  byte log (header, bytes taken out, bytes put in, length, so it walks both ways), typing and
+  runs of Backspace or Delete growing one step, at most 1024 steps, the oldest dropped when the
+  log is full, and a serial per state so `Modified` is exact after undoing back to the saved
+  text; `find.rs` (ASCII letters match either case unless `Match case`, wrapping, the rank
+  among non-overlapping matches), `words.rs`, `columns.rs` and `editor.rs` (caret, anchor, the
+  column Up and Down keep, the editor's own clipboard, as Files' is); `file.rs` checks a file in
+  a pass of its own (a regular file of at most 4 MiB, UTF-8 with no NUL) before the document is
+  touched, so a refused Open leaves the document as it was, and saves through
+  `.<name>.saving` beside the file, synced and renamed over it (the old permissions kept), so a
+  failed save never leaves half a file. The window (`editor_window.rs`, the `window` feature)
+  is pure state over the editor and `eggos-app`'s `Files`, like Files' window, so the host tests
+  and the QEMU test's expected frames run the code the program shows.
+- **Bounded memory.** 4 MiB of text (a larger file is refused with `<name> is too large to open
+  (over 4 MB).`, a larger edit with `The document is full (4 MB).`), its line index, a history
+  log of twice that (so any one edit can be undone) and a 4 MiB clipboard, each an anonymous
+  mapping made when the editor starts; pages cost memory only when the document touches them,
+  so a small file costs a few pages. Nothing runs while no editor is open (CLAUDE.md notes 3
+  and 8).
+- **The program** (as D134 and D135): `/bin/text-editor [<path>]` and `/bin/edit` are two more
+  names of `/bin/settings` (hard links), so the toolkit and the fonts are in the image once;
+  the image grows by the editor's code in that program only. `text-editor` opens the window in
+  the foreground on `path` (made absolute against the working folder) or on `Untitled`; a path
+  with nothing at it is a new file the first save makes (as vi, nano and gedit do). The
+  toolkit's `View` gains `close_requested` (so a window can ask before closing) and
+  `take_title` (the title follows the document), `Window::set_title`, and the canvas draws Egg
+  Mono glyphs (`mono_glyph`); the runtime's `Spawn` gains `in_own_session` (`setsid`).
+- **Files** opens a text file in the editor when `/bin/text-editor` is installed, as a child
+  like the installer's window, with no size limit of its own (the editor refuses over 4 MiB);
+  without it, `cat` in the Terminal stays (D135). This closes D135's "until the Text Editor".
+- **The shell.** `AppId::TextEditor`, named `Text Editor`, listed in the launcher after
+  Terminal and like Files always listed: launching it without `/bin/text-editor` says `Text
+  Editor is not installed.` (the kernel records whether the image has it, as for Files). Each
+  launch opens a new window, as Notepad from Start does; the dock's icon of running editors
+  focuses them. A window whose title ends with ` - Text Editor` is the editor's, so its icon
+  and grouping are right. `app open "Text Editor"` and the MCP `app_open` open it by name.
+- **The command and headless installs** (decided by research). `edit [--] [<path>]` checks the
+  desktop (`/dev/window`'s work area), refuses a file the editor would refuse with the
+  editor's words, starts `/bin/text-editor` in a session of its own with its standard streams
+  on a pipe nobody reads, prints `Opened <path> in Text Editor.` and returns at once, as
+  `notepad file`, `open -e file` and `gedit file` do; a foreground editor would hold the
+  terminal and be stopped by the MCP server's 10 s limit. Changing `OPEN_APP` to carry a path
+  was rejected: a new ABI for what a child process does already. With no desktop it says
+  there is no desktop to open the Text Editor on, names `cat` and `tee`, and fails; no terminal editor and no `edit --replace` (a CLI-only replace would be a
+  front end the GUI lacks, D22). Old item 24's terminal `edit` was never built, so there are
+  not two editors to keep in step; a terminal editor is "Not yet".
+- **Three front ends (D22).** GUI: the window, Files and the launcher. CLI: `edit` opens it;
+  reading and writing text are `cat` and `tee`, finding is `grep`. MCP (decided by research):
+  `edit_open {path}`, the twin `edit -- <path>`, paths in `/home` and `/media/host` like
+  `cat`'s, under the `install` grant like `app_open` (it opens a window from a built-in program;
+  `view` is for seeing windows and `run` would be too strong), neither read-only nor
+  destructive (saving needs input through the `wm_*` tools, under `run`); `cat` and `tee` read
+  and write the text, and the window is operated with the `wm_*` tools like any other.
+- **Points decided by the build loop.** Notices name errors as Files does, with the error's
+  message (`Could not save notes.txt (No space left on device).`), not Fable's `ENOENT`
+  names. Shift with the wheel or a click is tracked from the Shift keys' own events (the
+  window server's wheel and button events carry no modifiers). The caret's damage is the text
+  view; edits redraw the window. The new icon is checked pixel by pixel; its two hashes join the
+  pinned table when the batch is built.
+- **Testing.** Host: the document's line index through inserts and removals, the room's
+  limits, boundaries, CRLF and the byte-order mark both ways, refusing what is not text; the
+  streaming UTF-8 check in pieces; opening by kind, 4 MiB and one byte more, saving over a file,
+  read-only places, a missing folder and a full disk; columns and tabs; words; finding,
+  wrapping and ranks; undo coalescing, the log's limits and serials; the editor's motions,
+  selections, clipboard, Backspace and Delete over whole characters; the window's title, new
+  file, refusals, CRLF, find bar, close question and its three answers, Save As through the
+  bar for `Untitled`, `Replace`, Open, New, the context menu, clicks, double-clicks and the
+  gutter, the gutter's width, a full document and drawing with the caret shown and hidden; the
+  catalogue, the icon, `app open`'s built-in name, `edit`'s arguments, Files' request and the
+  MCP tool's twin, grant and roots. QEMU on all three architectures (`xtask/src/qemu/
+  text_editor.rs`): the shell writes `/tmp/notes.txt`, `edit` opens it, typing, Ctrl+F `egg`
+  (`1 of 2`), Esc, Ctrl+S and the close control each give the frame the host draws, and `cat`
+  prints the saved text; the MCP boot opens the share's text file with `edit_open` and sees its
+  window in `wm_list`.
+- **Review round 1 (build loop).** The Open bar asks `Save changes to <name>?` before it
+  replaces a document changed while the bar shows (a click in the text lets one type with the
+  bar up), keeping the path typed for after the answer; a path with nothing at it is a notice
+  there, never a new document. The scroll bars' thumb positions and thumb drags (the editor's
+  and the toolkit's `scroll_bar` and list drags) compute in 64 bits, so a 4 MiB line or
+  hundreds of thousands of lines keep the thumb in its track instead of overflowing. Typing a
+  character with nothing selected widens the known widest line by the caret's line instead of
+  measuring the whole document again.
+- **Not yet.** Word wrap; a file picker; a clipboard shared with other programs; changing the
+  line ending or the encoding; a read-only mode for files that are not text; auto-indent and
+  indenting a selection; replace; go to line; syntax colouring; reloading a file changed on
+  disk; one window per file (opening a file twice gives two windows); a terminal editor; text
+  in Egg Mono only (other characters show `?`). From review round 1: a file with mixed line
+  endings is saved all CRLF once it holds one `\r\n` (documented in `document.rs`); saving
+  replaces a symbolic link by a regular file and breaks hard links (the rename-over save);
+  from review round 2, saving no longer removes a file named `.<name>.saving` (it may be the
+  user's): it writes `.<name>.1.saving` up to `.<name>.15.saving` instead, so a save cut short
+  leaves its hidden file behind, never cleaned up; Backspace, Delete, Enter and pastes still
+  measure the widest line over the whole document (only typing a character is incremental);
+  Option and AltGr characters (the keymap, `drivers/src/input/keymap.rs`, has no Option or
+  AltGr layer: Alt with a letter gives the plain letter, so the editor keeps ignoring Alt
+  combinations rather than typing that letter); the shell tells an editor window by its title
+  (` - Text Editor`), not by the program that owns it.
+
+## D150 Real time: real-time clock drivers (CMOS, PL031, Goldfish), the wall clock as the monotonic clock plus an offset, setting the clock, `date`, `hwclock`, `/proc/driver/rtc`, Settings' `Date & time` and `clock_get`/`clock_set` (v0.3.0 item 29; extends D73, D75, D110, D133, D136, D137) — Decided by the build loop (design by Claude Fable, `docs/ux/date-time-v0.3.md`; the points below marked so decided by research)
+- **Why.** Item 29: the wall clock started at 1970 at boot (D73), so `date`, file times, the
+  audit log and the desktop's clock were not real. Every machine EggOS boots on has a
+  real-time clock, and QEMU's follows the host's clock (`-rtc base=utc`, its default).
+- **The drivers** (`drivers/src/rtc/`, host-tested over `RegisterIo`): one `RealTimeClock`
+  trait (`name`, `read` and `write` in nanoseconds since the epoch, `RtcError`) and three
+  drivers. `cmos.rs`, the PC's MC146818-compatible clock on ports 0x70/0x71: a read waits
+  while status A says an update is in progress and takes two snapshots in a row until they
+  agree, giving up after 10 ms on the monotonic clock (`READ_TIME_LIMIT_MS`; an update takes
+  under 2.3 ms, and a poll count would be no bound in time); BCD or binary and 12- or 24-hour as status B says; the century from the
+  register the FADT names (`acpi::cmos_clock`, 0x32 on QEMU), else years 70-99 are 19xx and
+  00-69 20xx, as Linux reads them; a write holds the clock with status B's `SET` and stores
+  every field, the weekday and the century included. `pl031.rs`, Arm's PL031 (AArch64 `virt`):
+  32-bit seconds, set through the load register, started if the firmware left it stopped.
+  `goldfish.rs`, Google's Goldfish clock (RISC-V `virt`): 64-bit nanoseconds, the low half read
+  first (it latches the high one) and written last. The calendar (civil date and days, leap
+  years, the setting parser, the texts) is a new no_std crate, `calendar` (`eggos-calendar`),
+  shared by the drivers, the kernel, `date`, `hwclock`, Settings and xtask.
+- **Discovery, behind the driver model** (decided by the build loop). The PL031 and the
+  Goldfish clock are device-tree devices: `kernel/src/devices/rtc.rs` adds two
+  `DriverDescriptor`s (`arm,pl031`, `google,goldfish-rtc`, behind the default cargo feature
+  `rtc`, D18), whose probe maps the registers and registers the clock. The CMOS clock is no
+  bus's device (ACPI's namespace, where it is `PNP0B00`, is not read yet, M13), so it is the
+  platform's own, like COM1 and the PIT: `Platform::platform_clock` hands the kernel a `Cmos`
+  over `PortIo` unless the FADT's `IAPC_BOOT_ARCH` says "CMOS RTC Not Present"; the default
+  has none. The first clock found is the machine's, and a later one is refused before its
+  registers are mapped (review round 2: the driver model has no unmap); there is no UEFI or
+  ACPI time service.
+- **The wall clock** (`kernel/src/wall_clock.rs`) is the monotonic clock plus a signed offset
+  in nanoseconds, one relaxed atomic: a read is one load and one saturating addition over the
+  monotonic read (D73), with no lock and no allocation (benchmark `linux_clock_realtime_read`;
+  review round 2: the saturating addition is eight instructions on AArch64 where a wrapping one
+  is one, but the HAL promises each CPU's monotonic clock only, so a CPU whose clock lags the
+  one that set the clock near the epoch would wrap to the year 2554). Once the
+  drivers probed, the boot reads the clock once (`clock: 2026-10-29 14:05:09 UTC from
+  rtc-pl031` in the log) and sets the offset; it is never polled again. `CLOCK_REALTIME`, its
+  coarse variant and `CLOCK_TAI` (TAI offset 0) read it, as do `gettimeofday`, x86_64's `time`
+  and file times (`file_changes::now`); the monotonic and boot-time clocks do not move. The
+  desktop's clock shows `HH:MM` once the wall clock is set: read from a real-time clock at boot
+  or set since (`wall_clock::is_set`, an atomic flag; review round 2: Fable's first rule, a
+  reading of at least a day, showed `1970-01-02` after a day's uptime on a machine whose clock
+  is missing or unreadable). The
+  drawing thread still looks at the desktop once a second, as D144's timers need (a close's
+  timeout, a notice's expiry, a tooltip's delay), and the clock's rectangle is redrawn only
+  when `HH:MM` changes, so an idle second damages nothing (review: looking only once a minute
+  let those timers fire up to a minute late). The Windows layer's
+  `GetSystemTimeAsFileTime` and the macOS layer's `gettimeofday` and `time` already read
+  `CLOCK_REALTIME`, so they are real now; `mach_absolute_time` stays monotonic. The statics
+  are all zero (`.bss`, the lock's value an `Option<Box<_>>`, the set flag false).
+- **The clock's lock** (review). Reading the CMOS clock is some forty port accesses (each a
+  VM exit under virtualisation), so the real-time clock's lock is an ordinary spin lock whose
+  waiters do their wait duty, not a leaf lock. A set moves the offset and writes the clock in
+  one hold of it, so two sets cannot leave the wall clock and the clock disagreeing; the
+  boot's presence probe takes it too. Whether there is a clock (`/proc/driver/rtc`'s
+  listing) is an atomic flag, and x86_64 reads the FADT's word on the CMOS clock once and
+  keeps it, instead of walking the ACPI tables on every read. While a CMOS read waits out an
+  update (up to 2.3 ms once a second, bounded at 10 ms) it does the kernel's wait duty at each
+  poll (`MonotonicClock::wait_duty`, passed by `Platform::platform_clock`, now an `unsafe fn`
+  whose contract is that lock; review round 2), so a TLB shootdown from another CPU is
+  answered. `/proc/driver/rtc` reads the hardware at most once a second
+  (`READING_KEPT_NANOSECONDS`): in between it answers the last good reading, or what a set
+  wrote, plus the monotonic time since, so a loop of `cat /proc/driver/rtc` by any user reaches
+  the hardware once a second at most. What is left: that one read a second can meet the update
+  window and keep its CPU busy, interrupts masked, for up to 2.3 ms (10 ms on a broken clock),
+  and the answer can be up to a second behind the hardware's, which counts whole seconds
+  anyway. A CMOS reading past what 64-bit nanoseconds count (after 2554) is `Invalid`.
+- **Setting the clock.** `clock_settime(CLOCK_REALTIME)` and `settimeofday` keep Linux's
+  checks (D73) and then set the clock for a privileged process (effective user id 0, Linux's
+  `CAP_SYS_TIME`, D75; decided by research), `EPERM` otherwise; `settimeofday`'s time zone is
+  read and dropped. An absolute `CLOCK_REALTIME` sleep or `FUTEX_CLOCK_REALTIME` wait turns its
+  deadline into the monotonic clock's when it starts, so setting the clock later does not move
+  it (Linux wakes it; a limitation).
+- **Every set writes the real-time clock** (decided by research): as Windows and macOS do,
+  unlike Linux's `date -s`. With no network time and no saved-time file it is the only thing
+  that keeps a set time across a restart; a clock that refuses (out of its range) does not
+  fail the set.
+- **UTC only, no time zones** (decided by research): every consumer (the desktop, `date`,
+  Settings, the layers' local time) would have to agree on an offset, and real zones need a
+  database and daylight-saving rules: a subsystem for later. Documented in
+  docs/limitations.md.
+- **The years 2000 to 2099** (Fable, decided by the build loop): what `date -s`, Settings and
+  `clock_set` take (one parser, `eggos_calendar::parse_setting`: `YYYY-MM-DD HH:MM[:SS]`,
+  `HH:MM[:SS]` keeping today's date, `T` for the space, a trailing `Z` or ` UTC`); every clock
+  EggOS writes can hold them. A time alone keeps today's date only when today's year is one of
+  them: an unset clock (1970) asks for the date (review round 2: after a day's uptime it said
+  the year must be 2000 to 2099).
+- **`hwclock` over `/proc/driver/rtc`** (decided by research): `/proc/driver/rtc` is Linux's
+  text file (`rtc_time`, `rtc_date`, `24hr`), read from the clock when it is opened and listed
+  only on a machine with one, and failing to open with `EIO` when the clock cannot be read
+  (review round 2: it opened empty); `hwclock -r` prints it as `2026-10-29 14:05:09+00:00`,
+  `-w` sets the clock to the system time with its nanoseconds (which writes the hardware
+  clock; the system clock steps back only by the call's latency, review round 2: whole seconds
+  stepped it back up to 999 ms) and `-s` the system time to it. No `/dev/rtc0` and its
+  ioctls: a new device kind for one tool (CLAUDE.md note 8); it comes when a foreign program
+  needs it.
+- **Three front-ends (D22).** CLI: `date` (`+format`, `-r`, `-s`, `-u`) and `hwclock` in
+  coreutils (two more hard links). GUI: Fable's Settings pane `Date & time`, fifth in the
+  sidebar, its container and seven widgets (the tree's 48 are full): `Now` as a sentence
+  (`Thursday 29 October 2026, 14:05:09 UTC`) ticking while shown, `Set to` field and primary
+  `Set` (the default button, disabled while the field is empty), and one status line; the bar's
+  `HH:MM` in `text`, pixel-centred in its 80 px rectangle (which moves the uptime forms of odd
+  length by 4 px: the pinned picture hashes change). Settings tells "saved to the hardware
+  clock" from "no hardware clock" by reading `/proc/driver/rtc` back after the set (decided by
+  the build loop), and says `The clock could not be set.` for an error other than `EPERM` (a
+  case the design has no line for). MCP (decided by research): `clock_get` (no grant, read-only,
+  twin `date -u +%Y-%m-%dT%H:%M:%SZ`) and `clock_set` (`time` as `YYYY-MM-DDTHH:MM:SSZ`, the
+  `run` grant, destructive, always asking the user or `confirm: true`, twin `date -u -s
+  <time>`); the server checks only the form, `date` the moment.
+- **Testing.** Host: the calendar both ways over 800 years, leap years, the parser's forms and
+  refusals, the texts; the CMOS driver over a fake clock (BCD and binary, 12- and 24-hour, the
+  century register or none, an update in progress with the wait duty at each poll, a second
+  ticking between snapshots, invalid registers, a year past 2554, writes in each format and out
+  of range); the PL031 and Goldfish register orders; the FADT's century and "not present"; the
+  wall clock's registration, start, set and write-back, its set flag, the kept reading (one
+  hardware read for two opens, a set's write read back, failures never kept);
+  `clock_settime` and `settimeofday` for root and for uid 1000; `/proc/driver/rtc` and its
+  `EIO`;
+  the bar's clock; `date`, `hwclock`; the Settings pane's layout, search words, set flow and
+  refusals; the MCP tools, their arguments, question and audit. QEMU on all three
+  architectures (`xtask/src/qemu/real_time.rs`): the boot log names the expected driver,
+  `date +%s` is within 5 minutes of the host, a file made in `/tmp` has that time (`date -r`),
+  `hwclock -r` agrees, and `date -s '2030-01-02 03:04:05'` reaches `date` and `hwclock -r`.
+  Every desktop frame check accepts the bar's `HH:MM` near the host's time. The MCP check reads
+  `clock_get` against the host's clock and sets the clock a day ahead and back.
+- **Cost (D24).** The kernel grows by three small drivers, the calendar's arithmetic and the
+  wall clock; reading the clock adds one load to `clock_gettime(CLOCK_REALTIME)` and nothing
+  to the monotonic clocks. Nothing runs after boot unless a program reads or sets the clock.
+- **Not yet.** Time zones and a `TZ` setting; network time; `/dev/rtc0`, alarms and wake-ups
+  (`CLOCK_REALTIME_ALARM` stays `EOPNOTSUPP`); waking absolute realtime waits when the clock is
+  set; ACPI's `PNP0B00` and UEFI's `GetTime`; a `settings` key for the time.
+  Settings tells "no hardware clock" by reading `/proc/driver/rtc` back, so a clock that
+  exists but cannot be read (now `EIO`) is reported as none (a set's own write is read back
+  from the kept reading, so a set that wrote says saved). The MCP audit log's records carry
+  the wall clock's seconds, which `clock_set` can
+  move back: their order stays the file's and each call's number, and the `clock_set` call is
+  itself recorded, but a monotonic or boot-time field is a format change left for later.
+
+## D151 ARM64 programs' `CurrentEL` probe and `KUSER_SHARED_DATA`, and a line for a Windows program's fault (fixes item 43 on aarch64; extends D124, D146) — Decided by the build loop
+- **What broke.** The first MSVC build of `eggpad.exe` ran on x64 but died at once on ARM64
+  with "Illegal instruction". MSVC's ARM64 C runtime links outlined atomics helpers into every
+  program; on first use they learn once whether to use the ARMv8.1 atomic instructions
+  (`casal`, `swpal`) or exclusive pairs (`ldaxr`/`stlxr`). To tell kernel from user code they
+  read `CurrentEL` (`mrs x16, CurrentEL`, after `mov x16, #0`), which user code cannot read: the
+  processor refuses it as undefined, and on Windows the helper's own exception handler, found
+  through the image's `.pdata`, sees `STATUS_ILLEGAL_INSTRUCTION` at that instruction and
+  steps over it, so `x16` stays 0 (user mode). The helper then reads
+  `PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE` from `KUSER_SHARED_DATA` at `0x7ffe0296`. The
+  layer had neither exception dispatch (D146) nor that page.
+- **The fix.** The layer handles `SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE` and `SIGSEGV` for
+  every thread (`fault_handler.rs`). On aarch64, an illegal instruction inside the program's
+  image that is `mrs <Xt>, CurrentEL` is completed as reading exception level 0 (what the
+  register holds for user code; the same result as the helper's handler) and the program
+  resumes at the next instruction: one signal per process, at the helper's first use. Every
+  other fault the kernel raised writes `windows: <program>: <fault> at <pc> (<module>+<offset>)`
+  (and the address of a memory fault) to standard error, then gives the signal back its default
+  action and raises it again, so the process ends as before with the same status. A signal
+  another process sent is not reported. The layer also maps `KUSER_SHARED_DATA` read-only at
+  `0x7ffe0000` in every process (one page, only while a Windows program runs, D18) with
+  `ProcessorFeatures` filled from the same table `IsProcessorFeaturePresent` now answers from:
+  the baseline features, plus the ARMv8.1 atomics on aarch64 when the kernel's `AT_HWCAP` has
+  `HWCAP_ATOMICS`, which the aarch64 HAL now sets from `ID_AA64ISAR0_EL1.Atomic`, as Linux
+  does. On QEMU's `cortex-a72` (ARMv8.0) the helpers take the exclusive pairs; on a processor
+  with LSE, the single atomic instructions.
+- **Why not exception dispatch.** Dispatching the fault to the program's handler (looking up
+  `.pdata`, building a Windows `CONTEXT`, calling the language handler) is the faithful
+  mechanism and comes with structured exception handling as a whole (still "Not yet"). Until
+  then, completing the one instruction gives MSVC's helpers the result their handler would,
+  costs nothing on any other path, and stays correct once dispatch exists (a program whose
+  handler would step over it sees the same register). Emulating it in the kernel instead would
+  change what Linux programs see (a `SIGILL`, as on Linux).
+- **Running the test alone.** `cargo xtask windows-crt --arch <arch>` runs only the Windows C
+  runtime boot test, with the programs from MSVC or `EGGOS_WINDOWS_PROGRAMS`.

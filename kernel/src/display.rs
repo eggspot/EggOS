@@ -1,7 +1,8 @@
 //! The display (D112): the framebuffer a display driver set up, which the kernel draws into and
-//! shows. The virtio GPU's driver installs it today ([`crate::devices::virtio`], feature
-//! `virtio-gpu`); the graphical terminal and the desktop (v0.3.0 items 13 and 14) draw through
-//! it.
+//! shows. The virtio GPU's driver installs it ([`crate::devices::virtio`], feature
+//! `virtio-gpu`), or, with no display device and `eggos.display=offscreen` on the kernel command
+//! line, the kernel makes one in memory ([`offscreen`], D144); the graphical terminal and the
+//! desktop (v0.3.0 items 13 and 14) draw through it.
 //!
 //! [`draw`] lends the [`Framebuffer`] under the display's lock; what it changes is recorded as
 //! damage ([`Framebuffer::damage`], [`Framebuffer::fill`]), and [`flush`] shows the damage and
@@ -13,11 +14,14 @@ use alloc::boxed::Box;
 pub use eggos_drivers::display::{Damage, Mode, Rect};
 use eggos_hal::Platform;
 
+pub mod offscreen;
+
 /// The first frame's colour, as every pixel is: `0x00RRGGBB`. The design's `wallpaper.top`,
 /// the boot screen's background (docs/ux/desktop-v0.3.md, sections 1 and 2).
 pub const FIRST_FRAME_COLOUR: u32 = 0x000e_1726;
 
-/// The [`pixel_hash`] of the first frame at 1280x800, the mode xtask asks QEMU for.
+/// The [`pixel_hash`] of the first frame at 1280x800, [`offscreen::DEFAULT_MODE`], the mode xtask
+/// asks QEMU for.
 pub const FIRST_FRAME_HASH_1280X800: u64 = 0x1125_09e9_e81d_2325;
 
 /// How long a flush polls the device before giving up.

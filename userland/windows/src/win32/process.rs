@@ -111,6 +111,7 @@ extern "efiapi" fn get_command_line_a() -> *const u8 {
 }
 
 extern "efiapi" fn exit_process(code: u32) -> ! {
+    super::crt::flush_streams_at_process_exit();
     linux::exit(code)
 }
 

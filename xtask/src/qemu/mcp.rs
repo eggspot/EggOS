@@ -2,13 +2,17 @@
 //! Windows hosts), written by `cargo xtask release`'s own writer, runs as a child with a host
 //! folder (holding `win-paint.exe` and the static Linux program) and a blank disk, and a
 //! scripted MCP client drives it through the script's standard input and output, checking that
-//! every line the script prints there is a JSON-RPC message. Two boots of the same disk:
+//! every line the script prints there is a JSON-RPC message. Both boots run with no screen
+//! (`--no-window`, D144): no display or input device, the desktop drawn in memory, which each
+//! boot's console must show. Two boots of the same disk:
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
 //!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
-//!    paths outside the roots, hostile lines, and every tool that needs a grant refused with
-//!    its grant named (`wm_capture` with `view`).
-//! 2. `--mcp-allow view,write,run,install`: writing, replacing with `confirm`, reading back,
+//!    `clock_get` within five minutes of the host's clock (D150), paths outside the roots,
+//!    hostile lines, and every tool that needs a grant refused with its grant named
+//!    (`wm_capture` with `view`).
+//! 2. `--mcp-allow view,write,run,install`: `clock_set` refused without `confirm`, then a day
+//!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
 //!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
 //!    program stopped at its time limit), installing and opening an app; then the windows
 //!    (D143): Settings opened by name and captured at scale 1/2, a click on its macOS card
@@ -17,8 +21,9 @@
 //!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
-//!    pressed in it and a scroll; then uninstalling the app; then, with a client that can ask its user, a trash
-//!    declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
+//!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
+//!    Editor window that `wm_list` shows (D149); then uninstalling the app; then, with a
+//!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
 //!    which must show every call. The disk image read back must hold the audit log, with
 //!    `asked` records and no written content.
 
@@ -61,7 +66,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -71,11 +76,12 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
     ("ps", "{}", "eggmcpd"),
     ("wm_list", "{}", WM_LIST_HEADER),
     ("app_list", "{}", ""),
+    ("clock_get", "{}", "Z"),
 ];
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 11] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -88,11 +94,21 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 11] = [
     ),
     ("run", r#"{"program":"/bin/uname"}"#, "run"),
     (
+        "clock_set",
+        r#"{"time":"2030-01-02T03:04:05Z","confirm":true}"#,
+        "run",
+    ),
+    (
         "app_install",
         r#"{"path":"/media/host/win-paint.exe"}"#,
         "install",
     ),
     ("app_open", r#"{"name":"win-paint"}"#, "install"),
+    (
+        "edit_open",
+        r#"{"path":"/media/host/readme.txt"}"#,
+        "install",
+    ),
     (
         "app_uninstall",
         r#"{"name":"win-paint","confirm":true}"#,
@@ -103,6 +119,12 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 11] = [
     ("wm_type", r#"{"window":64,"text":"ls"}"#, "run"),
     ("wm_press", r#"{"window":64,"keys":"Enter"}"#, "run"),
     ("wm_scroll", r#"{"window":64,"dy":1}"#, "run"),
+    ("wm_menu_list", r#"{"window":64}"#, "view"),
+    (
+        "wm_menu_choose",
+        r#"{"window":64,"menu":0,"entry":0}"#,
+        "run",
+    ),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -402,6 +424,32 @@ fn prepare(
     Ok((script, apps, disk))
 }
 
+fn both(session: Result<(), String>, console: Result<(), String>) -> Result<(), String> {
+    match (session, console) {
+        (Err(session), Err(console)) => Err(format!("{session}; and {console}")),
+        (session, console) => session.and(console),
+    }
+}
+
+fn shown_offscreen(arch: &Arch, script: &Path) -> Result<(), String> {
+    let log = script.with_file_name(format!("eggos-{}-serial.log", arch.name));
+    let console = std::fs::read(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let console = String::from_utf8_lossy(&console);
+    let lines: Vec<&str> = console.lines().map(str::trim_end).collect();
+    for line in [
+        super::OFFSCREEN_LINE_1280X800,
+        super::DISPLAY_LINE_1280X800,
+        super::NO_INPUT_LINE,
+    ] {
+        expect(
+            lines.contains(&line),
+            arch.name,
+            &format!("the console in {} has no `{line}`", log.display()),
+        )?;
+    }
+    Ok(())
+}
+
 fn expect(holds: bool, arch: &str, what: &str) -> Result<(), String> {
     match holds {
         true => Ok(()),
@@ -477,6 +525,7 @@ fn session(client: &mut Client) -> Result<(), String> {
             &format!("{tool}'s output lacks `{wanted}`: {}", result.all()),
         )?;
     }
+    clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
     client.next_id += 1;
@@ -595,6 +644,61 @@ fn refused(client: &mut Client, tool: &str, arguments: &str, wanted: &str) -> Re
     )
 }
 
+const CLOCK_TOLERANCE_SECONDS: u64 = 5 * 60;
+const CLOCK_AHEAD_SECONDS: u64 = 86_400;
+
+fn iso_utc(seconds: u64) -> String {
+    let mut text = String::new();
+    let _ = eggos_calendar::format::iso(&mut text, seconds as i64);
+    format!("{}Z", text.replace(' ', "T"))
+}
+
+fn clock_seconds(text: &str) -> Option<u64> {
+    text.split_whitespace()
+        .find_map(|word| eggos_calendar::parse_setting(word, 0).ok())
+        .and_then(|seconds| u64::try_from(seconds).ok())
+}
+
+fn clock_near(client: &mut Client, expected: u64, at: &str) -> Result<(), String> {
+    let result = client.call("clock_get", "{}")?;
+    let read = clock_seconds(&result.all());
+    expect(
+        !result.is_error
+            && read.is_some_and(|read| read.abs_diff(expected) <= CLOCK_TOLERANCE_SECONDS),
+        client.arch,
+        &format!(
+            "at {at}, clock_get is not near {expected}: {}",
+            result.all()
+        ),
+    )
+}
+
+fn set_clock(client: &mut Client) -> Result<(), String> {
+    let ahead = host_seconds() + CLOCK_AHEAD_SECONDS;
+    let time = iso_utc(ahead);
+    refused(
+        client,
+        "clock_set",
+        &format!(r#"{{"time":"{time}"}}"#),
+        "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "clock_set",
+        &format!(r#"{{"time":"{time}","confirm":true}}"#),
+        "UTC",
+    )?;
+    clock_near(client, ahead, "clock_set a day ahead")?;
+    let now = iso_utc(host_seconds());
+    succeeds(
+        client,
+        "clock_set",
+        &format!(r#"{{"time":"{now}","confirm":true}}"#),
+        "UTC",
+    )?;
+    clock_near(client, host_seconds(), "clock_set back")
+}
+
 fn granted_session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     let answer = client.request(
@@ -609,6 +713,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         &format!("initialize does not name the grants: {answer}"),
     )?;
     client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
+    set_clock(client)?;
     let first = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} first\n"}}"#);
     succeeds(client, "tee", &first, "Wrote")?;
     let second = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n"}}"#);
@@ -672,7 +777,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         client,
         "run",
         r#"{"program":"/bin/cat","arguments":["/proc/cmdline"]}"#,
-        &format!("eggos.mcp_allow={GRANTS}"),
+        &format!("{} {}", super::OFFSCREEN_WORD, super::grant_word(GRANTS)),
     )?;
     refused(client, "run", r#"{"program":"uname"}"#, "absolute path")?;
     let started = Instant::now();
@@ -1211,6 +1316,13 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
         &format!(r#"{{"window":{terminal},"keys":"shift"}}"#),
         "pressed shift",
     )?;
+    succeeds(
+        client,
+        "edit_open",
+        r#"{"path":"/media/host/readme.txt"}"#,
+        "Opened /media/host/readme.txt in Text Editor.",
+    )?;
+    window_titled(client, "readme.txt - Text Editor")?;
     Ok(())
 }
 
@@ -1228,7 +1340,7 @@ pub fn check(
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);
     client.stop();
-    outcome?;
+    both(outcome, shown_offscreen(arch, &script))?;
     eprintln!(
         "xtask: {}: running {} --mcp --mcp-allow {GRANTS}",
         arch.name,
@@ -1240,7 +1352,7 @@ pub fn check(
         .and_then(|()| client.receive(FIRST_ANSWER_TIMEOUT));
     let outcome = probe.and_then(|_| granted_session(&mut client));
     client.stop();
-    outcome?;
+    both(outcome, shown_offscreen(arch, &script))?;
     let mut volume = image_volume(&disk)?;
     let log = contents(&mut volume, "/var/log/agent-audit.log")?
         .ok_or_else(|| format!("{}: MCP check: the disk holds no audit log", arch.name))?;
@@ -1273,6 +1385,15 @@ pub fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_session_keeps_what_the_console_showed() {
+        let failed = || Err::<(), String>("x".into());
+        assert_eq!(both(Ok(()), Ok(())), Ok(()));
+        assert_eq!(both(failed(), Ok(())), failed());
+        assert_eq!(both(Ok(()), failed()), failed());
+        assert_eq!(both(failed(), Err("y".into())), Err("x; and y".into()));
+    }
 
     #[test]
     fn every_tool_is_called_by_the_check() {

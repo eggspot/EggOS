@@ -146,6 +146,73 @@ pub fn parse_fadt(fadt: &[u8]) -> Option<Fadt> {
     })
 }
 
+const FADT_CENTURY: usize = 108;
+const FADT_IAPC_BOOT_ARCH: usize = 109;
+const IAPC_BOOT_ARCH_CMOS_RTC_NOT_PRESENT: u16 = 1 << 5;
+
+/// What the FADT says about the PC's CMOS real-time clock (D150).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmosClock {
+    /// Its IA-PC boot architecture flags say "CMOS RTC Not Present".
+    Absent,
+    /// The clock is there, with its century kept in this register, if the FADT names one.
+    Present { century_register: Option<u8> },
+}
+
+const CMOS_CLOCK_ABSENT_BITS: u16 = 1;
+const CMOS_CLOCK_PRESENT_BITS: u16 = 2;
+const CMOS_CLOCK_CENTURY_BITS: u16 = 0x100;
+
+impl CmosClock {
+    /// `self` as a nonzero `u16`, to keep in an atomic once the FADT was read;
+    /// [`Self::from_bits`] gives it back.
+    pub const fn to_bits(self) -> u16 {
+        match self {
+            Self::Absent => CMOS_CLOCK_ABSENT_BITS,
+            Self::Present {
+                century_register: None,
+            } => CMOS_CLOCK_PRESENT_BITS,
+            Self::Present {
+                century_register: Some(register),
+            } => CMOS_CLOCK_CENTURY_BITS | register as u16,
+        }
+    }
+
+    /// The [`CmosClock`] whose [`Self::to_bits`] is `bits`; `None` for any other value, 0
+    /// included.
+    pub const fn from_bits(bits: u16) -> Option<Self> {
+        match bits {
+            CMOS_CLOCK_ABSENT_BITS => Some(Self::Absent),
+            CMOS_CLOCK_PRESENT_BITS => Some(Self::Present {
+                century_register: None,
+            }),
+            _ if bits & !0xff == CMOS_CLOCK_CENTURY_BITS => Some(Self::Present {
+                century_register: Some(bits as u8),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// What a validated FADT (signature "FACP") says about the CMOS clock: its `CENTURY` field (0
+/// for none) and the "CMOS RTC Not Present" flag of its `IAPC_BOOT_ARCH` (ACPI 6.5, tables 5.9
+/// and 5.10). A FADT too short to hold them, as ACPI 1.0's may be, names no century register
+/// and does not say the clock is absent.
+pub fn cmos_clock(fadt: &[u8]) -> CmosClock {
+    let flags = fadt
+        .get(FADT_IAPC_BOOT_ARCH..FADT_IAPC_BOOT_ARCH + 2)
+        .map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+    if flags & IAPC_BOOT_ARCH_CMOS_RTC_NOT_PRESENT != 0 {
+        return CmosClock::Absent;
+    }
+    CmosClock::Present {
+        century_register: fadt
+            .get(FADT_CENTURY)
+            .copied()
+            .filter(|&register| register != 0),
+    }
+}
+
 /// Calls `cpu` with the local APIC id of every usable processor a validated MADT (signature
 /// "APIC") lists, in its order: each Processor Local APIC structure whose Enabled flag is set.
 /// Processors that are only online capable (hot-pluggable, not usable until enabled) are
@@ -559,6 +626,55 @@ mod tests {
         let mut with_x_dsdt = fadt.clone();
         with_x_dsdt[FADT_X_DSDT..FADT_X_DSDT + 8].copy_from_slice(&0x9_0000u64.to_le_bytes());
         assert_eq!(parse_fadt(&with_x_dsdt).unwrap().dsdt, 0x9_0000);
+    }
+
+    #[test]
+    fn the_fadt_names_the_cmos_clock_s_century_register_or_says_there_is_no_clock() {
+        let mut body = vec![0u8; 244 - TABLE_HEADER_LENGTH];
+        assert_eq!(
+            cmos_clock(&table(b"FACP", &body)),
+            CmosClock::Present {
+                century_register: None
+            }
+        );
+        body[FADT_CENTURY - TABLE_HEADER_LENGTH] = 0x32;
+        assert_eq!(
+            cmos_clock(&table(b"FACP", &body)),
+            CmosClock::Present {
+                century_register: Some(0x32)
+            }
+        );
+        body[FADT_IAPC_BOOT_ARCH - TABLE_HEADER_LENGTH] = 0x20;
+        assert_eq!(cmos_clock(&table(b"FACP", &body)), CmosClock::Absent);
+        let short = table(b"FACP", &[0u8; FADT_CENTURY - TABLE_HEADER_LENGTH]);
+        assert_eq!(
+            cmos_clock(&short),
+            CmosClock::Present {
+                century_register: None
+            }
+        );
+    }
+
+    #[test]
+    fn what_the_fadt_says_of_the_cmos_clock_packs_into_nonzero_bits_and_back() {
+        for clock in [
+            CmosClock::Absent,
+            CmosClock::Present {
+                century_register: None,
+            },
+            CmosClock::Present {
+                century_register: Some(0x32),
+            },
+            CmosClock::Present {
+                century_register: Some(0),
+            },
+        ] {
+            assert_ne!(clock.to_bits(), 0);
+            assert_eq!(CmosClock::from_bits(clock.to_bits()), Some(clock));
+        }
+        assert_eq!(CmosClock::from_bits(0), None);
+        assert_eq!(CmosClock::from_bits(3), None);
+        assert_eq!(CmosClock::from_bits(0x232), None);
     }
 
     #[test]

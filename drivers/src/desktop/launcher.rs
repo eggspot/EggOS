@@ -22,6 +22,8 @@ use crate::input::keymap::Modifiers;
 
 /// What launching Files says while it is not installed (D18).
 pub const FILES_MISSING: &str = "Files is not installed.";
+/// What launching the Text Editor says while it is not installed (D18, D149).
+pub const TEXT_EDITOR_MISSING: &str = "Text Editor is not installed.";
 /// What the notice says when the kernel could not start an app.
 pub const LAUNCH_FAILED: &str = "The app could not start.";
 /// One launcher row's height.
@@ -58,7 +60,7 @@ const MINIMISED_MAX_ROWS: usize = 7;
 const CHIP_GAP: u32 = 8;
 const PLACEHOLDER: &str = "Search apps";
 const NO_MATCH: &str = "No apps match";
-const MATCH_CAPACITY: usize = 4 + MAX_INSTALLED;
+const MATCH_CAPACITY: usize = 5 + MAX_INSTALLED;
 const MENU_OPEN: &str = "Open";
 const MENU_UNINSTALL: &str = "Uninstall...";
 const MENU_MARGIN: u32 = 8;
