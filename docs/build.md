@@ -147,6 +147,17 @@ holds what used to be written in them.
   otherwise the test is skipped with a message, but fails when `CI` is set. CI builds them in
   its `macos-programs` job, and the `qemu` jobs wait for that artifact before their boot tests
   (D120).
+- **The macOS GUI boot test** (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64) takes
+  `mac-paint`, our AppKit test app built from `tests/macos-gui/main.m` with the other macOS
+  programs (`-framework AppKit -framework Foundation`), writes `mac-paint.app` (its
+  `Info.plist` and this CPU's slice as `Contents/MacOS/mac-paint`) in a host folder, and boots
+  the release kernel with the macOS layer on a blank disk with that folder attached. It installs
+  the bundle with `app install /media/host/mac-paint.app`, opens it from the launcher, then
+  compares the display with the host's render (the desktop, and the window and alert painted by
+  `eggos-macos-gui-tests`) after each step: the window with its menu in the top bar, `Hello` and
+  Enter, clicks in the paint view, `c`, `Clear`, `Info` and Esc, the `File` menu and Esc, and
+  Cmd+Q, which must end the app with status 0. It is skipped like the macOS programs boot test
+  (D146).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is

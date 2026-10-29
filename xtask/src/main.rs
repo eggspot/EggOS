@@ -690,6 +690,9 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::files::check(arch, &install_kernel, &install_folder)?;
+    if let Some((kernel, folder)) = build_macos_gui_test(arch)? {
+        qemu::macos_gui::check(arch, &kernel, &folder)?;
+    }
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
     qemu::mcp::check(
         arch,
@@ -1488,11 +1491,11 @@ fn macos_layer_for(arch: &Arch, added: &[image::AddedFile]) -> Result<Option<Mac
 
 const MACOS_FAT_PROGRAM: &str = "macos-fat";
 
-fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+fn macos_test_programs(arch: &Arch, test: &str) -> Result<Option<macos::Programs>, String> {
     if macos::not_built_for_this_run(std::env::var_os(macos::PROGRAMS_VARIABLE).as_deref()) {
         eprintln!(
-            "xtask: {}: macOS programs boot test skipped: {} is empty, so this CI run built no \
-             Mach-O programs (pull requests that change code build them)",
+            "xtask: {}: {test} skipped: {} is empty, so this CI run built no Mach-O programs \
+             (pull requests that change code build them)",
             arch.name,
             macos::PROGRAMS_VARIABLE
         );
@@ -1501,17 +1504,60 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
     let Some(programs) = macos::find_or_build_programs(&target_directory())? else {
         if std::env::var_os("CI").is_some() {
             return Err(format!(
-                "{}: the macOS programs boot test needs the Mach-O test programs in CI: set {}",
+                "{}: the {test} needs the Mach-O test programs in CI: set {}",
                 arch.name,
                 macos::PROGRAMS_VARIABLE
             ));
         }
         eprintln!(
-            "xtask: {}: macOS programs boot test skipped: Apple's linker builds its programs, \
-             so it runs on a macOS host or with {} naming a folder of them; CI runs it",
+            "xtask: {}: {test} skipped: Apple's linker builds its programs, so it runs on a \
+             macOS host or with {} naming a folder of them; CI runs it",
             arch.name,
             macos::PROGRAMS_VARIABLE
         );
+        return Ok(None);
+    };
+    Ok(Some(programs))
+}
+
+fn build_macos_gui_test(
+    arch: &Arch,
+) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, String> {
+    let Some((cpu, _)) = macos::target(arch.name) else {
+        return Ok(None);
+    };
+    let Some(programs) = macos_test_programs(arch, "macOS GUI boot test")? else {
+        return Ok(None);
+    };
+    let app = macos::objc_program(macos::GUI_APP)
+        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::GUI_APP))?;
+    let folder = target_directory().join(format!("macos-gui-folder-{}", arch.name));
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let program = programs.path(macos::GUI_APP, cpu);
+    macos::assemble_app(
+        &folder,
+        macos::GUI_APP,
+        &macos::source_folder(&app).join(macos::INFO_PLIST),
+        &program,
+    )?;
+    let detected = [image::AddedFile {
+        host: program.to_string_lossy().into_owned(),
+        path: String::new(),
+    }];
+    let layer = macos_layer_for(arch, &detected)?;
+    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-macos-gui-{}.cpio", arch.user_target),
+    )?;
+    let kernel = build_release_kernel(arch, &initramfs)?;
+    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
+    Ok(Some((kernel, folder)))
+}
+
+fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(programs) = macos_test_programs(arch, "macOS programs boot test")? else {
         return Ok(None);
     };
     let (own, other) = match arch.name {

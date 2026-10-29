@@ -5,6 +5,7 @@
 pub mod files;
 pub mod install;
 mod linux_gui;
+pub mod macos_gui;
 pub mod mcp;
 pub mod persistent;
 pub mod settings;
