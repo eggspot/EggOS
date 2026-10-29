@@ -5,6 +5,7 @@
 //! libSystem and rebases its pointers by the slide through its chained fixups, protects each
 //! segment and calls `main(argc, argv, envp, apple)`, whose return value goes to `exit`.
 
+use crate::appkit;
 use crate::fixups::{ChainedFixups, Source};
 use crate::foundation;
 use crate::libsystem;
@@ -139,6 +140,12 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             .libraries()
             .any(|library| Library::provided(library.path).is_some_and(Library::is_objc));
     if uses_objc && !(objc::set_up() && foundation::set_up()) {
+        return Err(Failure::Memory);
+    }
+    let uses_appkit = program
+        .libraries()
+        .any(|library| Library::provided(library.path) == Some(Library::AppKit));
+    if uses_appkit && !appkit::set_up() {
         return Err(Failure::Memory);
     }
     let fixups = match program.chained_fixups {
@@ -281,6 +288,7 @@ enum Library {
     Objc,
     Foundation,
     CoreFoundation,
+    AppKit,
 }
 
 impl Library {
@@ -290,6 +298,7 @@ impl Library {
             macho::LIBOBJC => Self::Objc,
             macho::FOUNDATION => Self::Foundation,
             macho::CORE_FOUNDATION => Self::CoreFoundation,
+            macho::APPKIT => Self::AppKit,
             _ => return None,
         })
     }
@@ -304,6 +313,7 @@ impl Library {
             Self::Objc => b"libobjc",
             Self::Foundation => b"Foundation",
             Self::CoreFoundation => b"CoreFoundation",
+            Self::AppKit => b"AppKit",
         }
     }
 }
@@ -311,6 +321,7 @@ impl Library {
 fn resolve(name: &[u8]) -> Option<u64> {
     objc::resolve(name)
         .or_else(|| foundation::resolve(name))
+        .or_else(|| appkit::resolve(name))
         .or_else(|| libsystem::resolve(name))
 }
 

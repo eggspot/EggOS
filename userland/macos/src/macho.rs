@@ -24,6 +24,7 @@ pub const FOUNDATION: &[u8] =
     b"/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation";
 pub const CORE_FOUNDATION: &[u8] =
     b"/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation";
+pub const APPKIT: &[u8] = b"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
 
 const HEADER_SIZE: usize = 32;
 const FAT_ARCH_SIZE: usize = 20;

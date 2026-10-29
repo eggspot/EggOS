@@ -170,5 +170,6 @@ mod runtime {
         }
     }
 
+    pub use super::bundle::{app_name, permanent};
     pub use super::string::{string_from_utf8, text_of, with_utf8};
 }

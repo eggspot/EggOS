@@ -89,10 +89,12 @@ pub const AT_FDCWD: usize = -100isize as usize;
 pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 pub const AT_REMOVEDIR: usize = 0x200;
 pub const O_RDONLY: usize = 0;
+pub const O_RDWR: usize = 2;
 pub const O_CLOEXEC: usize = 0o2_000_000;
 pub const PROT_READ: usize = 1;
 pub const PROT_WRITE: usize = 2;
 pub const PROT_EXEC: usize = 4;
+pub const MAP_SHARED: usize = 0x01;
 pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
@@ -226,6 +228,32 @@ pub fn map_anonymous(
         syscall(
             number::MMAP,
             [hint, length, protection, flags, usize::MAX, 0],
+        )
+    }
+}
+
+/// Makes device request `request`, whose encoded size must be `argument`'s length.
+pub fn device_control(fd: usize, request: usize, argument: &mut [u8]) -> Result<usize, Errno> {
+    if (request >> 16) & 0x3fff != argument.len() {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: the request reads and writes at most its encoded size, which is the borrowed
+    // argument's length.
+    unsafe {
+        syscall(
+            number::IOCTL,
+            [fd, request, argument.as_mut_ptr() as usize, 0, 0, 0],
+        )
+    }
+}
+
+/// Maps `length` bytes of `fd` at `offset`, shared and readable and writable.
+pub fn map_shared(fd: usize, length: usize, offset: usize) -> Result<usize, Errno> {
+    // SAFETY: a new mapping at an address the kernel chooses replaces nothing the program uses.
+    unsafe {
+        syscall(
+            number::MMAP,
+            [0, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset],
         )
     }
 }
