@@ -39,8 +39,9 @@ On Windows, if PowerShell refuses to run a downloaded script, start it with
 
 To use files from your computer, pass a folder: it appears read-only at `/media/host`, where
 you can list it, read its files and run programs from it (`ls /media/host`, `cat`,
-`/media/host/hello`). It must fit about 500 MB, with fewer than about 250 names at its top
-level ([docs/limitations.md](docs/limitations.md)):
+`/media/host/hello`), or install an app from it, a program, an `.app` or a `.zip`, with its
+own icon (`app install /media/host/Paint.zip`, [docs/apps.md](docs/apps.md)). It must fit about
+500 MB, with fewer than about 250 names at its top level ([docs/limitations.md](docs/limitations.md)):
 
 ```
 sh run-eggos.sh --apps ~/eggos-apps                  # macOS, Linux

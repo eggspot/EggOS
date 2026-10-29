@@ -9339,3 +9339,76 @@ the license, by an explicit instruction recorded here.
   submenus below the top level, a menu inside the window in the Windows and Linux profiles,
   alpha blending, anti-aliasing, fonts other than Egg Sans, text beyond the font's glyphs,
   `NSApplicationMain` loading a main nib, windowless apps, and NSNotification objects.
+
+## D148 Real icons and archives: installing from a `.zip`, our own inflate and PNG decoder, and each installed app's own icon (v0.3.0 item 45; extends D133, D134, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/app-icons-v0.3.md`)
+- **What.** Item 45: "PE icon resources, `.icns`, PNG with our own inflate, installing from
+  `.zip`. Check: an installed app shows its own icon." Users install a downloaded app archive
+  the way they install a program, and the shell shows the icon its vendor drew instead of the
+  letter tile.
+- **Inflate, once, in `eggos-png`.** `png/src/inflate.rs` is RFC 1951 in full: stored,
+  fixed-Huffman and dynamic-Huffman blocks, codes decoded bit by bit through their canonical
+  counts (608 bytes a table, no allocation), into one slice holding the whole output or
+  through a 32 KiB window to a sink in pieces, so a stream of any length costs the window.
+  The zip reader and both PNG decoders use it; the encoder is unchanged. `decode` (8-bit RGB,
+  for tests and xtask) now takes any block type; the new `rows` module decodes any
+  non-interlaced PNG (every colour type and depth, `PLTE`, `tRNS`, the five filters) row by
+  row from a byte source, each row straight-alpha `0xAARRGGBB`, with every CRC and the zlib
+  checksum checked, in a caller's `RowWorkspace` (about 113 KiB) whatever the height.
+- **`.zip` in the installer.** `userland/app/src/archive.rs` reads the end record (behind a
+  comment of up to 64 KiB), the central directory and the local headers; stored and deflated
+  entries, CRC-32 and size checked; no ZIP64, encryption, multi-disk or other methods. A name
+  that is absolute or holds an empty, `.` or `..` part, a backslash, a colon or a NUL is
+  refused (`it holds a file whose name points outside its folder`), so extraction never leaves
+  the app's folder; symbolic links and devices are refused; `__MACOSX/` is skipped. A `.zip` is
+  told by its first bytes (`PK\3\4` or an empty archive's end record), as programs are (D134).
+  Its program is its one `.exe`, `X.app/Contents/MacOS/X`, or extensionless ELF outside any
+  bundle's `Contents`; several need `--entry <path>` (`app install --entry`), none is `it holds
+  no program EggOS can run`. The whole archive is extracted into `/Applications/<name>/`, an
+  entry a step, parent folders made as needed, the program `0o755`, other files their Unix
+  mode or `0o644`; the name comes from the program's stem. The `Files` trait gains `read_at`
+  (`pread64` on Linux; other implementations say `EOPNOTSUPP`), and `reader.rs` gives one
+  random-access `Reader` over files and bytes, so the same code reads archives, programs,
+  `.icns` files and test bytes. Files offers `Install...` on a `.zip` (a new `Kind::Archive`).
+- **The app's own icon.** After the copy, a new installation stage makes it from what was
+  installed (`userland/app/src/icon.rs`, with `pe.rs`, `bitmap.rs`, `icns.rs` and `scale.rs`):
+  a Windows program's first `RT_GROUP_ICON` and its `RT_ICON` images (PNG, or bitmap entries at
+  1, 4, 8, 24 and 32 bits with their AND mask; a 32-bit entry with no alpha at all takes the
+  mask), mapped through the section table; a bundle's `.icns` named by `CFBundleIconFile` in an
+  XML `Info.plist`, else `AppIcon.icns`, else `<bundle>.icns`, else the only one (PNG entries
+  at their own size, `is32`/`il32`/`ih32` planes with `s8mk`/`l8mk`/`h8mk`, `ic04`/`ic05`
+  `ARGB`); else `<stem>.png` beside the program or bundle, installed or installed from. For each
+  size (48, 32) the exact size of the best kind wins, else the smallest larger (area average in
+  premultiplied integers), else the largest smaller (nearest by a whole factor, centred); an
+  image that fails to decode gives way to the next. The result is `app.icon` (13 312 bytes, the
+  48x48 then the 32x32 image, premultiplied `0xAARRGGBB`, `eggos-app-manifest`'s `icon`
+  module) and the manifest's `icon=app.icon`; an app with none, or whose icon file could not be
+  written, installs the same with the tile. The work happens on the installer's stack (about
+  180 KiB, only during that step); no image larger than 1024 pixels is decoded.
+- **The shell.** The kernel reads `app.icon` with the manifest when it reads the catalogue; a
+  file of exactly the right length becomes the app's `IconPixels` (each channel clamped to its
+  alpha), and `Icon::Own` draws it wherever the app's icon shows (dock, desktop, launcher rows,
+  taskbar, switcher), blended `s + (d * (255 - a) + 127) / 255` over what is beneath, with no
+  badge. Everything else about icons is unchanged.
+- **Three front ends (D22).** GUI: the shell's icons, Files' `Install...` on a `.zip`, the
+  installer window's `Inside:` line. CLI: `app install [--entry <path>] <file>.zip`, `app list`'s
+  fifth column (`app.icon` or `-`). MCP: `app_install` takes a `.zip` and `app_list` answers
+  `app list`'s lines, the icon column included.
+- **Points decided by the build loop.** The shell keeps an own icon on the kernel's heap in the
+  app's catalogue entry, allocated only for an app that has one, instead of Fable's 416 KiB
+  static pool: an unused feature costs nothing (CLAUDE.md notes 3 and 8). The icon is made after
+  the copy from what was installed, so one code path serves programs, bundles and archives; the
+  installer's dialogs keep the tile for now. The zip extracts one entry per step (a large
+  deflated entry finishes before `Cancel` is seen). Listing names in the several-programs
+  message stops at 120 bytes with `...`. Fable's `app icon` export and `app_icon` MCP tool wait:
+  they need an RGBA mode in the PNG encoder. The QEMU check uses the macOS GUI test (D147),
+  where the bundle is ours: `mac-paint.zip`, archived by xtask's own stored-zip writer
+  (`xtask/src/zip.rs`), whose `AppIcon.icns` holds a 128-pixel `ic07` and a 32-pixel `icp5`
+  drawn by xtask; the host computes the expected `app.icon` with the installer's own code and
+  compares the desktop's and the launcher's frames. `win-paint.exe` stays without icon
+  resources (no resource compiler in the build); PE icons are host-tested on hand-built
+  resource trees.
+- **Not yet.** `app icon` and `app_icon`; icons in the installer's dialogs, title bars and
+  Files; native 2x images; binary property lists, asset catalogues, JPEG 2000 and `it32`;
+  interlaced PNGs; 16-bit and compressed bitmap entries; `.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`;
+  ZIP64 and encrypted entries; the installer window's chooser for a `.zip` with several
+  programs and `--entry` in the MCP tool.

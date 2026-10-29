@@ -389,6 +389,17 @@ D16):
     (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
     same test types into a field, presses buttons, answers an alert, opens the `File` menu and
     quits with Cmd+Q. Next: nibs, Swift, scroll views, images, timers (D147's "Not yet").
+45. **done** — users can now install an app from a `.zip` and see its own icon (D148,
+    docs/apps.md, Claude Fable's docs/ux/app-icons-v0.3.md): `app install <file>.zip` (and
+    Files and the installer's window, and the MCP tool `app_install`) extracts the archive's
+    one program with everything beside it, `--entry` choosing among several, through our own
+    inflate (every DEFLATE block type, shared by a new row-by-row PNG decoder in `eggos-png`);
+    the installer then makes the app's own icon from a Windows program's icon resources, a
+    bundle's `.icns` or a PNG beside it, scaled to 48 and 32 pixels and written as `app.icon`,
+    which the dock, desktop, launcher, taskbar and switcher draw instead of the letter tile;
+    `app list` and `app_list` name it. A QEMU test installs `mac-paint.zip` and compares the
+    desktop's and the launcher's frames, its own icon in them. Next: `app icon` and `app_icon`,
+    icons in the installer's dialogs and title bars, 2x images, binary property lists.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

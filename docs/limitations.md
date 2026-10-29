@@ -156,6 +156,21 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
   chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
   <path>` installs any);
+- archives other than `.zip` (`.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`), ZIP64 (archives or
+  entries past 4 GiB or 65 535 entries), encrypted entries, methods other than stored and
+  deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); the installer's
+  window shows a `.zip` with several programs as a refusal (`app install --entry <path>`
+  chooses one; the window's chooser and the MCP tool `app_install` have no `--entry` yet);
+  every entry of a `.zip` is extracted in one step of the installer, so `Cancel` waits for the
+  entry being extracted;
+- app icons (D148): binary property lists, asset catalogues (`Assets.car`), JPEG 2000 and
+  `it32` entries of an `.icns`, interlaced PNGs, 16-bit and compressed bitmap entries of a
+  Windows icon, and images larger than 1024 pixels (256 for a bitmap entry) are not read (the
+  next image is taken, else the app wears the letter tile); icons are made at 48 and 32 pixels
+  only (2x doubles them); the title bar, Files and the installer's dialogs still show the
+  generic tile; a native EggOS app cannot name its own icon in its manifest yet beyond `icon=`
+  pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
+  tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
 - closing the terminal (its close control is disabled) and a second terminal: launching
   Terminal focuses the one console terminal, and installed console apps are typed into it, so
   they reach whatever reads the console at that moment (docs/apps.md);

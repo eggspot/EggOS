@@ -11,6 +11,7 @@ one is attached (D131), so installed apps survive a reboot.
 ```
 /Applications/<name>/
     app.manifest        the app's entry in the catalogue
+    app.icon            its own icon, when the installer found one (D148)
     ...                 its program and the files beside it
 ```
 
@@ -35,7 +36,7 @@ the app appears there and on the desktop.
 `app` is the command; the installer's window is the same capability with dialogs (D22, D134).
 
 ```
-app install [--name <name>] [--window] [--] <path>
+app install [--name <name>] [--entry <path>] [--window] [--] <path>
 app uninstall [--window] [--] <name>   (app remove is the same)
 app open [--] <name>
 app list
@@ -51,8 +52,32 @@ app list
   name. The app's name is the file's name without its extension (`win-paint.exe` gives
   `win-paint`, `Paint.app` gives `Paint`), or `--name`; it must follow the manifest's rules
   below. The program, or the `.app` folder whole, is copied into `/Applications/<name>/`, then
-  the manifest is written (`name`, `source`, `run`, `architecture`) and everything synced.
-  It prints `Installed <name> in /Applications/<name>.`
+  the app's own icon is written (below), then the manifest (`name`, `source`, `run`,
+  `architecture`, `icon`) and everything is synced. It prints `Installed <name> in
+  /Applications/<name>.`
+- **A `.zip`** (D148, told by its first bytes) installs the one program it holds: a `.exe`,
+  the program of an `.app` bundle in it (`X.app/Contents/MacOS/X`), or a file without an
+  extension that is an ELF; nothing inside another bundle's `Contents` counts. The whole
+  archive is extracted into `/Applications/<name>/` (macOS's `__MACOSX` metadata left out), so
+  the program's files and DLLs come along, and `run` is the program's path inside it; the name
+  comes from the program (`bin/win-paint.exe` gives `win-paint`, `Paint.app` gives `Paint`). An
+  archive with several programs is refused with their list (`it holds several programs (a.exe,
+  b.exe): choose one with --entry <path>`); `--entry <path>` chooses one (a bundle's own path
+  names its program too). Stored and deflated entries are read (our own inflate, shared with
+  the PNG decoder); ZIP64, encryption and other methods are refused as `not a zip archive EggOS
+  can open`, and an entry whose name would leave the folder (absolute, `..`, a backslash or a
+  colon) as `it holds a file whose name points outside its folder`. Each entry's CRC-32 is
+  checked; a damaged one fails the install and removes what was extracted.
+- **The app's own icon** (D148, `docs/ux/app-icons-v0.3.md`): after the copy, the installer
+  looks for it in what it installed: a Windows program's first icon group (`RT_GROUP_ICON`
+  and its `RT_ICON` images, PNG or bitmap with its mask), a bundle's `.icns`
+  (`Contents/Resources/<CFBundleIconFile>` from an XML `Info.plist`, else `AppIcon.icns`, else
+  `<bundle name>.icns`, else the only `.icns`; PNG entries and the `is32`/`il32`/`ih32` and
+  `ARGB` planes), else `<stem>.png` beside the program or bundle, installed or installed from.
+  For each of the two sizes the shell draws (48 and 32 pixels) it takes the exact size of the
+  best kind, else the smallest larger (area average), else the largest smaller (grown by a
+  whole factor, centred), and writes `app.icon`. An app without a readable icon installs the
+  same, with the generic letter tile.
 - It refuses, before writing anything: a file that is no program
   (`not a program EggOS can run`), a library, a folder that is not an `.app`, a name already
   installed (`it is already installed`: uninstall it first), a name or program path the
@@ -75,7 +100,8 @@ app list
   prints `Opened <name>.`; `app: <name> is not installed`, or `app: could not open <name>: <error>` without a
   desktop. It is the MCP tool `app_open`'s twin.
 - **`app list`** prints one line per installed app, in `/Applications`' order: its name,
-  source, architecture and program path, separated by tabs.
+  source, architecture, program path and own icon file (`app.icon`, or `-` for the generic
+  tile), separated by tabs; the MCP tool `app_list` answers the same.
 - Status: 0 done, 1 refused or failed, 2 a usage error. With a desktop running, `install`
   and `uninstall` tell it (`APPS_CHANGED`, [Windows](windows.md)), so its launcher and icons
   follow at once.
@@ -90,8 +116,9 @@ app list
 - The desktop starts the same window: the launcher's `Install from host share...` row (while
   the share is mounted) opens it on `/media/host`, and `Uninstall...` in an installed app's
   menu (its desktop icon's or its launcher row's) asks to uninstall it.
-- Files (D135) starts the same window: a double-click on a Windows or macOS program or an
-  `.app` outside `/Applications`, or `Install...` in a program's menu, opens the prompt; in the
+- Files (D135) starts the same window: a double-click on a Windows or macOS program, an
+  `.app` outside `/Applications` or a `.zip` (D148), or `Install...` in their menu, opens the
+  prompt (for a `.zip`, an `Inside:` line names the program in it); in the
   `Apps` place (`/Applications`) a double-click on an app opens it as its icon does and Delete
   or `Uninstall...` asks to uninstall it.
 - Not yet: the MCP tools `app_install`, `app_uninstall` and `app_list` come with the MCP
@@ -113,7 +140,7 @@ and the installer share it.
 | `run` | yes | The program: an absolute path, or a path relative to the app's folder; at most 192 bytes, no `..` part, no `'`, not ending in `/`. |
 | `architecture` | no | The machine it was built for (`x86_64`, `aarch64`, ...), at most 16 bytes. |
 | `synonyms` | no | Words the launcher's search also matches, separated by commas, at most 8 used, at most 128 bytes in all. The program's file name always matches. |
-| `icon` | no | Reserved: icons are drawn from the name's first letter and the source's badge in 0.3.0. |
+| `icon` | no | The app's own icon file (D148), relative to the folder, with `run`'s rules: [`app.icon`](../app-manifest/src/icon.rs), exactly 13 312 bytes, the 48x48 then the 32x32 image as premultiplied `0xAARRGGBB`, little-endian. The shell draws it, without a badge, wherever the app's icon shows; without the key, or with a file of another size, the app wears the letter tile and its source's badge. |
 
 A manifest that is not this format, is longer than 1024 bytes, lacks a required key, has an
 invalid value for one, or names another folder is not an app: the shell skips it. At most 32
