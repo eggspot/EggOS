@@ -8755,6 +8755,98 @@ the license, by an explicit instruction recorded here.
   instead of opening `/dev/window` at each `wl_output` bind; and what real toolkits need
   (docs/linux-programs.md).
 
+## D142 The macOS layer, part 3: our own Objective-C runtime and the core of Foundation, so Objective-C console programs run (v0.3.0 item 40) — Decided by EggAgentCode (the points below marked so decided by research)
+- **What.** v0.3.0 item 40: Objective-C console programs built with clang for macOS 13 or later
+  (ARC, `-framework Foundation`, arm64 on aarch64 and x86_64 on x86_64) run from `eggsh`. The
+  macOS layer (D120, D123) accepts `/usr/lib/libobjc.A.dylib`, Foundation and CoreFoundation
+  besides libSystem and implements their core itself: classes and categories, selectors,
+  `objc_msgSend` and `objc_msgSendSuper2`, non-fragile ivars, reference counting, ARC's entry
+  points, autorelease pools, `+load` and `+initialize`, and NSObject, NSString,
+  NSMutableString, NSArray, NSMutableArray, NSDictionary, NSMutableDictionary, NSNumber, the
+  compiler's constant literal classes, NSBundle's main bundle and `NSLog`. Guide and lists:
+  docs/macos-programs.md. riscv64 still refuses Mach-O files (D120).
+- **Where.** In the macOS layer, as `src/objc/` (libobjc) and `src/foundation/` (Foundation and
+  CoreFoundation), one way: Foundation uses the runtime, the runtime uses the layer's libSystem.
+  So it stays one optional component (D18): only a program whose image has Objective-C
+  metadata or imports from these libraries sets the runtime up; others pay nothing at run
+  time. The layer's binary grows from about 357 KiB to about 595 KiB (aarch64 365,488 to
+  600,248 bytes; x86_64 351,128 to 591,288), installed only with macOS programs; the base
+  image does not change (D24).
+- **Clean room.** The ABI as binaries built from our own sources show it: probe programs and
+  `tests/macos-objc/main.m` compiled with Apple's clang on a Mac and read with `otool -lv -ov`
+  and `dyld_info -imports -fixups` (section names and segments, `class_t`, `class_ro_t`, both
+  method list forms, ivar lists, `category_t`, the constant string, number, array and
+  dictionary layouts, which symbols are imported from which library), Apple's documentation
+  (the Objective-C runtime reference, Foundation's class references, `NSLog`'s format,
+  `descriptionWithLocale:indent:` sorting string keys), and the programs' observed output on
+  macOS, which the boot test's expected lines are. No objc4, CoreFoundation, Foundation, GNUstep,
+  Darling, Cocotron or other APSL/GPL/LGPL code was read.
+- **The ABI we read.** Classes from `__objc_classlist`, categories from `__objc_catlist`,
+  `+load` from `__objc_nlclslist` and `__objc_nlcatlist`, selector references from
+  `__objc_selrefs`, wherever the linker puts them (`__DATA` or `__DATA_CONST`; the loader checks
+  each lies inside its segment and is whole aligned words). Image registration (selectors made
+  canonical in place, class records, categories attached) runs after the fixups and before
+  `protect`, while every segment is still writable; `+load` runs after the process and streams
+  are set up, just before `main`, inside an autorelease pool. Method lists in both forms: the
+  24-byte `{SEL, types, IMP}` (x86_64's) and the 12-byte relative form (arm64's, flag
+  `0x8000_0000`, the name an offset to a selector reference). The ivar offset variables are
+  read and written as 32 bits. Constant literals use clang's layouts, which are also our own
+  classes' layouts: `{isa, flags, characters, length}` strings (flags `0x7c8` ASCII, `0x7d0`
+  UTF-16), `{isa, encoding, value}` integer numbers, `{isa, f32}` and `{isa, f64}` floating
+  numbers, `{isa, count, objects}` arrays and `{isa, options, count, keys, objects}`
+  dictionaries; `__kCFBooleanTrue`, `___NSArray0__struct` and `___NSDictionary0__struct` are
+  the objects themselves.
+- **Records and caches.** The runtime keeps its record of each class in the class object's
+  `vtable` word, which clang leaves 0, and the class's method cache in its `cache` word, bound
+  to `__objc_empty_cache`, which is our empty cache. Classes are realized lazily, on first use:
+  superclass first, ivars slid when the superclass is larger than compiled for, a method table
+  built from the categories (newest first) then the base list. A cache is a power-of-two table
+  of `(SEL, IMP)` pairs probed from `(SEL << 4) & mask_bytes`, filled under the runtime lock and
+  at most three quarters full; each slot is written once, IMP before SEL, and a reader treats
+  IMP 0 as a miss, so `objc_msgSend` reads it with no lock; a fuller table is replaced by a new
+  one published with one release store, and old tables are never freed. A category or
+  `class_addMethod` after realization flushes every cache. The runtime lock covers only
+  realization, attaching methods, cache fills and flushes and the class table; no program code
+  (`+initialize`, `+load`, `dealloc`, `description`, `isEqual:`) ever runs under it.
+- **Objects.** An object the runtime allocates sits 16 bytes into its heap block, the word
+  before it its extra retain count (atomic, 0 = one owner, the top bit "being deallocated");
+  no non-pointer isa and no tagged pointers. Metaclasses and the constant classes are
+  immortal (retain and release do nothing), decided by the class, never the address; a class
+  that defines its own `retain` or `release` gets the messages. NSObject's `dealloc` runs each
+  class's `.cxx_destruct`, most derived first. Autorelease pools are one stack per thread,
+  popped one object at a time; a created thread's leftovers are released when it ends.
+- **Foundation.** Strings are stored ASCII or UTF-16, the narrowest that holds them, so
+  `length` and `characterAtIndex:` take constant time; `hash` and `isEqual:` agree across
+  storages. Dictionaries keep insertion order (macOS's is unspecified) and find keys by
+  identity then `isEqual:`; `description` sorts string keys as macOS does. Descriptions of
+  nested collections, string quoting and number formatting follow macOS's output exactly.
+  `NSLog` is in UTC (no time zones yet, D123). A class the layer lacks is bound to a
+  placeholder that ends the program, naming the class and its library, when it is first used
+  (status 127, like D120's missing functions); an unknown selector ends it as macOS's uncaught
+  NSInvalidArgumentException does (status 134), without the call stack.
+- **Test data built by a foreign toolchain.** As D119's NDK programs, the Objective-C test
+  program is our own source built by Apple's clang on CI's macOS runner (`cargo xtask
+  macos-programs`, into the same artifact as the Rust programs); it is test data, never
+  shipped, and the only non-Rust source in the repository. D14 is unchanged for everything
+  EggOS ships.
+- **Performance.** A cached send is a nil check, two loads, the probe and an indirect branch:
+  about ten instructions, no stack, no lock. No benchmark harness runs userland layers yet (the
+  boot benchmarks are the kernel's), so `macos-objc bench` times sends and retain/release pairs
+  with `mach_absolute_time` and prints them; the boot test checks it runs, and the numbers are
+  in the PR. Not gated yet.
+- **Decided by research.** `+load` before `main` inside a pool, the registration before
+  `protect`, the per-thread pool drained only when a created thread ends (never at `exit`, as
+  macOS prints nothing for the main thread's leftovers), and the cuts below were settled by the
+  plan's two review rounds; the dictionary order and description sorting, the
+  unrecognized-selector lines and the quoting rule by the programs' observed output on macOS.
+- **Not yet.** Blocks, `__weak`, exceptions and `@try` (no unwinder), associated objects, KVC
+  and KVO, NSInvocation and forwarding (`forwardingTargetForSelector:`,
+  `+resolveInstanceMethod:`), `method_setImplementation`, `class_replaceMethod`, protocols as
+  objects and `conformsToProtocol:`, `objc_msgSend_fpret`, ARC's return-value handoff, a
+  dictionary hash index, subclasses of Foundation's class clusters, a test of manual
+  retain/release programs, most of Foundation (NSDate, NSData, NSSet, NSError, NSProcessInfo,
+  NSFileManager), Swift, and a gated benchmark of the send path.
+
 ## D141 Seeing and operating any window: `CAPTURE_WINDOW`, `SEND_INPUT`, a person wins, `wm capture`, `click`, `type`, `press` and `scroll`, the `eggos-png` encoder, and the built-in apps by name (v0.3.0 item 47a1) — Decided (owner, 2026-10-28: "the mcp is not enough … if windows app open gui, our os will support the ai to work with it"); the design decided by the build loop (the points below marked so decided by research)
 - **What.** A program, and through it a person or (next, 47a2) an agent, sees any app
   window's content and operates it: `wm capture <id>` writes the content as a PNG, `wm click`,

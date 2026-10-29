@@ -484,7 +484,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 12] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 16] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -497,8 +497,111 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 12] = [
     b"macos-tools -v --verbose -n 3 --list /usr/share/eggos --name=eggos rest more; \
       echo MACOS-CONSOLE status $?\r",
     b"macos-tools -x; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc unrecognized; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc unimplemented; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc bench; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
+
+const OBJC_LOAD_LINES: [&str; 2] = [
+    "MACOS-OBJC load Counter",
+    "MACOS-OBJC load NSString(EggShout)",
+];
+
+const OBJC_PROGRAM_LINES: [&str; 55] = [
+    "MACOS-OBJC main",
+    "MACOS-OBJC initialize Counter",
+    "MACOS-OBJC <Counter egg 2>",
+    "MACOS-OBJC items 1,2",
+    "MACOS-OBJC triple 2 4 6",
+    "MACOS-OBJC kinds 1 0 1 0",
+    "MACOS-OBJC class Counter initWithName: Counter",
+    "MACOS-OBJC dealloc egg",
+    "MACOS-OBJC counter pool done",
+    "MACOS-OBJC named spam 0",
+    "MACOS-OBJC dealloc spam",
+    "MACOS-OBJC named pool done",
+    "MACOS-OBJC shout ABC!",
+    "MACOS-OBJC wide 5 h\u{e9}llo 233",
+    "MACOS-OBJC built 11 w\u{f6}rld equal prefix",
+    "MACOS-OBJC a|b||c",
+    "MACOS-OBJC array (",
+    "    1,",
+    "    two,",
+    "    \"3.5\",",
+    "        (",
+    "        4,",
+    "        five",
+    "    ),",
+    "        {",
+    "        k = v;",
+    "    }",
+    ")",
+    "MACOS-OBJC dictionary {",
+    "    Beta = \"2.5\";",
+    "    alpha = 1;",
+    "    mid = \"a b\";",
+    "    zeta = 1;",
+    "}",
+    "MACOS-OBJC empty (",
+    ") {",
+    "}",
+    "MACOS-OBJC item 1",
+    "MACOS-OBJC item two",
+    "MACOS-OBJC item 3.5",
+    "MACOS-OBJC mutable w+y 2",
+    "MACOS-OBJC table 2 3 a,b",
+    "MACOS-OBJC table {",
+    "    a = 1;",
+    "    b = 3;",
+    "}",
+    "MACOS-OBJC text big eggs 12 11",
+    "MACOS-OBJC numbers 42 -7 0.1 3.25 1 9223372036854775808 99",
+    "MACOS-OBJC compare 1 1 -1 42",
+    "MACOS-OBJC bundle 1 (null) 0",
+    "MACOS-OBJC thread noisy",
+    "MACOS-OBJC dealloc Noisy on its thread",
+    "MACOS-OBJC joined",
+    "MACOS-OBJC done",
+    "MACOS-CONSOLE status 0",
+];
+
+const OBJC_UNRECOGNIZED: &str = "*** Terminating app due to uncaught exception \
+     'NSInvalidArgumentException', reason: '-[Counter frobnicate]: unrecognized selector sent to \
+     instance 0x";
+
+fn objc_program_output() -> [Vec<Line>; 4] {
+    let whole = |line: &str| Line::Whole(line.to_owned());
+    let loads = || OBJC_LOAD_LINES.iter().map(|line| whole(line));
+    let mut program: Vec<Line> = loads().collect();
+    program.extend(OBJC_PROGRAM_LINES.iter().map(|line| whole(line)));
+    program.insert(
+        3,
+        Line::Around("", "] MACOS-OBJC NSLog hello 42 world (null)"),
+    );
+    let mut unrecognized: Vec<Line> = loads().collect();
+    unrecognized.extend([
+        whole("MACOS-OBJC initialize Counter"),
+        Line::Around(OBJC_UNRECOGNIZED, "'"),
+        whole("libc++abi: terminating due to uncaught exception of type NSException"),
+        whole("Aborted"),
+        whole("MACOS-CONSOLE status 134"),
+    ]);
+    let mut unimplemented: Vec<Line> = loads().collect();
+    unimplemented.extend([
+        whole("eggos-macos: unimplemented CoreFoundation class NSDate"),
+        whole("MACOS-CONSOLE status 127"),
+    ]);
+    let mut bench: Vec<Line> = loads().collect();
+    bench.extend([
+        whole("MACOS-OBJC initialize Counter"),
+        Line::Around("MACOS-OBJC bench send ", " ns (0)"),
+        whole("MACOS-OBJC dealloc bench"),
+        whole("MACOS-CONSOLE status 0"),
+    ]);
+    [program, unrecognized, unimplemented, bench]
+}
 
 fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] {
     let whole = |lines: &[&str]| -> Vec<Line> {
@@ -528,10 +631,15 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-std"),
             refused("macos-tools"),
             refused("macos-tools"),
+            refused("macos-objc"),
+            refused("macos-objc"),
+            refused("macos-objc"),
+            refused("macos-objc"),
             end,
         ];
     }
     let own = if arch == "x86_64" { "x86_64" } else { "arm64" };
+    let mut objc_program = objc_program_output().into_iter();
     [
         whole(&[
             "MACOS-CONSOLE macos-console args a|b c",
@@ -606,6 +714,10 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             "MACOS-CONSOLE status 0",
         ]),
         whole(&["macos-tools: illegal option -- x", "MACOS-CONSOLE status 2"]),
+        objc_program.next().unwrap_or_default(),
+        objc_program.next().unwrap_or_default(),
+        objc_program.next().unwrap_or_default(),
+        objc_program.next().unwrap_or_default(),
         end,
     ]
 }

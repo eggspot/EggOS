@@ -92,12 +92,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
   system properties (all read as unset), no `logd` or binder, no riscv64.
-- **macOS: console programs on aarch64 and x86_64 only, part 1.** Mach-O console programs
-  (thin or fat, built for macOS 13 or later) that link only libSystem and use the functions
-  the macOS layer provides run natively, arm64 programs on aarch64 and x86_64 programs on
-  x86_64, added with `cargo xtask image --add` ([macOS programs](macos-programs.md), D120).
-  Programs on Rust's std, Objective-C or Swift, threads, signal handlers, `mmap`, other
-  libraries and frameworks, `.app` bundles and riscv64 do not run yet.
+- **macOS: console programs on aarch64 and x86_64 only.** Mach-O console programs (thin or
+  fat, built for macOS 13 or later) that link libSystem, and Objective-C programs that use the
+  core of Foundation, run natively, arm64 programs on aarch64 and x86_64 programs on x86_64,
+  added with `cargo xtask image --add` ([macOS programs](macos-programs.md), D120, D123, D142).
+  Swift, Objective-C blocks, `__weak` and exceptions, most of Foundation, signal handlers,
+  other libraries and frameworks, GUI apps, `.app` bundles and riscv64 do not run yet.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
   app window's content as a PNG and `wm click`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input, and drag, double-click,

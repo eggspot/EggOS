@@ -4,20 +4,20 @@
 //! that names it and ends the program with status 127 when it is called, so a program whose
 //! unused imports are missing still runs.
 
-mod dynamic;
+pub mod dynamic;
 mod file;
-mod heap;
+pub mod heap;
 mod locale;
 mod memory;
 mod options;
-mod process;
+pub mod process;
 mod signal;
-mod stdio;
+pub mod stdio;
 mod string;
-mod sync;
-mod thread;
+pub mod sync;
+pub mod thread;
 mod time;
-mod variadic;
+pub mod variadic;
 
 use crate::darwin;
 use crate::linux;
@@ -25,7 +25,7 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use eggos_runtime::errno::Errno;
 
 pub use dynamic::set_image;
-pub use process::{exit, set_process};
+pub use process::{abort, exit, set_process};
 pub use stdio::set_up as set_up_streams;
 pub use thread::{set_thread_local_template, set_up_main_thread};
 
@@ -64,6 +64,11 @@ impl<T> Exclusive<T> {
         sync::unlock(&self.lock);
         result
     }
+}
+
+/// Writes `bytes` to standard error, unbuffered.
+pub fn write_error(bytes: &[u8]) {
+    let _ = linux::write_all(2, bytes);
 }
 
 pub fn set_errno(value: c_int) {
@@ -528,16 +533,16 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 /// How many missing functions a program may import.
 pub const MISSING_STUBS: usize = 256;
 
-static MISSING_NAMES: Exclusive<[(usize, usize); MISSING_STUBS]> =
-    Exclusive::new([(0, 0); MISSING_STUBS]);
+static MISSING_NAMES: Exclusive<[(&'static [u8], &'static [u8]); MISSING_STUBS]> =
+    Exclusive::new([(b"", b""); MISSING_STUBS]);
 
 extern "C" fn missing<const INDEX: usize>() -> ! {
-    let (address, length) = MISSING_NAMES.with(|names| names[INDEX]);
-    // SAFETY: `bind_missing` stored a name from the program's file, which stays mapped.
-    let name = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
+    let (library, name) = MISSING_NAMES.with(|names| names[INDEX]);
     let name = name.strip_prefix(b"_").unwrap_or(name);
     stdio::flush_all();
-    let _ = linux::write_all(2, b"eggos-macos: unimplemented libSystem function ");
+    let _ = linux::write_all(2, b"eggos-macos: unimplemented ");
+    let _ = linux::write_all(2, library);
+    let _ = linux::write_all(2, b" function ");
     let _ = linux::write_all(2, name);
     let _ = linux::write_all(2, b"\n");
     linux::exit(127)
@@ -589,8 +594,8 @@ fn missing_stub(index: usize) -> usize {
 }
 
 /// The address of stub number `index` (below [`MISSING_STUBS`]), which reports `name` as an
-/// unimplemented function when the program calls it.
-pub fn bind_missing(index: usize, name: &'static [u8]) -> u64 {
-    MISSING_NAMES.with(|names| names[index] = (name.as_ptr() as usize, name.len()));
+/// unimplemented function of `library` (its short name) when the program calls it.
+pub fn bind_missing(index: usize, library: &'static [u8], name: &'static [u8]) -> u64 {
+    MISSING_NAMES.with(|names| names[index] = (library, name));
     missing_stub(index) as u64
 }
