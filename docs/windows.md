@@ -149,8 +149,9 @@ use `GET_PROFILE` and `SET_PROFILE`.
 
 From the command line, `wm` (docs/coreutils.md) lists the windows and focuses, minimises,
 maximises, restores, closes, moves and sizes them; it uses `LIST_WINDOW` and `MANAGE_WINDOW`,
-so it needs root. Its MCP tools come with the MCP server: there is no capability or MCP
-framework yet (D21, D22).
+so it needs root. Listing, capturing and operating windows have MCP tools (`wm_list`,
+`wm_capture`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, the menu tools; docs/mcp.md,
+D143); focusing, minimising, maximising, restoring, closing, moving and sizing do not yet.
 
 ## The shell around the windows
 

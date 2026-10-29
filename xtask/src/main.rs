@@ -709,6 +709,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
+    qemu::reboot::check(arch, &kernel)?;
     if let Some(folder) = build_macos_gui_folder(arch)? {
         qemu::macos_gui::check(arch, &kernel, &folder)?;
     }

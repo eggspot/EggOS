@@ -14,20 +14,22 @@ Download the release (the image for your architecture, `SHA256SUMS` and the run 
 one folder, then:
 
 ```
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp
 claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
 ```
 
 To let the agent change things too, add the grants you want:
 
 ```
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp --mcp-allow write,install
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp --mcp-allow write,install
 claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp -McpAllow view,write,run,install
 ```
 
 Claude Code starts the script when it needs EggOS; the script boots EggOS in QEMU and connects
 its own standard input and output to EggOS's agent channel. The QEMU window still shows the
-desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdio MCP server.
+desktop. Other clients take the same command: run `sh run-eggos.sh --mcp` as a stdio MCP server.
+The script is started with `sh` because a downloaded file is not executable; after `chmod +x
+run-eggos.sh` the script's own path works too.
 
 - **No screen at all.** Add `--no-window` (`-NoWindow`) on a server, in CI or whenever you don't
   want a window: QEMU gets no display, keyboard or mouse, and EggOS draws its desktop in memory
@@ -45,8 +47,9 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
   (with `--no-disk`, `/home` and the audit log are in memory and gone at power-off). On Windows
   QEMU does not lock images; the script checks by opening the image exclusively.
 - **Start-up time.** Claude Code waits 30 s for a server by default (`MCP_TIMEOUT`, in
-  milliseconds). EggOS boots in a few seconds on aarch64 and x86_64; riscv64 under QEMU's
-  emulation is slower on some hosts: raise `MCP_TIMEOUT` if the connection times out.
+  milliseconds). EggOS boots to its prompt in about a quarter of a second (120 to 261 ms from
+  QEMU's start on CI's machines, without acceleration), and the server answers soon after; a
+  slow or busy host takes longer: raise `MCP_TIMEOUT` if the connection times out.
 - **Protocol versions.** The server speaks the 2025-11-25 and 2025-06-18 versions of MCP (with
   `initialize`) and answers the client's version when it is one of them, else 2025-11-25. A
   client that first probes for the newer, stateless 2026-07-28 version with `server/discover`
@@ -54,7 +57,9 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
   not, set `MCP_PROTOCOL_NEGOTIATION=legacy` for Claude Code (`auto` or `legacy`).
 - **Stopping.** The client stops the server by ending the script, which ends QEMU: for EggOS it
   is a power cut. EggFS's journal keeps the disk consistent, and every audit record is synced
-  as it is written.
+  as it is written. `reboot` (through `run`) also ends QEMU in an MCP boot, unlike the
+  interactive ones, where it restarts EggOS: the session cannot survive a restart, so the
+  client sees the server end and starts it again (D153).
 
 ## Grants
 

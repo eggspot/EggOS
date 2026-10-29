@@ -64,7 +64,11 @@ pub fn run() -> Result<(), String> {
         &dir.join(POWERSHELL_SCRIPT),
         powershell_script(&scripts).as_bytes(),
     )?;
-    write(&dir.join(NOTES_FILE), release_notes(&images).as_bytes())?;
+    let changes = merged_changes()?;
+    write(
+        &dir.join(NOTES_FILE),
+        release_notes(&images, &changes).as_bytes(),
+    )?;
     for image in &images {
         eprintln!(
             "xtask: {}: {} bytes, sha256 {}, boot to prompt {} ms",
@@ -500,54 +504,59 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         );
     }
     format!(
-        r#"[CmdletBinding(PositionalBinding = $false)]
-param(
-    [string]$Arch,
-    [switch]$Serial,
-    [switch]$Mcp,
-    [switch]$NoWindow,
-    [string[]]$McpAllow,
-    [string]$Apps,
-    [string]$Disk,
-    [switch]$NoDisk,
-    [switch]$FormatDisk,
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$Rest
-)
-$ErrorActionPreference = 'Stop'
+        r#"$ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
 $Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
-for ($i = 0; $i -lt $Rest.Count; $i++) {{
-    $argument = $Rest[$i]
-    if ($argument -eq '--serial') {{
+$Arch = ''
+$Serial = $false
+$Mcp = $false
+$NoWindow = $false
+$McpAllow = $null
+$Apps = ''
+$Disk = ''
+$NoDisk = $false
+$FormatDisk = $false
+$UsageError = $false
+$Words = @($args)
+for ($i = 0; $i -lt $Words.Count; $i++) {{
+    $argument = @($Words[$i]) -join ','
+    $value = $null
+    if ($i + 1 -lt $Words.Count) {{ $value = @($Words[$i + 1]) -join ',' }}
+    if ($argument -in @('-Serial', '--serial')) {{
         $Serial = $true
-    }} elseif ($argument -eq '--mcp') {{
+    }} elseif ($argument -in @('-Mcp', '--mcp')) {{
         $Mcp = $true
-    }} elseif ($argument -eq '--no-window') {{
+    }} elseif ($argument -in @('-NoWindow', '--no-window')) {{
         $NoWindow = $true
-    }} elseif ($argument -eq '--mcp-allow' -and $i + 1 -lt $Rest.Count) {{
-        $i++
-        $McpAllow = @($Rest[$i])
-    }} elseif ($argument -eq '--apps' -and $i + 1 -lt $Rest.Count) {{
-        $i++
-        $Apps = $Rest[$i]
-    }} elseif ($argument -eq '--disk' -and $i + 1 -lt $Rest.Count) {{
-        $i++
-        $Disk = $Rest[$i]
-    }} elseif ($argument -eq '--no-disk') {{
+    }} elseif ($argument -in @('-NoDisk', '--no-disk')) {{
         $NoDisk = $true
-    }} elseif ($argument -eq '--format-disk') {{
+    }} elseif ($argument -in @('-FormatDisk', '--format-disk')) {{
         $FormatDisk = $true
+    }} elseif ($argument -in @('-McpAllow', '--mcp-allow') -and $null -ne $value) {{
+        $McpAllow = $value
+        $i++
+    }} elseif ($argument -in @('-Apps', '--apps') -and $null -ne $value) {{
+        $Apps = $value
+        $i++
+    }} elseif ($argument -in @('-Disk', '--disk') -and $null -ne $value) {{
+        $Disk = $value
+        $i++
+    }} elseif ($argument -in @('-Arch', '--arch') -and $null -ne $value -and -not $Arch) {{
+        $Arch = $value
+        $i++
     }} elseif ($Arches -contains $argument -and -not $Arch) {{
         $Arch = $argument
+    }} elseif ($argument -in @('-h', '-Help', '--help')) {{
+        [Console]::Out.WriteLine($Usage)
+        exit 0
     }} else {{
-        Write-Error "run-eggos.ps1: $Usage"
-        exit 2
+        $UsageError = $true
     }}
 }}
-if (($NoDisk -and ($Disk -or $FormatDisk)) -or ($NoWindow -and -not $Mcp) -or ($Mcp -and $Serial) -or (($null -ne $McpAllow) -and -not $Mcp)) {{
-    Write-Error "run-eggos.ps1: $Usage"
+$Arch = $Arch.ToLowerInvariant()
+if ($UsageError -or ($Arch -and $Arches -notcontains $Arch) -or ($NoDisk -and ($Disk -or $FormatDisk)) -or ($NoWindow -and -not $Mcp) -or ($Mcp -and $Serial) -or (($null -ne $McpAllow) -and -not $Mcp)) {{
+    [Console]::Error.WriteLine("run-eggos.ps1: $Usage")
     exit 2
 }}
 $McpAllowList = ''
@@ -564,10 +573,6 @@ if ($null -ne $McpAllow) {{
 function Say([string]$Text) {{
     if ($Mcp) {{ [Console]::Error.WriteLine($Text) }} else {{ Write-Host $Text }}
 }}
-if ($Arch -and $Arches -notcontains $Arch) {{
-    Write-Error "run-eggos.ps1: $Usage"
-    exit 2
-}}
 if (-not $Arch) {{
     $hostArch = $null
     try {{ $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() }} catch {{ }}
@@ -577,20 +582,20 @@ if (-not $Arch) {{
 $File = "eggos-$Version-$Arch.elf"
 $Image = Join-Path $PSScriptRoot $File
 if (-not (Test-Path -LiteralPath $Image)) {{
-    Write-Error "run-eggos.ps1: $File not found: download it next to this script"
+    [Console]::Error.WriteLine("run-eggos.ps1: $File not found: download it next to this script")
     exit 1
 }}
 $Sums = Join-Path $PSScriptRoot '{SUMS_FILE}'
 if (Test-Path -LiteralPath $Sums) {{
     $line = Get-Content -LiteralPath $Sums | Where-Object {{ $_.EndsWith("  $File") }} | Select-Object -First 1
     if (-not $line) {{
-        Write-Error "run-eggos.ps1: $File is not listed in {SUMS_FILE}"
+        [Console]::Error.WriteLine("run-eggos.ps1: $File is not listed in {SUMS_FILE}")
         exit 1
     }}
     $expected = $line.Substring(0, 64)
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Image).Hash.ToLowerInvariant()
     if ($actual -ne $expected) {{
-        Write-Error "run-eggos.ps1: $File does not match its checksum in {SUMS_FILE}: download it again"
+        [Console]::Error.WriteLine("run-eggos.ps1: $File does not match its checksum in {SUMS_FILE}: download it again")
         exit 1
     }}
     Say "run-eggos.ps1: ${{File}}: checksum OK"
@@ -604,7 +609,7 @@ if (-not (Get-Command $Qemu -ErrorAction SilentlyContinue)) {{
     if ($installed -and (Test-Path -LiteralPath $installed)) {{
         $Qemu = $installed
     }} else {{
-        Write-Error "run-eggos.ps1: $Qemu not found: install QEMU (https://www.qemu.org/download/) and add it to PATH"
+        [Console]::Error.WriteLine("run-eggos.ps1: $Qemu not found: install QEMU (https://www.qemu.org/download/) and add it to PATH")
         exit 1
     }}
 }}
@@ -613,7 +618,7 @@ $QemuArgs = switch ($Arch) {{
 {cases}}}
 if ($Apps) {{
     if (-not (Test-Path -LiteralPath $Apps -PathType Container)) {{
-        Write-Error "run-eggos.ps1: $Apps is not a folder"
+        [Console]::Error.WriteLine("run-eggos.ps1: $Apps is not a folder")
         exit 1
     }}
     $Folder = (Resolve-Path -LiteralPath $Apps).ProviderPath.Replace(',', ',,')
@@ -689,7 +694,89 @@ exit $LASTEXITCODE
     )
 }
 
-fn release_notes(images: &[Image]) -> String {
+const REPOSITORY_URL: &str = "https://github.com/eggspot/EggOS";
+
+/// The QEMU release the run scripts need at least: the one CI tests with (Ubuntu 24.04's).
+pub const QEMU_MINIMUM_VERSION: &str = "8.2";
+
+fn git(args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(crate::workspace_root())
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|_| format!("git {} printed no UTF-8", args.join(" ")))
+}
+
+fn merged_changes() -> Result<String, String> {
+    let needs_history = |error: String| {
+        format!(
+            "{error}: the release notes list what the pull requests merged since the last \
+             release tag let users do, so they need the history and its tags (git fetch --tags \
+             --unshallow)"
+        )
+    };
+    let previous = git(&[
+        "describe",
+        "--tags",
+        "--abbrev=0",
+        "--match",
+        "v[0-9]*",
+        "HEAD^",
+    ])
+    .map_err(needs_history)?;
+    let previous = previous.trim();
+    let range = format!("{previous}..HEAD");
+    let subjects = git(&["log", "--first-parent", "--reverse", "--format=%s", &range])
+        .map_err(needs_history)?;
+    Ok(whats_new(previous, subjects.lines()))
+}
+
+fn whats_new<'a>(previous: &str, subjects: impl Iterator<Item = &'a str>) -> String {
+    let changes: Vec<String> = subjects.filter_map(user_change).collect();
+    if changes.is_empty() {
+        return format!("Nothing users can do that they could not in {previous}.\n");
+    }
+    let mut text = format!("Since {previous}, users can now:\n\n");
+    for change in changes {
+        let _ = writeln!(text, "{change}");
+    }
+    text
+}
+
+fn user_change(subject: &str) -> Option<String> {
+    let subject = subject.strip_prefix("feat: ").unwrap_or(subject);
+    let change = subject
+        .strip_prefix("Users can now ")
+        .or_else(|| subject.strip_prefix("users can now "))?;
+    let (change, pull_request) = split_pull_request(change);
+    let change = change
+        .rsplit_once(" (D")
+        .filter(|(_, decisions)| decisions.ends_with(')'))
+        .map_or(change, |(before, _)| before);
+    let mut line = format!("- {change}");
+    if let Some(number) = pull_request {
+        let _ = write!(line, " ([#{number}]({REPOSITORY_URL}/pull/{number}))");
+    }
+    Some(line)
+}
+
+fn split_pull_request(subject: &str) -> (&str, Option<&str>) {
+    subject
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" (#"))
+        .filter(|(_, number)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        .map_or((subject, None), |(before, number)| (before, Some(number)))
+}
+
+fn release_notes(images: &[Image], whats_new: &str) -> String {
     let mut table = String::new();
     for image in images {
         let _ = writeln!(
@@ -705,15 +792,18 @@ fn release_notes(images: &[Image]) -> String {
     format!(
         r#"# EggOS {VERSION}
 
+EggOS is pre-alpha: it boots in QEMU only, to try, not to use. Every process in it runs as root
+until users and permissions come (M10).
+
 ## What's new
 
-To be written in the release PR: what users can do now that they could not in the last release.
-
+{whats_new}
 ## Download and run
 
 Download the image for your architecture, `{SUMS_FILE}` and the run script for your system into
-one folder, then run the script. It checks the image against `{SUMS_FILE}` and boots it in QEMU,
-which must be installed (`qemu-system-<arch>` on `PATH`).
+one folder, then run the script. It checks the image against `{SUMS_FILE}` and boots it in QEMU
+{QEMU_MINIMUM_VERSION} or later, which must be installed (`qemu-system-<arch>` on `PATH`). QEMU
+emulates the CPU (TCG, no acceleration) on every host.
 
 | Architecture | File | Size | Boot to prompt |
 |--------------|------|------|----------------|
@@ -739,8 +829,22 @@ Windows (PowerShell):
 ```
 
 The window shows the EggOS desktop with the shell in a terminal window; the same session is on
-the terminal the script runs in. Quit with Ctrl-A then X on that terminal, or close the window.
+the terminal the script runs in. `poweroff` turns EggOS off and ends QEMU, `reboot` restarts it
+in the same window. Quit with Ctrl-A then X on that terminal, or close the window. Your files in
+`/home` and your apps in `/Applications` are kept in `eggos-<arch>-disk.img` next to the script.
 From a source checkout, `cargo xtask run --arch <arch>` boots the same image.
+
+## What runs
+
+- The desktop in the Windows, macOS or Linux layout (Settings picks it), the Terminal with the
+  `eggsh` shell and the core utilities, Files, Settings and the Text Editor.
+- Windows programs on x86_64 (x64) and aarch64 (ARM64): console programs and GUI programs on
+  kernel32, user32 and gdi32, with the system's buttons, text boxes, lists, menus, timers and
+  Open and Save dialogs, and C programs built by MSVC on its C runtime (`/MD`).
+- macOS programs on aarch64 (arm64) and x86_64 (x86_64), for macOS 13 or later: console
+  programs on libSystem, Objective-C programs on Foundation's core, and AppKit apps built in
+  code, with buttons, text fields, alerts and the main menu in the top bar.
+- Linux static programs on every architecture, console programs and Wayland GUI programs.
 
 ## Install an app
 
@@ -760,30 +864,67 @@ The release ships no apps of its own. To try some, build ours from a checkout wi
 `cargo xtask sample-apps --arch <arch>` and pass the folder it prints: `win-paint.exe`,
 `win-controls.exe`, `linux-paint` and, built on a Mac, `mac-paint.zip`. See docs/apps.md.
 
+## Keys
+
+The layout you pick in Settings decides the habits, as on the system you came from:
+
+- The launcher: Super (Windows and Linux layouts) or Cmd+Space (macOS layout); type a name and
+  press Enter.
+- Windows: Alt+Tab switches (Cmd+Tab in the macOS layout); Alt+F4 or Cmd+W closes (Ctrl+W in
+  the Windows and Linux layouts); Super+Up maximises, Super+Down restores or minimises,
+  Super+Left and Super+Right snap to a half, Cmd+M minimises (Super+H in the Linux layout),
+  Super+D shows the desktop, Super+X opens the power menu and Alt+Space the window menu.
+- The Text Editor takes Ctrl or Cmd with S (save), F (find), Z (undo), X, C and V in every
+  layout.
+- The terminal the script runs in: Ctrl-A then X quits QEMU.
+
+The keyboard layout is US only.
+
 ## Connect an AI agent (MCP)
 
 ```
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp
 claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
 ```
 
 Claude Code, or any MCP client, then starts EggOS and talks to its built-in MCP server. Add
 `--no-window` (`-NoWindow`) to run EggOS with no screen at all: it draws its desktop in memory,
-so apps still open for the agent, which sees and operates their windows as before. Agents
-can list and read files in `/home` and `/media/host` and list processes, windows and installed
-apps. With grants you give when starting it (`--mcp-allow view,write,run,install`,
-`-McpAllow` in PowerShell), they can also see what app windows show (`view`), write files below
-`/home/root` and move them to the Trash (`write`), install apps from `/media/host`, open and
-uninstall them (`install`), and run programs and click and type in any window (`run`, which can
-do anything a program can, so it implies the others). Without grants they only read. Replacing or trashing a file and uninstalling an app ask you first when the client can
-ask (Claude Code can). Every call is recorded in `/var/log/agent-audit.log`, which `agentlog`
-shows; an agent with `run` could erase it. Not yet: grants you can change while EggOS runs,
-per-agent grants, MCP over the network. See docs/mcp.md.
+so apps still open for the agent, which sees and operates their windows as before.
+
+| Grant (`--mcp-allow`, `-McpAllow`) | Lets the agent |
+|-------|----------------|
+| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock |
+| `view` | see what any app window shows, covered and minimised ones too, passwords and messages included |
+| `write` | write files below `/home/root` and move them to the Trash |
+| `install` | install apps from `/media/host`, open and uninstall installed apps, open a file in the Text Editor |
+| `run` | run any program, and click, type and scroll in any window, the terminal's root shell included: full control of the machine, so it implies the others |
+
+What grants do not protect:
+
+- Grants hold for the whole boot and for every agent: you set them when you start EggOS and
+  change them by restarting it. There are no per-agent grants, and no MCP over the network.
+- Every process runs as root until M10, so any app you install can do what the `run` grant
+  allows, and an agent with `run` can do anything, erasing the audit log included.
+- Replacing or trashing a file and uninstalling an app ask you first when the client can ask
+  (Claude Code can). Otherwise the call needs `confirm: true`, which guards against an agent's
+  accident and is not your approval: the agent sets it itself. Keep your client's own
+  permission prompts on for these tools.
+- What EggOS returns (files, names, window titles and captures) is data from the machine, not
+  instructions; the server says so in every result.
+- Every call is recorded in `/var/log/agent-audit.log`, which `agentlog` shows. See
+  docs/mcp.md.
 
 ## Known limits
 
-See [docs/limitations.md](https://github.com/eggspot/EggOS/blob/v{VERSION}/docs/limitations.md)
-for what this release does not do yet.
+- QEMU only: no real hardware, no network, no sound, no USB; the US keyboard layout; UTC only.
+- Everything is in the base for now: the desktop and the Windows and macOS layers cannot be
+  left out until the component manager comes (M14).
+- Linux programs must be static; programs built for another CPU and 32-bit programs are
+  refused; no Android apps (`.apk`) or iOS apps; riscv64 runs no Windows or macOS programs.
+- One host folder, read-only.
+
+See [docs/limitations.md]({REPOSITORY_URL}/blob/v{VERSION}/docs/limitations.md) for everything
+this release does not do yet.
 "#
     )
 }
@@ -935,7 +1076,7 @@ mod tests {
         assert!(shell.contains(
             "if [ -n \"$mcp_allow\" ]; then\n  command_line=\"${command_line:+$command_line }eggos.mcp_allow=$mcp_allow\"\n"
         ));
-        assert!(powershell.contains("    [string[]]$McpAllow,\n"));
+        assert!(powershell.contains("$McpAllow = $null\n"));
         assert!(powershell.contains("$GrantNames = @(($McpAllow -join ',') -split ',')"));
         assert!(
             powershell.contains("if ($GrantName -cnotin @('view', 'write', 'run', 'install')) {")
@@ -944,13 +1085,9 @@ mod tests {
         assert!(powershell.contains(
             "if ($McpAllowList) {\n    $CommandLineWords += \"eggos.mcp_allow=$McpAllowList\"\n"
         ));
-        assert!(
-            powershell.contains(
-                "    }} elseif ($argument -eq '--mcp-allow'"
-                    .replace("}}", "}")
-                    .as_str()
-            )
-        );
+        assert!(powershell.contains(
+            "    } elseif ($argument -in @('-McpAllow', '--mcp-allow') -and $null -ne $value) {\n"
+        ));
         assert_eq!(qemu::grant_word("write,run"), "eggos.mcp_allow=write,run");
         assert_eq!(qemu::check_grants("write,run,install"), Ok(()));
         assert_eq!(qemu::check_grants("view"), Ok(()));
@@ -1013,6 +1150,32 @@ mod tests {
     }
 
     #[test]
+    fn a_powershell_usage_error_is_one_line_on_standard_error_and_status_2() {
+        let powershell = powershell_script(&script_arches());
+        assert!(!powershell.contains("Write-Error"), "{powershell}");
+        assert!(!powershell.contains("CmdletBinding"));
+        assert!(!powershell.contains("param("));
+        assert!(powershell.contains("$Words = @($args)\n"));
+        assert!(powershell.contains("    } else {\n        $UsageError = $true\n    }\n"));
+        assert!(
+            powershell.contains("if ($UsageError -or ($Arch -and $Arches -notcontains $Arch) -or ")
+        );
+        assert!(
+            powershell.contains(
+                "    [Console]::Error.WriteLine(\"run-eggos.ps1: $Usage\")\n    exit 2\n"
+            )
+        );
+        let parsed = powershell.find("$Arch = $Arch.ToLowerInvariant()").unwrap();
+        assert!(parsed < powershell.find("function Say").unwrap());
+        for switch in ["Serial", "Mcp", "NoWindow", "NoDisk", "FormatDisk"] {
+            assert!(powershell.contains(&format!("$argument -in @('-{switch}', '--")));
+        }
+        for option in ["McpAllow", "Apps", "Disk", "Arch"] {
+            assert!(powershell.contains(&format!("$argument -in @('-{option}', '--")));
+        }
+    }
+
+    #[test]
     fn the_scripts_carry_no_comments_but_the_shebang() {
         let arches = script_arches();
         for line in shell_script(&arches).lines().skip(1) {
@@ -1039,12 +1202,122 @@ mod tests {
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  eggos-{VERSION}-aarch64.elf\n"
             )
         );
-        let notes = release_notes(&images);
+        let notes = release_notes(&images, "Since v0.2.0, users can now:\n\n- boot\n");
         assert!(notes.contains(&format!(
             "| aarch64 | `eggos-{VERSION}-aarch64.elf` | 3 bytes (0 KiB) | 55 ms |"
         )));
-        assert!(notes.contains("## What's new"));
+        assert!(notes.contains("## What's new\n\nSince v0.2.0, users can now:\n\n- boot\n\n"));
         assert!(notes.contains("## Install an app"));
         assert!(notes.contains("cargo xtask sample-apps --arch <arch>"));
+    }
+
+    #[test]
+    fn the_release_notes_have_every_section_the_release_needs() {
+        let notes = release_notes(&[], "Since v0.2.0, users can now:\n\n- boot\n");
+        let mut from = 0;
+        for section in [
+            "## What's new",
+            "## Download and run",
+            "## What runs",
+            "## Install an app",
+            "## Keys",
+            "## Connect an AI agent (MCP)",
+            "## Known limits",
+        ] {
+            let at = notes[from..]
+                .find(&format!("\n{section}\n"))
+                .unwrap_or_else(|| panic!("{section}"));
+            from += at + section.len();
+        }
+        assert!(!notes.contains("To be written"));
+        assert!(notes.contains(&format!("QEMU\n{QEMU_MINIMUM_VERSION} or later")));
+        assert!(notes.contains("TCG, no acceleration"));
+        assert!(notes.contains("runs as root"));
+        assert!(notes.contains("is not your approval"));
+        assert!(notes.contains("`reboot` restarts it"));
+        for grant in ["`view`", "`write`", "`install`", "`run`"] {
+            assert!(notes.contains(&format!("| {grant} |")), "{grant}");
+        }
+    }
+
+    #[test]
+    fn what_s_new_lists_what_merged_pull_requests_let_users_do() {
+        assert_eq!(
+            user_change(
+                "Users can now run Windows programs with buttons (D145, v0.3.0 item 42) (#148)"
+            ),
+            Some(format!(
+                "- run Windows programs with buttons ([#148]({REPOSITORY_URL}/pull/148))"
+            ))
+        );
+        assert_eq!(
+            user_change("feat: users can now pipe commands (D125, v0.3.0 items 22-23) (#124)"),
+            Some(format!(
+                "- pipe commands ([#124]({REPOSITORY_URL}/pull/124))"
+            ))
+        );
+        assert_eq!(
+            user_change("Users can now see the time"),
+            Some("- see the time".to_owned())
+        );
+        assert_eq!(user_change("ci: parallel jobs (D122) (#121)"), None);
+        assert_eq!(user_change("feat: the driver model (D110) (#110)"), None);
+        let subjects = [
+            "feat: execve from a file (D103, v0.3.0 item 5) (#103)",
+            "Users can now keep files across reboots (D131, v0.3.0 item 25) (#129)",
+            "Users can now install apps (D134) (#132)",
+        ];
+        assert_eq!(
+            whats_new("v0.2.0", subjects.into_iter()),
+            format!(
+                "Since v0.2.0, users can now:\n\n\
+                 - keep files across reboots ([#129]({REPOSITORY_URL}/pull/129))\n\
+                 - install apps ([#132]({REPOSITORY_URL}/pull/132))\n"
+            )
+        );
+        assert_eq!(
+            whats_new("v0.2.0", subjects[..1].iter().copied()),
+            "Nothing users can do that they could not in v0.2.0.\n"
+        );
+    }
+
+    #[test]
+    fn the_docs_tell_users_to_start_the_shell_script_with_sh_and_agree_on_the_mcp_server() {
+        let root = crate::workspace_root();
+        let read = |path: &str| {
+            std::fs::read_to_string(root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+        };
+        let notes = release_notes(&[], "");
+        let documents = [
+            ("README.md", read("README.md")),
+            ("docs/mcp.md", read("docs/mcp.md")),
+            ("RELEASE-NOTES.md", notes),
+        ];
+        for (name, text) in &documents {
+            let lines: Vec<&str> = text
+                .lines()
+                .filter(|line| line.contains("claude mcp add") && line.contains("run-eggos.sh"))
+                .collect();
+            assert!(!lines.is_empty(), "{name} has no `claude mcp add` line");
+            for line in lines {
+                assert!(line.contains("-- sh /"), "{name}: {line}");
+            }
+        }
+        let limitations = read("docs/limitations.md");
+        assert!(!limitations.contains("No MCP server"));
+        assert!(!limitations.contains("come with the MCP server"));
+        let boot_claims = ["tenth of a second", "a few seconds"];
+        for path in ["README.md", "docs/limitations.md", "docs/mcp.md"] {
+            let text = read(path);
+            for claim in boot_claims {
+                assert!(!text.contains(claim), "{path}: {claim}");
+            }
+        }
+        for path in ["README.md", "docs/limitations.md"] {
+            assert!(
+                read(path).contains(&format!("QEMU {QEMU_MINIMUM_VERSION} or later")),
+                "{path}"
+            );
+        }
     }
 }

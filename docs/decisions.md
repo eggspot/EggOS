@@ -9930,3 +9930,69 @@ the license, by an explicit instruction recorded here.
   manager, costing nothing when absent (part 69, D18); layers on riscv64 (D17's ahead-of-time
   translation would bring x64 programs there); our sample apps as a release asset (the owner's
   decision); Android (`.apk`) and iOS apps (D34).
+
+## D153 The README, docs and release notes work as written: `sh run-eggos.sh`, `reboot` that restarts, one boot-time figure, QEMU 8.2, one-line PowerShell usage errors and release notes from the merged pull requests (issue #144; extends D116, D136, D137, D152) — Decided by the build loop
+- **Why.** The release-path review followed the README and docs as a new user would and hit
+  steps that fail and docs that contradict each other: `claude mcp add eggos --
+  /path/to/run-eggos.sh --mcp` fails with "permission denied" on a downloaded script (a
+  release asset has no executable bit); `reboot` ended QEMU instead of restarting EggOS;
+  `docs/limitations.md` said "No MCP server" and that the app and file MCP tools came after
+  the release, which had shipped; two boot-time claims disagreed; no QEMU version was named;
+  `run-eggos.ps1`'s usage errors printed a PowerShell error trace; and the release notes were a
+  skeleton.
+- **`sh` everywhere.** Every `claude mcp add` line (README, docs/mcp.md, the release notes)
+  starts the script with `sh /path/to/run-eggos.sh`, which needs no executable bit; docs/mcp.md
+  says `chmod +x` makes the bare path work too.
+- **`reboot` restarts in the run scripts and `cargo xtask run`.** `qemu::interactive_args` no
+  longer passes `-no-reboot`, so a reset boots EggOS again in the same QEMU and window, as on
+  a computer. The boot tests keep their own arguments: the ones that want a reset to end QEMU
+  still pass `-no-reboot` (D106), and the others fail on a second banner. A new QEMU check
+  (`xtask/src/qemu/reboot.rs`) boots the release image with the scripts' serial arguments,
+  types `reboot`, and needs the restart line, a second boot and its prompt, then `poweroff`'s
+  clean exit, on every architecture.
+- **MCP boots keep `-no-reboot`** (decided by the build loop, not by research). An MCP session
+  begins with `initialize` and the server's state; a restarted EggOS would answer the client's
+  next call as a server that was never initialized, with the grants re-read and every
+  in-flight call lost. Ending QEMU ends the script, which the client sees as the server
+  stopping and can start again; docs/mcp.md says so.
+- **One boot-time figure.** CI's boot-to-prompt test measured 120 ms (aarch64), 161 ms
+  (riscv64) and 261 ms (x86_64) from QEMU's start to the first prompt on `main` (run
+  40875176920, 2026-10-29, without acceleration). The README, docs/limitations.md and
+  docs/mcp.md now say "about a quarter of a second"; the release notes give each image's own
+  figure from `cargo xtask release`.
+- **QEMU 8.2 or later, no acceleration.** CI tests with Ubuntu 24.04's QEMU 8.2.2 (the
+  baseline's `qemu` lines), so that is the stated minimum (`release::QEMU_MINIMUM_VERSION`),
+  in the README, docs/limitations.md and the release notes, with "QEMU emulates the CPU (TCG)
+  on every host".
+- **PowerShell usage errors.** `run-eggos.ps1` has no `param` block any more: with one,
+  PowerShell binds the arguments before the script's first line runs, so a wrong one (an
+  unknown `-Bogus`, `-Arch` with no value) ended in PowerShell's own error record, and
+  `Write-Error` under `$ErrorActionPreference = 'Stop'` threw before `exit 2`. The script now
+  reads `$args` itself, takes PowerShell's `-Serial` and the shell script's `--serial`
+  spellings alike (case-insensitively, as PowerShell does), and answers anything else with one
+  line, `run-eggos.ps1: usage: ...`, on standard error and status 2; every other error is one
+  line on standard error too (`[Console]::Error.WriteLine`).
+- **Release notes from the merged pull requests.** `cargo xtask release` writes "What's new"
+  from `git log --first-parent` since the last `v*` tag before `HEAD`: each merged pull
+  request whose subject says what users can now do (the history's convention since D115)
+  becomes a line, without its decision references, linked to its pull request; other subjects
+  (CI, refactors) are left out. It needs the history and tags, and says so if they are
+  missing. The other sections are written now, so the release only fills numbers: download and
+  run (QEMU's minimum, TCG, `reboot` and `poweroff`), what runs, installing an app (D152), the
+  keys of each layout, the MCP grants in a table and what they do not protect (every process
+  is root until M10, so any installed app can do what `run` allows; `confirm: true` guards
+  against an agent's accident and is not the user's approval; text from EggOS is data), and
+  the known limits.
+- **Docs reconciled.** docs/limitations.md: "No components yet" with what has no MCP tool
+  yet, instead of "No MCP server"; Linux programs run from the host folder and install as
+  apps; the Files and windows lines name the MCP tools that exist. docs/coreutils.md,
+  docs/drivers.md and docs/windows.md likewise. The README's "Try EggOS" gains "Install an app".
+- **Checked by host tests.** `release.rs` asserts that every `claude mcp add` line for the
+  shell script in the README, docs/mcp.md and the release notes uses `sh`, that
+  docs/limitations.md no longer says "No MCP server" or "come with the MCP server", that no
+  doc keeps the old boot claims, that the README and limitations name QEMU 8.2, that the notes
+  have every section in order with the root and `confirm` warnings, that the PowerShell script
+  has no `Write-Error` or `param` block and answers usage errors with one line and status 2, and
+  that "What's new" keeps only user-facing subjects.
+- **Not yet.** A QEMU version check in the scripts themselves (they name the minimum but do not
+  read `qemu-system-<arch> --version`); `run-eggos.ps1` run by CI on Windows (D154).

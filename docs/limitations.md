@@ -8,9 +8,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 ## Where it runs
 - **QEMU only.** The images boot on QEMU's `virt` machines (aarch64 with a Cortex-A72 and GICv2,
   riscv64 through OpenSBI) and `q35` (x86_64), with 128 MiB of memory and 4 CPUs, as the run
-  scripts start them. No real hardware, no other hypervisor, no UEFI or bootable disk image yet.
-- **No acceleration.** QEMU emulates the CPU (TCG), so the system runs slower than it will on
-  hardware; boot to the prompt still takes about a tenth of a second.
+  scripts start them; they need QEMU 8.2 or later (CI tests with Ubuntu 24.04's 8.2.2). No real
+  hardware, no other hypervisor, no UEFI or bootable disk image yet.
+- **No acceleration.** QEMU emulates the CPU (TCG) on every host, so the system runs slower than
+  it will on hardware; boot to the prompt still takes about a quarter of a second (120 ms on
+  aarch64, 161 ms on riscv64 and 261 ms on x86_64 from QEMU's start, on CI's machines on
+  2026-10-29; the release notes give each image's own figure).
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
   virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
   RISC-V Goldfish, D150) and on test kernels virtio-rng. Nothing else is driven: no network,
@@ -64,8 +67,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   clock shows the uptime until the clock is set (D73). `/proc/driver/rtc` reads the hardware
   clock at most once a second and may be up to a second behind it in between.
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
-  Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
-  can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
+  Linux system-call layer, from the host folder (`--apps`), installed as apps (`app install`),
+  or built into an image by `cargo xtask image --add` ([Linux programs](linux-programs.md),
+  D117, D130, D134). No
   dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
@@ -130,8 +134,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   through the MCP server's grants (`view` to see, `run` to operate, D143). Input to a window
   whose program stopped reading its events is retried for 3 s, then fails.
 - **iOS apps are not in yet** (D17).
-- **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends
-  of every capability (D22) and the component manager (D18) come later.
+- **No components yet.** The component manager (D18) comes later (M14): for v0.3.0 the
+  desktop and the Windows and macOS layers are in the base and cannot be left out (D109,
+  D152). The built-in MCP server is in (D136, docs/mcp.md), but not every capability has its
+  three front-ends yet (D22): Settings, the device list and window focus, move, size and
+  close have no MCP tools, and Files' copy, move and new folder have none either (an agent
+  with `run` uses `cp`, `mv` and `mkdir`).
 - **One user, root.** Processes start as root; there are no logins or permissions to manage
   (D75).
 
@@ -209,8 +217,9 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   one item inside the Files process, shared with no other program and lost when Files
   closes; a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
   in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
-  most 32 levels deep in a copy, a move across file systems or a delete; the MCP tools for
-  files come with the MCP server (item 28, after the release);
+  most 32 levels deep in a copy, a move across file systems or a delete; agents read, write
+  and trash files through the MCP tools `ls`, `cat`, `tee` and `trash` (docs/mcp.md), and copy,
+  move or make folders only through `run`;
 - the Trash holds only what is on the home folder's file system (`/home`): an item in `/tmp`
   or `/Applications` is deleted for good after a question, and the read-only host share's are
   neither trashed nor changed;

@@ -429,6 +429,11 @@ The release path (the release-path review's issues #141-#145, after the items ab
   layers, a v0.3.0 exception to D18 until the component manager; the install, Files, MCP and
   macOS GUI boot tests boot the release artifact itself, with no `--add`; `cargo xtask
   sample-apps` builds our own apps to try. Next: the layers as optional components (M14).
+- #144 **done** — users can follow the README, docs and release notes as written (D153):
+  `sh run-eggos.sh --mcp` everywhere, `reboot` restarts EggOS in the run scripts (a QEMU check
+  on every architecture), QEMU 8.2 or later and no acceleration stated, one measured boot time,
+  one-line PowerShell usage errors with status 2, the docs reconciled with the MCP server, and
+  release notes whose "What's new" comes from the merged pull requests.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

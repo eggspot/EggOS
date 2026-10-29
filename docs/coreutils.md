@@ -58,9 +58,9 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
   `rm` asks nothing (no `-i`); `grep` has no `-E`, `-r`, `-o`, `-l` or back-references; `touch` sets only the
   modification time (no access time is kept, no `-d` or `-r`).
 - `cp`, `mv`, `mkdir`, `rm` and `trash` are the command line of what Files does with a
-  window (D135); the MCP front-ends every capability gets (D22) come with the MCP server (item
-  28, after the release); the other utilities' GUI front-ends come with the capability
-  framework (M14).
+  window (D135); `trash` is also the MCP tool `trash` (D137), while `cp`, `mv`, `mkdir` and
+  `rm` have no MCP tools yet (an agent with the `run` grant runs them, docs/mcp.md); the other
+  utilities' GUI front-ends come with the capability framework (M14).
 
 - `ls` shows owners and groups as numbers (there is no user database yet), times always as
   `YYYY-MM-DD HH:MM` in UTC (GNU's `--time-style=long-iso`; there is no time zone database),

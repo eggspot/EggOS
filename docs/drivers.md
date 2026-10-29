@@ -42,8 +42,9 @@ other CPU starts.
   kept; nothing is reassigned.
 
 The table (`DeviceTable`) is on the heap, as large as what was found, in discovery order,
-children after their parents. `devices::for_each` is the `devices` capability: the GUI, CLI
-and MCP front-ends (D22) come with the MCP server (M10). The boot log prints the count and
+children after their parents. `devices::for_each` is the `devices` capability: its GUI, CLI
+and MCP front-ends (D22) are not built yet (the MCP server exists, D136, but has no tool for
+it). The boot log prints the count and
 each device a bus found or a driver refused.
 
 ## Drivers

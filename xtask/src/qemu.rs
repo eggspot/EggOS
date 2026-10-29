@@ -9,6 +9,7 @@ pub mod macos_gui;
 pub mod mcp;
 pub mod persistent;
 pub mod real_time;
+pub mod reboot;
 pub mod settings;
 pub mod shell;
 pub mod text_editor;
@@ -2997,7 +2998,8 @@ pub fn run_interactive(
 
 /// QEMU's arguments, but the kernel's, for an interactive boot of `arch`: its display in a
 /// window when `window` says so, with the console on the terminal either way. `cargo xtask
-/// run` and the release's run scripts both use them (D116).
+/// run` and the release's run scripts both use them (D116). There is no `-no-reboot`, so
+/// `reboot` restarts EggOS in the same QEMU (D153).
 pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
     let console: &[&str] = match window {
         true => &["-serial", "mon:stdio"],
@@ -3010,7 +3012,7 @@ pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
         .chain(arch.input_args)
         .chain(COMMON_ARGS)
         .copied()
-        .chain(["-smp", cpus.as_str(), "-no-reboot"])
+        .chain(["-smp", cpus.as_str()])
         .chain(console.iter().copied())
         .map(str::to_owned)
         .collect()
@@ -3070,7 +3072,8 @@ pub fn command_line_args(line: &str) -> Vec<String> {
 /// console in the file `console_log` (commas doubled), no monitor, and the display and input
 /// devices with the display in a window when `window` says so; otherwise none of them
 /// ([`Arch::offscreen_args`]), for a boot whose command line asks for the offscreen display
-/// ([`OFFSCREEN_WORD`], D144).
+/// ([`OFFSCREEN_WORD`], D144). It keeps `-no-reboot`: a reboot ends QEMU and with it the MCP
+/// session, which the client then starts again with a new `initialize` (D153).
 pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
     let cpus = TEST_CPUS.to_string();
     let devices: Vec<&str> = match window {
@@ -3271,12 +3274,12 @@ mod tests {
         {
             assert!(window.iter().any(|arg| arg == part), "{part}");
         }
-        assert!(
-            joined.ends_with("-smp 4 -no-reboot -serial mon:stdio"),
-            "{joined}"
-        );
+        assert!(joined.ends_with("-smp 4 -serial mon:stdio"), "{joined}");
         let serial = interactive_args(arch, false).join(" ");
-        assert!(serial.ends_with("-smp 4 -no-reboot -nographic"), "{serial}");
+        assert!(serial.ends_with("-smp 4 -nographic"), "{serial}");
+        assert!(!joined.contains("-no-reboot") && !serial.contains("-no-reboot"));
+        let mcp = mcp_args(arch, false, "/tmp/serial.log").join(" ");
+        assert!(mcp.contains("-smp 4 -no-reboot"), "{mcp}");
     }
 
     #[test]

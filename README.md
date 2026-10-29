@@ -14,13 +14,15 @@ AI-native operating system written from scratch in Rust, with its own kernel (no
 EggOS is open source and open for funding. If you want to help build it, [sponsor EggOS on GitHub Sponsors](https://github.com/sponsors/eggspot).
 
 ## Try EggOS
-EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop. These steps apply
-from v0.3.0, the first release with the desktop, `SHA256SUMS` and the run scripts.
+EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop, in about a quarter
+of a second. These steps apply from v0.3.0, the first release with the desktop, `SHA256SUMS` and
+the run scripts.
 
 ![The EggOS desktop: the top bar, the wallpaper and the shell in a terminal window](docs/images/desktop.png)
 
-1. Install [QEMU](https://www.qemu.org/download/) (macOS: `brew install qemu`; Debian or Ubuntu:
-   `sudo apt install qemu-system`; Windows: the QEMU installer, with its folder on `PATH`).
+1. Install [QEMU](https://www.qemu.org/download/), QEMU 8.2 or later (macOS: `brew install qemu`;
+   Debian or Ubuntu 24.04 or later: `sudo apt install qemu-system`; Windows: the QEMU installer,
+   with its folder on `PATH`). QEMU emulates the CPU (no acceleration), on every host.
 2. From the [latest release](https://github.com/eggspot/EggOS/releases/latest) (v0.3.0 or later), download into one
    folder the image for your machine (`eggos-<version>-aarch64.elf`, `-riscv64.elf` or
    `-x86_64.elf`), `SHA256SUMS`, and `run-eggos.sh` (macOS, Linux) or `run-eggos.ps1` (Windows).
@@ -55,8 +57,8 @@ also write and trash files, run programs and install apps; every call is logged 
 shows it), add the script as a server ([docs/mcp.md](docs/mcp.md)):
 
 ```
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp
-claude mcp add eggos -- /path/to/run-eggos.sh --mcp --mcp-allow write,install
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp
+claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp --mcp-allow write,install
 ```
 
 `run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine.
@@ -66,8 +68,8 @@ shell in a terminal window you can move, focus and minimise with the mouse. Type
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
 `grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, `date`, pipes such as `ls /bin | grep s | wc -l`,
 files in `/tmp` and `/home` (`echo hi > /tmp/x`, `cp`, `mv`, `rm`, `mkdir`, `touch`), the up
-arrow for the last lines, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
-[core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives
+arrow for the last lines, `poweroff` (which ends QEMU) and `reboot` (which restarts EggOS in
+the same window) (the [shell](docs/shell.md) and the [core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives
 a reboot: the script creates `eggos-<arch>-disk.img` next to the image (1 GiB, sparse) and
 EggOS formats it with [EggFS](docs/eggfs.md), its own journaled file system, the first time;
 `sync` writes changes at once, and they are written within 5 s anyway. `--disk <image>` uses
@@ -79,6 +81,15 @@ Type `edit notes.txt` (or double-click a text file in Files) to open it in the T
 ([docs/apps.md](docs/apps.md#the-text-editor-edit)).
 Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
+
+### Install an app
+Put a program in the folder you pass with `--apps`, then type `app install /media/host/<file>`
+at the prompt, or choose `Install from host share...` in the launcher: Windows `.exe` files on
+x86_64 and aarch64, macOS tools, `.app` bundles and `.zip` archives of them on aarch64 and
+x86_64, and static Linux programs everywhere. The app gets an icon on the desktop and a row in
+the launcher, and stays on the disk; `app list` lists your apps and `app uninstall <name>`
+removes one. To get some to try, `cargo xtask sample-apps --arch <arch>` builds ours from a
+checkout ([docs/apps.md](docs/apps.md#what-you-can-install-today-and-apps-to-try)).
 
 ### Run your own Linux programs
 Static Linux programs run unmodified. From a checkout, add yours to the image and boot it, then

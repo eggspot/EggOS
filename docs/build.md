@@ -185,6 +185,10 @@ holds what used to be written in them.
   D18 until the component manager (D152); so does every test image built on the release
   initramfs. Adding an Android program (an ELF file with the `.note.android.ident` note) adds
   `/system/bin/sh`, another name for `eggsh` ([Android programs](android-programs.md), D119).
+- **The reboot boot test** (`xtask/src/qemu/reboot.rs`, every architecture) boots the release
+  image with `qemu::interactive_args`' serial arguments, as `run-eggos.sh --serial` does,
+  types `reboot` at the prompt and must see the restart, a second boot and its prompt in the
+  same QEMU, then powers off with `poweroff` (D153).
 - **The install, Files and MCP boot tests boot the release image itself**, the kernel `cargo
   xtask release` copies to `target/release-dist/`, with no `--add`: they install
   `win-paint.exe` (x86_64 and aarch64) or the static Linux program (riscv64) from the host
@@ -281,10 +285,13 @@ holds what used to be written in them.
   and writes to `target/release-dist/` (under `CARGO_TARGET_DIR` when set): the image as
   `eggos-<version>-<arch>.elf` (the version is `[workspace.package]`'s), `SHA256SUMS` in
   `sha256sum`'s format (xtask's own SHA-256), `run-eggos.sh` and `run-eggos.ps1`, and
-  `RELEASE-NOTES.md`, a skeleton with each image's size and boot-to-prompt time whose
-  what's-new section the release PR writes. The scripts' QEMU arguments are
-  `qemu::interactive_args`, the ones `cargo xtask run` uses, with `-nographic` for `--serial`
-  (`-Serial`), `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
+  `RELEASE-NOTES.md`: what's new, written from the subjects of the pull requests merged on
+  `main` since the last `v*` tag that say what users can now do (`git log --first-parent`, so
+  the release needs the history and its tags), each image's size and boot-to-prompt time, what
+  runs, installing an app, the keys, the MCP grants and what they do not protect, and the known
+  limits (D153). The scripts' QEMU arguments are `qemu::interactive_args`, the ones `cargo
+  xtask run` uses, with no `-no-reboot`, so `reboot` restarts EggOS in the same QEMU (D153), and
+  with `-nographic` for `--serial` (`-Serial`), `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
   PowerShell), with the folder made absolute and its commas doubled, and `qemu::disk_args`
   for the disk image; with `--mcp` (`-Mcp`) `qemu::mcp_args`: the agent channel on the
   script's standard input and output (`qemu::agent_channel_args`), the console in
@@ -292,11 +299,14 @@ holds what used to be written in them.
   input device (`Arch::offscreen_args`, `-display none`) and the kernel command line word
   `qemu::OFFSCREEN_WORD`, `eggos.display=offscreen`, so EggOS draws its desktop in memory
   (D144), every script message on standard error, and the disk image checked with `qemu-io`
-  for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>` (`-McpAllow`,
+  for another EggOS's lock, and `-no-reboot`, so a reboot ends the MCP session (D136, D153,
+  docs/mcp.md); with `--mcp-allow <list>` (`-McpAllow`,
   `--mcp` only) the word `qemu::grant_word`, `eggos.mcp_allow=<list>`, once each name is
   checked as `view`, `write`, `run` or `install` (D137, D143). The words go in one `-append`
   (`qemu::command_line_args`), since QEMU keeps only the last; host tests check the scripts'
-  text. Each script picks the host's architecture
+  text. `run-eggos.ps1` reads its arguments itself (`$args`: PowerShell's `-Name` and the shell
+  script's `--name` spellings alike, no `param` block), so an unknown or misplaced one prints
+  one usage line on standard error and exits with 2, as `run-eggos.sh` does (D153). Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
   `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one
