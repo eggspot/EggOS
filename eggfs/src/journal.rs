@@ -102,7 +102,11 @@ pub fn format<D: Disk + ?Sized>(disk: &mut D, now: u64) -> Result<(), FormatErro
 
 fn is_replayable(geometry: &Geometry, target: u32) -> bool {
     let journal_end = geometry.journal + geometry.journal_blocks;
-    target >= 1 && target < geometry.blocks && !(geometry.journal..journal_end).contains(&target)
+    target < geometry.blocks && !(geometry.journal..journal_end).contains(&target)
+}
+
+fn is_same_superblock(geometry: &Geometry, image: &[u8]) -> bool {
+    Geometry::decode(image).is_some_and(|upgraded| geometry.same_layout(&upgraded))
 }
 
 fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), MountError> {
@@ -140,6 +144,15 @@ fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), Moun
         .all(|&target| is_replayable(geometry, target))
     {
         return Err(MountError::Corrupt);
+    }
+    for (index, &target) in descriptor.targets.iter().enumerate() {
+        if target == 0 {
+            disk.read(journal + 1 + index as u64, &mut image[..])
+                .map_err(io)?;
+            if !is_same_superblock(geometry, &image[..]) {
+                return Err(MountError::Corrupt);
+            }
+        }
     }
     let mut recovered = 0;
     for (index, &target) in descriptor.targets.iter().enumerate() {
@@ -185,8 +198,9 @@ fn count_clear<D: Disk>(
 
 impl<D: Disk> Volume<D> {
     /// Mounts the EggFS file system on `disk`, first restoring from the journal a committed
-    /// transaction whose blocks did not all reach their places. On an error the disk comes
-    /// back.
+    /// transaction whose blocks did not all reach their places, then freeing, in a commit of
+    /// its own, the files removed while open that a crash or a power-off left behind. On an
+    /// error the disk comes back.
     pub fn mount(mut disk: D) -> Result<(Self, Mounted), (MountError, D)> {
         let mut block = zeroed_block();
         if disk.read(0, &mut block[..]).is_err() {
@@ -201,6 +215,18 @@ impl<D: Disk> Volume<D> {
         let (sequence, recovered_blocks) = match replay(&mut disk, &geometry) {
             Ok(replayed) => replayed,
             Err(error) => return Err((error, disk)),
+        };
+        let geometry = match recovered_blocks {
+            0 => geometry,
+            _ => {
+                if disk.read(0, &mut block[..]).is_err() {
+                    return Err((MountError::Io, disk));
+                }
+                match Geometry::decode(&block[..]) {
+                    Some(replayed) if geometry.same_layout(&replayed) => replayed,
+                    _ => return Err((MountError::Corrupt, disk)),
+                }
+            }
         };
         let free = count_clear(
             &mut disk,
@@ -223,14 +249,22 @@ impl<D: Disk> Volume<D> {
         let mut volume = Volume::assemble(disk, geometry, sequence);
         volume.free_blocks = free_blocks;
         volume.free_inodes = free_inodes;
-        match volume.inode(ROOT_INODE) {
-            Ok(root) if root.kind == InodeKind::Directory => {
-                volume.root_generation = root.generation;
-                Ok((volume, Mounted { recovered_blocks }))
-            }
-            Ok(_) | Err(Error::Corrupt) => Err((MountError::Corrupt, volume.into_disk())),
-            Err(_) => Err((MountError::Io, volume.into_disk())),
-        }
+        let root = match volume.inode(ROOT_INODE) {
+            Ok(root) if root.kind == InodeKind::Directory => root,
+            Ok(_) | Err(Error::Corrupt) => return Err((MountError::Corrupt, volume.into_disk())),
+            Err(_) => return Err((MountError::Io, volume.into_disk())),
+        };
+        volume.root_generation = root.generation;
+        let freed_orphans = match volume.free_left_orphans() {
+            Ok(freed) => freed,
+            Err(Error::Io) => return Err((MountError::Io, volume.into_disk())),
+            Err(_) => return Err((MountError::Corrupt, volume.into_disk())),
+        };
+        let mounted = Mounted {
+            recovered_blocks,
+            freed_orphans,
+        };
+        Ok((volume, mounted))
     }
 
     /// Commits the changes made since the last commit: journal, commit record, then the blocks

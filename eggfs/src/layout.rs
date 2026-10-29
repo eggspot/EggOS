@@ -10,7 +10,14 @@ pub const ROOT_INODE: u32 = 1;
 pub const FIRST_FREE_INODE: u32 = 2;
 pub const MAGIC: [u8; 8] = *b"EGGFS\0\0\0";
 pub const FORMATTING_MAGIC: [u8; 8] = *b"EGGFSFMT";
-pub const VERSION: u32 = 1;
+/// The on-disk format version [`crate::format`] writes; version 1 volumes still mount and are
+/// upgraded by the first change that needs version 2.
+pub const VERSION: u32 = 2;
+pub const OLDEST_VERSION: u32 = 1;
+/// The longest target a symbolic link holds, in bytes.
+pub const MAX_LINK_TARGET: usize = 4095;
+/// The most names a regular file or a symbolic link has.
+pub const MAX_LINKS: u32 = 65000;
 pub const MIN_BLOCKS: u64 = 256;
 pub const MAX_BLOCKS: u64 = u32::MAX as u64 - BITS_PER_BLOCK as u64;
 pub const MIN_JOURNAL_BLOCKS: u32 = 64;
@@ -60,6 +67,7 @@ pub fn put_u64(bytes: &mut [u8], at: usize, value: u64) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
+    pub version: u32,
     pub blocks: u32,
     pub inodes: u32,
     pub block_bitmap: u32,
@@ -96,6 +104,7 @@ impl Geometry {
         let inode_table = journal + journal_blocks;
         let data_start = inode_table.checked_add(inode_table_blocks)?;
         let geometry = Self {
+            version: VERSION,
             blocks,
             inodes,
             block_bitmap,
@@ -158,7 +167,7 @@ impl Geometry {
     pub fn encode(&self) -> alloc::boxed::Box<Block> {
         let mut block = zeroed_block();
         block[0..8].copy_from_slice(&MAGIC);
-        put_u32(&mut block[..], 8, VERSION);
+        put_u32(&mut block[..], 8, self.version);
         put_u32(&mut block[..], 12, BLOCK_SIZE as u32);
         put_u32(&mut block[..], 16, self.blocks);
         put_u32(&mut block[..], 20, self.inodes);
@@ -185,14 +194,14 @@ impl Geometry {
     pub fn decode(block: &[u8]) -> Option<Self> {
         if block.len() < BLOCK_SIZE
             || block[0..8] != MAGIC
-            || u32_at(block, 8) != VERSION
             || u32_at(block, 12) != BLOCK_SIZE as u32
-            || u32_at(block, SUPERBLOCK_CHECKSUM) != crc32c(&block[..SUPERBLOCK_CHECKSUM])
         {
             return None;
         }
+        let version = superblock_version(block)?;
         let field = |index: usize| u32_at(block, 24 + 4 * index);
         let geometry = Self {
+            version,
             blocks: u32_at(block, 16),
             inodes: u32_at(block, 20),
             block_bitmap: field(0),
@@ -208,6 +217,34 @@ impl Geometry {
         };
         geometry.is_consistent().then_some(geometry)
     }
+
+    pub fn same_layout(&self, other: &Geometry) -> bool {
+        Geometry {
+            version: other.version,
+            ..*self
+        } == *other
+    }
+}
+
+fn superblock_checksum_with(block: &[u8], version: u32) -> u32 {
+    let mut crc = Crc32c::new();
+    crc.update(&block[..8]);
+    crc.update(&version.to_le_bytes());
+    crc.update(&block[12..SUPERBLOCK_CHECKSUM]);
+    crc.finish()
+}
+
+fn superblock_version(block: &[u8]) -> Option<u32> {
+    let stored = u32_at(block, 8);
+    let known = OLDEST_VERSION..=VERSION;
+    if !known.contains(&stored) {
+        return None;
+    }
+    let checksum = u32_at(block, SUPERBLOCK_CHECKSUM);
+    let matches = |version: u32| superblock_checksum_with(block, version) == checksum;
+    core::iter::once(stored)
+        .chain(known.filter(|&version| version != stored))
+        .find(|&version| matches(version))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,14 +252,16 @@ pub enum InodeKind {
     Free,
     Directory,
     Regular,
+    SymbolicLink,
 }
 
 impl InodeKind {
-    fn code(self) -> u8 {
+    pub fn code(self) -> u8 {
         match self {
             InodeKind::Free => 0,
             InodeKind::Directory => 1,
             InodeKind::Regular => 2,
+            InodeKind::SymbolicLink => 3,
         }
     }
 
@@ -231,10 +270,15 @@ impl InodeKind {
             0 => Some(InodeKind::Free),
             1 => Some(InodeKind::Directory),
             2 => Some(InodeKind::Regular),
+            3 => Some(InodeKind::SymbolicLink),
             _ => None,
         }
     }
 }
+
+const ORPHAN_FLAG: u8 = 1;
+const MORE_NAMES_AT: usize = 104;
+const NEXT_ORPHAN_AT: usize = 108;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inode {
@@ -250,6 +294,9 @@ pub struct Inode {
     pub group: u32,
     pub direct: [u32; DIRECT_POINTERS],
     pub indirect: [u32; 3],
+    pub more_names: u32,
+    pub orphan: bool,
+    pub next_orphan: u32,
 }
 
 const INODE_CHECKSUM: usize = INODE_SIZE - 4;
@@ -269,6 +316,9 @@ impl Inode {
             group: 0,
             direct: [0; DIRECT_POINTERS],
             indirect: [0; 3],
+            more_names: 0,
+            orphan: false,
+            next_orphan: 0,
         }
     }
 
@@ -276,6 +326,7 @@ impl Inode {
         let out = &mut out[..INODE_SIZE];
         out.fill(0);
         out[0] = self.kind.code();
+        out[1] = if self.orphan { ORPHAN_FLAG } else { 0 };
         put_u16(out, 2, self.permissions);
         put_u32(out, 4, self.generation);
         put_u32(out, 8, self.parent);
@@ -288,6 +339,8 @@ impl Inode {
         for (index, &pointer) in self.direct.iter().chain(&self.indirect).enumerate() {
             put_u32(out, 44 + 4 * index, pointer);
         }
+        put_u32(out, MORE_NAMES_AT, self.more_names);
+        put_u32(out, NEXT_ORPHAN_AT, self.next_orphan);
         let checksum = inode_checksum(number, &out[..INODE_CHECKSUM]);
         put_u32(out, INODE_CHECKSUM, checksum);
     }
@@ -298,6 +351,9 @@ impl Inode {
             return None;
         }
         let kind = InodeKind::from_code(bytes[0])?;
+        if bytes[1] & !ORPHAN_FLAG != 0 {
+            return None;
+        }
         let mut direct = [0u32; DIRECT_POINTERS];
         for (index, pointer) in direct.iter_mut().enumerate() {
             *pointer = u32_at(bytes, 44 + 4 * index);
@@ -319,6 +375,9 @@ impl Inode {
             group: u32_at(bytes, 40),
             direct,
             indirect,
+            more_names: u32_at(bytes, MORE_NAMES_AT),
+            orphan: bytes[1] & ORPHAN_FLAG != 0,
+            next_orphan: u32_at(bytes, NEXT_ORPHAN_AT),
         })
     }
 }
@@ -333,7 +392,7 @@ fn inode_checksum(number: u32, bytes: &[u8]) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Record<'a> {
     pub inode: u32,
-    pub directory: bool,
+    pub kind: InodeKind,
     pub name: &'a [u8],
     pub offset: usize,
     pub length: usize,
@@ -351,10 +410,9 @@ pub fn record_at(block: &[u8], offset: usize) -> Result<Option<Record<'_>>, ()> 
     if inode == 0 {
         return Ok(None);
     }
-    let directory = match block[offset + 4] {
-        1 => true,
-        2 => false,
-        _ => return Err(()),
+    let kind = match InodeKind::from_code(block[offset + 4]) {
+        Some(InodeKind::Free) | None => return Err(()),
+        Some(kind) => kind,
     };
     let name_length = usize::from(block[offset + 5]);
     let length = RECORD_HEADER + name_length;
@@ -363,7 +421,7 @@ pub fn record_at(block: &[u8], offset: usize) -> Result<Option<Record<'_>>, ()> 
     }
     Ok(Some(Record {
         inode,
-        directory,
+        kind,
         name: &block[offset + RECORD_HEADER..offset + length],
         offset,
         length,
@@ -378,9 +436,9 @@ pub fn records_end(block: &[u8]) -> Result<usize, ()> {
     Ok(offset)
 }
 
-pub fn write_record(block: &mut [u8], offset: usize, inode: u32, directory: bool, name: &[u8]) {
+pub fn write_record(block: &mut [u8], offset: usize, inode: u32, kind: InodeKind, name: &[u8]) {
     put_u32(block, offset, inode);
-    block[offset + 4] = if directory { 1 } else { 2 };
+    block[offset + 4] = kind.code();
     block[offset + 5] = name.len() as u8;
     block[offset + RECORD_HEADER..offset + RECORD_HEADER + name.len()].copy_from_slice(name);
 }

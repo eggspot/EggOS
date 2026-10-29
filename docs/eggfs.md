@@ -1,9 +1,13 @@
-# EggFS on-disk format, version 1
+# EggFS on-disk format, version 2
 
 EggFS is EggOS's own journaled file system for disks (D131). This document is the format's
 specification: enough to read and write an EggFS disk from any implementation. The reference
 implementation is the `eggos-eggfs` crate (`eggfs/`); the kernel mounts it through
 `kernel/src/vfs/eggfs.rs`.
+
+Version 2 (D170) adds symbolic links, hard links and files removed while open; everything
+else is version 1's. Sections marked **(new in version 2)** describe what version 1 lacks, and
+"Version 1" at the end says how a version 1 disk is read and upgraded.
 
 All integers are little-endian. "CRC-32C" is the Castagnoli CRC (reflected polynomial
 `0x82F63B78`, initial value and final XOR `0xFFFFFFFF`; check value of `123456789` is
@@ -34,7 +38,7 @@ the data region.
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 8 | magic `EGGFS\0\0\0` |
-| 8 | 4 | version, 1 |
+| 8 | 4 | version: 2 (1 on a disk not yet upgraded) |
 | 12 | 4 | block size, 4096 |
 | 16 | 4 | blocks in the volume |
 | 20 | 4 | inodes |
@@ -42,11 +46,18 @@ the data region.
 | 64 | 8 | when the volume was made, seconds since the Unix epoch |
 | 4092 | 4 | CRC-32C of bytes 0 to 4091 |
 
-A reader must check every field: the regions in the order above with no gaps, bitmaps large
-enough for their bits, the inode table exactly inodes / 32 blocks, a journal of at least 64
-blocks and at least 8 data blocks. The superblock is written once, by the format, and never
-changes. A disk whose block 0 starts with `EGGFSFMT` is a format that stopped before it ended:
-it is blank.
+A reader must check every field: the version 1 or 2 (any other is refused), the regions in
+the order above with no gaps, bitmaps large enough for their bits, the inode table exactly
+inodes / 32 blocks, a journal of at least 64 blocks and at least 8 data blocks. The superblock
+is written by the format and changes only once, when a version 1 volume is upgraded (see
+"Version 1"): then only the version and the checksum change, through the journal. A disk whose
+block 0 starts with `EGGFSFMT` is a format that stopped before it ended: it is blank.
+
+**Reading a superblock torn by the upgrade.** A reader whose checksum does not match tries the
+other version (1 for a stored 2, 2 for a stored 1) in its place: the upgrade writes only those
+two fields, so a block 0 torn while the upgrade reached its place still names the volume's
+layout, with the version the checksum matches. Mounting then replays the journal, which holds
+the upgraded block 0 (it reaches its place only after its transaction committed).
 
 ## Bitmaps
 
@@ -61,7 +72,8 @@ Inode *n* is the 128 bytes at offset (*n* mod 32) × 128 of block (inode table s
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 1 | kind: 0 free, 1 directory, 2 regular file |
+| 0 | 1 | kind: 0 free, 1 directory, 2 regular file, 3 symbolic link (new in version 2) |
+| 1 | 1 | flags (new in version 2): bit 0 *orphan*; the other bits are 0 |
 | 2 | 2 | permission bits (`07777`) |
 | 4 | 4 | generation, raised each time the inode is freed |
 | 8 | 4 | parent directory's inode (the root's is itself) |
@@ -73,11 +85,23 @@ Inode *n* is the 128 bytes at offset (*n* mod 32) × 128 of block (inode table s
 | 40 | 4 | group id |
 | 44 | 4 × 12 | direct block pointers |
 | 92 | 4 × 3 | single, double and triple indirect block pointers |
+| 104 | 4 | more names (new in version 2): names a regular file or a symbolic link has beyond its first; 0 for a directory |
+| 108 | 4 | next orphan (new in version 2): the next inode on the orphan chain, 0 ending it; in the root inode, the chain's first |
+| 112 | 12 | unused, zeros |
 | 124 | 4 | CRC-32C of the inode's number (4 bytes) followed by bytes 0 to 123 |
 
-An inode in use reads back with its checksum right; a free inode's bytes do not matter. A
-file or directory has exactly one name, in its parent (no hard links): a directory's link
-count is 2 plus its subdirectories, a file's is 1.
+An inode in use reads back with its checksum right and no unknown flag set; a free inode's
+bytes do not matter. A version 1 inode has zeros in bytes 1 and 104 to 123, so it reads as one
+name and not an orphan. Bytes 1, 104 to 111 change only through journaled inode writes, like
+every other field.
+
+**Names and link counts.** A directory has exactly one name, in its parent; its link count is
+2 plus its subdirectories. A regular file or a symbolic link has 1 + *more names* names
+(**hard links**, new in version 2): records in any directories of the volume, at most 65000
+(1 + more names ≤ 65000); its link count is that number, or 0 for an orphan. Its *parent*
+field (bytes 8 to 11) names a directory that holds one of its names: the one it was made in,
+moved to the directory of another remaining name when that one's last name there goes, and to
+the destination of a rename. An orphan's parent is 0.
 
 ## Contents
 
@@ -85,9 +109,15 @@ Block *i* of a file or directory (bytes *i* × 4096 on) is found through the poi
 to 11 through the direct pointers; the next 1024 through the single indirect block, a block of
 1024 four-byte pointers; the next 1024² through the double indirect block, whose pointers lead
 to such blocks; the next 1024³ through the triple. A pointer of 0 is a hole that reads as
-zeros (files only); every other pointer names a block of the data region, used by exactly one
-inode once. A file maps no block at or past ceil(size / 4096), and the bytes of its last block
-past its size are zeros. The largest file is (12 + 1024 + 1024² + 1024³) blocks.
+zeros (regular files only); every other pointer names a block of the data region, used by
+exactly one inode once. A file maps no block at or past ceil(size / 4096), and the bytes of its
+last block past its size are zeros. The largest file is (12 + 1024 + 1024² + 1024³) blocks.
+
+**Symbolic links** (new in version 2). A symbolic link's contents are its target, stored and
+written exactly as a regular file's contents (data blocks, copy on write, the same pointers):
+its size is the target's length, 1 to 4095 bytes, with no NUL byte, so only direct pointer 0
+is used and it is never a hole. Its permission bits are `0777`. The target is written once,
+when the link is made, and never changes.
 
 ## Directories
 
@@ -97,7 +127,7 @@ is mapped (no holes). Each directory block holds packed **records** from offset 
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | inode, never 0 |
-| 4 | 1 | kind: 1 directory, 2 regular file (the inode's) |
+| 4 | 1 | kind: 1 directory, 2 regular file, 3 symbolic link (the inode's) |
 | 5 | 1 | name length, 1 to 255 |
 | 6 | length | the name: any bytes but `/` and NUL, not `.` or `..` |
 
@@ -106,7 +136,8 @@ bytes after the last record are zeros. Names are unique within a directory. Remo
 moves the records after it down; a new record goes after the last record of the first block
 with room, or into a new block added at the directory's end. `.` and `..` are not stored: the
 parent is in the inode. The directory's inode counts its records (entries) and those that are
-directories.
+directories. Several records, in one directory or several, may name the same regular file or
+symbolic link (its names); never a directory.
 
 ## The journal
 
@@ -140,6 +171,10 @@ A block freed by the running transaction is not reused until it commits. A block
 the running transaction may be written again in place. So the disk always holds the last
 committed state, plus blocks no committed pointer names.
 
+Any block outside the journal may be a target, block 0 included (the upgrade of a version 1
+superblock); a reader replays a block 0 image only if it reads as a superblock of the same
+layout as the one on the disk, differing at most in the version.
+
 **Mounting** reads the descriptor; if its checksum and the commit block (same sequence, same
 *n*, the transaction checksum of what the journal holds) match, it compares each image with
 its target and writes those that differ, then flushes. Replaying a transaction already in place
@@ -148,21 +183,56 @@ descriptor's plus 1 (1 on a blank journal). A torn or uncommitted transaction is
 targets still hold the state of the commit before, which reached its places before this one
 began.
 
+## Files removed while open (new in version 2)
+
+A program may hold a file open while its last name is removed (`unlink`, or a `rename` that
+replaces it). The volume counts holds in memory, never on disk. When the last name of a held
+regular file or symbolic link goes, its inode is not freed: it becomes an **orphan**, in the
+same transaction as the removal of the name:
+
+- its *orphan* flag is set, its parent set to 0, and it is pushed on the **orphan chain**: its
+  *next orphan* is set to the root inode's *next orphan*, which is set to it;
+- it keeps its contents and stays readable and writable through the node that holds it.
+
+When its last hold is released, it is freed: its blocks are released (in several transactions
+if they do not fit one, each leaving a consistent orphan with fewer blocks), then, in one
+transaction, it is unlinked from the chain (its predecessor's *next orphan*, the root's for
+the first, takes its own) and the inode is freed. An orphan left on the disk, by a crash or a
+power-off while the file was open, is freed the same way by the next mount, which commits that
+before it returns.
+
 ## Formatting
 
 A blank disk (its first 128 KiB zeros, or block 0 starting with `EGGFSFMT`) is formatted by
 writing `EGGFSFMT` to block 0, flushing, writing the bitmaps, a zero journal descriptor and the
 inode table block holding the root (inode 1, a directory, parent 1, generation 1, 0755),
-flushing, then writing the superblock and flushing. EggOS never formats a disk holding
+flushing, then writing the superblock (version 2) and flushing. EggOS never formats a disk holding
 anything else: see "Persistent disk" in docs/build.md for erasing one on purpose.
 
 ## Checking
 
 `Volume::check` (also run on the image by the QEMU tests) verifies everything above: every
-inode reachable from the root reads back, its kind matches its record and its parent the
-directory listing it, every pointer leads into the data region and is used once, nothing is
-mapped past a file's end, directories have no holes, malformed records or repeated names and
-their counts are right, and the bitmaps mark exactly the blocks and inodes in use.
+inode reachable from the root reads back, its kind (1 to 3) matches its records, a
+directory's parent is the directory listing it and a file's or link's parent lists one of its
+names, a file's or link's records number 1 + its more names and a directory's only one, every
+pointer leads into the data region and is used once, nothing is mapped past a file's end,
+symbolic links' targets are 1 to 4095 bytes with no NUL and no hole, directories have no
+holes, malformed records or repeated names and their counts are right, the orphan chain holds
+only flagged, nameless files and links, each once, while no named inode is flagged, a version
+1 volume holds no symbolic link, second name or orphan, and the bitmaps mark exactly the
+blocks and inodes in use.
+
+## Version 1
+
+A version 1 disk is a version 2 disk without symbolic links, hard links or orphans: its
+superblock's version is 1, its inodes have zeros in bytes 1 and 104 to 123 (one name, not an
+orphan, an empty orphan chain) and its records' kinds are 1 or 2. A version 2 reader mounts
+and changes it as it is, leaving the version at 1, until the first change that needs version
+2: making a symbolic link, giving a file a second name, or keeping a removed file as an
+orphan. That change's own transaction also rewrites block 0 with version 2 (only the version
+and the superblock's checksum change), so the upgrade commits atomically with it: after a
+crash the disk is either the version 1 volume before the change or the version 2 volume after
+it. A version 1 reader refuses a version 2 disk.
 
 ## Work disks
 
@@ -170,7 +240,8 @@ A **work disk** (D166) is an ordinary EggFS volume whose root directory holds a 
 named `.eggos-work-disk` (empty, permissions 0444) and a directory named `work`, which EggOS
 mounts at `/work`; the disk that holds `/home` has neither (its root holds `home`,
 `Applications` and `var`). Nothing inside EggOS can reach a volume's root, so only the host
-makes a work disk (`cargo xtask work pack`). EggOS tells the two apart by this marker, never by
+makes a work disk (`cargo xtask work pack`, which carries the folder's symbolic links and hard
+links onto it, and `cargo xtask work unpack` back). EggOS tells the two apart by this marker, never by
 the order of the disks: of the EggFS disks it finds, the first with the marker is mounted at
 `/work` and the first without it (or the first blank one) at `/home`. The crate's
 `make_work_disk`, `is_work_disk` and `work_folder` write and read the marker.

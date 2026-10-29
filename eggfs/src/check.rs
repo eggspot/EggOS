@@ -1,10 +1,11 @@
 use crate::layout::{
-    BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, Geometry, InodeKind, MAX_DIRECTORY_BLOCKS,
-    MAX_NAME, POINTERS_PER_BLOCK, ROOT_INODE, record_at, u32_at,
+    BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, FIRST_FREE_INODE, Geometry, Inode,
+    InodeKind, MAX_DIRECTORY_BLOCKS, MAX_LINK_TARGET, MAX_NAME, POINTERS_PER_BLOCK, ROOT_INODE,
+    VERSION, record_at, u32_at,
 };
 use crate::volume::{MAX_FILE_BYTES, Volume, tree_first};
 use crate::{Disk, Error};
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 /// What [`Volume::check`] found, all of it consistent.
@@ -12,8 +13,12 @@ use alloc::vec::Vec;
 pub struct CheckReport {
     /// Directories, the root included.
     pub directories: u64,
-    /// Regular files.
+    /// Regular files, each counted once however many names it has, orphans not counted.
     pub files: u64,
+    /// Symbolic links, counted as files are.
+    pub symbolic_links: u64,
+    /// Files and symbolic links that have no name and are kept until they are released.
+    pub orphans: u64,
     /// Blocks in use, the file system's own included.
     pub used_blocks: u64,
 }
@@ -41,6 +46,12 @@ impl core::fmt::Display for Inconsistency {
 
 fn wrong(what: &'static str, inode: u32, block: u32) -> Inconsistency {
     Inconsistency { what, inode, block }
+}
+
+struct Names {
+    more_names: u32,
+    parent: u32,
+    first_directory: u32,
 }
 
 struct Bits(Vec<u64>);
@@ -176,11 +187,138 @@ impl<D: Disk> Volume<D> {
         Ok(clear)
     }
 
+    fn check_contents(
+        &mut self,
+        number: u32,
+        inode: &Inode,
+        used: &mut Bits,
+    ) -> Result<(), Inconsistency> {
+        if inode.size > MAX_FILE_BYTES {
+            return Err(wrong("a file is larger than the format allows", number, 0));
+        }
+        let mapped = inode.size.div_ceil(BLOCK_SIZE as u64);
+        self.walk_blocks(
+            number,
+            inode.direct,
+            inode.indirect,
+            used,
+            &mut |index, block| match index < mapped {
+                true => Ok(()),
+                false => Err(wrong("a file maps a block past its end", number, block)),
+            },
+        )?;
+        if inode.kind != InodeKind::SymbolicLink {
+            return Ok(());
+        }
+        let length = inode.size as usize;
+        if length == 0 || length > MAX_LINK_TARGET {
+            return Err(wrong(
+                "a symbolic link's target is empty or too long",
+                number,
+                0,
+            ));
+        }
+        let block = inode.direct[0];
+        if block == 0 {
+            return Err(wrong("a symbolic link has a hole", number, 0));
+        }
+        let target = self.read_data_block(block).map_err(io(number, block))?;
+        if target[..length].contains(&0) {
+            return Err(wrong("a symbolic link's target holds NUL", number, block));
+        }
+        Ok(())
+    }
+
+    fn check_orphans(
+        &mut self,
+        head: u32,
+        seen: &mut Bits,
+        used: &mut Bits,
+    ) -> Result<u64, Inconsistency> {
+        let mut orphans = 0u64;
+        let mut number = head;
+        while number != 0 {
+            if number < FIRST_FREE_INODE || number >= self.geometry.inodes || seen.get(number) {
+                return Err(wrong(
+                    "the orphan chain names an inode that is reserved, named or listed twice",
+                    number,
+                    0,
+                ));
+            }
+            seen.set(number);
+            let inode = self.inode(number).map_err(io(number, 0))?;
+            if !inode.orphan
+                || inode.more_names != 0
+                || !matches!(inode.kind, InodeKind::Regular | InodeKind::SymbolicLink)
+            {
+                return Err(wrong(
+                    "the orphan chain names an inode that is not an orphan",
+                    number,
+                    0,
+                ));
+            }
+            self.check_contents(number, &inode, used)?;
+            orphans += 1;
+            number = inode.next_orphan;
+        }
+        Ok(orphans)
+    }
+
+    fn check_names(
+        &mut self,
+        named: &BTreeMap<u32, Names>,
+        more_records: &BTreeMap<u32, Vec<(u32, InodeKind)>>,
+    ) -> Result<(), Inconsistency> {
+        for (&number, records) in more_records {
+            let inode = self.inode(number).map_err(io(number, 0))?;
+            if records.iter().any(|&(_, kind)| kind != inode.kind)
+                || inode.kind == InodeKind::Directory
+            {
+                return Err(wrong(
+                    "a directory lists an inode that is reserved or listed elsewhere",
+                    number,
+                    0,
+                ));
+            }
+            if !named.contains_key(&number) {
+                return Err(wrong(
+                    "a file has more names than its inode counts",
+                    number,
+                    0,
+                ));
+            }
+        }
+        for (&number, names) in named {
+            let records = more_records.get(&number);
+            let extra = records.map_or(0, Vec::len);
+            if extra as u64 != u64::from(names.more_names) {
+                return Err(wrong(
+                    "a file's names are not the names its inode counts",
+                    number,
+                    0,
+                ));
+            }
+            let parent = names.parent;
+            let holds_one = names.first_directory == parent
+                || records.is_some_and(|records| records.iter().any(|&(at, _)| at == parent));
+            if !holds_one {
+                return Err(wrong(
+                    "an inode's parent is not a directory that lists it",
+                    number,
+                    0,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Checks that everything the volume holds, its uncommitted changes included, is
     /// consistent: every inode reachable from the root reads back with its parent, kind and
-    /// counts right, every pointer leads to a data block used once and within a file's size,
-    /// directories have no holes, malformed records or repeated names, and the bitmaps and
-    /// free counts mark exactly what is used.
+    /// counts right (a file's names as its inode counts them), every pointer leads to a data
+    /// block used once and within a file's size, symbolic links hold a valid target,
+    /// directories have no holes, malformed records or repeated names, the orphan chain holds
+    /// exactly the files that have no name, a version 1 volume uses nothing of version 2, and
+    /// the bitmaps and free counts mark exactly what is used.
     pub fn check(&mut self) -> Result<CheckReport, Inconsistency> {
         let geometry = self.geometry;
         let mut used = Bits::new(geometry.blocks);
@@ -193,21 +331,45 @@ impl<D: Disk> Volume<D> {
         let mut report = CheckReport {
             directories: 0,
             files: 0,
+            symbolic_links: 0,
+            orphans: 0,
             used_blocks: 0,
         };
-        let mut pending: Vec<(u32, u32, bool)> = alloc::vec![(ROOT_INODE, ROOT_INODE, true)];
-        while let Some((number, parent, directory)) = pending.pop() {
+        let mut named: BTreeMap<u32, Names> = BTreeMap::new();
+        let mut more_records: BTreeMap<u32, Vec<(u32, InodeKind)>> = BTreeMap::new();
+        let mut pending: Vec<(u32, u32, InodeKind)> =
+            alloc::vec![(ROOT_INODE, ROOT_INODE, InodeKind::Directory)];
+        let mut orphan_head = 0;
+        while let Some((number, parent, kind)) = pending.pop() {
             let inode = self.inode(number).map_err(io(number, 0))?;
-            let expected = match directory {
-                true => InodeKind::Directory,
-                false => InodeKind::Regular,
-            };
-            if inode.kind != expected {
+            if inode.kind != kind {
                 return Err(wrong(
                     "a directory entry's kind is not its inode's",
                     number,
                     0,
                 ));
+            }
+            if inode.orphan || (number != ROOT_INODE && inode.next_orphan != 0) {
+                return Err(wrong("a named inode is marked an orphan", number, 0));
+            }
+            if number == ROOT_INODE {
+                orphan_head = inode.next_orphan;
+            }
+            if kind != InodeKind::Directory {
+                match kind {
+                    InodeKind::SymbolicLink => report.symbolic_links += 1,
+                    _ => report.files += 1,
+                }
+                if inode.more_names != 0 || inode.parent != parent {
+                    let names = Names {
+                        more_names: inode.more_names,
+                        parent: inode.parent,
+                        first_directory: parent,
+                    };
+                    named.insert(number, names);
+                }
+                self.check_contents(number, &inode, &mut used)?;
+                continue;
             }
             if inode.parent != parent {
                 return Err(wrong(
@@ -216,23 +378,8 @@ impl<D: Disk> Volume<D> {
                     0,
                 ));
             }
-            if !directory {
-                report.files += 1;
-                if inode.size > MAX_FILE_BYTES {
-                    return Err(wrong("a file is larger than the format allows", number, 0));
-                }
-                let mapped = inode.size.div_ceil(BLOCK_SIZE as u64);
-                self.walk_blocks(
-                    number,
-                    inode.direct,
-                    inode.indirect,
-                    &mut used,
-                    &mut |index, block| match index < mapped {
-                        true => Ok(()),
-                        false => Err(wrong("a file maps a block past its end", number, block)),
-                    },
-                )?;
-                continue;
+            if inode.more_names != 0 {
+                return Err(wrong("a directory counts more than one name", number, 0));
             }
             report.directories += 1;
             if !inode.size.is_multiple_of(BLOCK_SIZE as u64)
@@ -280,7 +427,10 @@ impl<D: Disk> Volume<D> {
                             block,
                         ));
                     }
-                    if record.inode < 2 || record.inode >= geometry.inodes || seen.get(record.inode)
+                    let is_directory = record.kind == InodeKind::Directory;
+                    if record.inode < 2
+                        || record.inode >= geometry.inodes
+                        || (seen.get(record.inode) && is_directory)
                     {
                         return Err(wrong(
                             "a directory lists an inode that is reserved or listed elsewhere",
@@ -288,10 +438,18 @@ impl<D: Disk> Volume<D> {
                             block,
                         ));
                     }
-                    seen.set(record.inode);
                     entries += 1;
-                    subdirectories += u32::from(record.directory);
-                    pending.push((record.inode, number, record.directory));
+                    subdirectories += u32::from(is_directory);
+                    match seen.get(record.inode) {
+                        true => more_records
+                            .entry(record.inode)
+                            .or_default()
+                            .push((number, record.kind)),
+                        false => {
+                            seen.set(record.inode);
+                            pending.push((record.inode, number, record.kind));
+                        }
+                    }
                     offset += record.length;
                 }
                 if data[offset..].iter().any(|&byte| byte != 0) {
@@ -305,6 +463,18 @@ impl<D: Disk> Volume<D> {
             if entries != inode.entries || subdirectories != inode.child_directories {
                 return Err(wrong("a directory's counts are wrong", number, 0));
             }
+        }
+        self.check_names(&named, &more_records)?;
+        report.orphans = self.check_orphans(orphan_head, &mut seen, &mut used)?;
+        let hard_links = named.values().any(|names| names.more_names > 0);
+        if geometry.version < VERSION
+            && (report.symbolic_links > 0 || report.orphans > 0 || hard_links)
+        {
+            return Err(wrong(
+                "a version 1 volume holds symbolic links, hard links or orphans",
+                0,
+                0,
+            ));
         }
         let free_blocks = self.bitmap_matches(
             geometry.block_bitmap,

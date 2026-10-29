@@ -1,9 +1,18 @@
 use crate::layout::{BLOCK_SIZE, Geometry, INODE_SIZE, Inode, InodeKind};
 use crate::memory::MemoryDisk;
-use crate::{Contents, Error, Kind, MountError, Volume, format, probe};
+use crate::{
+    Contents, Error, Kind, MAX_LINK_TARGET, MAX_LINKS, MountError, VERSION, Volume, format, probe,
+};
 use std::collections::BTreeMap;
 
-type Tree = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Item {
+    Directory,
+    File(Vec<u8>),
+    Link(Vec<u8>),
+}
+
+type Tree = BTreeMap<Vec<u8>, Item>;
 
 fn formatted(blocks: usize) -> MemoryDisk {
     let mut disk = MemoryDisk::new(blocks);
@@ -46,12 +55,16 @@ fn tree(volume: &mut Volume<MemoryDisk>) -> Tree {
             child.extend_from_slice(entry.name());
             match crate::kind_of(entry.node) {
                 Kind::Directory => {
-                    tree.insert(child.clone(), None);
+                    tree.insert(child.clone(), Item::Directory);
                     pending.push((child, entry.node));
                 }
                 Kind::Regular => {
                     let contents = read_all(volume, entry.node);
-                    tree.insert(child, Some(contents));
+                    tree.insert(child, Item::File(contents));
+                }
+                Kind::SymbolicLink => {
+                    let target = volume.link_target(entry.node).unwrap();
+                    tree.insert(child, Item::Link(target));
                 }
             }
             position += 1;
@@ -79,9 +92,11 @@ fn a_formatted_disk_mounts_empty_and_checks_clean() {
     format(&mut disk, 5).unwrap();
     assert_eq!(probe(&mut disk), Ok(Contents::EggFs));
     let (mut volume, mounted) = Volume::mount(disk).unwrap();
-    assert_eq!(mounted.recovered_blocks, 0);
+    assert_eq!((mounted.recovered_blocks, mounted.freed_orphans), (0, 0));
+    assert_eq!(volume.version(), VERSION);
     let report = volume.check().unwrap();
     assert_eq!((report.directories, report.files), (1, 0));
+    assert_eq!((report.symbolic_links, report.orphans), (0, 0));
     let root = volume.root();
     assert_eq!(volume.parent(root), Ok(root));
     let attributes = volume.attributes(root).unwrap();
@@ -427,9 +442,24 @@ impl Workload {
     fn files(&self) -> Vec<Vec<u8>> {
         self.model
             .iter()
-            .filter(|(_, contents)| contents.is_some())
+            .filter(|(_, item)| matches!(item, Item::File(_)))
             .map(|(path, _)| path.clone())
             .collect()
+    }
+
+    fn links(&self) -> Vec<Vec<u8>> {
+        self.model
+            .iter()
+            .filter(|(_, item)| matches!(item, Item::Link(_)))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    fn contents<'a>(model: &'a mut Tree, path: &[u8]) -> &'a mut Vec<u8> {
+        match model.get_mut(path) {
+            Some(Item::File(contents)) => contents,
+            _ => panic!("not a file in the model"),
+        }
     }
 
     fn step(&mut self, index: usize) -> Result<(), Error> {
@@ -463,8 +493,9 @@ impl Workload {
     }
 
     fn operation(&mut self, index: usize) -> Result<bool, Error> {
-        let choice = self.random.below(12);
+        let choice = self.random.below(14);
         let files = self.files();
+        let links = self.links();
         let directory = DIRECTORIES[self.random.below(3) as usize];
         let name = format!("f{}", self.random.below(4));
         let mut path = directory.to_vec();
@@ -479,12 +510,12 @@ impl Workload {
                 let parent = self.node(directory).unwrap();
                 self.volume
                     .create(parent, name.as_bytes(), Kind::Regular, 0o644, index as u64)?;
-                self.model.insert(path, Some(Vec::new()));
+                self.model.insert(path, Item::File(Vec::new()));
             }
             3..=6 if !files.is_empty() => {
                 let file = &files[self.random.below(files.len() as u64) as usize];
                 let node = self.node(file).unwrap();
-                let contents = self.model.get_mut(file).unwrap().as_mut().unwrap();
+                let contents = Self::contents(&mut self.model, file);
                 let block_start = contents.len() as u64 / 4096 * 4096;
                 let offset = match choice {
                     3 | 4 => contents.len() as u64,
@@ -505,7 +536,7 @@ impl Workload {
             7 if !files.is_empty() => {
                 let file = &files[self.random.below(files.len() as u64) as usize];
                 let node = self.node(file).unwrap();
-                let contents = self.model.get_mut(file).unwrap().as_mut().unwrap();
+                let contents = Self::contents(&mut self.model, file);
                 let length = self.random.below(contents.len() as u64 + 3000);
                 self.volume.truncate(node, length, index as u64)?;
                 contents.resize(length as usize, 0);
@@ -522,7 +553,7 @@ impl Workload {
                 let mut target = to_directory.to_vec();
                 target.push(b'/');
                 target.extend_from_slice(to_name.as_bytes());
-                if matches!(self.model.get(&target), Some(None)) {
+                if matches!(self.model.get(&target), Some(Item::Directory)) {
                     return Ok(true);
                 }
                 let to = self.node(to_directory).unwrap();
@@ -549,7 +580,7 @@ impl Workload {
                 let parent = self.node(parent).unwrap();
                 self.volume
                     .create(parent, name, Kind::Directory, 0o755, index as u64)?;
-                self.model.insert(make.to_vec(), None);
+                self.model.insert(make.to_vec(), Item::Directory);
             }
             11 => {
                 let remove = DIRECTORIES[1 + self.random.below(2) as usize];
@@ -565,6 +596,23 @@ impl Workload {
                 let parent = self.node(parent).unwrap();
                 self.volume.remove(parent, name, true, index as u64)?;
                 self.model.remove(remove);
+            }
+            12 if directory.is_empty() || self.model.contains_key(directory) => {
+                if self.model.contains_key(&path) {
+                    return Ok(true);
+                }
+                let parent = self.node(directory).unwrap();
+                let target = format!("../target {index}").into_bytes();
+                self.volume
+                    .symlink(parent, name.as_bytes(), &target, index as u64)?;
+                self.model.insert(path, Item::Link(target));
+            }
+            13 if !links.is_empty() => {
+                let link = links[self.random.below(links.len() as u64) as usize].clone();
+                let (directory, name) = Self::split(&link);
+                let parent = self.node(directory).unwrap();
+                self.volume.remove(parent, name, false, index as u64)?;
+                self.model.remove(&link);
             }
             _ => {}
         }
@@ -689,6 +737,11 @@ fn exercise(mut volume: Volume<MemoryDisk>) {
             let _ = volume.name(entry.node, &mut name);
             match crate::kind_of(entry.node) {
                 Kind::Directory => pending.push(entry.node),
+                Kind::SymbolicLink => {
+                    let _ = volume.link_target(entry.node);
+                    let _ = volume.read(entry.node, 0, &mut [0u8; 64]);
+                    let _ = volume.write(entry.node, None, b"refused", 1);
+                }
                 Kind::Regular => {
                     let mut buffer = [0u8; 9000];
                     let mut offset = 0;
@@ -700,12 +753,22 @@ fn exercise(mut volume: Volume<MemoryDisk>) {
                     }
                     let _ = volume.write(entry.node, Some(10), b"overwrite", 1);
                     let _ = volume.truncate(entry.node, 5, 1);
+                    let _ = volume.link(entry.node, volume.root(), b"alias", 1);
+                    let _ = volume.hold(entry.node);
                 }
             }
         }
         let _ = volume.create(directory, b"new", Kind::Regular, 0o644, 1);
+        let _ = volume.symlink(directory, b"link", b"new", 1);
+        let _ = volume.remove(volume.root(), b"alias", false, 1);
         let _ = volume.rename(directory, b"new", volume.root(), b"moved", false, 1);
         let _ = volume.remove(directory, b"file3", false, 1);
+    }
+    for position in 0..64 {
+        let Ok(Some(entry)) = volume.entry(volume.root(), position) else {
+            break;
+        };
+        let _ = volume.release(entry.node);
     }
     let _ = volume.commit();
     let _ = volume.check();
@@ -782,7 +845,7 @@ fn hostile_inodes_with_valid_checksums_never_panic_or_hang() {
                 u64::from(wild) << 20,
                 crate::volume::MAX_FILE_BYTES,
             ];
-            match random.below(12) {
+            match random.below(15) {
                 0 => inode.direct[slot] = wild,
                 1 => inode.direct[slot] = metadata_block,
                 2 => inode.direct[slot] = geometry.blocks,
@@ -802,6 +865,12 @@ fn hostile_inodes_with_valid_checksums_never_panic_or_hang() {
                         InodeKind::Directory => InodeKind::Regular,
                         _ => InodeKind::Directory,
                     }
+                }
+                11 => inode.next_orphan = [wild, other, number][slot % 3],
+                12 => inode.more_names = [wild, 1, MAX_LINKS][slot % 3],
+                13 => {
+                    inode.orphan = true;
+                    inode.kind = [InodeKind::SymbolicLink, inode.kind][slot % 2];
                 }
                 _ => {
                     inode.size = (BLOCK_SIZE as u64) * u64::from(wild % 20_000);
@@ -895,4 +964,514 @@ fn a_directory_named_like_the_marker_does_not_make_a_work_disk() {
         .create(root, crate::WORK_FOLDER, Kind::Regular, 0o644, 1)
         .unwrap();
     assert_eq!(crate::work_folder(&mut volume), Err(Error::NotDirectory));
+}
+
+fn as_version_1(image: &mut [u8]) {
+    let mut geometry = Geometry::decode(&image[..BLOCK_SIZE]).unwrap();
+    geometry.version = 1;
+    image[..BLOCK_SIZE].copy_from_slice(&geometry.encode()[..]);
+}
+
+fn version_1_volume() -> Volume<MemoryDisk> {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    let directory = volume
+        .create(root, b"d", Kind::Directory, 0o755, 1)
+        .unwrap();
+    let file = volume
+        .create(directory, b"a.txt", Kind::Regular, 0o644, 1)
+        .unwrap();
+    volume.write(file, None, b"version one\n", 1).unwrap();
+    volume.commit().unwrap();
+    let mut image = volume.into_disk().image().to_vec();
+    as_version_1(&mut image);
+    Volume::mount(MemoryDisk::from_image(image)).unwrap().0
+}
+
+#[test]
+fn symbolic_links_are_made_read_back_and_survive_a_remount() {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    let file = volume
+        .create(root, b"a.txt", Kind::Regular, 0o644, 1)
+        .unwrap();
+    volume.write(file, None, b"hello", 1).unwrap();
+    volume.commit().unwrap();
+    let (_, free_before) = volume.space();
+    let link = volume.symlink(root, b"l", b"a.txt", 2).unwrap();
+    assert_eq!(crate::kind_of(link), Kind::SymbolicLink);
+    assert_eq!(volume.link_target(link), Ok(b"a.txt".to_vec()));
+    assert_eq!(read_all(&mut volume, link), b"a.txt");
+    let attributes = volume.attributes(link).unwrap();
+    assert_eq!((attributes.kind, attributes.size), (Kind::SymbolicLink, 5));
+    assert_eq!((attributes.permissions, attributes.links), (0o777, 1));
+    assert_eq!(volume.lookup(root, b"l"), Ok(Some(link)));
+    assert_eq!(volume.parent(link), Ok(root));
+    let mut name = [0u8; crate::MAX_NAME];
+    let length = volume.name(link, &mut name).unwrap();
+    assert_eq!(&name[..length], b"l");
+    assert_eq!(
+        volume.write(link, None, b"x", 3),
+        Err(Error::InvalidArgument)
+    );
+    assert_eq!(volume.truncate(link, 0, 3), Err(Error::InvalidArgument));
+    assert_eq!(volume.link_target(file), Err(Error::InvalidArgument));
+    assert_eq!(volume.link_target(root), Err(Error::InvalidArgument));
+    assert_eq!(
+        volume.create(root, b"x", Kind::SymbolicLink, 0o777, 3),
+        Err(Error::InvalidArgument)
+    );
+    let too_long = vec![b'x'; MAX_LINK_TARGET + 1];
+    for bad in [&b""[..], b"a\0b", &too_long[..]] {
+        assert_eq!(
+            volume.symlink(root, b"bad", bad, 3),
+            Err(Error::InvalidArgument)
+        );
+    }
+    assert_eq!(volume.symlink(root, b"l", b"other", 3), Err(Error::Exists));
+    assert_eq!(volume.symlink(root, b"", b"other", 3), Err(Error::Exists));
+    assert_eq!(
+        volume.symlink(file, b"x", b"other", 3),
+        Err(Error::NotDirectory)
+    );
+    let longest_target = vec![b'y'; MAX_LINK_TARGET];
+    let longest = volume
+        .symlink(root, b"longest", &longest_target, 3)
+        .unwrap();
+    assert_eq!(volume.link_target(longest), Ok(longest_target.clone()));
+    let report = volume.check().unwrap();
+    assert_eq!((report.files, report.symbolic_links), (1, 2));
+    volume.commit().unwrap();
+    let mut volume = remount(volume);
+    let root = volume.root();
+    let link = volume.lookup(root, b"l").unwrap().unwrap();
+    assert_eq!(volume.link_target(link), Ok(b"a.txt".to_vec()));
+    let longest = volume.lookup(root, b"longest").unwrap().unwrap();
+    assert_eq!(volume.link_target(longest), Ok(longest_target));
+    volume.check().unwrap();
+    volume.remove(root, b"longest", false, 4).unwrap();
+    assert_eq!(volume.link_target(longest), Err(Error::NotFound));
+    volume.rename(root, b"a.txt", root, b"l", false, 5).unwrap();
+    assert_eq!(volume.link_target(link), Err(Error::NotFound));
+    let renamed = volume.lookup(root, b"l").unwrap().unwrap();
+    assert_eq!(crate::kind_of(renamed), Kind::Regular);
+    assert_eq!(read_all(&mut volume, renamed), b"hello");
+    assert_eq!(volume.space().1, free_before);
+    let report = volume.check().unwrap();
+    assert_eq!((report.files, report.symbolic_links), (1, 0));
+}
+
+#[test]
+fn hard_links_count_names_and_keep_the_file_until_its_last_name_goes() {
+    let mut volume = mounted(2048);
+    let root = volume.root();
+    let directory = volume
+        .create(root, b"d", Kind::Directory, 0o755, 1)
+        .unwrap();
+    volume
+        .create(directory, b"placeholder", Kind::Regular, 0o644, 1)
+        .unwrap();
+    volume.remove(directory, b"placeholder", false, 1).unwrap();
+    volume.commit().unwrap();
+    let (_, free_blocks) = volume.space();
+    let (_, free_inodes) = volume.inodes();
+    let file = volume.create(root, b"a", Kind::Regular, 0o644, 1).unwrap();
+    volume.write(file, None, &pattern(4, 9000), 1).unwrap();
+    volume.link(file, directory, b"b", 5).unwrap();
+    volume.link(file, root, b"c", 6).unwrap();
+    assert_eq!(volume.attributes(file).unwrap().links, 3);
+    assert_eq!(volume.attributes(directory).unwrap().modified, 5);
+    assert_eq!(volume.lookup(directory, b"b"), Ok(Some(file)));
+    assert_eq!(volume.lookup(root, b"c"), Ok(Some(file)));
+    assert_eq!(
+        volume.link(directory, root, b"x", 7),
+        Err(Error::IsDirectory)
+    );
+    assert_eq!(volume.link(file, root, b"a", 7), Err(Error::Exists));
+    assert_eq!(volume.link(file, root, b"", 7), Err(Error::Exists));
+    assert_eq!(volume.link(file, file, b"x", 7), Err(Error::NotDirectory));
+    let link = volume.symlink(root, b"s", b"a", 7).unwrap();
+    volume.link(link, directory, b"s2", 7).unwrap();
+    assert_eq!(volume.attributes(link).unwrap().links, 2);
+    assert_eq!(volume.lookup(directory, b"s2"), Ok(Some(link)));
+    let report = volume.check().unwrap();
+    assert_eq!((report.files, report.symbolic_links), (1, 1));
+    volume.rename(root, b"a", root, b"c", false, 8).unwrap();
+    assert_eq!(volume.lookup(root, b"a"), Ok(Some(file)));
+    assert_eq!(volume.lookup(root, b"c"), Ok(Some(file)));
+    volume.remove(root, b"a", false, 9).unwrap();
+    assert_eq!(volume.attributes(file).unwrap().links, 2);
+    assert_eq!(volume.parent(file), Ok(root));
+    let mut name = [0u8; crate::MAX_NAME];
+    let length = volume.name(file, &mut name).unwrap();
+    assert_eq!(&name[..length], b"c");
+    volume.remove(root, b"c", false, 10).unwrap();
+    assert_eq!(volume.parent(file), Ok(directory));
+    let length = volume.name(file, &mut name).unwrap();
+    assert_eq!(&name[..length], b"b");
+    assert_eq!(read_all(&mut volume, file), pattern(4, 9000));
+    volume.check().unwrap();
+    volume.commit().unwrap();
+    let mut volume = remount(volume);
+    let root = volume.root();
+    let directory = volume.lookup(root, b"d").unwrap().unwrap();
+    let file = volume.lookup(directory, b"b").unwrap().unwrap();
+    assert_eq!(volume.attributes(file).unwrap().links, 1);
+    assert_eq!(read_all(&mut volume, file), pattern(4, 9000));
+    volume.check().unwrap();
+    let other = volume
+        .create(root, b"other", Kind::Regular, 0o644, 11)
+        .unwrap();
+    volume
+        .rename(root, b"other", directory, b"s2", false, 12)
+        .unwrap();
+    assert_eq!(volume.lookup(directory, b"s2"), Ok(Some(other)));
+    let link = volume.lookup(root, b"s").unwrap().unwrap();
+    assert_eq!(volume.attributes(link).unwrap().links, 1);
+    assert_eq!(volume.parent(link), Ok(root));
+    volume.check().unwrap();
+    volume.remove(directory, b"b", false, 13).unwrap();
+    assert_eq!(volume.read(file, 0, &mut [0; 4]), Err(Error::NotFound));
+    volume.remove(root, b"s", false, 13).unwrap();
+    volume.remove(directory, b"s2", false, 13).unwrap();
+    assert_eq!(volume.space().1, free_blocks);
+    assert_eq!(volume.inodes().1, free_inodes);
+    volume.check().unwrap();
+}
+
+#[test]
+fn a_file_with_the_most_names_refuses_another() {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    let file = volume.create(root, b"a", Kind::Regular, 0o644, 1).unwrap();
+    let number = volume.attributes(file).unwrap().inode;
+    let mut inode = volume.inode(number).unwrap();
+    inode.more_names = MAX_LINKS - 2;
+    volume.write_inode(number, &inode).unwrap();
+    volume.link(file, root, b"one more", 2).unwrap();
+    assert_eq!(volume.attributes(file).unwrap().links, MAX_LINKS);
+    assert_eq!(
+        volume.link(file, root, b"too many", 3),
+        Err(Error::TooManyLinks)
+    );
+    assert_eq!(volume.lookup(root, b"too many"), Ok(None));
+}
+
+#[test]
+fn a_file_removed_while_held_stays_usable_until_its_last_release() {
+    let mut volume = mounted(2048);
+    let root = volume.root();
+    volume
+        .create(root, b"keep", Kind::Regular, 0o644, 1)
+        .unwrap();
+    volume.commit().unwrap();
+    let (_, free_blocks) = volume.space();
+    let (_, free_inodes) = volume.inodes();
+    let file = volume
+        .create(root, b"held", Kind::Regular, 0o644, 1)
+        .unwrap();
+    let contents = pattern(5, 20_000);
+    volume.write(file, None, &contents, 1).unwrap();
+    volume.hold(file).unwrap();
+    volume.hold(file).unwrap();
+    volume.hold(root).unwrap();
+    volume.remove(root, b"held", false, 2).unwrap();
+    assert_eq!(volume.lookup(root, b"held"), Ok(None));
+    assert_eq!(read_all(&mut volume, file), contents);
+    assert_eq!(volume.attributes(file).unwrap().links, 0);
+    let mut name = [0u8; crate::MAX_NAME];
+    assert_eq!(volume.name(file, &mut name), Err(Error::NotFound));
+    assert_eq!(volume.parent(file), Err(Error::NotFound));
+    assert_eq!(volume.link(file, root, b"back", 3), Err(Error::NotFound));
+    assert_eq!(volume.write(file, None, b"more", 3), Ok((4, 20_004)));
+    volume.truncate(file, 10_000, 3).unwrap();
+    let report = volume.check().unwrap();
+    assert_eq!((report.files, report.orphans), (1, 1));
+    volume.commit().unwrap();
+    volume.release(file).unwrap();
+    assert_eq!(read_all(&mut volume, file), contents[..10_000]);
+    volume.release(file).unwrap();
+    assert_eq!(volume.read(file, 0, &mut [0; 4]), Err(Error::NotFound));
+    volume.release(root).unwrap();
+    assert_eq!(volume.release(file), Err(Error::NotFound));
+    assert_eq!(volume.space().1, free_blocks);
+    assert_eq!(volume.inodes().1, free_inodes);
+    let report = volume.check().unwrap();
+    assert_eq!((report.files, report.orphans), (1, 0));
+    let replaced = volume
+        .create(root, b"replaced", Kind::Regular, 0o644, 4)
+        .unwrap();
+    volume.write(replaced, None, b"old", 4).unwrap();
+    volume.hold(replaced).unwrap();
+    volume
+        .rename(root, b"keep", root, b"replaced", false, 5)
+        .unwrap();
+    assert_eq!(read_all(&mut volume, replaced), b"old");
+    assert_eq!(volume.check().unwrap().orphans, 1);
+    volume.release(replaced).unwrap();
+    assert_eq!(volume.check().unwrap().orphans, 0);
+    let held = volume
+        .create(root, b"unremoved", Kind::Regular, 0o644, 6)
+        .unwrap();
+    volume.hold(held).unwrap();
+    volume.release(held).unwrap();
+    assert_eq!(volume.lookup(root, b"unremoved"), Ok(Some(held)));
+    volume.check().unwrap();
+}
+
+#[test]
+fn orphans_left_by_a_power_off_are_freed_at_the_next_mount() {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    volume
+        .create(root, b"keep", Kind::Regular, 0o644, 1)
+        .unwrap();
+    volume.commit().unwrap();
+    let (_, free_blocks) = volume.space();
+    let (_, free_inodes) = volume.inodes();
+    for (index, name) in [&b"one"[..], b"two", b"three"].into_iter().enumerate() {
+        let file = volume.create(root, name, Kind::Regular, 0o644, 2).unwrap();
+        volume
+            .write(file, None, &pattern(index as u64, 6000), 2)
+            .unwrap();
+        volume.hold(file).unwrap();
+        volume.remove(root, name, false, 3).unwrap();
+    }
+    let link = volume.symlink(root, b"link", b"keep", 3).unwrap();
+    volume.hold(link).unwrap();
+    volume.remove(root, b"link", false, 3).unwrap();
+    assert_eq!(volume.link_target(link), Ok(b"keep".to_vec()));
+    volume.commit().unwrap();
+    assert_eq!(volume.check().unwrap().orphans, 4);
+    let image = volume.into_disk().image().to_vec();
+    let (mut volume, mounted) = Volume::mount(MemoryDisk::from_image(image)).unwrap();
+    assert_eq!(mounted.freed_orphans, 4);
+    assert_eq!(volume.space().1, free_blocks);
+    assert_eq!(volume.inodes().1, free_inodes);
+    assert_eq!(volume.check().unwrap().orphans, 0);
+    let (_, mounted) = Volume::mount(volume.into_disk()).unwrap();
+    assert_eq!(mounted.freed_orphans, 0);
+}
+
+#[test]
+fn a_version_1_volume_mounts_and_its_first_link_upgrades_it() {
+    let mut volume = version_1_volume();
+    assert_eq!(volume.version(), 1);
+    assert_eq!(volume.disk().image()[8], 1);
+    let root = volume.root();
+    let directory = volume.lookup(root, b"d").unwrap().unwrap();
+    let file = volume.lookup(directory, b"a.txt").unwrap().unwrap();
+    assert_eq!(read_all(&mut volume, file), b"version one\n");
+    volume
+        .create(directory, b"plain", Kind::Regular, 0o644, 2)
+        .unwrap();
+    volume.remove(directory, b"plain", false, 2).unwrap();
+    volume.check().unwrap();
+    volume.commit().unwrap();
+    let volume = remount(volume);
+    assert_eq!(volume.version(), 1);
+    for change in 0..3 {
+        let mut volume = version_1_volume();
+        let root = volume.root();
+        let directory = volume.lookup(root, b"d").unwrap().unwrap();
+        let file = volume.lookup(directory, b"a.txt").unwrap().unwrap();
+        match change {
+            0 => {
+                volume.symlink(root, b"l", b"d/a.txt", 3).unwrap();
+            }
+            1 => volume.link(file, root, b"b.txt", 3).unwrap(),
+            _ => {
+                volume.hold(file).unwrap();
+                volume.remove(directory, b"a.txt", false, 3).unwrap();
+            }
+        }
+        assert_eq!(volume.version(), VERSION, "change {change}");
+        volume.check().unwrap();
+        volume.commit().unwrap();
+        assert_eq!(volume.disk().image()[8], 2);
+        let mut volume = remount(volume);
+        assert_eq!(volume.version(), VERSION);
+        volume.check().unwrap();
+    }
+}
+
+#[test]
+fn superblock_versions_are_read_strictly_except_for_a_torn_upgrade() {
+    let volume = version_1_volume();
+    let mut image = volume.into_disk().image().to_vec();
+    let version = |image: &[u8]| Geometry::decode(image).map(|geometry| geometry.version);
+    let mut torn = image.clone();
+    torn[8] = 2;
+    assert_eq!(version(&torn[..]), Some(1));
+    let mut upgraded = Geometry::decode(&image).unwrap();
+    upgraded.version = 2;
+    let encoded = upgraded.encode();
+    let mut torn = image.clone();
+    torn[BLOCK_SIZE - 4..BLOCK_SIZE].copy_from_slice(&encoded[BLOCK_SIZE - 4..]);
+    assert_eq!(version(&torn[..]), Some(2));
+    let mut future = image.clone();
+    let mut geometry = Geometry::decode(&image).unwrap();
+    geometry.version = 3;
+    future[..BLOCK_SIZE].copy_from_slice(&geometry.encode()[..]);
+    assert!(Geometry::decode(&future).is_none());
+    assert!(matches!(
+        Volume::mount(MemoryDisk::from_image(future)),
+        Err((MountError::NotEggFs, _))
+    ));
+    image[8] = 3;
+    assert!(Geometry::decode(&image).is_none());
+}
+
+#[test]
+fn a_version_1_volume_holding_a_link_fails_its_check() {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    volume.symlink(root, b"l", b"target", 1).unwrap();
+    volume.commit().unwrap();
+    let mut image = volume.into_disk().image().to_vec();
+    as_version_1(&mut image);
+    let mut volume = Volume::mount(MemoryDisk::from_image(image)).unwrap().0;
+    let problem = volume.check().unwrap_err();
+    assert!(problem.what.contains("version 1"), "{problem}");
+}
+
+#[test]
+fn permissions_change_on_files_directories_and_orphans_but_not_links() {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    let directory = volume
+        .create(root, b"d", Kind::Directory, 0o755, 1)
+        .unwrap();
+    let file = volume
+        .create(directory, b"a", Kind::Regular, 0o644, 2)
+        .unwrap();
+    let link = volume.symlink(root, b"l", b"d/a", 3).unwrap();
+    volume.set_permissions(file, 0o10_4750).unwrap();
+    volume.set_permissions(directory, 0o700).unwrap();
+    assert_eq!(
+        volume.set_permissions(link, 0o600),
+        Err(Error::InvalidArgument)
+    );
+    let attributes = volume.attributes(file).unwrap();
+    assert_eq!((attributes.permissions, attributes.modified), (0o4750, 2));
+    assert_eq!(volume.attributes(link).unwrap().permissions, 0o777);
+    volume.check().unwrap();
+    volume.commit().unwrap();
+    let mut volume = remount(volume);
+    let root = volume.root();
+    let directory = volume.lookup(root, b"d").unwrap().unwrap();
+    let file = volume.lookup(directory, b"a").unwrap().unwrap();
+    assert_eq!(volume.attributes(directory).unwrap().permissions, 0o700);
+    assert_eq!(volume.attributes(file).unwrap().permissions, 0o4750);
+    volume.hold(file).unwrap();
+    volume.remove(directory, b"a", false, 4).unwrap();
+    volume.set_permissions(file, 0o600).unwrap();
+    assert_eq!(volume.attributes(file).unwrap().permissions, 0o600);
+    volume.release(file).unwrap();
+    assert_eq!(volume.set_permissions(file, 0o644), Err(Error::NotFound));
+    volume.check().unwrap();
+}
+
+fn scenario_base() -> Vec<u8> {
+    let mut volume = mounted(512);
+    let root = volume.root();
+    volume
+        .create(root, b"d", Kind::Directory, 0o755, 1)
+        .unwrap();
+    let file = volume.create(root, b"a", Kind::Regular, 0o644, 1).unwrap();
+    volume.write(file, None, &pattern(3, 9000), 1).unwrap();
+    let big = volume
+        .create(root, b"big", Kind::Regular, 0o644, 1)
+        .unwrap();
+    volume.write(big, None, &pattern(8, 30_000), 1).unwrap();
+    volume.commit().unwrap();
+    let mut image = volume.into_disk().image().to_vec();
+    as_version_1(&mut image);
+    image
+}
+
+fn commit_step(volume: &mut Volume<MemoryDisk>, states: &mut Vec<Tree>) -> Result<(), Error> {
+    let before = volume.commits();
+    volume.commit()?;
+    if volume.commits() > before {
+        states.push(tree(volume));
+    }
+    Ok(())
+}
+
+fn scenario_steps(volume: &mut Volume<MemoryDisk>, states: &mut Vec<Tree>) -> Result<(), Error> {
+    let root = volume.root();
+    let directory = volume.lookup(root, b"d")?.ok_or(Error::NotFound)?;
+    let file = volume.lookup(root, b"a")?.ok_or(Error::NotFound)?;
+    let big = volume.lookup(root, b"big")?.ok_or(Error::NotFound)?;
+    volume.symlink(root, b"l", b"a", 2)?;
+    commit_step(volume, states)?;
+    volume.link(file, directory, b"b", 3)?;
+    commit_step(volume, states)?;
+    volume.hold(file)?;
+    volume.remove(root, b"a", false, 4)?;
+    volume.remove(directory, b"b", false, 4)?;
+    commit_step(volume, states)?;
+    volume.write(file, None, &pattern(9, 5000), 5)?;
+    commit_step(volume, states)?;
+    volume.release(file)?;
+    commit_step(volume, states)?;
+    volume.link(big, directory, b"big2", 6)?;
+    volume.rename(root, b"l", directory, b"big2", false, 6)?;
+    commit_step(volume, states)?;
+    volume.hold(big)?;
+    volume.remove(root, b"big", false, 7)?;
+    commit_step(volume, states)
+}
+
+fn run_scenario(disk: MemoryDisk) -> (Volume<MemoryDisk>, Vec<Tree>) {
+    let mut volume = Volume::mount(disk).unwrap().0;
+    let mut states = vec![tree(&mut volume)];
+    let _ = scenario_steps(&mut volume, &mut states);
+    (volume, states)
+}
+
+#[test]
+fn a_power_cut_while_linking_or_removing_a_held_file_recovers_a_committed_state() {
+    let base = scenario_base();
+    let (reference, states) = run_scenario(MemoryDisk::from_image(base.clone()));
+    assert_eq!(states.len(), 8);
+    assert_eq!(reference.commits() as usize, states.len() - 1);
+    assert_eq!(reference.version(), VERSION);
+    let writes = reference.disk().writes();
+    let (mut after, mounted) = Volume::mount(reference.into_disk()).unwrap();
+    assert_eq!(mounted.freed_orphans, 1);
+    after.check().unwrap();
+    let mut seen_freed = false;
+    let mut seen_versions = [false; 2];
+    for cut in 0..=writes {
+        let mut disk = MemoryDisk::from_image(base.clone());
+        disk.cut_power_after(cut);
+        let (run, _) = run_scenario(disk);
+        let completed = run.commits() as usize;
+        let disk = run.into_disk();
+        let mut random = Random(cut * 104_729 + 3);
+        let variants = [
+            disk.after_power_cut(|_, _| false),
+            disk.after_power_cut(|_, _| true),
+            disk.after_power_cut(|_, _| random.below(2) == 0),
+        ];
+        for (variant, crashed) in variants.into_iter().enumerate() {
+            let (mut volume, mounted) = Volume::mount(crashed)
+                .unwrap_or_else(|(error, _)| panic!("cut {cut}, variant {variant}: {error:?}"));
+            seen_freed |= mounted.freed_orphans > 0;
+            seen_versions[volume.version() as usize - 1] = true;
+            if let Err(problem) = volume.check() {
+                panic!("cut {cut}, variant {variant}: {problem}");
+            }
+            let found = tree(&mut volume);
+            let candidates = &states[completed..(completed + 2).min(states.len())];
+            assert!(
+                candidates.contains(&found),
+                "cut {cut}, variant {variant}: the state is no committed one"
+            );
+        }
+    }
+    assert!(seen_freed);
+    assert_eq!(seen_versions, [true, true]);
 }

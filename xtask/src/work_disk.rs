@@ -6,10 +6,12 @@
 //! `/home`; [`unpack`] reads the image after QEMU has ended and writes `/work`'s tree into a
 //! new folder on the host. The image is a sparse file sized to the folder plus room for what
 //! builds write; files keep their permission bits (on Unix hosts) and modification times.
-//! The folder's top-level `.git` and `target` are left out, as are symbolic links and
-//! anything else that is neither a file nor a folder, which EggFS cannot hold yet.
+//! Symbolic links keep their targets and hard links stay one file with several names, both
+//! ways (Windows gives every file one name, and may refuse to make symbolic links to a user
+//! without the privilege: those are reported and left out). The folder's top-level `.git` and
+//! `target` are left out, as is anything that is neither a file, a folder nor a symbolic link.
 
-use eggos_eggfs::{BLOCK_SIZE, Disk, DiskError, Kind, MAX_NAME, Volume};
+use eggos_eggfs::{BLOCK_SIZE, Disk, DiskError, Kind, MAX_LINK_TARGET, MAX_NAME, Volume};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -100,7 +102,11 @@ pub struct Packed {
     pub folders: u64,
     /// Bytes of the files packed.
     pub bytes: u64,
-    /// Symbolic links and special files left out.
+    /// Symbolic links packed.
+    pub symbolic_links: u64,
+    /// Names packed as further names of a file already packed.
+    pub hard_links: u64,
+    /// Special files, and symbolic links EggFS cannot hold, left out.
     pub skipped: u64,
     /// The image's size in bytes.
     pub image_bytes: u64,
@@ -115,12 +121,24 @@ pub struct Unpacked {
     pub folders: u64,
     /// Bytes of the files written.
     pub bytes: u64,
+    /// Symbolic links made.
+    pub symbolic_links: u64,
+    /// Names made as hard links to a file already written.
+    pub hard_links: u64,
+    /// Symbolic links the host refused to make, left out.
+    pub skipped: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemKind {
     Folder,
-    File { bytes: u64 },
+    File {
+        bytes: u64,
+        identity: Option<(u64, u64)>,
+    },
+    Link {
+        target: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +153,7 @@ struct Item {
 #[derive(Debug, Default)]
 struct Scan {
     items: Vec<Item>,
-    skipped: Vec<PathBuf>,
+    skipped: Vec<(PathBuf, String)>,
 }
 
 fn seconds(time: std::io::Result<SystemTime>) -> u64 {
@@ -157,6 +175,48 @@ fn permissions_of(metadata: &std::fs::Metadata) -> u32 {
         (false, true) => 0o444,
         (false, false) => 0o644,
     }
+}
+
+#[cfg(unix)]
+fn identity_of(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.nlink() > 1 {
+        Some((metadata.dev(), metadata.ino()))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn identity_of(_: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(unix)]
+fn link_target_bytes(target: &Path) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    Some(target.as_os_str().as_bytes().to_vec())
+}
+
+#[cfg(not(unix))]
+fn link_target_bytes(target: &Path) -> Option<Vec<u8>> {
+    target
+        .to_str()
+        .map(|text| text.replace('\\', "/").into_bytes())
+}
+
+fn link_kind(host: &Path) -> Result<Result<ItemKind, String>, String> {
+    let target = std::fs::read_link(host).map_err(|e| format!("{}: {e}", host.display()))?;
+    let Some(target) = link_target_bytes(&target) else {
+        let reason = "a symbolic link whose target is not valid Unicode";
+        return Ok(Err(reason.to_owned()));
+    };
+    if target.is_empty() || target.len() > MAX_LINK_TARGET || target.contains(&0) {
+        let reason =
+            format!("a symbolic link whose target is empty or longer than {MAX_LINK_TARGET} bytes");
+        return Ok(Err(reason));
+    }
+    Ok(Ok(ItemKind::Link { target }))
 }
 
 fn scan_folder(folder: &Path, parts: &[String], scan: &mut Scan) -> Result<(), String> {
@@ -187,9 +247,19 @@ fn scan_folder(folder: &Path, parts: &[String], scan: &mut Scan) -> Result<(), S
         } else if metadata.is_file() {
             ItemKind::File {
                 bytes: metadata.len(),
+                identity: identity_of(&metadata),
+            }
+        } else if metadata.file_type().is_symlink() {
+            match link_kind(&host)? {
+                Ok(kind) => kind,
+                Err(reason) => {
+                    scan.skipped.push((host, reason));
+                    continue;
+                }
             }
         } else {
-            scan.skipped.push(host);
+            scan.skipped
+                .push((host, "not a file, a folder or a symbolic link".to_owned()));
             continue;
         };
         let mut item_parts = parts.to_vec();
@@ -235,9 +305,14 @@ fn eggfs_error(what: &str, error: eggos_eggfs::Error) -> String {
         eggos_eggfs::Error::TooBig => "the file is larger than EggFS allows",
         eggos_eggfs::Error::Corrupt => "the work disk is damaged",
         eggos_eggfs::Error::Io => "the image could not be read or written",
+        eggos_eggfs::Error::TooManyLinks => "the file has as many names as EggFS allows",
         _ => "EggFS refused it",
     };
     format!("{what}: {reason} ({error:?})")
+}
+
+fn item_name(item: &Item) -> &[u8] {
+    item.parts.last().map_or("", String::as_str).as_bytes()
 }
 
 fn pack_item(
@@ -247,14 +322,21 @@ fn pack_item(
     buffer: &mut [u8],
 ) -> Result<u64, String> {
     let shown = item.host.display().to_string();
-    let name = item.parts.last().map_or("", String::as_str).as_bytes();
-    let kind = match item.kind {
-        ItemKind::Folder => Kind::Directory,
-        ItemKind::File { .. } => Kind::Regular,
+    let name = item_name(item);
+    let made = match &item.kind {
+        ItemKind::Folder => volume.create(
+            parent,
+            name,
+            Kind::Directory,
+            item.permissions,
+            item.modified,
+        ),
+        ItemKind::File { .. } => {
+            volume.create(parent, name, Kind::Regular, item.permissions, item.modified)
+        }
+        ItemKind::Link { target } => volume.symlink(parent, name, target, item.modified),
     };
-    let node = volume
-        .create(parent, name, kind, item.permissions, item.modified)
-        .map_err(|error| eggfs_error(&shown, error))?;
+    let node = made.map_err(|error| eggfs_error(&shown, error))?;
     if let ItemKind::File { .. } = item.kind {
         let mut file = File::open(&item.host).map_err(|e| format!("{shown}: {e}"))?;
         let mut offset = 0u64;
@@ -278,10 +360,9 @@ fn pack_item(
     Ok(node)
 }
 
-/// Writes `folder` (without its top-level [`SKIPPED_AT_TOP`] entries, symbolic links and
-/// special files) into a new work disk image at `image` with [`HEADROOM_BYTES`] to spare,
-/// replacing any file there, and says what it packed. Each skipped path is printed as a
-/// warning.
+/// Writes `folder` (without its top-level [`SKIPPED_AT_TOP`] entries and special files) into a
+/// new work disk image at `image` with [`HEADROOM_BYTES`] to spare, replacing any file there,
+/// and says what it packed. Each skipped path is printed as a warning with its reason.
 pub fn pack(folder: &Path, image: &Path) -> Result<Packed, String> {
     pack_with_room(folder, image, HEADROOM_BYTES)
 }
@@ -292,9 +373,9 @@ fn pack_with_room(folder: &Path, image: &Path, room: u64) -> Result<Packed, Stri
     }
     let mut scan = Scan::default();
     scan_folder(folder, &[], &mut scan)?;
-    for skipped in &scan.skipped {
+    for (skipped, reason) in &scan.skipped {
         eprintln!(
-            "xtask: {} is not a file or a folder (a symbolic link?): left out of the work disk",
+            "xtask: {}: {reason}: left out of the work disk",
             skipped.display()
         );
     }
@@ -302,8 +383,8 @@ fn pack_with_room(folder: &Path, image: &Path, room: u64) -> Result<Packed, Stri
         .items
         .iter()
         .map(|item| match item.kind {
-            ItemKind::File { bytes } => bytes,
-            ItemKind::Folder => BLOCK_SIZE as u64,
+            ItemKind::File { bytes, .. } => bytes,
+            ItemKind::Folder | ItemKind::Link { .. } => BLOCK_SIZE as u64,
         })
         .sum();
     let image_bytes = image_bytes(bytes, scan.items.len() as u64, room);
@@ -332,6 +413,7 @@ fn pack_with_room(folder: &Path, image: &Path, room: u64) -> Result<Packed, Stri
     let top = eggos_eggfs::make_work_disk(&mut volume, made)
         .map_err(|error| eggfs_error(&image.display().to_string(), error))?;
     let mut nodes: HashMap<&[String], u64> = HashMap::new();
+    let mut first_names: HashMap<(u64, u64), u64> = HashMap::new();
     let mut buffer = vec![0u8; COPY_CHUNK_BYTES];
     let mut packed = Packed {
         skipped: scan.skipped.len() as u64,
@@ -346,19 +428,37 @@ fn pack_with_room(folder: &Path, image: &Path, room: u64) -> Result<Packed, Stri
                 .get(parent_parts)
                 .ok_or_else(|| format!("{}: its folder was not packed", item.host.display()))?,
         };
+        let linked = match &item.kind {
+            ItemKind::File {
+                identity: Some(identity),
+                ..
+            } => first_names.get(identity).copied(),
+            _ => None,
+        };
+        if let Some(node) = linked {
+            volume
+                .link(node, parent, item_name(item), item.modified)
+                .map_err(|error| eggfs_error(&item.host.display().to_string(), error))?;
+            packed.hard_links += 1;
+            continue;
+        }
         let node = pack_item(&mut volume, parent, item, &mut buffer)?;
-        match item.kind {
+        match &item.kind {
             ItemKind::Folder => {
                 packed.folders += 1;
                 nodes.insert(&item.parts, node);
             }
-            ItemKind::File { .. } => {
+            ItemKind::File { identity, .. } => {
                 packed.files += 1;
                 packed.bytes += volume
                     .attributes(node)
                     .map_err(|error| eggfs_error(&item.host.display().to_string(), error))?
                     .size;
+                if let Some(identity) = identity {
+                    first_names.insert(*identity, node);
+                }
             }
+            ItemKind::Link { .. } => packed.symbolic_links += 1,
         }
     }
     for item in scan.items.iter().rev() {
@@ -452,10 +552,78 @@ fn set_permissions(path: &Path, permissions: u32) -> Result<(), String> {
     std::fs::set_permissions(path, host).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+#[cfg(unix)]
+fn make_host_link(
+    _: &mut Volume<FileDisk>,
+    _: u64,
+    target: &[u8],
+    path: &Path,
+) -> Result<Option<String>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), path)
+        .map(|()| None)
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(windows)]
+const PRIVILEGE_NOT_HELD: i32 = 1314;
+
+#[cfg(windows)]
+fn names_directory(volume: &mut Volume<FileDisk>, directory: u64, target: &[u8]) -> bool {
+    if target.starts_with(b"/") {
+        return false;
+    }
+    let mut node = directory;
+    for part in target.split(|&byte| byte == b'/') {
+        node = match part {
+            b"" | b"." => node,
+            b".." => match volume.parent(node) {
+                Ok(parent) => parent,
+                Err(_) => return false,
+            },
+            name => match volume.lookup(node, name) {
+                Ok(Some(found)) => found,
+                _ => return false,
+            },
+        };
+    }
+    eggos_eggfs::kind_of(node) == Kind::Directory
+}
+
+#[cfg(windows)]
+fn make_host_link(
+    volume: &mut Volume<FileDisk>,
+    directory: u64,
+    target: &[u8],
+    path: &Path,
+) -> Result<Option<String>, String> {
+    let Ok(text) = std::str::from_utf8(target) else {
+        return Ok(Some("its target is not valid Unicode".to_owned()));
+    };
+    let host_target = text.replace('/', "\\");
+    let made = match names_directory(volume, directory, target) {
+        true => std::os::windows::fs::symlink_dir(&host_target, path),
+        false => std::os::windows::fs::symlink_file(&host_target, path),
+    };
+    match made {
+        Ok(()) => Ok(None),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                || error.raw_os_error() == Some(PRIVILEGE_NOT_HELD) =>
+        {
+            let reason = format!("Windows refused to make the symbolic link ({error})");
+            Ok(Some(reason))
+        }
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
 /// Writes the tree under `/work` on the work disk image `image` into the folder `out`, which
 /// must not exist or be empty, and says what it wrote. The image's journal is replayed first,
 /// so a QEMU that was killed still gives back everything EggOS committed, and the whole file
-/// system is checked before anything is written.
+/// system is checked before anything is written. A file with several names is written once
+/// and its other names made as hard links; a symbolic link the host refuses to make is
+/// printed as a warning and left out.
 pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
     if out.exists() && !(out.is_dir() && is_empty_folder(out)?) {
         return Err(format!(
@@ -482,6 +650,7 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut unpacked = Unpacked::default();
     let mut buffer = vec![0u8; COPY_CHUNK_BYTES];
+    let mut first_names: HashMap<u64, PathBuf> = HashMap::new();
     let mut pending = vec![(out.to_path_buf(), top)];
     while let Some((folder, directory)) = pending.pop() {
         let mut position = 0;
@@ -498,8 +667,36 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
                     pending.push((path, entry.node));
                 }
                 Kind::Regular => {
+                    if let Some(first) = first_names.get(&entry.node) {
+                        std::fs::hard_link(first, &path)
+                            .map_err(|e| format!("{}: {e}", path.display()))?;
+                        unpacked.hard_links += 1;
+                        continue;
+                    }
                     unpacked.bytes += write_file(&mut volume, entry.node, &path, &mut buffer)?;
                     unpacked.files += 1;
+                    let links = volume
+                        .attributes(entry.node)
+                        .map_err(|error| eggfs_error(&path.display().to_string(), error))?
+                        .links;
+                    if links > 1 {
+                        first_names.insert(entry.node, path);
+                    }
+                }
+                Kind::SymbolicLink => {
+                    let target = volume
+                        .link_target(entry.node)
+                        .map_err(|error| eggfs_error(&path.display().to_string(), error))?;
+                    match make_host_link(&mut volume, directory, &target, &path)? {
+                        None => unpacked.symbolic_links += 1,
+                        Some(reason) => {
+                            eprintln!(
+                                "xtask: {}: {reason}: left out of the unpacked folder",
+                                path.display()
+                            );
+                            unpacked.skipped += 1;
+                        }
+                    }
                 }
             }
         }
@@ -649,8 +846,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn permission_bits_survive_and_symbolic_links_are_left_out() {
-        use std::os::unix::fs::PermissionsExt;
+    fn permission_bits_symbolic_links_and_hard_links_survive_a_round_trip() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let root = scratch("unix");
         let folder = root.join("repo");
         write(&folder.join("run.sh"), b"#!/bin/eggsh\necho hi\n");
@@ -660,17 +857,54 @@ mod tests {
         )
         .unwrap();
         std::os::unix::fs::symlink("run.sh", folder.join("link")).unwrap();
+        std::os::unix::fs::symlink("../outside/missing", folder.join("dangling")).unwrap();
+        std::fs::create_dir_all(folder.join("sub")).unwrap();
+        std::os::unix::fs::symlink("..", folder.join("sub/up")).unwrap();
+        std::fs::hard_link(folder.join("run.sh"), folder.join("sub/run2.sh")).unwrap();
         let image = root.join("work.img");
         let packed = pack_with_room(&folder, &image, TEST_ROOM).unwrap();
-        assert_eq!((packed.files, packed.skipped), (1, 1));
+        assert_eq!(
+            (packed.files, packed.symbolic_links, packed.hard_links),
+            (1, 3, 1)
+        );
+        assert_eq!((packed.folders, packed.skipped), (1, 0));
+        let (mut volume, _) = Volume::mount(FileDisk::open(&image).unwrap()).unwrap();
+        let top = eggos_eggfs::work_folder(&mut volume).unwrap();
+        let link = volume.lookup(top, b"link").unwrap().unwrap();
+        assert_eq!(eggos_eggfs::kind_of(link), Kind::SymbolicLink);
+        assert_eq!(volume.link_target(link), Ok(b"run.sh".to_vec()));
+        let script = volume.lookup(top, b"run.sh").unwrap().unwrap();
+        assert_eq!(volume.attributes(script).unwrap().links, 2);
+        volume.check().unwrap();
+        drop(volume);
         let out = root.join("out");
-        unpack(&image, &out).unwrap();
+        let unpacked = unpack(&image, &out).unwrap();
+        assert_eq!((unpacked.files, unpacked.symbolic_links), (1, 3));
+        assert_eq!((unpacked.hard_links, unpacked.skipped), (1, 0));
         let mode = std::fs::metadata(out.join("run.sh"))
             .unwrap()
             .permissions()
             .mode();
         assert_eq!(mode & 0o7777, 0o750);
-        assert!(!out.join("link").exists());
+        assert_eq!(
+            std::fs::read_link(out.join("link")).unwrap(),
+            Path::new("run.sh")
+        );
+        assert_eq!(
+            std::fs::read_link(out.join("dangling")).unwrap(),
+            Path::new("../outside/missing")
+        );
+        assert_eq!(
+            std::fs::read_link(out.join("sub/up")).unwrap(),
+            Path::new("..")
+        );
+        let first = std::fs::metadata(out.join("run.sh")).unwrap();
+        let second = std::fs::metadata(out.join("sub/run2.sh")).unwrap();
+        assert_eq!((first.ino(), first.nlink()), (second.ino(), 2));
+        assert_eq!(
+            std::fs::read(out.join("link")).unwrap(),
+            b"#!/bin/eggsh\necho hi\n"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
