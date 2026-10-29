@@ -104,7 +104,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146). Programs on a C++ runtime,
   MinGW's or Rust's std, `scanf`, locales, the math library, other processes, other DLLs, structured exception handling,
-  the system's controls (buttons, edits), menus, dialogs from resources, timers, fonts other
+  controls beyond buttons, edits, labels and lists (D145), dialogs from resources, fonts other
   than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
   riscv64 do not run yet; names are case-sensitive and local time is UTC.
 - **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
