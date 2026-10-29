@@ -695,12 +695,12 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
-    let (install_kernel, install_folder) = build_install_test(arch)?;
-    qemu::install::check(arch, &install_kernel, &install_folder)?;
-    qemu::files::check(arch, &install_kernel, &install_folder)?;
     if let Some((kernel, folder)) = build_macos_gui_test(arch)? {
         qemu::macos_gui::check(arch, &kernel, &folder)?;
     }
+    let (install_kernel, install_folder) = build_install_test(arch)?;
+    qemu::install::check(arch, &install_kernel, &install_folder)?;
+    qemu::files::check(arch, &install_kernel, &install_folder)?;
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
     qemu::mcp::check(
         arch,
