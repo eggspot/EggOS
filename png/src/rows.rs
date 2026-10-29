@@ -257,7 +257,7 @@ impl<'s, S: ByteSource> RowDecoder<'s, S> {
 
     fn read_palette(&mut self) -> Result<(), DecodeError> {
         let length = self.chunks.remaining as usize;
-        if length % 3 != 0 || length > 3 * MAX_PALETTE {
+        if !length.is_multiple_of(3) || length > 3 * MAX_PALETTE {
             return Err(DecodeError::Corrupt);
         }
         for entry in 0..length / 3 {

@@ -110,7 +110,7 @@ pub fn decode(
             if !reader.read_exact_at(colour_start + (row * colour_stride) as u64, line) {
                 return false;
             }
-            own_alpha |= line.chunks_exact(4).any(|pixel| pixel[3] != 0);
+            own_alpha |= line.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0);
         }
     }
     let mut pixels = [0u32; MAX_SIDE as usize];

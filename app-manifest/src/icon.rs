@@ -37,15 +37,17 @@ pub fn sanitised(pixel: u32) -> u32 {
 /// [`FILE_BYTES`] long.
 pub fn pixels(file: &[u8]) -> Option<impl Iterator<Item = u32> + '_> {
     (file.len() == FILE_BYTES).then(|| {
-        file.chunks_exact(4)
-            .map(|bytes| sanitised(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])))
+        file.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| sanitised(u32::from_le_bytes(*bytes)))
     })
 }
 
 /// Writes `pixels` (large image first, [`PIXELS`] of them) as the file's bytes into `out`.
 pub fn write(pixels: &[u32; PIXELS], out: &mut [u8; FILE_BYTES]) {
-    for (bytes, pixel) in out.chunks_exact_mut(4).zip(pixels) {
-        bytes.copy_from_slice(&pixel.to_le_bytes());
+    for (bytes, pixel) in out.as_chunks_mut::<4>().0.iter_mut().zip(pixels) {
+        *bytes = pixel.to_le_bytes();
     }
 }
 

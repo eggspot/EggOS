@@ -586,7 +586,7 @@ fn super_and_a_letter_the_profile_does_not_take_reach_the_focused_window() {
         let mut events = Recorded::default();
         desktop.set_profile(profile, &mut Damage::new(), &mut events);
         let window = with_menu(&mut desktop, CLIENT, MAC_PAINT);
-        for letter in [b'q', b'k'] {
+        for letter in *b"qk" {
             let (code, _) = key_for_ascii(letter).unwrap();
             events.take();
             let mut damage = Damage::new();

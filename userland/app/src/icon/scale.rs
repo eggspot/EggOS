@@ -99,7 +99,7 @@ impl<'a> Scaler<'a> {
             return;
         }
         let total = (self.side * self.side) as u32;
-        for (pixel, sums) in self.out.iter_mut().zip(self.sums.chunks_exact(4)) {
+        for (pixel, sums) in self.out.iter_mut().zip(self.sums.as_chunks::<4>().0) {
             let mean = |channel: usize| (sums[channel] + total / 2) / total;
             *pixel = mean(0) << 24 | mean(1) << 16 | mean(2) << 8 | mean(3);
         }

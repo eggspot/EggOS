@@ -610,7 +610,7 @@ mod tests {
                 let (x, y) = (index % side, index / side);
                 let alpha = x * 255 / (side - 1);
                 let colour = (y * 255 / (side - 1)).min(alpha);
-                alpha << 24 | colour << 16 | (alpha - colour) / 2 << 8 | colour / 3
+                alpha << 24 | colour << 16 | (((alpha - colour) / 2) << 8) | (colour / 3)
             })
         };
         let mut all: Vec<u32> = formula(48).collect();

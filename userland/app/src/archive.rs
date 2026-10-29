@@ -94,7 +94,7 @@ pub struct Cursor {
 }
 
 /// One entry of the central directory.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     name: [u8; NAME_CAPACITY],
     name_length: usize,

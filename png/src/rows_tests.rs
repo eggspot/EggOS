@@ -239,7 +239,7 @@ impl PngSink for Bytes {
 #[test]
 fn what_the_encoder_writes_decodes_row_by_row() {
     let pixels: Vec<u32> = (0..40 * 7)
-        .map(|index| index * 0x0001_0307 & 0x00ff_ffff)
+        .map(|index| (index * 0x0001_0307) & 0x00ff_ffff)
         .collect();
     let mut work = Box::new(EncoderWorkspace::new());
     let mut encoder = Encoder::new(40, 7, &mut work, Bytes(Vec::new())).unwrap();

@@ -39,12 +39,9 @@ mod darwin;
     )
 ))]
 mod fixups;
-#[cfg(any(
-    test,
-    all(
-        target_env = "musl",
-        any(target_arch = "aarch64", target_arch = "x86_64")
-    )
+#[cfg(all(
+    target_env = "musl",
+    any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
 use eggos_c_format as format;
 #[cfg(any(

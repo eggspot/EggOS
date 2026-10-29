@@ -555,7 +555,7 @@ fn a_zip_with_several_programs_needs_an_entry_and_one_with_none_is_refused() {
         crate::messages::reason(problem).as_str(),
         "it holds several programs (bin/a.exe, bin/b.exe): choose one with --entry <path>"
     );
-    let plan = plan_entry(
+    let entry_plan = plan_entry(
         &mut files,
         b"/media/host/tools.zip",
         None,
@@ -563,7 +563,7 @@ fn a_zip_with_several_programs_needs_an_entry_and_one_with_none_is_refused() {
         X86_64,
     )
     .unwrap();
-    assert_eq!(plan.name(), "b");
+    assert_eq!(entry_plan.name(), "b");
     assert_eq!(
         plan_entry(
             &mut files,

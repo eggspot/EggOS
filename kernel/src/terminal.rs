@@ -374,7 +374,7 @@ pub fn tick<P: Platform>(input_queued: bool) {
 fn clock_key<P: Platform>() -> u64 {
     let wall = crate::wall_clock::seconds::<P>();
     match eggos_calendar::is_set(wall as i64) {
-        true => WALL_CLOCK_KEY | wall / SECONDS_PER_MINUTE,
+        true => WALL_CLOCK_KEY | (wall / SECONDS_PER_MINUTE),
         false => P::clock_ticks() / P::clock_frequency().max(1),
     }
 }

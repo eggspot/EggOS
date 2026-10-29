@@ -145,7 +145,7 @@ fn a_path_with_nothing_there_is_a_new_file_the_first_save_makes() {
 #[test]
 fn what_is_not_text_does_not_open_and_says_why() {
     let mut owned = Owned::new(4096);
-    let mut driver = Driver::new(&mut owned, Some(b"/home/root/photo.png"));
+    let driver = Driver::new(&mut owned, Some(b"/home/root/photo.png"));
     assert_eq!(
         driver.window.notice(),
         Some("photo.png is not a text file.")
