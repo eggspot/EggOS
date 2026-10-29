@@ -61,10 +61,10 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
 | none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get` |
-| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included | `wm_capture` |
+| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu | `wm_capture`, `wm_menu_list` |
 | `write` | write files below `/home/root` and move them to the Trash | `tee`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
-| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `clock_set` |
+| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `clock_set` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -104,9 +104,11 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | `wm_type` | Types printable ASCII into a window (`window`, `text`, at most 96 characters) | `wm type -- <window> <text>` | `run` |
 | `wm_press` | Presses a key with modifiers in a window (`window`, `keys` such as `Enter` or `ctrl+s`) | `wm press -- <window> <keys>` | `run` |
 | `wm_scroll` | Turns the wheel `dy` notches (-16 to 16) in a window, at `x`, `y` or the centre | `wm scroll [--at <x> <y>] -- <window> 0 <dy>` | `run` |
+| `wm_menu_list` | A window's main menu, the one a macOS app shows in the top bar (`window`): each menu's number and title, each entry's number, label, key equivalent and `[disabled]`, separators as `----` (D147) | `wm menu -- <window>` | `view` |
+| `wm_menu_choose` | Chooses an enabled item of a window's main menu (`window`; `menu`, 0 to 5, and `entry`, 0 to 15, the numbers `wm_menu_list` shows) as a click on it in the top bar would; covered and minimised windows too | `wm menu --choose -- <window> <menu> <entry>` | `run` |
 
-The reading tools and `wm_capture` are `readOnlyHint`; `tee`, `trash`, `run`, `app_uninstall`
-and the four input tools are `destructiveHint`, so clients ask their user before them. Paths are absolute and resolved
+The reading tools, `wm_capture` and `wm_menu_list` are `readOnlyHint`; `tee`, `trash`, `run`,
+`app_uninstall`, the four input tools and `wm_menu_choose` are `destructiveHint`, so clients ask their user before them. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
 component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. A refusal is
 a tool result with `isError: true` that says why. A command that fails gives its error output and

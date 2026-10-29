@@ -22,8 +22,9 @@ use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
-    EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, capture_reply,
-    create_reply, list_reply, put_double_word, put_word, request, set_size_reply, size,
+    EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MENU_POOL_CAPACITY, Request, WindowError,
+    capture_reply, create_reply, get_menu_reply, list_reply, put_double_word, put_word, request,
+    set_size_reply, size,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -87,7 +88,7 @@ pub fn ioctl<P: Platform>(
     let client = connection.client().id();
     let manages = matches!(
         request,
-        Request::ListWindow { .. } | Request::ManageWindow { .. }
+        Request::ListWindow { .. } | Request::ManageWindow { .. } | Request::GetMenu { .. }
     );
     if manages && !is_privileged(process) {
         return Err(Errno::EPERM);
@@ -104,7 +105,11 @@ pub fn ioctl<P: Platform>(
     if matches!(request, Request::CaptureWindow { .. }) && !may_capture_windows(process) {
         return Err(Errno::EPERM);
     }
-    if matches!(request, Request::SendInput { .. }) && !may_send_input(process) {
+    let injects = matches!(
+        request,
+        Request::SendInput { .. } | Request::ChooseMenu { .. }
+    );
+    if injects && !may_send_input(process) {
         return Err(Errno::EPERM);
     }
     match request {
@@ -310,6 +315,34 @@ pub fn ioctl<P: Platform>(
             if let Injected::ForTerminal(input) = injected {
                 send_to_terminal::<P>(input);
             }
+        }
+        Request::GetMenu { window } => {
+            let mut pool = [0u8; MENU_POOL_CAPACITY];
+            let length = on_windows::<P, _>(|desktop, _, _, _| {
+                let menu = desktop.menu_pool(window)?;
+                pool[..menu.len()].copy_from_slice(menu);
+                Ok(menu.len())
+            })?;
+            bytes.fill(0);
+            put_word(bytes, 0, window);
+            put_word(bytes, get_menu_reply::LENGTH, length as u32);
+            bytes[get_menu_reply::POOL..get_menu_reply::POOL + length]
+                .copy_from_slice(&pool[..length]);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::ChooseMenu {
+            window,
+            menu,
+            entry,
+        } => {
+            if crate::input::person_holds_input() || crate::input::has_pending_events() {
+                return Err(Errno::EBUSY);
+            }
+            on_windows::<P, _>(|desktop, _, damage, events| {
+                desktop.choose_menu(window, menu, entry, damage, events)
+            })?;
         }
     }
     Ok(0)

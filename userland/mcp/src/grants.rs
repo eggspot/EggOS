@@ -24,7 +24,7 @@ pub const MAX_UNKNOWN_BYTES: usize = 128;
 /// One thing the user can let agents do beyond reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grant {
-    /// See window contents (`wm_capture`).
+    /// See window contents and menus (`wm_capture`, `wm_menu_list`).
     View,
     /// Write and delete files below `/home/root` (`tee`, `trash`).
     Write,
@@ -32,7 +32,8 @@ pub enum Grant {
     /// a text file in the Text Editor (`edit_open`).
     Install,
     /// Run any program (`run`), operate any window (`wm_click`, `wm_type`, `wm_press`,
-    /// `wm_scroll`) and set the clock (`clock_set`, D150): full control of the machine.
+    /// `wm_scroll`, `wm_menu_choose`) and set the clock (`clock_set`, D150): full control of
+    /// the machine.
     Run,
 }
 

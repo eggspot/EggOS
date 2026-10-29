@@ -39,6 +39,10 @@ pub const MAX_WINDOW_ID: u64 = 999_999_999;
 pub const MAX_COORDINATE: u64 = 65_535;
 /// The most wheel notches one scroll turns, either way (the window server's own limit).
 pub const MAX_NOTCHES: u64 = 16;
+/// The largest menu number of a main menu (the window server holds 6 menus).
+pub const MAX_MENU_INDEX: u64 = 5;
+/// The largest entry number in one menu (the window server holds 16 entries a menu).
+pub const MAX_ENTRY_INDEX: u64 = 15;
 
 /// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
 pub const TIME_BYTES: usize = 20;
@@ -93,6 +97,8 @@ pub enum ArgumentProblem {
     BadImageWidth,
     /// `time` is not `YYYY-MM-DDTHH:MM:SSZ`.
     BadTime,
+    /// `menu` is not 0 to [`MAX_MENU_INDEX`] or `entry` not 0 to [`MAX_ENTRY_INDEX`].
+    BadMenuItem,
 }
 
 impl ArgumentProblem {
@@ -110,6 +116,9 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("text") => "text is required",
             ArgumentProblem::Missing("keys") => "keys is required",
             ArgumentProblem::Missing("dy") => "dy is required",
+            ArgumentProblem::Missing("menu") => {
+                "menu and entry are required: the numbers wm_menu_list shows"
+            }
             ArgumentProblem::Missing("time") => "time is required: YYYY-MM-DDTHH:MM:SSZ, in UTC",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
@@ -155,6 +164,9 @@ impl ArgumentProblem {
             ArgumentProblem::BadTime => {
                 "time must be a date and time in UTC as YYYY-MM-DDTHH:MM:SSZ, such as \
                  2026-10-29T14:05:09Z"
+            }
+            ArgumentProblem::BadMenuItem => {
+                "menu (0 to 5) and entry (0 to 15) are whole numbers as wm_menu_list shows them"
             }
         }
     }
@@ -325,6 +337,8 @@ pub struct Checked {
     pub max_width: Option<u32>,
     /// `clock_set`'s time.
     pub time: Option<TimeText>,
+    /// `wm_menu_choose`'s menu and entry numbers.
+    pub menu_item: Option<(u32, u32)>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -574,6 +588,14 @@ fn window_arguments<'a>(
             };
             checked.notches = Some(notches as i32);
             checked.point = point(get("x"), get("y"))?;
+        }
+        Kind::WmMenuChoose => {
+            let menu = whole(get("menu"), MAX_MENU_INDEX, ArgumentProblem::BadMenuItem)?;
+            let entry = whole(get("entry"), MAX_ENTRY_INDEX, ArgumentProblem::BadMenuItem)?;
+            let (Some(menu), Some(entry)) = (menu, entry) else {
+                return Err(ArgumentProblem::Missing("menu"));
+            };
+            checked.menu_item = Some((menu as u32, entry as u32));
         }
         _ => {}
     }
@@ -1078,6 +1100,39 @@ mod tests {
             checked("wm_type", &exact).0.unwrap().text,
             Some(MAX_TYPED_TEXT_BYTES)
         );
+        let (result, _) = checked("wm_menu_choose", r#"{"window":5,"menu":5,"entry":15}"#);
+        assert_eq!(result.unwrap().menu_item, Some((5, 15)));
+        let (result, _) = checked("wm_menu_list", r#"{"window":5}"#);
+        assert_eq!(result.unwrap().menu_item, None);
+        for (arguments, problem) in [
+            (
+                r#"{"window":1,"menu":6,"entry":0}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (
+                r#"{"window":1,"menu":0,"entry":16}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (
+                r#"{"window":1,"menu":-1,"entry":0}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (
+                r#"{"window":1,"menu":"File","entry":0}"#,
+                ArgumentProblem::BadMenuItem,
+            ),
+            (r#"{"window":1,"menu":0}"#, ArgumentProblem::Missing("menu")),
+            (
+                r#"{"window":1,"entry":0}"#,
+                ArgumentProblem::Missing("menu"),
+            ),
+        ] {
+            assert_eq!(
+                checked("wm_menu_choose", arguments).0,
+                Err(problem),
+                "{arguments}"
+            );
+        }
         let exact = format!(r#"{{"window":1,"keys":"{}"}}"#, "x".repeat(MAX_KEYS_BYTES));
         assert_eq!(
             checked("wm_press", &exact).0.unwrap().keys,

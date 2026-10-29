@@ -675,3 +675,122 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen_with_a_menu_open() {
     }
     assert!(whole == parts);
 }
+
+#[test]
+fn get_and_choose_menu_have_linux_s_encoding_and_parse_their_fields() {
+    assert_eq!(request::GET_MENU, 0xc100_7716);
+    assert_eq!(request::CHOOSE_MENU, 0x400c_7717);
+    assert_eq!((size::GET_MENU, size::CHOOSE_MENU), (256, 12));
+    let mut bytes = [0u8; 256];
+    bytes[..4].copy_from_slice(&65u32.to_ne_bytes());
+    assert_eq!(
+        Request::parse(request::GET_MENU, &bytes),
+        Some(Request::GetMenu { window: 65 })
+    );
+    let mut choose = [0u8; 12];
+    for (index, word) in [65u32, 1, 2].into_iter().enumerate() {
+        choose[index * 4..index * 4 + 4].copy_from_slice(&word.to_ne_bytes());
+    }
+    assert_eq!(
+        Request::parse(request::CHOOSE_MENU, &choose),
+        Some(Request::ChooseMenu {
+            window: 65,
+            menu: 1,
+            entry: 2
+        })
+    );
+    assert_eq!(Request::parse(request::CHOOSE_MENU, &choose[..8]), None);
+}
+
+#[test]
+fn any_window_s_menu_pool_reads_back_as_it_was_set() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let paint = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    let bare = shown(&mut desktop, OTHER);
+    assert_eq!(desktop.menu_pool(u32::from(paint)), Ok(MAC_PAINT));
+    assert_eq!(desktop.menu_pool(u32::from(bare)), Ok(&b""[..]));
+    assert_eq!(desktop.menu_pool(9999), Err(WindowError::NoSuchWindow));
+    set(&mut desktop, paint, EDIT).unwrap();
+    assert_eq!(desktop.menu_pool(u32::from(paint)), Ok(EDIT));
+}
+
+#[test]
+fn a_command_chooses_an_enabled_item_of_any_window_s_menu() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let paint = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    let edit = with_menu(&mut desktop, OTHER, EDIT);
+    desktop.set_time(10_000);
+    let mut events = Recorded::default();
+    let mut choose = |desktop: &mut Desktop, window: u32, menu: u32, entry: u32| {
+        desktop.choose_menu(window, menu, entry, &mut Damage::new(), &mut events)
+    };
+    assert_eq!(choose(&mut desktop, u32::from(paint), 1, 0), Ok(()));
+    assert_eq!(choose(&mut desktop, u32::from(edit), 0, 3), Ok(()));
+    for (window, menu, entry) in [
+        (paint, 0, 1),
+        (paint, 1, 2),
+        (paint, 3, 0),
+        (paint, u32::MAX, 0),
+        (paint, 0, u32::MAX),
+        (edit, 0, 1),
+        (edit, 0, 2),
+    ] {
+        assert_eq!(
+            choose(&mut desktop, u32::from(window), menu, entry),
+            Err(WindowError::Invalid),
+            "{menu} {entry}"
+        );
+    }
+    assert_eq!(
+        choose(&mut desktop, 9999, 0, 0),
+        Err(WindowError::NoSuchWindow)
+    );
+    assert_eq!(
+        events.chosen(),
+        [(CLIENT, paint, 1, 0), (OTHER, edit, 0, 3)]
+    );
+}
+
+#[test]
+fn a_command_s_choice_closes_the_open_menu_and_waits_for_a_person() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    click(&mut desktop, 200, 10, &mut events);
+    assert!(desktop.main_menu_area().is_some());
+    events.take();
+    let id = u32::from(window);
+    assert_eq!(
+        desktop.choose_menu(id, 1, 0, &mut Damage::new(), &mut events),
+        Err(WindowError::Busy)
+    );
+    assert!(desktop.main_menu_area().is_some());
+    desktop.set_time(1000);
+    assert_eq!(
+        desktop.choose_menu(id, 1, 0, &mut Damage::new(), &mut events),
+        Ok(())
+    );
+    assert_eq!(desktop.main_menu_area(), None);
+    assert_eq!(events.chosen(), [(CLIENT, window, 1, 0)]);
+}
+
+#[test]
+fn a_command_s_choice_waits_for_room_in_the_client_s_queue() {
+    struct Full;
+    impl EventSink for Full {
+        fn send(&mut self, _: u16, _: EventRecord) {
+            panic!("nothing is sent");
+        }
+
+        fn room(&self, _: u16) -> usize {
+            0
+        }
+    }
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    desktop.set_time(10_000);
+    assert_eq!(
+        desktop.choose_menu(u32::from(window), 1, 0, &mut Damage::new(), &mut Full),
+        Err(WindowError::QueueFull)
+    );
+}

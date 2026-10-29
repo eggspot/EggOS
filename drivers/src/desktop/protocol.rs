@@ -57,6 +57,8 @@ pub mod size {
     pub const CAPTURE_WINDOW: usize = 40;
     pub const SEND_INPUT: usize = 24;
     pub const SET_MENU: usize = 256;
+    pub const GET_MENU: usize = 256;
+    pub const CHOOSE_MENU: usize = 12;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -87,6 +89,8 @@ pub mod request {
     pub const CAPTURE_WINDOW: u32 = encode(READ | WRITE, 19, size::CAPTURE_WINDOW);
     pub const SEND_INPUT: u32 = encode(WRITE, 20, size::SEND_INPUT);
     pub const SET_MENU: u32 = encode(WRITE, 21, size::SET_MENU);
+    pub const GET_MENU: u32 = encode(READ | WRITE, 22, size::GET_MENU);
+    pub const CHOOSE_MENU: u32 = encode(WRITE, 23, size::CHOOSE_MENU);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -345,6 +349,14 @@ pub enum Request {
         length: u32,
         pool: [u8; MENU_POOL_CAPACITY],
     },
+    GetMenu {
+        window: u32,
+    },
+    ChooseMenu {
+        window: u32,
+        menu: u32,
+        entry: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -394,6 +406,8 @@ impl Request {
             request::CAPTURE_WINDOW => size::CAPTURE_WINDOW,
             request::SEND_INPUT => size::SEND_INPUT,
             request::SET_MENU => size::SET_MENU,
+            request::GET_MENU => size::GET_MENU,
+            request::CHOOSE_MENU => size::CHOOSE_MENU,
             _ => return None,
         })
     }
@@ -514,6 +528,12 @@ impl Request {
                     pool,
                 }
             }
+            request::GET_MENU => Self::GetMenu { window: at(0) },
+            request::CHOOSE_MENU => Self::ChooseMenu {
+                window: at(0),
+                menu: at(4),
+                entry: at(8),
+            },
             _ => Self::GetWorkArea,
         })
     }
@@ -541,6 +561,13 @@ pub mod capture_reply {
     pub const WIDTH: usize = 12;
     pub const HEIGHT: usize = 16;
     pub const ROWS: usize = 20;
+}
+
+/// Where `GetMenu` writes the length of the window's menu pool and the pool back into its
+/// argument.
+pub mod get_menu_reply {
+    pub const LENGTH: usize = 4;
+    pub const POOL: usize = 8;
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside

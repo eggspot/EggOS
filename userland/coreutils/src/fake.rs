@@ -53,6 +53,8 @@ pub struct Fake {
     pub window_pixels: BTreeMap<u32, (u32, u32, Vec<u32>)>,
     pub sent_input: Vec<[u32; 6]>,
     pub input_results: Vec<Option<Errno>>,
+    pub menus: BTreeMap<u32, Vec<u8>>,
+    pub chosen_menus: Vec<[u32; 3]>,
     pub capture_calls: usize,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
@@ -99,6 +101,8 @@ impl Default for Fake {
             window_pixels: BTreeMap::new(),
             sent_input: Vec::new(),
             input_results: Vec::new(),
+            menus: BTreeMap::new(),
+            chosen_menus: Vec::new(),
             capture_calls: 0,
             capture_fails_at: None,
             resized_at: None,
@@ -518,6 +522,29 @@ impl System for Fake {
                     return Err(errno);
                 }
                 self.sent_input.push(request);
+                Ok(())
+            }
+            (crate::wm::GET_MENU, crate::wm::GET_MENU_SIZE) => {
+                let window = word(argument, 0);
+                if !self.windows.iter().any(|known| known.id == window) {
+                    return Err(Errno::ENOENT);
+                }
+                let pool = self.menus.get(&window).map_or(&[][..], Vec::as_slice);
+                argument[4..8].copy_from_slice(&(pool.len() as u32).to_ne_bytes());
+                argument[8..8 + pool.len()].copy_from_slice(pool);
+                Ok(())
+            }
+            (crate::wm::CHOOSE_MENU, crate::wm::CHOOSE_MENU_SIZE) => {
+                let request = [0, 4, 8].map(|at| word(argument, at));
+                if !self.windows.iter().any(|known| known.id == request[0]) {
+                    return Err(Errno::ENOENT);
+                }
+                if !self.input_results.is_empty()
+                    && let Some(errno) = self.input_results.remove(0)
+                {
+                    return Err(errno);
+                }
+                self.chosen_menus.push(request);
                 Ok(())
             }
             _ => Err(Errno::ENOTTY),

@@ -11,7 +11,11 @@
 //! in the paint view paints a square, `c` clears it; another click and the `Clear` button do the
 //! same; `Info` opens the alert over the window (the menu titles dimmed), which Esc closes; a
 //! click on the `File` title opens that menu and Esc closes it; Cmd+Q quits the app with status
-//! 0, its window and menu gone.
+//! 0, its window and menu gone. Then the terminal runs it again in a pipeline whose first
+//! command waits for a line on the console and then runs `wm menu --choose <id> File Clear`
+//! (D147's CLI front-end of the main menu): a click paints a square, a newline on the console
+//! (well after the click, so a person no longer wins) clears it through the menu, and after Cmd+Q
+//! the command's output says what it chose.
 
 use super::install::host_destroy;
 use super::settings::{Boot, Screen};
@@ -40,13 +44,18 @@ const INSTALLED_LINE: &str = "EGGOS-APP status 0";
 const QUIT_STATUS: &[u8] = b"echo MAC-PAINT status $?\r";
 const QUIT_LINE: &str = "MAC-PAINT status 0";
 const POWER_OFF: &[u8] = b"poweroff\r";
+const THIRD_SQUARE: (i32, i32) = (120, 140);
+const PERSON_QUIET: Duration = Duration::from_millis(1500);
+const GO_ON: &[u8] = b"\r";
+const SHOW_MENU_RESULT: &[u8] = b"cat /tmp/menu\r";
+const MENU_STATUS_LINE: &str = "EGGOS-MENU status 0";
 const LETTERS: &str = "abcdefghijklmnopqrstuvwxyz";
 const LETTER_CODES: [u16; 26] = [
     30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45,
     21, 44,
 ];
 
-const CHECKS: [&str; 14] = [
+const CHECKS: [&str; 18] = [
     "the first prompt with the host share",
     "mac-paint.zip installed from the terminal: its own icon on the desktop",
     "the launcher filtered by `mac-paint`, its own icon in the row",
@@ -61,6 +70,10 @@ const CHECKS: [&str; 14] = [
     "a click on the File title: the File menu open",
     "Esc: the File menu closed",
     "Cmd+Q: mac-paint quit, its window and menu gone",
+    "mac-paint opened again from the terminal, `wm menu --choose` waiting",
+    "a click in the paint view: a blue square, again",
+    "`wm menu --choose <id> File Clear`: the square cleared",
+    "Cmd+Q and `cat /tmp/menu`: what `wm menu` chose",
 ];
 
 /// The archive the host folder holds and the test installs.
@@ -98,6 +111,19 @@ fn install_output() -> [String; 2] {
 
 fn launched_program() -> String {
     format!("/Applications/{NAME}/{}", program_inside_the_bundle())
+}
+
+fn menu_launch_line(window: WindowId) -> String {
+    format!(
+        "eggsh -c 'head -n 1; wm menu --choose {} File Clear > /tmp/menu; \
+         echo EGGOS-MENU status $? >> /tmp/menu' | {}\r",
+        u32::from(window),
+        launched_program()
+    )
+}
+
+fn chosen_line(window: WindowId) -> String {
+    format!("chose File > Clear in window {}", u32::from(window))
 }
 
 fn manifest_of(arch: &Arch) -> Vec<u8> {
@@ -451,6 +477,41 @@ impl MacGui<'_> {
         self.check(FRAME_TIMEOUT)
     }
 
+    fn choose_from_the_terminal(&mut self) -> Result<(), String> {
+        let window = self.create(ROLE_NORMAL, NO_PARENT, CONTENT, flags::FIXED_SIZE)?;
+        self.shell
+            .screen
+            .desktop
+            .set_menu(
+                APP_CLIENT,
+                u32::from(window),
+                app::menu_pool().as_bytes(),
+                &mut Damage::new(),
+            )
+            .map_err(|error| self.refused("the main menu again", error))?;
+        self.window = Some(window);
+        self.paint = MacPaint::new();
+        let prompts = self.shell.boot.prompts();
+        self.type_on_console(menu_launch_line(window).as_bytes())?;
+        self.check(WINDOW_TIMEOUT)?;
+        self.click_content(THIRD_SQUARE)?;
+        self.paint.click_paint(THIRD_SQUARE.0, THIRD_SQUARE.1);
+        self.check(FRAME_TIMEOUT)?;
+        std::thread::sleep(PERSON_QUIET);
+        self.type_on_console(GO_ON)?;
+        self.paint.clear();
+        self.check(FRAME_TIMEOUT)?;
+        self.command_key('q')?;
+        host_destroy(&mut self.shell, APP_CLIENT, window)?;
+        self.window = None;
+        self.shell.boot.wait_for_prompts(prompts + 1)?;
+        self.type_on_console(SHOW_MENU_RESULT)?;
+        self.shell.wait_for_line(&chosen_line(window))?;
+        self.shell.wait_for_line(MENU_STATUS_LINE)?;
+        self.shell.boot.wait_for_prompts(prompts + 2)?;
+        self.check(FRAME_TIMEOUT)
+    }
+
     fn run(&mut self, arch: &Arch) -> Result<(), String> {
         self.install_from_the_terminal(arch)?;
         self.open_from_the_launcher()?;
@@ -459,6 +520,7 @@ impl MacGui<'_> {
         self.alert_and_escape()?;
         self.file_menu()?;
         self.quit()?;
+        self.choose_from_the_terminal()?;
         match self.checked == CHECKS.len() {
             true => Ok(()),
             false => Err(format!(
@@ -615,11 +677,30 @@ mod tests {
         assert_eq!(key_of('m'), Some(("m", key::M)));
         assert_eq!(key_of('-'), Some(("minus", key::MINUS)));
         assert_eq!(key_of('!'), None);
-        assert_eq!(CHECKS.len(), 14);
+        assert_eq!(CHECKS.len(), 18);
         assert!(CHECKS[1].contains("installed"));
         assert!(CHECKS[3].contains("launcher"));
         assert!(CHECKS[9].starts_with("Info"));
         assert!(CHECKS[13].starts_with("Cmd+Q"));
+        assert!(CHECKS[16].contains("wm menu --choose"));
+    }
+
+    #[test]
+    fn the_second_run_waits_for_a_line_then_chooses_file_clear_by_name() {
+        let window = WindowId::try_from(130u32).unwrap();
+        assert_eq!(
+            menu_launch_line(window),
+            "eggsh -c 'head -n 1; wm menu --choose 130 File Clear > /tmp/menu; echo EGGOS-MENU \
+             status $? >> /tmp/menu' | /Applications/mac-paint/mac-paint.app/Contents/MacOS/\
+             mac-paint\r"
+        );
+        assert_eq!(chosen_line(window), "chose File > Clear in window 130");
+        let pool = app::menu_pool();
+        assert!(pool.as_bytes().starts_with(b"Mmac-paint\n"));
+        assert!(
+            String::from_utf8_lossy(pool.as_bytes()).contains("\nMFile\nIClear\t"),
+            "File > Clear is the second menu's first item"
+        );
     }
 
     #[test]

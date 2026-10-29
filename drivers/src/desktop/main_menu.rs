@@ -91,6 +91,7 @@ const NO_MENU: Menu = Menu {
 #[derive(Debug, Clone)]
 pub(super) struct MainMenu {
     pool: [u8; MENU_POOL_CAPACITY],
+    pool_length: u8,
     menus: [Menu; MAX_MENUS],
     length: u8,
 }
@@ -107,6 +108,7 @@ impl MainMenu {
         core::str::from_utf8(pool).map_err(|_| WindowError::Invalid)?;
         let mut parsed = Box::new(Self {
             pool: [0; MENU_POOL_CAPACITY],
+            pool_length: pool.len() as u8,
             menus: [NO_MENU; MAX_MENUS],
             length: 0,
         });
@@ -194,6 +196,11 @@ impl MainMenu {
 
     fn entry(&self, menu: usize, entry: usize) -> Entry {
         self.menus[menu].entries[entry]
+    }
+
+    /// The pool it was parsed from, as `SetMenu` carried it.
+    pub fn pool(&self) -> &[u8] {
+        &self.pool[..usize::from(self.pool_length)]
     }
 
     /// How many menus it has.
@@ -366,6 +373,55 @@ impl Desktop {
             self.damage_menu_titles(damage);
             self.forget_menu_title_hover();
         }
+        Ok(())
+    }
+
+    /// The pool of window `window`'s main menu, any client's window, as `SetMenu` set it; empty
+    /// when it has none (`GET_MENU`). [`WindowError::NoSuchWindow`] for no such window.
+    pub fn menu_pool(&self, window: u32) -> Result<&[u8], WindowError> {
+        let slot = self.any_window(window)?;
+        Ok(self.main_menus[slot]
+            .as_deref()
+            .map_or(&[][..], MainMenu::pool))
+    }
+
+    /// Chooses entry `entry` of menu `menu` of window `window`'s main menu for a command or an
+    /// agent (`CHOOSE_MENU`), as a person's choice in the top bar does: the window's menu closes
+    /// if it is open, and the window gets `MenuChosen`. It works on a covered, minimised or
+    /// unfocused window, in every profile, and moves neither focus nor the pointer.
+    /// [`WindowError::NoSuchWindow`] for no such window, [`WindowError::Busy`] while
+    /// [`Self::person_is_active`], [`WindowError::Invalid`] when the window has no such enabled
+    /// item, [`WindowError::QueueFull`] when its client's queue has no room (nothing is sent).
+    pub fn choose_menu(
+        &mut self,
+        window: u32,
+        menu: u32,
+        entry: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<(), WindowError> {
+        let slot = self.any_window(window)?;
+        if self.person_is_active() {
+            return Err(WindowError::Busy);
+        }
+        let (menu, entry) = (menu as usize, entry as usize);
+        let enabled = self.main_menus[slot]
+            .as_deref()
+            .is_some_and(|main| menu < main.menu_count() && main.is_enabled(menu, entry));
+        if !enabled {
+            return Err(WindowError::Invalid);
+        }
+        if events.room(self.window_at(slot).client) == 0 {
+            return Err(WindowError::QueueFull);
+        }
+        if self.open_main_menu.is_some_and(|open| open.window == slot) {
+            self.close_main_menu(damage);
+        }
+        self.send(
+            slot,
+            EventRecord::new(event::MENU_CHOSEN, 0, menu as i32, entry as i32, 0, 0),
+            events,
+        );
         Ok(())
     }
 

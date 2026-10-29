@@ -18,11 +18,11 @@ A person always wins: while someone holds a key or a button, or for half a secon
 they last used the keyboard or the pointer, input is refused and wm exits with 75.\n";
 
 const MAX_POSITIONALS: usize = 3;
-const RETRY_PAUSE: Duration = Duration {
+pub const RETRY_PAUSE: Duration = Duration {
     seconds: 0,
     nanoseconds: 20_000_000,
 };
-const MAX_RETRIES: u32 = 150;
+pub const MAX_RETRIES: u32 = 150;
 
 const KIND_CLICK: u32 = 1;
 const KIND_WHEEL: u32 = 2;
@@ -115,6 +115,7 @@ pub struct Arguments<'a> {
     pub at: Option<(&'a [u8], &'a [u8])>,
     pub max_width: Option<&'a [u8]>,
     pub max_bytes: Option<&'a [u8]>,
+    pub choose: bool,
 }
 
 fn is_option(argument: &[u8]) -> bool {
@@ -141,6 +142,7 @@ pub fn parse<'a>(arguments: &[&'a CStr], options: &[&[u8]]) -> Option<Arguments<
                 b"--button" => parsed.button = Some(value()?),
                 b"--max-width" => parsed.max_width = Some(value()?),
                 b"--max-bytes" => parsed.max_bytes = Some(value()?),
+                b"--choose" => parsed.choose = true,
                 b"--at" => {
                     let x = value()?;
                     parsed.at = Some((x, value()?));

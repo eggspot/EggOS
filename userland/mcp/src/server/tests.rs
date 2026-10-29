@@ -188,7 +188,9 @@ fn the_tools_are_listed_once_initialized() {
             "wm_click",
             "wm_type",
             "wm_press",
-            "wm_scroll"
+            "wm_scroll",
+            "wm_menu_list",
+            "wm_menu_choose"
         ]
     );
 }
@@ -1389,6 +1391,7 @@ fn seeing_needs_view_operating_needs_run_and_only_run_implies_view() {
         ("wm_type", r#"{"window":129,"text":"ab"}"#),
         ("wm_press", r#"{"window":129,"keys":"Enter"}"#),
         ("wm_scroll", r#"{"window":129,"dy":-2}"#),
+        ("wm_menu_choose", r#"{"window":129,"menu":1,"entry":0}"#),
     ];
     for (grants, sees, operates) in [
         (&[][..], false, false),
@@ -1398,6 +1401,9 @@ fn seeing_needs_view_operating_needs_run_and_only_run_implies_view() {
     ] {
         let mut harness = granted_only(grants);
         let answer = harness.call(1, "wm_capture", r#"{"window":129}"#);
+        let refused = texts(&answer)[0].contains("needs the view grant");
+        assert_eq!(refused, !sees, "{grants:?}: {answer}");
+        let answer = harness.call(9, "wm_menu_list", r#"{"window":129}"#);
         let refused = texts(&answer)[0].contains("needs the view grant");
         assert_eq!(refused, !sees, "{grants:?}: {answer}");
         for (id, (tool, arguments)) in input_calls.iter().enumerate() {
@@ -1639,6 +1645,18 @@ fn input_tools_run_wm_with_options_then_two_dashes_then_their_words() {
             "scroll --at 5 6 -- 129 0 16",
             r#"{"window":129,"x":5,"y":6,"dy":16}"#,
         ),
+        (
+            "wm_menu_list",
+            r#"{"window":129}"#,
+            "menu -- 129",
+            r#"{"window":129}"#,
+        ),
+        (
+            "wm_menu_choose",
+            r#"{"window":129,"menu":1,"entry":0}"#,
+            "menu --choose -- 129 1 0",
+            r#"{"window":129,"menu":1,"entry":0}"#,
+        ),
     ] {
         let answer = harness.call(1, tool, arguments);
         assert!(!is_error(&answer), "{tool}: {answer}");
@@ -1723,6 +1741,17 @@ fn hostile_window_arguments_are_refused_before_wm_runs() {
             "dy must be",
         ),
         ("wm_scroll", r#"{"window":1,"dy":1,"x":3}"#, "x and y"),
+        (
+            "wm_menu_choose",
+            r#"{"window":1,"menu":6,"entry":0}"#,
+            "menu (0 to 5)",
+        ),
+        (
+            "wm_menu_choose",
+            r#"{"window":1,"menu":0}"#,
+            "menu and entry",
+        ),
+        ("wm_menu_list", r#"{"window":1,"menu":0}"#, "does not take"),
         (
             "wm_scroll",
             r#"{"window":1,"dx":1,"dy":1}"#,

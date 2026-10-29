@@ -81,7 +81,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 13] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -119,6 +119,12 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 13] = [
     ("wm_type", r#"{"window":64,"text":"ls"}"#, "run"),
     ("wm_press", r#"{"window":64,"keys":"Enter"}"#, "run"),
     ("wm_scroll", r#"{"window":64,"dy":1}"#, "run"),
+    ("wm_menu_list", r#"{"window":64}"#, "view"),
+    (
+        "wm_menu_choose",
+        r#"{"window":64,"menu":0,"entry":0}"#,
+        "run",
+    ),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
