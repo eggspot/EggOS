@@ -66,7 +66,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 7] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -77,6 +77,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
     ("wm_list", "{}", WM_LIST_HEADER),
     ("app_list", "{}", ""),
     ("clock_get", "{}", "Z"),
+    ("net_status", "{}", "\"adapters\""),
 ];
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its

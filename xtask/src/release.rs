@@ -189,6 +189,7 @@ struct ScriptArch {
     shell_mcp_headless: Vec<String>,
     powershell_mcp: Vec<String>,
     powershell_mcp_headless: Vec<String>,
+    network: Vec<String>,
 }
 
 const SHELL_FOLDER: &str = "$folder";
@@ -226,6 +227,7 @@ fn script_arches() -> Vec<ScriptArch> {
             shell_mcp_headless: qemu::mcp_args(arch, false, SHELL_CONSOLE_LOG),
             powershell_mcp: qemu::mcp_args(arch, true, POWERSHELL_CONSOLE_LOG),
             powershell_mcp_headless: qemu::mcp_args(arch, false, POWERSHELL_CONSOLE_LOG),
+            network: qemu::network_args(arch),
         })
         .collect()
 }
@@ -258,12 +260,19 @@ fn shell_script(arches: &[ScriptArch]) -> String {
     let mut cases = String::new();
     let mut folder_cases = String::new();
     let mut disk_cases = String::new();
+    let mut network_cases = String::new();
     for arch in arches {
         let _ = writeln!(
             disk_cases,
             "    {}) set -- \"$@\" {} ;;",
             arch.name,
             double_quoted(&arch.shell_disk)
+        );
+        let _ = writeln!(
+            network_cases,
+            "    {}) set -- \"$@\" {} ;;",
+            arch.name,
+            single_quoted(&arch.network)
         );
         let _ = writeln!(
             cases,
@@ -288,7 +297,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -303,6 +312,7 @@ apps=''
 disk=''
 no_disk=''
 format_disk=''
+no_network=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) mode=serial ;;
@@ -323,6 +333,7 @@ while [ "$#" -gt 0 ]; do
       disk="$1" ;;
     --no-disk) no_disk=yes ;;
     --format-disk) format_disk=yes ;;
+    --no-network) no_network=yes ;;
     {alternatives}) arch="$1" ;;
     -h | --help) echo "$usage"; exit 0 ;;
     *) echo "$usage" >&2; exit 2 ;;
@@ -442,6 +453,12 @@ if [ -z "$no_disk" ]; then
 {disk_cases}  esac
   say "run-eggos.sh: $disk holds /home, /Applications and /var in EggOS (--no-disk: none)."
 fi
+if [ -z "$no_network" ]; then
+  case "$arch" in
+{network_cases}  esac
+else
+  set -- "$@" -nic none
+fi
 command_line=''
 if [ "$mode" = mcp-headless ]; then
   command_line='{offscreen_word}'
@@ -483,12 +500,19 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
     let mut cases = String::new();
     let mut folder_cases = String::new();
     let mut disk_cases = String::new();
+    let mut network_cases = String::new();
     for arch in arches {
         let _ = writeln!(
             disk_cases,
             "        '{}' {{ @({}) }}",
             arch.name,
             double_quoted(&arch.powershell_disk).replace("\" \"", "\", \"")
+        );
+        let _ = writeln!(
+            network_cases,
+            "        '{}' {{ @({}) }}",
+            arch.name,
+            single_quoted(&arch.network).replace("' '", "', '")
         );
         let list = |args: &[String]| single_quoted(args).replace("' '", "', '");
         let expanded = |args: &[String]| double_quoted(args).replace("\" \"", "\", \"");
@@ -512,7 +536,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         r#"$ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork]"
 $Arch = ''
 $Serial = $false
 $Mcp = $false
@@ -522,6 +546,7 @@ $Apps = ''
 $Disk = ''
 $NoDisk = $false
 $FormatDisk = $false
+$NoNetwork = $false
 $UsageError = $false
 $Words = @($args)
 for ($i = 0; $i -lt $Words.Count; $i++) {{
@@ -538,6 +563,8 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
         $NoDisk = $true
     }} elseif ($argument -in @('-FormatDisk', '--format-disk')) {{
         $FormatDisk = $true
+    }} elseif ($argument -in @('-NoNetwork', '--no-network')) {{
+        $NoNetwork = $true
     }} elseif ($argument -in @('-McpAllow', '--mcp-allow') -and $null -ne $value) {{
         $McpAllow = $value
         $i++
@@ -660,6 +687,12 @@ if (-not $NoDisk) {{
     $QemuArgs += switch ($Arch) {{
 {disk_cases}    }}
     Say "run-eggos.ps1: $Disk holds /home, /Applications and /var in EggOS (-NoDisk: none)."
+}}
+if ($NoNetwork) {{
+    $QemuArgs += @('-nic', 'none')
+}} else {{
+    $QemuArgs += switch ($Arch) {{
+{network_cases}    }}
 }}
 $CommandLineWords = @()
 if ($Mcp -and $NoWindow) {{
@@ -1178,7 +1211,7 @@ mod tests {
         );
         let parsed = powershell.find("$Arch = $Arch.ToLowerInvariant()").unwrap();
         assert!(parsed < powershell.find("function Say").unwrap());
-        for switch in ["Serial", "Mcp", "NoWindow", "NoDisk", "FormatDisk"] {
+        for switch in ["Serial", "Mcp", "NoWindow", "NoDisk", "FormatDisk", "NoNetwork"] {
             assert!(powershell.contains(&format!("$argument -in @('-{switch}', '--")));
         }
         for option in ["McpAllow", "Apps", "Disk", "Arch"] {

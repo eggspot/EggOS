@@ -455,7 +455,7 @@ pub fn pread64<P: Platform>(
     }
     if matches!(
         file.kind(),
-        FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_)
+        FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_) | FileKind::InetSocket(_)
     ) {
         return Err(Errno::ESPIPE);
     }

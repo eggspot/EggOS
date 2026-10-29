@@ -1,10 +1,79 @@
 use crate::system::{
-    CapturedRows, DIRECTORY, Duration, STANDARD_ERROR, STANDARD_INPUT, STANDARD_OUTPUT, Status,
-    SymbolicLinks, System, SystemName, UTSNAME_FIELD, UTSNAME_SIZE,
+    CapturedRows, DIRECTORY, DatagramKind, Duration, STANDARD_ERROR, STANDARD_INPUT,
+    STANDARD_OUTPUT, Sender, Status, SymbolicLinks, System, SystemName, UTSNAME_FIELD,
+    UTSNAME_SIZE,
 };
 use core::ffi::CStr;
+use eggos_net::{Ipv4Address, dns, icmp};
 use eggos_runtime::errno::Errno;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+
+const FIRST_SOCKET_DESCRIPTOR: usize = 200;
+const FIRST_SOCKET_PORT: u16 = 40_000;
+
+#[derive(Debug)]
+pub struct FakeSocket {
+    pub kind: DatagramKind,
+    pub port: u16,
+    pub queue: VecDeque<(Vec<u8>, Sender)>,
+    pub open: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct FakeNetwork {
+    pub reachable: Vec<Ipv4Address>,
+    pub names: Vec<(Vec<u8>, Ipv4Address)>,
+    pub dns_servers: Vec<(Ipv4Address, u16)>,
+    pub round_trip_us: u64,
+    pub sent: Vec<(DatagramKind, Ipv4Address, u16, Vec<u8>)>,
+    pub sockets: Vec<FakeSocket>,
+    pub monotonic_us: u64,
+    pub send_error: Option<Errno>,
+}
+
+impl FakeNetwork {
+    fn socket(&mut self, descriptor: usize) -> Result<&mut FakeSocket, Errno> {
+        self.sockets
+            .get_mut(descriptor.wrapping_sub(FIRST_SOCKET_DESCRIPTOR))
+            .filter(|socket| socket.open)
+            .ok_or(Errno(9))
+    }
+
+    fn answer(&mut self, descriptor: usize, bytes: &[u8], address: Ipv4Address, port: u16) {
+        let Ok(socket) = self.socket(descriptor) else {
+            return;
+        };
+        let kind = socket.kind;
+        let identifier = socket.port;
+        let reply = match kind {
+            DatagramKind::Ping if self.reachable.contains(&address) => {
+                let mut reply = bytes.to_vec();
+                let sequence = u16::from_be_bytes([bytes[6], bytes[7]]);
+                let data = bytes.len() - icmp::HEADER_BYTES;
+                icmp::write_echo_header(&mut reply, icmp::kind::ECHO_REPLY, identifier, sequence, data);
+                Some((reply, Sender { address, port: 0 }))
+            }
+            DatagramKind::Udp if self.dns_servers.contains(&(address, port)) => {
+                let Some(name) = dns::query_name(bytes) else {
+                    return;
+                };
+                let addresses: Vec<Ipv4Address> = self
+                    .names
+                    .iter()
+                    .filter(|(known, _)| known.as_slice() == name.as_bytes())
+                    .map(|&(_, address)| address)
+                    .collect();
+                let mut answer = [0u8; dns::MAX_MESSAGE_BYTES];
+                let length = dns::write_answer(&mut answer, bytes, &addresses, 60).unwrap();
+                Some((answer[..length].to_vec(), Sender { address, port }))
+            }
+            _ => None,
+        };
+        if let (Some(reply), Ok(socket)) = (reply, self.socket(descriptor)) {
+            socket.queue.push_back(reply);
+        }
+    }
+}
 
 const REGULAR_FILE: u32 = 0o100_000;
 const FIRST_FILE_DESCRIPTOR: usize = 3;
@@ -62,6 +131,7 @@ pub struct Fake {
     pub resized_at: Option<(usize, u32, u32)>,
     pub window_server: bool,
     pub working_directory: String,
+    pub network: FakeNetwork,
     open: Vec<Option<OpenFile>>,
 }
 
@@ -112,6 +182,7 @@ impl Default for Fake {
             resized_at: None,
             window_server: true,
             working_directory: "/".to_owned(),
+            network: FakeNetwork::default(),
             open: Vec::new(),
         }
     }
@@ -269,6 +340,10 @@ impl System for Fake {
     }
 
     fn close(&mut self, descriptor: usize) {
+        if let Ok(socket) = self.network.socket(descriptor) {
+            socket.open = false;
+            return;
+        }
         if let Some(file) = self.open.get_mut(descriptor - FIRST_FILE_DESCRIPTOR) {
             *file = None;
         }
@@ -341,6 +416,8 @@ impl System for Fake {
 
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno> {
         self.slept.push(duration);
+        self.network.monotonic_us +=
+            duration.seconds * 1_000_000 + u64::from(duration.nanoseconds) / 1000;
         Ok(())
     }
 
@@ -616,6 +693,54 @@ impl System for Fake {
             height,
             rows,
         })
+    }
+
+    fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno> {
+        let index = self.network.sockets.len();
+        self.network.sockets.push(FakeSocket {
+            kind,
+            port: FIRST_SOCKET_PORT + index as u16,
+            queue: VecDeque::new(),
+            open: true,
+        });
+        Ok(FIRST_SOCKET_DESCRIPTOR + index)
+    }
+
+    fn send_to(
+        &mut self,
+        descriptor: usize,
+        bytes: &[u8],
+        address: Ipv4Address,
+        port: u16,
+    ) -> Result<usize, Errno> {
+        let kind = self.network.socket(descriptor)?.kind;
+        if let Some(errno) = self.network.send_error {
+            return Err(errno);
+        }
+        self.network.sent.push((kind, address, port, bytes.to_vec()));
+        self.network.answer(descriptor, bytes, address, port);
+        Ok(bytes.len())
+    }
+
+    fn receive_from(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<(usize, Sender)>, Errno> {
+        let round_trip = self.network.round_trip_us;
+        let Some((bytes, sender)) = self.network.socket(descriptor)?.queue.pop_front() else {
+            self.network.monotonic_us += u64::from(timeout_ms) * 1000;
+            return Ok(None);
+        };
+        self.network.monotonic_us += round_trip;
+        let count = bytes.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&bytes[..count]);
+        Ok(Some((count, sender)))
+    }
+
+    fn monotonic_us(&mut self) -> u64 {
+        self.network.monotonic_us
     }
 }
 

@@ -194,6 +194,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::BLOCK_DRIVER,
     #[cfg(any(test, feature = "virtio-console"))]
     &virtio::CONSOLE_DRIVER,
+    #[cfg(any(test, feature = "virtio-net"))]
+    &virtio::NET_DRIVER,
     #[cfg(any(test, feature = "rtc"))]
     &rtc::PL031_DRIVER,
     #[cfg(any(test, feature = "rtc"))]

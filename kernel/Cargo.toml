@@ -10,6 +10,7 @@ eggos-calendar = { path = "../calendar" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
 eggos-hal = { path = "../hal" }
+eggos-net = { path = "../net" }
 eggos-settings-file = { path = "../settings-file" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-wayland = { path = "../wayland" }
@@ -18,15 +19,16 @@ eggos-wayland = { path = "../wayland" }
 workspace = true
 
 [features]
-default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "rtc"]
+default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console", "virtio-net", "rtc"]
 virtio = []
 virtio-gpu = ["virtio"]
 virtio-input = ["virtio"]
 virtio-rng = ["virtio"]
 virtio-blk = ["virtio"]
 virtio-console = ["virtio"]
+virtio-net = ["virtio"]
 rtc = []
-qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "rtc"]
+qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "virtio-net", "rtc"]
 qemu-test-fatal-exception = ["qemu-test"]
 qemu-bench = ["qemu-test"]
 qemu-boot-clock = []

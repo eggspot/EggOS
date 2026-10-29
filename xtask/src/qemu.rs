@@ -7,6 +7,7 @@ pub mod install;
 mod linux_gui;
 pub mod macos_gui;
 pub mod mcp;
+pub mod network;
 pub mod persistent;
 pub mod real_time;
 pub mod reboot;
@@ -3053,6 +3054,25 @@ pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+/// QEMU's arguments that put EggOS on the host's network (D157): user networking (`-netdev
+/// user`, QEMU's own NAT and DHCP server: EggOS is 10.0.2.15, the host 10.0.2.2, DNS 10.0.2.3)
+/// behind the architecture's virtio network device.
+pub fn network_args(arch: &Arch) -> Vec<String> {
+    vec![
+        "-netdev".into(),
+        format!("user,id={NETWORK_ID}"),
+        "-device".into(),
+        format!("{},netdev={NETWORK_ID}", arch.network_device),
+    ]
+}
+
+/// QEMU's arguments for a machine without a network adapter (`--no-network`): no default one.
+pub fn no_network_args() -> Vec<String> {
+    vec!["-nic".into(), "none".into()]
+}
+
+const NETWORK_ID: &str = "net0";
 
 /// The name the agent channel's port has, which the kernel looks for (D136).
 pub const AGENT_PORT_NAME: &str = "org.eggos.mcp";

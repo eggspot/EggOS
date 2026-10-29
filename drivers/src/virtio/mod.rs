@@ -10,6 +10,7 @@ pub mod console;
 pub mod gpu;
 pub mod input;
 pub mod mmio;
+pub mod net;
 pub mod pci;
 pub mod queue;
 pub mod rng;
@@ -117,6 +118,10 @@ pub enum Error {
     BeyondCapacity,
     /// The console device has no data port the driver can use, or never named it.
     NoPort,
+    /// The network device does not say its hardware (MAC) address.
+    NoHardwareAddress,
+    /// A frame longer than the network device's buffers.
+    FrameTooLong,
 }
 
 impl Error {
@@ -149,6 +154,8 @@ impl Error {
             Error::PartialSector => "a transfer that is not a whole number of sectors",
             Error::BeyondCapacity => "a transfer past the end of the disk",
             Error::NoPort => "the console device offers no named port with multiport support",
+            Error::NoHardwareAddress => "the network device does not say its hardware address",
+            Error::FrameTooLong => "a frame longer than the network device's buffers",
         }
     }
 }

@@ -1,6 +1,7 @@
-//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138) and
-//! `driver/rtc` (D150), read-only regular files made when they are opened, mounted on `/proc` at
-//! boot when the root file system has that directory.
+//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138),
+//! `net/interfaces`, `net/route` and `net/arp` (D157) and `driver/rtc` (D150), read-only
+//! regular files made when they are opened, mounted on `/proc` at boot when the root file
+//! system has that directory.
 //!
 //! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
 //!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
@@ -15,6 +16,10 @@
 //!   waited for) and its name, separated by single spaces. `ps` reads it.
 //! - `net/unix`: the bound `AF_UNIX` sockets, in Linux's format (D138,
 //!   [`super::unix_socket::proc_net_unix`]).
+//! - `net/interfaces`: EggOS's own, one line per network interface (`lo`, and `eth0` with an
+//!   adapter): its link, addresses, DHCP state, lease and counters (D157,
+//!   [`eggos_net::status`]); `ip`, `net_status` and Settings read it. `net/route` and
+//!   `net/arp`: the routes and the neighbours' hardware addresses, in Linux's layouts.
 //! - `driver/rtc`: the real-time clock's date and time, read from the clock when the file is
 //!   opened (at most once a second, [`crate::wall_clock::read_clock`]), in Linux's layout
 //!   (`rtc_time`, `rtc_date`, `24hr`), only on a machine with one; `hwclock` reads it. Opening
@@ -42,7 +47,18 @@ const FILES: [(&[u8], u64); 6] = [
 
 const NET: u64 = 6;
 
-const NET_FILES: [(&[u8], u64); 1] = [(b"unix", 7)];
+const NET_FILES: [(&[u8], u64); 4] = [
+    (b"unix", 7),
+    (b"arp", NET_ARP),
+    (b"interfaces", NET_INTERFACES),
+    (b"route", NET_ROUTE),
+];
+
+const NET_ARP: u64 = 10;
+
+const NET_INTERFACES: u64 = 11;
+
+const NET_ROUTE: u64 = 12;
 
 const NET_UNIX: u64 = 7;
 
@@ -262,6 +278,9 @@ impl<P: Platform> FileSystem for Proc<P> {
             PS => ps(),
             CMDLINE => cmdline::<P>(),
             NET_UNIX => super::unix_socket::proc_net_unix(),
+            NET_INTERFACES => crate::net::interfaces_text::<P>(),
+            NET_ROUTE => crate::net::routes_text::<P>(),
+            NET_ARP => crate::net::neighbours_text::<P>(),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
                 Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
                 _ => return Err(StorageError),
@@ -393,6 +412,16 @@ mod tests {
         assert_eq!(proc.name(NET_UNIX).as_bytes(), b"unix");
         assert_eq!(proc.entry(NET, 0).unwrap().node, NET_UNIX);
         assert!(matches!(proc.generate(NET_UNIX), Ok(Some(_))));
+        for (name, node) in [
+            (&b"arp"[..], NET_ARP),
+            (b"interfaces", NET_INTERFACES),
+            (b"route", NET_ROUTE),
+        ] {
+            assert_eq!(proc.lookup(NET, name), Some(node));
+            assert_eq!(proc.parent(node), NET);
+            assert_eq!(proc.name(node).as_bytes(), name);
+            assert!(matches!(proc.generate(node), Ok(Some(_))));
+        }
         assert_eq!(proc.lookup(ROOT, b"cmdline"), Some(CMDLINE));
         assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
         assert_eq!(proc.lookup(ROOT, b"self"), None);

@@ -60,6 +60,9 @@ pub mod number {
     pub const KILL: usize = 62;
     pub const SOCKET: usize = 41;
     pub const CONNECT: usize = 42;
+    pub const SENDTO: usize = 44;
+    pub const RECVFROM: usize = 45;
+    pub const GETSOCKNAME: usize = 51;
     pub const SENDMSG: usize = 46;
     pub const RECVMSG: usize = 47;
     pub const BIND: usize = 49;
@@ -129,6 +132,9 @@ pub mod number {
     pub const BIND: usize = 200;
     pub const LISTEN: usize = 201;
     pub const CONNECT: usize = 203;
+    pub const GETSOCKNAME: usize = 204;
+    pub const SENDTO: usize = 206;
+    pub const RECVFROM: usize = 207;
     pub const SENDMSG: usize = 211;
     pub const RECVMSG: usize = 212;
     pub const ACCEPT4: usize = 242;

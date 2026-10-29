@@ -119,8 +119,8 @@ pub mod request {
 }
 
 /// What an open file description names: the console, a node of the file system (D102), an
-/// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), or a
-/// socket (D138), or a memory file (D139).
+/// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), a
+/// socket (D138, D157), or a memory file (D139).
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
@@ -141,6 +141,8 @@ pub enum FileKind {
     AgentChannel(super::agent_channel::AgentChannelEnd),
     /// An `AF_UNIX` stream socket (D138).
     Socket(Arc<super::unix_socket::UnixSocket>),
+    /// An `AF_INET` datagram socket: UDP or ping (D157).
+    InetSocket(Arc<super::socket::inet::InetSocket>),
     /// A memory file (`memfd_create`, D139).
     MemoryFile(Arc<super::memfd::MemoryFile>),
 }
@@ -163,6 +165,7 @@ impl FileKind {
             | Self::Window(_)
             | Self::AgentChannel(_)
             | Self::Socket(_)
+            | Self::InetSocket(_)
             | Self::MemoryFile(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),

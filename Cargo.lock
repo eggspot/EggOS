@@ -37,6 +37,7 @@ dependencies = [
  "eggos-drivers",
  "eggos-files",
  "eggos-mcp",
+ "eggos-net",
  "eggos-png",
  "eggos-runtime",
 ]
@@ -124,6 +125,7 @@ dependencies = [
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-hal",
+ "eggos-net",
  "eggos-settings-file",
  "eggos-wayland",
 ]
@@ -145,6 +147,10 @@ version = "0.2.0"
 
 [[package]]
 name = "eggos-linux-static"
+version = "0.2.0"
+
+[[package]]
+name = "eggos-linux-udp"
 version = "0.2.0"
 
 [[package]]
@@ -182,6 +188,10 @@ version = "0.2.0"
 dependencies = [
  "eggos-runtime",
 ]
+
+[[package]]
+name = "eggos-net"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-png"
@@ -270,6 +280,7 @@ dependencies = [
  "eggos-linux-gui-tests",
  "eggos-macos-gui-tests",
  "eggos-mcp",
+ "eggos-net",
  "eggos-png",
  "eggos-settings",
  "eggos-settings-file",

@@ -96,6 +96,7 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
         Some(FileKind::Window(connection)) => super::window::events(connection, requested),
         Some(FileKind::AgentChannel(_)) => agent_events(requested),
         Some(FileKind::Socket(socket)) => socket.events(requested),
+        Some(FileKind::InetSocket(socket)) => socket.events(requested),
     }
 }
 
@@ -409,7 +410,10 @@ fn poll_fds<P: Platform>(
         };
         match file.kind() {
             FileKind::Console => watches.console_input |= requested & INPUT_EVENTS != 0,
-            FileKind::Pipe(_) | FileKind::Window(_) | FileKind::Socket(_) => {
+            FileKind::Pipe(_)
+            | FileKind::Window(_)
+            | FileKind::Socket(_)
+            | FileKind::InetSocket(_) => {
                 watches.devices = true;
             }
             FileKind::AgentChannel(_) => watches.agent |= requested & INPUT_EVENTS != 0,
@@ -466,6 +470,7 @@ fn any_device_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool 
                         super::window::events(connection, requested) != 0
                     }
                     FileKind::Socket(socket) => socket.events(requested) != 0,
+                    FileKind::InetSocket(socket) => socket.events(requested) != 0,
                     _ => false,
                 })
     })

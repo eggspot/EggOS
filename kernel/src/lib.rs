@@ -28,6 +28,7 @@ pub mod input;
 pub mod interrupt;
 pub mod linux;
 pub mod memory;
+pub mod net;
 pub mod paging;
 pub mod process;
 pub mod random;
@@ -113,6 +114,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 mount_disks::<P>(console)?;
                 mount_system_file_systems::<P>();
                 if BOOT_MODE == BootMode::Init {
+                    net::start::<P>(console)?;
                     init::run(console, &mut memory)?;
                     return Ok(false);
                 }

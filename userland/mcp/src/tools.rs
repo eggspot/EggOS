@@ -58,6 +58,8 @@ pub enum Kind {
     ClockGet,
     /// `clock_set`: sets the machine's clock (D150).
     ClockSet,
+    /// `net_status`: the network's state (D157).
+    NetStatus,
     /// `tee`: writes a file.
     Tee,
     /// `trash`: moves a file or folder to the Trash.
@@ -254,7 +256,7 @@ const OPERATING: Hints = Hints {
 };
 
 /// Every tool, in `tools/list`'s order.
-pub const TOOLS: [Tool; 21] = [
+pub const TOOLS: [Tool; 22] = [
     Tool {
         name: "ls",
         title: "List a folder",
@@ -344,6 +346,23 @@ pub const TOOLS: [Tool; 21] = [
         confirmation: Confirmation::Never,
         hints: READING,
         twin: twin("/bin/date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"], Operand::None),
+    },
+    Tool {
+        name: "net_status",
+        title: "Read the network's state",
+        description: "Reads the network's state, as `ip -j addr` prints it: a JSON object whose \
+                      state is connected, getting-address, no-address, cable-unplugged or none \
+                      (no network adapter), and whose adapters array holds each interface (lo, \
+                      and eth0 with an adapter): its state, link, DHCP state, hardware address, \
+                      MTU, IPv4 address, prefix and mask, router, DNS servers, DHCP server, \
+                      lease seconds left and length, and traffic counters.",
+        input_schema: NO_ARGUMENTS,
+        arguments: &[],
+        kind: Kind::NetStatus,
+        grant: None,
+        confirmation: Confirmation::Never,
+        hints: READING,
+        twin: twin("/bin/ip", &["-j", "addr"], Operand::None),
     },
     Tool {
         name: "tee",

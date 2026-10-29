@@ -537,6 +537,24 @@ pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), Mo
     if !point.is_directory() || point == root {
         return Err(MountError::NoMountPoint);
     }
+    add_mount(point, file_system)
+}
+
+/// Mounts `file_system`, whose root is a regular file, over the regular file `path` names from
+/// the root, for good, as Linux mounts one file over another (D157): opening the path opens
+/// the mounted file.
+pub fn mount_file(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+    let root = root();
+    let point = resolve(root, root, path).map_err(|_| MountError::NoMountPoint)?;
+    if point.kind() != NodeKind::Regular
+        || file_system.kind(file_system.root()) != NodeKind::Regular
+    {
+        return Err(MountError::NoMountPoint);
+    }
+    add_mount(point, file_system)
+}
+
+fn add_mount(point: Node, file_system: &'static dyn FileSystem) -> Result<(), MountError> {
     if covered_by(point).is_some() || mounts().any(|mounted| mounted.point == point) {
         return Err(MountError::Taken);
     }

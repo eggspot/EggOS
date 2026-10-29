@@ -330,6 +330,16 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
                 ..CONSOLE
             })
         }
+        FileKind::InetSocket(socket) => Ok(Status {
+            device: SOCKETS,
+            inode: socket.inode(),
+            mode: S_IFSOCK | 0o777,
+            links: 1,
+            represented_device: Device { major: 0, minor: 0 },
+            size: 0,
+            blocks: 0,
+            ..CONSOLE
+        }),
         FileKind::Socket(socket) => Ok(Status {
             device: SOCKETS,
             inode: socket.inode(),

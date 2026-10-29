@@ -1,4 +1,5 @@
 use core::ffi::CStr;
+use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 
 pub const STANDARD_INPUT: usize = 0;
@@ -85,6 +86,18 @@ pub struct CapturedRows {
     pub rows: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatagramKind {
+    Udp,
+    Ping,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sender {
+    pub address: Ipv4Address,
+    pub port: u16,
+}
+
 pub trait System {
     fn write(&mut self, descriptor: usize, bytes: &[u8]) -> Result<(), Errno>;
     fn read(&mut self, descriptor: usize, buffer: &mut [u8]) -> Result<usize, Errno>;
@@ -125,6 +138,21 @@ pub trait System {
         row_count: u32,
         pixels: &mut [u8],
     ) -> Result<CapturedRows, Errno>;
+    fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno>;
+    fn send_to(
+        &mut self,
+        descriptor: usize,
+        bytes: &[u8],
+        address: Ipv4Address,
+        port: u16,
+    ) -> Result<usize, Errno>;
+    fn receive_from(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<(usize, Sender)>, Errno>;
+    fn monotonic_us(&mut self) -> u64;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -231,6 +259,33 @@ impl<T: System + ?Sized> System for &mut T {
         pixels: &mut [u8],
     ) -> Result<CapturedRows, Errno> {
         (**self).capture_window_rows(descriptor, window, first_row, row_count, pixels)
+    }
+
+    fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno> {
+        (**self).open_datagram_socket(kind)
+    }
+
+    fn send_to(
+        &mut self,
+        descriptor: usize,
+        bytes: &[u8],
+        address: Ipv4Address,
+        port: u16,
+    ) -> Result<usize, Errno> {
+        (**self).send_to(descriptor, bytes, address, port)
+    }
+
+    fn receive_from(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<(usize, Sender)>, Errno> {
+        (**self).receive_from(descriptor, buffer, timeout_ms)
+    }
+
+    fn monotonic_us(&mut self) -> u64 {
+        (**self).monotonic_us()
     }
 }
 

@@ -1,8 +1,10 @@
 use crate::system::{
-    CapturedRows, Duration, STATX_SIZE, Status, SymbolicLinks, System, SystemName, UTSNAME_SIZE,
+    CapturedRows, DatagramKind, Duration, STATX_SIZE, Sender, Status, SymbolicLinks, System,
+    SystemName, UTSNAME_SIZE,
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
+use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -21,6 +23,28 @@ const CLOCK_REALTIME: usize = 0;
 const REBOOT_MAGIC1: usize = 0xfee1_dead;
 const REBOOT_MAGIC2: usize = 0x2812_1969;
 const EIO: Errno = Errno(5);
+const AF_INET: u16 = 2;
+const SOCK_DGRAM_CLOEXEC: usize = 2 | 0o2_000_000;
+const IPPROTO_ICMP: usize = 1;
+const MSG_DONTWAIT: usize = 0x40;
+const POLLIN: i16 = 1;
+const SIGSET_BYTES: usize = 8;
+const SOCKADDR_IN_SIZE: usize = 16;
+
+#[repr(C)]
+struct PollFd {
+    descriptor: i32,
+    events: i16,
+    returned: i16,
+}
+
+fn sockaddr_in(address: Ipv4Address, port: u16) -> [u8; SOCKADDR_IN_SIZE] {
+    let mut bytes = [0u8; SOCKADDR_IN_SIZE];
+    bytes[..2].copy_from_slice(&AF_INET.to_ne_bytes());
+    bytes[2..4].copy_from_slice(&port.to_be_bytes());
+    bytes[4..8].copy_from_slice(&address.0);
+    bytes
+}
 
 #[repr(C)]
 struct Timespec {
@@ -276,6 +300,112 @@ impl System for Linux {
             height: word(16),
             rows: word(20),
         })
+    }
+
+    fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno> {
+        let protocol = match kind {
+            DatagramKind::Udp => 0,
+            DatagramKind::Ping => IPPROTO_ICMP,
+        };
+        call(
+            number::SOCKET,
+            [usize::from(AF_INET), SOCK_DGRAM_CLOEXEC, protocol, 0, 0, 0],
+        )
+    }
+
+    fn send_to(
+        &mut self,
+        descriptor: usize,
+        bytes: &[u8],
+        address: Ipv4Address,
+        port: u16,
+    ) -> Result<usize, Errno> {
+        let to = sockaddr_in(address, port);
+        call(
+            number::SENDTO,
+            [
+                descriptor,
+                bytes.as_ptr() as usize,
+                bytes.len(),
+                0,
+                to.as_ptr() as usize,
+                SOCKADDR_IN_SIZE,
+            ],
+        )
+    }
+
+    fn receive_from(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<(usize, Sender)>, Errno> {
+        let mut poll = PollFd {
+            descriptor: descriptor as i32,
+            events: POLLIN,
+            returned: 0,
+        };
+        let timeout = Timespec {
+            seconds: i64::from(timeout_ms / 1000),
+            nanoseconds: i64::from(timeout_ms % 1000) * 1_000_000,
+        };
+        loop {
+            let polled = call(
+                number::PPOLL,
+                [
+                    &raw mut poll as usize,
+                    1,
+                    &raw const timeout as usize,
+                    0,
+                    SIGSET_BYTES,
+                    0,
+                ],
+            );
+            match polled {
+                Ok(0) => return Ok(None),
+                Ok(_) => break,
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        let mut from = [0u8; SOCKADDR_IN_SIZE];
+        let mut length = SOCKADDR_IN_SIZE as u32;
+        let received = call(
+            number::RECVFROM,
+            [
+                descriptor,
+                buffer.as_mut_ptr() as usize,
+                buffer.len(),
+                MSG_DONTWAIT,
+                from.as_mut_ptr() as usize,
+                &raw mut length as usize,
+            ],
+        );
+        match received {
+            Ok(count) => Ok(Some((
+                count,
+                Sender {
+                    address: Ipv4Address([from[4], from[5], from[6], from[7]]),
+                    port: u16::from_be_bytes([from[2], from[3]]),
+                },
+            ))),
+            Err(Errno::EAGAIN) => Ok(None),
+            Err(errno) => Err(errno),
+        }
+    }
+
+    fn monotonic_us(&mut self) -> u64 {
+        let mut time = Timespec {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        match call(
+            number::CLOCK_GETTIME,
+            [CLOCK_MONOTONIC, &raw mut time as usize, 0, 0, 0, 0],
+        ) {
+            Ok(_) => (time.seconds.max(0) as u64) * 1_000_000 + (time.nanoseconds.max(0) as u64) / 1000,
+            Err(_) => 0,
+        }
     }
 }
 

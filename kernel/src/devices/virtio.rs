@@ -677,6 +677,84 @@ mod agent {
     }
 }
 
+#[cfg(any(test, feature = "virtio-net"))]
+pub use network::NET_DRIVER;
+
+#[cfg(any(test, feature = "virtio-net"))]
+mod network {
+    use super::*;
+    use crate::net::NetDevice;
+    use eggos_drivers::virtio::net::{MEMORY_BYTES, VirtioNet};
+    use eggos_net::ethernet::MacAddress;
+
+    type Net = VirtioNet<AnyTransport, DmaRegion>;
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+
+    /// The polled virtio network device (virtio 1.2, 5.1), the stack's adapter (D157,
+    /// [`crate::net`]).
+    pub static NET_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-net",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::NETWORK)],
+        probe: probe_net,
+    };
+
+    struct VirtioAdapter(Net);
+
+    impl NetDevice for VirtioAdapter {
+        fn mac(&self) -> MacAddress {
+            MacAddress(self.0.mac())
+        }
+        fn mtu(&self) -> usize {
+            usize::from(self.0.mtu())
+        }
+        fn is_link_up(&self) -> bool {
+            self.0.is_link_up()
+        }
+        fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+            self.0.receive(frame)
+        }
+        fn transmit(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+            self.0.transmit(frame).map_err(virtio::Error::description)
+        }
+    }
+
+    fn probe_net(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused(
+                "the device's DMA is not coherent, which the kernel does not support yet",
+            ));
+        }
+        if crate::net::is_present() {
+            return Err(ProbeError::Refused("a network adapter is already in use"));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        let net = match VirtioNet::new(transport, memory, &mut || deadline.keep_waiting()) {
+            Ok(net) => net,
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: `VirtioNet::new` hands the memory back only when the device
+                    // never had it or was reset after.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        crate::net::install(Box::new(VirtioAdapter(net)))
+            .map_err(|_| ProbeError::Refused("a network adapter is already in use"))
+    }
+}
+
 #[cfg(any(test, feature = "virtio-rng"))]
 pub use entropy::{RNG_DRIVER, read_random};
 

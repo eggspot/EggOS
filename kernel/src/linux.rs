@@ -657,6 +657,14 @@ impl Errno {
     pub const EMSGSIZE: Self = Self(90);
     /// A mapping that would end past the largest offset (`mmap` of a memfd).
     pub const EOVERFLOW: Self = Self(75);
+    /// A datagram socket with no destination (`send` unconnected, D157).
+    pub const EDESTADDRREQ: Self = Self(89);
+    /// An address this machine does not have (`bind`, D157).
+    pub const EADDRNOTAVAIL: Self = Self(99);
+    /// The network is down: no cable (`sendto`, D157).
+    pub const ENETDOWN: Self = Self(100);
+    /// No route to the network (`sendto`, D157).
+    pub const ENETUNREACH: Self = Self(101);
 
     /// The value the program sees in its result register: `-errno`.
     pub fn result(self) -> u64 {
@@ -1323,6 +1331,7 @@ fn write<P: Platform>(
         | FileKind::Regular(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
+        | FileKind::InetSocket(_)
         | FileKind::MemoryFile(_) => {
             return Err(NOT_THE_CONSOLE);
         }
@@ -1414,6 +1423,9 @@ fn write_out_of_line<P: Platform>(
             FileKind::Socket(socket) => {
                 socket::write(process, thread, context, &file, socket, iovecs)
             }
+            FileKind::InetSocket(socket) => {
+                socket::inet::write(process, thread, context, socket, iovecs)
+            }
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1464,6 +1476,9 @@ fn read<P: Platform>(
             FileKind::Socket(socket) => {
                 socket::read(process, thread, context, &file, socket, iovecs)
             }
+            FileKind::InetSocket(socket) => {
+                socket::inet::read(process, thread, context, &file, socket, iovecs)
+            }
             FileKind::MemoryFile(memory) => {
                 let result = memfd::read(process, &file, memory, &iovecs);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -1510,6 +1525,8 @@ fn ioctl<P: Platform>(
         FileKind::Socket(socket) => {
             socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
         }
+        FileKind::InetSocket(socket) => socket::inet::ioctl(process, socket, request, argument)
+            .unwrap_or(Err(Errno::ENOTTY)),
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
             process
@@ -1528,7 +1545,8 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
         | FileKind::Pipe(_)
         | FileKind::Window(_)
         | FileKind::AgentChannel(_)
-        | FileKind::Socket(_) => terminal::lseek(whence),
+        | FileKind::Socket(_)
+        | FileKind::InetSocket(_) => terminal::lseek(whence),
         _ => files::lseek_node(&file, offset, whence),
     }
 }

@@ -176,6 +176,7 @@ fn the_tools_are_listed_once_initialized() {
             "wm_list",
             "app_list",
             "clock_get",
+            "net_status",
             "tee",
             "trash",
             "run",

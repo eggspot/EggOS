@@ -18,7 +18,7 @@ const PIPE_TEXT: &[u8] = b"through a passed pipe\n";
 const LARGE: usize = 1 << 20;
 
 const AF_UNIX: c_int = 1;
-const AF_INET: c_int = 2;
+const AF_INET6: c_int = 10;
 const SOCK_STREAM: c_int = 1;
 const SOCK_DGRAM: c_int = 2;
 const SOL_SOCKET: c_int = 1;
@@ -222,7 +222,7 @@ fn errors() -> Checked<()> {
         Err(error) => errno(&error),
     };
     let _ = std::fs::remove_file(CLOSED_PATH);
-    let family = socket_error(AF_INET, SOCK_STREAM);
+    let family = socket_error(AF_INET6, SOCK_STREAM);
     let datagram = socket_error(AF_UNIX, SOCK_DGRAM);
     let expected = [
         ENOENT,

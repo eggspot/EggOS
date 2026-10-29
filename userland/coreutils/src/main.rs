@@ -1,8 +1,8 @@
 //! The EggOS core utilities (D108): one program, `/bin/coreutils`, whose other names in `/bin`
 //! (hard links to the same file) are its utilities: `agentlog`, `cat`, `cp`, `date` (D150),
-//! `echo`, `false`, `free`, `grep`, `halt`, `head`, `hwclock` (D150), `ls`, `mkdir`, `mv`,
-//! `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`,
-//! `uname`, `uptime`, `wc` and `wm`. It runs
+//! `echo`, `false`, `free`, `grep`, `halt`, `head`, `hwclock` (D150), `ip` (D157), `ls`,
+//! `mkdir`, `mv`, `nslookup` (D157), `ping` (D157), `poweroff`, `ps`, `reboot`, `rm`, `sleep`,
+//! `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`. It runs
 //! the utility named by the last component of the name it was started by; started as
 //! `coreutils`, the one its first argument names (`coreutils --list` lists them). Each utility is pure logic over a `System` trait, with
 //! host tests against a fake; `linux.rs` makes the system calls. docs/coreutils.md describes
@@ -31,15 +31,23 @@ mod head;
 #[cfg(any(test, target_env = "musl"))]
 mod hwclock;
 #[cfg(any(test, target_env = "musl"))]
+mod ip;
+#[cfg(any(test, target_env = "musl"))]
 mod lines;
 #[cfg(target_env = "musl")]
 mod linux;
 #[cfg(any(test, target_env = "musl"))]
 mod ls;
 #[cfg(any(test, target_env = "musl"))]
+mod network;
+#[cfg(any(test, target_env = "musl"))]
+mod nslookup;
+#[cfg(any(test, target_env = "musl"))]
 mod options;
 #[cfg(any(test, target_env = "musl"))]
 mod output;
+#[cfg(any(test, target_env = "musl"))]
+mod ping;
 #[cfg(any(test, target_env = "musl"))]
 mod power;
 #[cfg(any(test, target_env = "musl"))]

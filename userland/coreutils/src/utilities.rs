@@ -6,8 +6,11 @@ use crate::file_changes::{cp, mkdir, mv, rm, touch};
 use crate::grep::grep;
 use crate::head::{head, tail};
 use crate::hwclock::hwclock;
+use crate::ip::ip;
 use crate::ls::{Listing, ls};
+use crate::nslookup::nslookup;
 use crate::output::{FAILURE, Output};
+use crate::ping::ping;
 use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
 use crate::processes::{free, ps, uptime};
 use crate::sleep::sleep;
@@ -38,9 +41,12 @@ pub enum Utility {
     Halt,
     Head,
     Hwclock,
+    Ip,
     Ls,
     Mkdir,
     Mv,
+    Nslookup,
+    Ping,
     Poweroff,
     Ps,
     Reboot,
@@ -59,7 +65,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 32] = [
         Self::Agentlog,
         Self::Cat,
         Self::Cp,
@@ -71,9 +77,12 @@ impl Utility {
         Self::Halt,
         Self::Head,
         Self::Hwclock,
+        Self::Ip,
         Self::Ls,
         Self::Mkdir,
         Self::Mv,
+        Self::Nslookup,
+        Self::Ping,
         Self::Poweroff,
         Self::Ps,
         Self::Reboot,
@@ -104,9 +113,12 @@ impl Utility {
             Self::Halt => b"halt",
             Self::Head => b"head",
             Self::Hwclock => b"hwclock",
+            Self::Ip => b"ip",
             Self::Ls => b"ls",
             Self::Mkdir => b"mkdir",
             Self::Mv => b"mv",
+            Self::Nslookup => b"nslookup",
+            Self::Ping => b"ping",
             Self::Poweroff => b"poweroff",
             Self::Ps => b"ps",
             Self::Reboot => b"reboot",
@@ -142,9 +154,12 @@ impl Utility {
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
             Self::Hwclock => hwclock(output, arguments),
+            Self::Ip => ip(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
             Self::Mkdir => mkdir(output, arguments),
             Self::Mv => mv(output, arguments),
+            Self::Nslookup => nslookup(output, arguments),
+            Self::Ping => ping(output, arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
             Self::Ps => ps(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),

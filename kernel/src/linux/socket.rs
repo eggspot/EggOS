@@ -1,7 +1,8 @@
 //! The socket calls (D138): `socket`, `socketpair`, `bind`, `listen`, `accept`, `accept4`,
 //! `connect`, `sendto`, `sendmsg`, `recvfrom`, `recvmsg`, `getsockname`, `getpeername`,
 //! `shutdown`, `setsockopt` and `getsockopt`, and `read`, `write` and their vector forms on a
-//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]).
+//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]); `AF_INET` datagram sockets
+//! have their own module ([`inet`], D157), which [`call`] hands their calls to.
 //!
 //! The calls read their arguments as Linux's ABI lays them out on the three architectures:
 //! `struct sockaddr_un` (a family and up to 108 bytes of path), `struct msghdr` and
@@ -36,10 +37,12 @@ use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
-/// The only address family: local sockets (`AF_UNIX`, `PF_UNIX`).
+pub mod inet;
+
+/// Local sockets (`AF_UNIX`, `PF_UNIX`).
 pub const AF_UNIX: u32 = 1;
 
-/// The only socket type: a stream (`SOCK_STREAM`).
+/// The only `AF_UNIX` socket type: a stream (`SOCK_STREAM`).
 pub const SOCK_STREAM: u32 = 1;
 
 const SOCK_TYPE_MASK: u32 = 0xf;
@@ -153,7 +156,16 @@ pub fn call<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let [first, second, third, fourth, fifth, sixth] = context.syscall_arguments();
+    if number != number::SOCKET
+        && number != number::SOCKETPAIR
+        && let Some((file, socket)) = inet::socket_at(thread, first)
+    {
+        return inet::call(process, thread, number, context, file, socket);
+    }
     let result = match number {
+        number::SOCKET if first as u32 == inet::AF_INET => {
+            inet::socket(process, thread, second, third)
+        }
         number::SOCKET => socket::<P>(process, thread, first, second, third),
         number::SOCKETPAIR => socketpair::<P>(process, thread, first, second, third, fourth),
         number::BIND => bind::<P>(process, thread, first, second, third),

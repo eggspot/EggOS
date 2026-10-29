@@ -46,7 +46,7 @@ commands:
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
   run   --arch <arch> [--nographic] [--apps <folder>] [--disk <image> | --no-disk]
-        [--format-disk] [--add <file> [--as <path>]]...
+        [--format-disk] [--no-network] [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
@@ -54,8 +54,9 @@ commands:
                          target/image/eggos-<arch>-disk.img (or --disk's), made empty and
                          1 GiB sparse if missing, holds /home, /Applications and /var across
                          boots (--no-disk: none, /home in memory); --format-disk empties
-                         it first, erasing everything on it; with --add, the release image
-                         with those files, as `image` builds it
+                         it first, erasing everything on it; EggOS is on the host's network
+                         through QEMU's user networking (--no-network: no network adapter);
+                         with --add, the release image with those files, as `image` builds it
   bench --arch <arch> [--update-baseline | --report-only]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -123,6 +124,9 @@ pub struct Arch {
     pub disk_device: &'static str,
     /// The virtio console device the agent channel's port sits on (D136).
     pub agent_bus_device: &'static str,
+    /// The virtio network device the run scripts and the network boot test attach to QEMU's
+    /// user networking (D157).
+    pub network_device: &'static str,
 }
 
 /// Every architecture brought up so far, cheapest to test first.
@@ -147,6 +151,7 @@ pub const ARCHES: &[Arch] = &[
         offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
+        network_device: "virtio-net-device",
     },
     Arch {
         name: "riscv64",
@@ -168,6 +173,7 @@ pub const ARCHES: &[Arch] = &[
         offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
+        network_device: "virtio-net-device",
     },
     Arch {
         name: "x86_64",
@@ -199,6 +205,7 @@ pub const ARCHES: &[Arch] = &[
         offscreen_args: &["-vga", "none"],
         disk_device: "virtio-blk-pci,disable-legacy=on",
         agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+        network_device: "virtio-net-pci,disable-legacy=on",
     },
 ];
 
@@ -219,6 +226,7 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-drivers",
     "eggos-font",
     "eggos-calendar",
+    "eggos-net",
     "eggos-settings-file",
     "eggos-app-manifest",
     "eggos-wayland",
@@ -226,6 +234,7 @@ const KERNEL_CRATES: &[&str] = &[
 
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
+    "eggos-net",
     "eggos-png",
     "eggos-c-format",
     "eggos-init",
@@ -244,6 +253,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-linux-static",
     "eggos-linux-sockets",
     "eggos-linux-memory",
+    "eggos-linux-udp",
     "eggos-linux-gui-tests",
     "eggos-windows",
     "eggos-windows-gui",
@@ -323,10 +333,10 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 29] = [
+const COREUTILS: [&str; 32] = [
     "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock",
-    "ls", "mkdir", "mv", "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch",
-    "trash", "true", "uname", "uptime", "wc", "wm",
+    "ip", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "reboot", "rm", "sleep",
+    "sync", "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -477,6 +487,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let (options, no_disk) = without_flag(&options, "--no-disk");
             let (options, format_disk) = without_flag(&options, "--format-disk");
             let (options, disk) = with_value(&options, "--disk")?;
+            let (options, no_network) = without_flag(&options, "--no-network");
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
@@ -485,6 +496,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some(folder) => qemu::host_folder_args(arch, &host_folder(&folder)?),
                 None => Vec::new(),
             };
+            extra_args.extend(match no_network {
+                true => qemu::no_network_args(),
+                false => qemu::network_args(arch),
+            });
             let kernel = build_release_image(arch, &added)?;
             let disk = match (no_disk, disk, format_disk) {
                 (true, Some(_), _) => {
@@ -731,6 +746,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
     qemu::reboot::check(arch, &kernel)?;
+    qemu::network::check(arch, &build_network_test_kernel(arch)?)?;
     qemu::run_scripts::check(arch, &kernel)?;
     if let Some(folder) = build_macos_gui_folder(arch)? {
         qemu::macos_gui::check(arch, &kernel, &folder)?;
@@ -1347,6 +1363,26 @@ const LINUX_SOCKETS_PATH: &str = "bin/linux-sockets";
 const LINUX_MEMORY_PACKAGE: &str = "eggos-linux-memory";
 
 const LINUX_MEMORY_PATH: &str = "bin/linux-memory";
+
+const LINUX_UDP_PACKAGE: &str = "eggos-linux-udp";
+
+fn build_network_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let added = [image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_UDP_PACKAGE, "static")?,
+        path: qemu::network::PROGRAM_PATH.to_owned(),
+    }];
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-network-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
 
 const LINUX_GUI_PACKAGE: &str = "eggos-linux-gui-tests";
 
