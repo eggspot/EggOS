@@ -126,10 +126,11 @@ it unlocks them:
 - **`mmap` of files** is not implemented (`mmap` takes anonymous memory only, and memfds,
   D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
   with `SCM_RIGHTS` (D138), and so does memory shared between programs with `memfd_create`
-  and `mmap(MAP_SHARED)` (D139). The network works for datagrams (D157,
-  [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`) and ping sockets,
-  and names through musl's resolver; TCP (`SOCK_STREAM`, `ESOCKTNOSUPPORT` for now), IPv6,
-  `AF_UNIX` datagrams and `epoll` do not yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
+  and `mmap(MAP_SHARED)` (D139). The network works (D157, D158,
+  [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`), ping sockets and
+  TCP (`std::net::TcpStream` and `TcpListener`: `connect`, `listen`, `accept`, `poll`,
+  `shutdown`, timeouts), and names through musl's resolver; IPv6, `AF_UNIX` datagrams and
+  `epoll` do not yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

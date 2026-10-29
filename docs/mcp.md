@@ -69,9 +69,9 @@ run-eggos.sh` the script's own path works too.
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock and the network's state | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get`, `net_status` |
+| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock and the network's state, ping a host and look a name up | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get`, `net_status`, `net_ping`, `net_lookup` |
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu | `wm_capture`, `wm_menu_list` |
-| `write` | write files below `/home/root` and move them to the Trash | `tee`, `trash` |
+| `write` | write files below `/home/root`, download files there, and move them to the Trash | `tee`, `fetch`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
 | `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `clock_set` |
 
@@ -101,8 +101,11 @@ run-eggos.sh` the script's own path works too.
 | `app_list` | Lists the installed apps | `app list` | |
 | `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |
 | `net_status` | The network's state as JSON (D157, docs/network.md): `state` (`connected`, `getting-address`, `no-address`, `cable-unplugged`, or `none` without an adapter) and an `adapters` array, each interface's link, DHCP state, hardware address, MTU, address, prefix and mask, router, DNS servers, DHCP server, lease and counters | `ip -j addr` | |
+| `net_ping` | Pings a host (`host`, an IPv4 address or a name; `count`, 1 to 5, 4 by default) and returns ping's report; an error when no reply came (D158) | `ping -W 1 -c <count> <host>` | |
+| `net_lookup` | Looks a host name up (`host`) with the network's DNS servers and returns nslookup's report (D158) | `nslookup <host>` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
+| `fetch` | Downloads an `http://` URL (`url`, at most 2048 bytes) into a file below `/home/root` (`path`, `confirm`): up to 5 redirects, an error for a 4xx or 5xx status, 60 seconds at most; replacing a file asks the user first (D158) | `fetch <url> -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
 | `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148) | `app install [--entry <entry>] -- <path>` | `install` |
@@ -162,8 +165,8 @@ coordinates times 2.
 
 ## Confirming destructive calls
 
-Replacing an existing file with `tee` (not adding to it with `append`, not creating it),
-`trash` and `app_uninstall` need a yes:
+Replacing an existing file with `tee` (not adding to it with `append`, not creating it) or
+`fetch`, `trash` and `app_uninstall` need a yes:
 
 - **When the client can ask you** (it declares elicitation, as Claude Code does), EggOS asks
   through it: `An agent asks to move /home/root/notes.txt (812 bytes) to the Trash. Allow it?`
@@ -283,6 +286,8 @@ clock at boot (D150). The log in Settings comes after the release.
 - Paths are checked after resolution; once EggOS has symbolic links, the commands will open
   them with `O_NOFOLLOW` or stay beneath their root as well.
 - Elicitation's URL mode is not used; a client that only offers it gets the `confirm` rule.
+- `fetch` writes the file as the body arrives: a download that fails half-way leaves the part
+  that came, and says why it stopped.
 - Every process is root until users come (M10), so any program in EggOS can capture windows
   and send them input; the grants are the boundary for agents, not for programs they run with
   `run`.

@@ -18,10 +18,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
   RISC-V Goldfish, D150), virtio-net (polled, the first adapter only, D157) and on test
   kernels virtio-rng. Nothing else is driven: no Wi-Fi, no sound, no USB (D110-D113, D130).
-- **Network, part 1** (D157, [network.md](network.md)). IPv4 over one wired adapter with an
-  address from DHCP, UDP and ping for programs, DNS through `/etc/resolv.conf`, `lo`; `ip`,
-  `ping`, `nslookup` and the MCP tool `net_status`. No TCP yet (so no downloads or web pages:
-  part 2), no IPv6, no fragment reassembly, no static addresses or second adapter, no
+- **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
+  adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
+  `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://`) and
+  the MCP tools `net_status`, `net_ping`, `net_lookup` and `fetch`. No HTTPS yet (part 3), so
+  most of the web is out of reach; TCP has no window scaling (64 KiB windows), no selective
+  acknowledgments, keep-alive or urgent data, drops segments that arrive out of order (they
+  are sent again), and on a machine without an adapter its timers run only when a program
+  makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
   multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
   `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
   docs/ux/network-v0.3.md). The adapter is polled (50 wakeups a second when idle) until drivers
@@ -100,7 +104,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
   sockets only (no datagrams or sequenced packets); `AF_INET` datagram sockets work for UDP
-  and ping (D157), streams (TCP) not yet; socket files only in the
+  and ping (D157), stream sockets for TCP (D158); socket files only in the
   memory file systems (`/tmp`, `/run`, `/var` and `/home` without a disk; `bind` on the disk
   is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
   itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or

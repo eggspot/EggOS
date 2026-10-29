@@ -10258,3 +10258,109 @@ the license, by an explicit instruction recorded here.
   interrupts instead of polling (part 32); netlink (`ip` reads `/proc/net`, so iproute2 and
   musl's `getifaddrs` do not work yet); RISC-V's virt machine has eight virtio-mmio slots, so
   `--mcp --apps` with a disk and the network needs `--no-network` there.
+
+## D158 EggOS is on the network, part 2: TCP of our own, stream sockets for Linux programs, downloads over HTTP with `fetch`, and the MCP tools `net_ping`, `net_lookup` and `fetch` (old item 27, M8; extends D21, D22, D136, D137, D138, D155, D157) — Decided by the build loop
+- **Why.** Part 1 (D157) gave EggOS addresses, names and UDP, but nothing a person or an agent
+  uses most: a connection to a server, and a file from the network. Programs that speak TCP
+  (almost every client and server) failed with `ESOCKTNOSUPPORT`; downloading meant copying
+  from the host by hand. HTTPS and the network clock build on this (part 3).
+- **TCP** (`net/src/tcp.rs`, in `eggos-net`, still without allocation or clock). The segment
+  format with its checksum over the IPv4 pseudo-header, and one connection's state machine
+  (RFC 9293), `eggos_net::tcp::Connection`, over bytes its caller keeps (`tcp::Buffers`): the
+  handshake both ways (simultaneous open included), the segment size option (1460 bytes on
+  Ethernet; 536 when the peer names none), sending within the peer's window, retransmission
+  (go-back-N) on a timer that follows the measured round trip (RFC 6298: 1 s before a sample,
+  at least 200 ms and at most 120 s, as Linux, doubled on each retry, Karn's rule), giving up
+  after 6 SYNs or 15 retries (Linux's `tcp_syn_retries` and `tcp_retries2`) with `ETIMEDOUT`,
+  fast retransmission after three duplicate acknowledgments (RFC 5681), probing a closed window
+  with one byte, the receiver's window (at most 65535: no window scaling) with updates when it
+  opens by a segment, FIN both ways through every closing state, `TIME-WAIT` for 60 s and
+  `FIN-WAIT-2` for at most 60 s (Linux's), and resets: sent for an abort or a segment no
+  connection owns (RFC 9293 3.10.7.1), taken when exactly in sequence and answered with a
+  challenge acknowledgment when only in the window (RFC 5961). Segments that arrive out of
+  order are dropped and acknowledged with the byte expected, so the sender resends them.
+  `eggos_net::interface` delivers TCP segments to its own address (`Delivery::Tcp`, checksum
+  checked) and sends the caller's (`Interface::send_tcp`, `tcp_mss`).
+- **The kernel side** (`kernel/src/net/tcp.rs`). A table of connections (`Stream`: a
+  `Connection`, up to 64 KiB queued to send and 64 KiB received, both grown only within the
+  reserve programs may use, D155) and of listeners (`Listener`: a backlog of connections being
+  made plus those made, SYNs beyond it dropped as Linux drops them). `deliver` hands each
+  segment to its connection, makes a connection for a listener's SYN, or answers with a reset.
+  `run` runs every connection's timers and output, under one lock so that segments to this
+  machine (`lo` and the interface's own address) arrive in order: they wait in an outbox and
+  are delivered at once, rounds after rounds, until the connections have nothing more to say.
+  It runs after every stream socket call and from the network's poll thread. Connections stay
+  in the table until they are over (`TIME-WAIT` included), whether or not a program still
+  holds them; a program that lets go of a connection closes it (FIN), or resets it when it
+  never read bytes that came, as Linux does; closing a listener resets the connections that
+  wait for `accept`. Initial sequence numbers come from the kernel's generator.
+- **Linux programs** (`kernel/src/linux/socket/tcp.rs`; `inet.rs` hands stream sockets to
+  it). `socket(AF_INET, SOCK_STREAM, 0 or IPPROTO_TCP)`, `bind` (the TCP ports, apart from
+  UDP's), `listen` (binding a port the kernel picks first, as Linux), `accept` and `accept4`,
+  `connect` (blocking until the handshake ends, `ECONNREFUSED`, `ETIMEDOUT`, `ENETUNREACH`
+  without a route; non-blocking with `EINPROGRESS`, then `EALREADY`, `EISCONN`, and `poll`
+  reporting the socket writable; `SO_SNDTIMEO` bounds a blocking one with `EINPROGRESS`, as
+  Linux), `getsockname`, `getpeername`, `sendto`, `sendmsg` (what fits is queued, the rest
+  waits for room; `EPIPE` and `SIGPIPE` once sending is over, `ECONNRESET` once), `recvfrom`
+  and `recvmsg` (`MSG_PEEK`, `MSG_DONTWAIT`, `MSG_WAITALL`; 0 at the peer's FIN), `read`,
+  `write`, `shutdown`, `getsockopt` (`SO_ERROR` once, `SO_TYPE`, `SO_PROTOCOL`,
+  `SO_ACCEPTCONN`, `TCP_NODELAY` 1), `setsockopt` (`IPPROTO_TCP` options, `SO_KEEPALIVE` and
+  `SO_LINGER` accepted; the rest as datagram sockets), `poll` (`POLLIN`, `POLLOUT`, `POLLERR`,
+  `POLLHUP`, `POLLRDHUP`), `ioctl(FIONREAD)`, `fstat`. Rust's `std::net::TcpStream` and
+  `TcpListener` work on musl.
+- **Downloads** (`net/src/http.rs`, `userland/coreutils/src/fetch.rs`). HTTP/1.1 for `GET`
+  (RFC 9110, 9112): `http://` URLs (`https://` refused with its reason), the request with
+  `Connection: close`, the response's head (status, `Content-Length` checked, `Transfer-Encoding:
+  chunked` or `identity`, `Location`, `Content-Type`; interim 1xx answers skipped) and a body
+  decoded as it arrives (by length, in chunks with extensions and trailers, or until the
+  server closes; a cut body is an error). `fetch [-q] [-o file] url [file]` resolves the host,
+  connects (10 s), follows up to 5 redirects (whole `http://` URLs or paths on the same host),
+  writes the body to the file or standard output, says `Saved <n> bytes to <file> (HTTP <status>
+  <reason>)` with a file, and fails on a 4xx or 5xx status, 30 s of silence or a cut body.
+  The core utilities gained the system calls it needs (`SETSOCKOPT`; a stream socket's
+  connect, send and receive in `System`).
+- **Front-ends (D22).** CLI: `fetch`, and any Linux program over TCP. MCP (D136, D137):
+  `net_ping` (`host`, `count` 1 to 5; twin `ping -W 1 -c <count> <host>`, 15 s) and
+  `net_lookup` (`host`; twin `nslookup <host>`, 15 s) need no grant; `fetch` (`url`, `path`
+  below `/home/root`, `confirm`; twin `fetch <url> -- <path>`, 60 s) needs `write` and asks
+  before it replaces a file, as `tee` does. Hosts are checked to letters, digits, dots,
+  hyphens and underscores, not starting with a dot or a hyphen, so they cannot pass as
+  options; the URL is kept in the buffer only calls with a grant fill, so it lasts while its
+  call waits for the user. GUI: not built (below).
+- **Checks.** Host tests: segments and options both ways and damaged ones, resets for
+  segments no one owns, the handshake, data both ways, orderly and simultaneous close, a lost
+  segment sent again with backoff, a silent peer timing out, unanswered SYNs, a closed window
+  probed until it opens, resets in and out of sequence, fast retransmission after segments out
+  of order; the interface's TCP delivery and sending; URLs, redirects, the request, heads,
+  bodies by length, in chunks whole and byte by byte, and malformed ones; the kernel's
+  loopback connections (bytes both ways, close in order, refusal, a full backlog, a closed
+  listener, a reset for unread bytes); every stream socket call through the system-call path;
+  `fetch` against a fake network (saving, standard output, chunks, redirects and their limit,
+  interim answers, 404, refusal, timeout, `https://`, a cut body, usage); the MCP tools'
+  twins, arguments, audit records, grant and confirmation. QEMU, on every architecture (the
+  network boot test, `xtask/src/qemu/network.rs`): `fetch` from an HTTP stand-in on the host,
+  and `linux-tcp` (`tests/linux-tcp`, `std::net` on musl) sending 300000 bytes each way over
+  `lo`, seeing a closed port refused, then talking to a TCP echo server on the host. The MCP
+  boot calls `net_ping` (127.0.0.1), `net_lookup` (an `.invalid` name, so its answer does not
+  depend on the internet) and `fetch` (refused without the grant, failing fast at a closed host
+  port with it).
+- **Performance and size (D24).** No benchmarked path changes: stream sockets are looked at
+  only after a socket call's dispatch found an `AF_INET` socket, a kernel with no connection
+  runs no TCP (`run` returns at an empty table), and the poll thread runs TCP only with
+  connections. The release image grows by TCP, HTTP and `fetch` (to be measured by the build
+  phase). A TCP round-trip benchmark comes with interrupts (part 32).
+- **Decided without research.** `fetch` fails on a 4xx or 5xx status instead of saving the
+  error page (curl's `-f`, so scripts and agents see the failure) and says what it saved on
+  standard output (so the MCP result carries it); `TCP_NODELAY` is always on (no Nagle delay:
+  latency first, D24); segments out of order are dropped rather than kept (the simplest
+  correct receiver; QEMU's network does not reorder); no window scaling (64 KiB windows, enough
+  for the polled adapter); `net_ping` sends at most 5 requests so the call ends within its
+  limit; the MCP check's `net_lookup` accepts any answer that shows nslookup ran. The owner can
+  overrule any of these.
+- **Not yet.** The GUI front-ends: Settings' Network pane and the bar's indicator (designed,
+  docs/ux/network-v0.3.md, from D157) and a downloads window (no Fable design yet); HTTPS and
+  the network clock (part 3); window scaling, selective acknowledgments, keeping segments out
+  of order, keep-alive probes, urgent data, `SO_LINGER`'s timeout, `TCP_INFO`; TCP timers on a
+  machine without an adapter run only when a program makes a socket call (loopback needs none
+  but `TIME-WAIT`'s end); `fetch` resuming a cut download, proxies, authentication, cookies,
+  compression and IPv6 literals; a TCP benchmark; MCP over the network.
