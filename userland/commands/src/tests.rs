@@ -245,6 +245,17 @@ fn every_tool_runs_a_registry_command() {
                         };
                         assert!(found.is_some(), "{} {option}", tool.name);
                     }
+                    if argument.maps_to == Mapping::DryRun && !tool.dry_run_by_server() {
+                        assert!(command.has_dry_run(), "{}", tool.name);
+                        assert!(
+                            command
+                                .examples
+                                .iter()
+                                .any(|example| example.line.contains(" --dry-run ")),
+                            "{}: its twin's dry run needs an example run as a test",
+                            tool.name
+                        );
+                    }
                 }
                 for fixed in tool.fixed.iter().filter(|word| word.starts_with('-')) {
                     let found = match fixed.strip_prefix("--") {
@@ -350,4 +361,105 @@ fn the_kept_names_and_builtins_are_listed_once() {
         assert!(!SHELL_BUILTINS[..index].contains(name), "{name}");
     }
     assert!(SHELL_BUILTINS.contains(&"help"));
+}
+
+#[test]
+fn list_commands_page_with_limit_and_after_and_say_a_bad_cursor() {
+    let mut paged = 0;
+    for command in &COMMANDS {
+        let name = command.words.join(" ");
+        let limit = command.page_limit();
+        assert_eq!(
+            limit.is_some(),
+            command.long_option(b"after").is_some(),
+            "{name}"
+        );
+        assert_eq!(
+            limit.is_some(),
+            command.exit_for(&errors::BAD_CURSOR).is_some(),
+            "{name}"
+        );
+        if let Some(limit) = limit {
+            assert!(matches!(command.outputs.json, Output::Records(_)), "{name}");
+            assert!((1..=500).contains(&limit), "{name}");
+            assert!(
+                command.description.contains("--limit and --after"),
+                "{name}"
+            );
+            paged += 1;
+        }
+    }
+    assert_eq!(paged, 4);
+}
+
+#[test]
+fn list_tools_page_as_their_commands_do() {
+    let mut paged = Vec::new();
+    for tool in &TOOLS {
+        let Some(limit) = tool.page_limit() else {
+            assert!(!tool.takes("after"), "{}", tool.name);
+            continue;
+        };
+        assert!(tool.takes("after") && tool.read_only(), "{}", tool.name);
+        let command = find(tool.command).unwrap();
+        assert_eq!(command.page_limit(), Some(limit), "{}", tool.name);
+        for name in ["limit", "after"] {
+            let argument = tool.arguments.iter().find(|a| a.name == name).unwrap();
+            assert!(!argument.required, "{} {name}", tool.name);
+            assert_eq!(argument.default, DefaultValue::None, "{} {name}", tool.name);
+        }
+        paged.push(tool.name);
+    }
+    assert_eq!(paged, ["ls", "ps", "wm_list", "app_list"]);
+}
+
+#[test]
+fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
+    for tool in &TOOLS {
+        assert_eq!(
+            tool.confirm != Confirmation::Never,
+            tool.takes("confirm"),
+            "{}",
+            tool.name
+        );
+        if tool.max_effect == Effect::Destroy {
+            assert_ne!(tool.confirm, Confirmation::Never, "{}", tool.name);
+        }
+        if tool.takes("dry_run") {
+            assert_ne!(tool.max_effect, Effect::Read, "{}", tool.name);
+            assert_ne!(tool.max_effect, Effect::Control, "{}", tool.name);
+            assert!(tool.grant.is_some(), "{}", tool.name);
+        }
+        assert_eq!(
+            tool.dry_run_by_server(),
+            tool.confirm != Confirmation::Never,
+            "{}",
+            tool.name
+        );
+    }
+    for confirmation in [
+        Confirmation::Never,
+        Confirmation::WhenOverwriting,
+        Confirmation::Always,
+    ] {
+        for replaces in [false, true] {
+            assert!(!confirmation.needed(replaces, true));
+        }
+    }
+    assert!(!Confirmation::Never.needed(true, false));
+    assert!(!Confirmation::WhenOverwriting.needed(false, false));
+    assert!(Confirmation::WhenOverwriting.needed(true, false));
+    assert!(Confirmation::Always.needed(false, false));
+    let dry: Vec<&str> = TOOLS
+        .iter()
+        .filter(|tool| tool.takes("dry_run"))
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(dry, ["tee", "trash", "app_uninstall", "settings_set"]);
+    let commands: Vec<String> = COMMANDS
+        .iter()
+        .filter(|command| command.has_dry_run())
+        .map(|command| command.words.join(" "))
+        .collect();
+    assert_eq!(commands, ["app uninstall", "settings set", "trash"]);
 }

@@ -1,12 +1,13 @@
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use core::ffi::CStr;
-use eggos_commands::{ErrorDefinition, errors};
+use eggos_commands::{ErrorDefinition, errors, page};
 use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
 pub const OUTPUT_CAPACITY: usize = 4096;
 
 const ERROR_JSON_BYTES: usize = 4096;
+const PAGE_JSON_BYTES: usize = page::MAX_CURSOR_BYTES + 128;
 const MESSAGE_BYTES_IN_JSON: usize = 512;
 
 pub const FAILURE: i32 = 1;
@@ -124,6 +125,33 @@ impl<S: System> Output<S> {
             out.string(command);
         }
         out.end_object();
+        out.end_object();
+        out.end_line();
+        if !out.overflowed() {
+            let _ = self.system.write(STANDARD_ERROR, out.as_bytes());
+        }
+    }
+
+    pub fn more(&mut self, last_key: &[u8]) {
+        self.flush();
+        let mut cursor = [0u8; page::MAX_CURSOR_BYTES];
+        let Some(length) = page::encode(last_key, &mut cursor) else {
+            return;
+        };
+        let cursor = &cursor[..length];
+        if !self.json {
+            let _ = self
+                .system
+                .write(STANDARD_ERROR, page::MORE_PREFIX.as_bytes());
+            let _ = self.system.write(STANDARD_ERROR, cursor);
+            let _ = self.system.write(STANDARD_ERROR, b"\n");
+            return;
+        }
+        let mut buffer = [0u8; PAGE_JSON_BYTES];
+        let mut out = JsonWriter::new(&mut buffer);
+        out.begin_object();
+        out.key("page");
+        eggos_mcp::server::write_page(&mut out, core::str::from_utf8(cursor).ok());
         out.end_object();
         out.end_line();
         if !out.overflowed() {
@@ -267,5 +295,21 @@ mod tests {
         );
         assert_eq!(error_for(Errno::EROFS).code, "read_only");
         assert_eq!(error_for(Errno::EINVAL).code, "failed");
+    }
+
+    #[test]
+    fn more_names_the_next_page_s_cursor_as_text_or_json_after_the_page() {
+        let mut output = Output::new(Fake::default(), b"ls");
+        output.write(b"a b\n");
+        output.more(b"a b");
+        assert_eq!(output.system.output(), "a b\n");
+        assert_eq!(output.system.errors(), "more: --after a%20b\n");
+        let mut output = Output::new(Fake::default(), b"ls");
+        output.use_json();
+        output.more(b"-x");
+        assert_eq!(
+            output.system.errors(),
+            "{\"page\":{\"truncated\":true,\"truncated_by\":\"limit\",\"next_cursor\":\"%2Dx\"}}\n"
+        );
     }
 }

@@ -65,6 +65,8 @@ pub const MAX_URL_BYTES: usize = 2048;
 pub const MAX_SETTING_KEY_BYTES: usize = 64;
 /// The longest value `settings_set` takes, kept in the words buffer after the key (D163).
 pub const MAX_SETTING_VALUE_BYTES: usize = 64;
+/// The longest `after` a list tool takes: a cursor (D164).
+pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
@@ -144,6 +146,10 @@ pub enum ArgumentProblem {
     BadSettingKey,
     /// `value` is not 1 to [`MAX_SETTING_VALUE_BYTES`] bytes without control characters (D163).
     BadSettingValue,
+    /// `limit` is not a whole number from 1 to the tool's page size (D164).
+    BadLimit,
+    /// `after` is not a cursor a page ended with (D164).
+    BadCursor,
 }
 
 impl ArgumentProblem {
@@ -178,6 +184,7 @@ impl ArgumentProblem {
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
             ArgumentProblem::WrongType("append" | "confirm") => "append and confirm are booleans",
+            ArgumentProblem::WrongType("dry_run") => "dry_run is a boolean",
             ArgumentProblem::WrongType(_) => "an argument has the wrong type",
             ArgumentProblem::BadPath => "the path is longer than 4095 bytes",
             ArgumentProblem::BothContents => "give content or content_base64, not both",
@@ -254,6 +261,14 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadSettingValue => {
                 "value must be 1 to 64 bytes without control characters"
+            }
+            ArgumentProblem::BadLimit => {
+                "limit must be a whole number from 1 to the most a page holds: 500 for ls, 100 \
+                 for the other lists"
+            }
+            ArgumentProblem::BadCursor => {
+                "after must be the next_cursor a page ended with, as it was given: leave it out \
+                 to start again"
             }
         }
     }
@@ -451,6 +466,12 @@ pub struct Checked {
     /// `settings_set`'s value's length, in the words buffer after
     /// [`MAX_SETTING_KEY_BYTES`] (D163).
     pub setting_value: Option<usize>,
+    /// A list tool's `limit` (D164).
+    pub limit: Option<u32>,
+    /// A list tool's `after`'s length, in the words buffer (D164).
+    pub after: Option<usize>,
+    /// `dry_run` (D164).
+    pub dry_run: bool,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -497,6 +518,28 @@ pub fn check(
     };
     checked.append = flag(get("append"), "append")?;
     checked.confirm = flag(get("confirm"), "confirm")?;
+    checked.dry_run = flag(get("dry_run"), "dry_run")?;
+    if let Some(most) = tool.definition.page_limit() {
+        checked.limit = match whole(get("limit"), most as u64, ArgumentProblem::BadLimit)? {
+            Some(0) => return Err(ArgumentProblem::BadLimit),
+            limit => limit.map(|limit| limit as u32),
+        };
+        if get("after").is_some() {
+            let length = short_text(
+                get("after"),
+                "after",
+                decoded.words,
+                MAX_CURSOR_BYTES,
+                |byte| byte == b'%' || eggos_commands::page::is_cursor_byte(byte),
+                ArgumentProblem::BadCursor,
+            )?;
+            let cursor = decoded.words.get(..length).unwrap_or_default();
+            if !eggos_commands::page::is_cursor(cursor) {
+                return Err(ArgumentProblem::BadCursor);
+            }
+            checked.after = Some(length);
+        }
+    }
     let path_argument = match (tool.kind, tool.twin.operand) {
         (Kind::Run, _) => Some(("program", None)),
         (_, Operand::Path(path)) => Some((path.name, path.default)),
@@ -1080,6 +1123,11 @@ pub fn archive_entry_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b
     core::str::from_utf8(buffer.get(..checked.archive_entry?)?).ok()
 }
 
+/// A list tool's `after` in `buffer`, the words buffer, that [`Checked::after`] measures (D164).
+pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.after?)?).ok()
+}
+
 /// The path or program in `buffer` that [`Checked::path`] measures.
 pub fn path_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     let length = checked.path?;
@@ -1560,5 +1608,64 @@ mod tests {
         assert_eq!(shown(r#""secret""#), r#""<unparsed 8 bytes>""#);
         let long = format!(r#"{{"{}":1}}"#, "k".repeat(100));
         assert_eq!(shown(&long), format!(r#"["{}"]"#, "k".repeat(32)));
+    }
+
+    #[test]
+    fn list_tools_take_a_limit_up_to_their_page_and_a_cursor() {
+        let (result, buffers) =
+            checked("ls", r#"{"path":"/home","limit":500,"after":"my%20notes"}"#);
+        let result = result.unwrap();
+        assert_eq!(result.limit, Some(500));
+        assert_eq!(after_text(&result, &buffers.words), Some("my%20notes"));
+        let (result, _) = checked("ps", "{}");
+        let result = result.unwrap();
+        assert_eq!((result.limit, result.after), (None, None));
+        let (result, buffers) = checked("wm_list", r#"{"after":"129"}"#);
+        assert_eq!(after_text(&result.unwrap(), &buffers.words), Some("129"));
+        for (tool, arguments, problem) in [
+            ("ps", r#"{"limit":101}"#, ArgumentProblem::BadLimit),
+            ("app_list", r#"{"limit":0}"#, ArgumentProblem::BadLimit),
+            ("ls", r#"{"limit":501}"#, ArgumentProblem::BadLimit),
+            ("ls", r#"{"limit":"5"}"#, ArgumentProblem::BadLimit),
+            ("ls", r#"{"after":""}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":"-rf"}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":"a b"}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":"a\nb"}"#, ArgumentProblem::BadCursor),
+            ("ls", r#"{"after":7}"#, ArgumentProblem::BadCursor),
+            (
+                "cat",
+                r#"{"path":"/home/a","limit":1}"#,
+                ArgumentProblem::Unknown,
+            ),
+            ("clock_get", r#"{"after":"x"}"#, ArgumentProblem::Unknown),
+        ] {
+            assert_eq!(
+                checked(tool, arguments).0,
+                Err(problem),
+                "{tool} {arguments}"
+            );
+        }
+        let long = format!(r#"{{"after":"{}"}}"#, "a".repeat(MAX_CURSOR_BYTES + 1));
+        assert_eq!(checked("ls", &long).0, Err(ArgumentProblem::BadCursor));
+    }
+
+    #[test]
+    fn dry_run_is_a_boolean_of_the_tools_that_change_something() {
+        let (result, _) = checked("trash", r#"{"path":"/home/root/a","dry_run":true}"#);
+        let result = result.unwrap();
+        assert!(result.dry_run && !result.confirm);
+        let (result, _) = checked("settings_set", r#"{"key":"shell.profile","value":"linux"}"#);
+        assert!(!result.unwrap().dry_run);
+        assert_eq!(
+            checked("tee", r#"{"path":"/home/root/a","dry_run":"yes"}"#).0,
+            Err(ArgumentProblem::WrongType("dry_run"))
+        );
+        for tool in ["run", "fetch", "clock_set", "wm_click", "ls"] {
+            assert_eq!(
+                checked(tool, r#"{"dry_run":true}"#).0,
+                Err(ArgumentProblem::Unknown),
+                "{tool}"
+            );
+        }
     }
 }

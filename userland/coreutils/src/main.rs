@@ -53,6 +53,8 @@ mod options;
 #[cfg(any(test, target_env = "musl"))]
 mod output;
 #[cfg(any(test, target_env = "musl"))]
+mod page;
+#[cfg(any(test, target_env = "musl"))]
 mod ping;
 #[cfg(any(test, target_env = "musl"))]
 mod power;

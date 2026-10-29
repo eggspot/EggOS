@@ -1,7 +1,11 @@
-use crate::output::{FAILURE, Output, error_for};
+use crate::options::parse_defined;
+use crate::output::{FAILURE, Output, decimal, error_for};
+use crate::page::Page;
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::commands::{self, LIST_PAGE_LIMIT};
 use eggos_commands::errors;
+use eggos_commands::page::Smallest;
 use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
@@ -39,6 +43,7 @@ const USAGE: &[u8] =
       wm show [--json] [--] <id> | \
       wm act [--] <id> <element> invoke|focus|set-text|select [<text>] | wm help";
 const TITLE_AT: usize = 32;
+const PAGE_SLOTS: usize = LIST_PAGE_LIMIT as usize + 1;
 const TITLE_CAPACITY: usize = 64;
 const WINDOW_RECORD_BYTES: usize = 1024;
 
@@ -124,49 +129,97 @@ fn state_name(state: u32) -> &'static [u8] {
     }
 }
 
-fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
-    if !output.is_json() {
-        output.write(HEADER);
-    }
-    for index in 0.. {
+fn each_window<S: System>(
+    output: &mut Output<S>,
+    device: usize,
+    mut on_window: impl FnMut(&mut Output<S>, &[u8; LIST_SIZE]),
+) -> Result<(), i32> {
+    for index in 0u32.. {
         let mut entry = [0u8; LIST_SIZE];
-        entry[..4].copy_from_slice(&(index as u32).to_ne_bytes());
+        entry[..4].copy_from_slice(&index.to_ne_bytes());
         match output
             .system
             .device_control(device, LIST_WINDOW, &mut entry)
         {
-            Ok(()) => {}
+            Ok(()) => on_window(output, &entry),
             Err(Errno::ENOENT) => break,
             Err(errno) => {
                 output.coded(
                     error_for(errno),
                     &[b"cannot list the windows: ", errno.message()],
                 );
-                return FAILURE;
+                return Err(FAILURE);
             }
         }
-        if output.is_json() {
-            write_window(output, &entry);
-            continue;
-        }
-        for (field, offset) in [(0, 0), (1, 8), (2, 12), (3, 16), (4, 20)] {
-            if field == 1 {
-                output.write(state_name(word(&entry, 4)));
-                output.write(b" ");
+    }
+    Ok(())
+}
+
+fn list<S: System>(output: &mut Output<S>, device: usize, page: &Page, after: Option<u64>) -> i32 {
+    let comes_after = |id: u32| after.is_none_or(|after| u64::from(id) > after);
+    let mut selected = None;
+    if let Some(limit) = page.limit {
+        let mut smallest = Smallest::<4, PAGE_SLOTS>::new(limit as usize);
+        let walked = each_window(output, device, |_, entry| {
+            let id = word(entry, 0);
+            if comes_after(id) {
+                smallest.offer(&id.to_be_bytes());
             }
-            output.write_number(u64::from(word(&entry, offset)), 0);
-            output.write(b" ");
+        });
+        if let Err(status) = walked {
+            return status;
         }
-        match word(&entry, 24) {
-            KERNEL_CLIENT => output.write(b"kernel"),
-            client => output.write_number(u64::from(client), 0),
+        selected = Some(smallest);
+    }
+    if !output.is_json() {
+        output.write(HEADER);
+    }
+    let walked = each_window(output, device, |output, entry| {
+        let id = word(entry, 0);
+        let shown = match &selected {
+            Some(smallest) => smallest.holds(&id.to_be_bytes()),
+            None => comes_after(id),
+        };
+        if shown {
+            write_entry(output, entry);
         }
-        output.write(b" ");
-        let length = (word(&entry, 28) as usize).min(TITLE_CAPACITY);
-        output.write(&entry[TITLE_AT..TITLE_AT + length]);
-        output.write(b"\n");
+    });
+    if let Err(status) = walked {
+        return status;
+    }
+    let last = selected
+        .as_ref()
+        .filter(|smallest| smallest.more())
+        .and_then(|smallest| smallest.last())
+        .and_then(|last| <[u8; 4]>::try_from(last).ok());
+    if let Some(last) = last {
+        let mut digits = [0u8; 20];
+        output.more(decimal(u64::from(u32::from_be_bytes(last)), &mut digits));
     }
     0
+}
+
+fn write_entry<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
+    if output.is_json() {
+        write_window(output, entry);
+        return;
+    }
+    for (field, offset) in [(0, 0), (1, 8), (2, 12), (3, 16), (4, 20)] {
+        if field == 1 {
+            output.write(state_name(word(entry, 4)));
+            output.write(b" ");
+        }
+        output.write_number(u64::from(word(entry, offset)), 0);
+        output.write(b" ");
+    }
+    match word(entry, 24) {
+        KERNEL_CLIENT => output.write(b"kernel"),
+        client => output.write_number(u64::from(client), 0),
+    }
+    output.write(b" ");
+    let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
+    output.write(&entry[TITLE_AT..TITLE_AT + length]);
+    output.write(b"\n");
 }
 
 fn write_window<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
@@ -223,15 +276,23 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     };
     let verb = verb.to_bytes();
     if verb == b"list" {
-        match rest {
-            [] => {}
-            [json] if json.to_bytes() == b"--json" => output.use_json(),
-            _ => return usage(output),
+        let mut page = Page::default();
+        let parsed = parse_defined(output, rest, &commands::WM_LIST, |output, given| {
+            page.take(output, given).map(|_| ())
+        });
+        let Ok(operands) = parsed else {
+            return USAGE_STATUS;
+        };
+        if !operands.all().is_empty() {
+            return usage(output);
         }
+        let Ok(after) = page.after_number(output) else {
+            return USAGE_STATUS;
+        };
         let Some(device) = open_device(output) else {
             return FAILURE;
         };
-        let status = list(output, device);
+        let status = list(output, device, &page, after);
         output.system.close(device);
         return status;
     }
@@ -391,6 +452,47 @@ mod tests {
         assert_eq!(fake.managed.last(), Some(&[129, 6, 640, 480]));
         let (status, _) = run(&[c"focus", c"--"], windows());
         assert_eq!(status, 2);
+    }
+
+    fn three_windows() -> Fake {
+        let mut fake = windows();
+        fake.windows.push(FakeWindow {
+            id: 3,
+            state: 1,
+            rect: [0, 0, 100, 100],
+            client: 70,
+            title: b"third".to_vec(),
+        });
+        fake
+    }
+
+    #[test]
+    fn list_pages_by_window_id_and_keeps_the_stacking_order_within_a_page() {
+        let (status, fake) = run(&[c"list", c"--limit", c"2"], three_windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
+             64 normal 311 192 658 458 kernel Terminal\n\
+             3 minimised 0 0 100 100 70 third\n"
+        );
+        assert_eq!(fake.errors(), "more: --after 64\n");
+        let arguments = [c"list", c"--after", c"64", c"--limit", c"2"];
+        let (status, fake) = run(&arguments, three_windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
+             129 maximised 0 28 1280 772 67 first\n"
+        );
+        assert_eq!(fake.errors(), "");
+        let arguments = [c"list", c"--json", c"--after", c"64"];
+        let (status, fake) = run(&arguments, three_windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.output().lines().count(), 1);
+        let (status, fake) = run(&[c"list", c"--after", c"x"], three_windows());
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "wm: invalid cursor 'x'\n");
     }
 
     #[test]

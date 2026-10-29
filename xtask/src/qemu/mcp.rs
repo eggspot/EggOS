@@ -7,6 +7,7 @@
 //! boot's console must show. Two boots of the same disk:
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
+//!    `ls` paging the host folder one entry and then the rest by its `next_cursor` (D164),
 //!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
 //!    `clock_get` within five minutes of the host's clock (D150), paths outside the roots,
 //!    hostile lines, and every tool that needs a grant refused with its grant named
@@ -387,6 +388,8 @@ pub(super) struct ToolResult {
     pub(super) is_error: bool,
     png: Option<Vec<u8>>,
     scale: Option<u64>,
+    truncated: Option<bool>,
+    next_cursor: Option<String>,
 }
 
 impl ToolResult {
@@ -415,15 +418,27 @@ impl ToolResult {
                 bytes.truncate(length);
                 Some(bytes)
             });
-        let scale = result
-            .get("structuredContent")
+        let structured = result.get("structuredContent");
+        let scale = structured
             .and_then(|structured| structured.get("scale"))
             .and_then(|scale| std::str::from_utf8(scale.raw()).ok()?.parse().ok());
+        let truncated = structured
+            .and_then(|structured| structured.get("truncated"))
+            .and_then(|truncated| match truncated {
+                Value::Bool(truncated) => Some(truncated),
+                _ => None,
+            });
+        let next_cursor = structured
+            .and_then(|structured| structured.get("next_cursor"))
+            .and_then(Value::as_str)
+            .map(|cursor| cursor.chars().collect());
         Some(Self {
             texts,
             is_error: result.get("isError") == Some(Value::Bool(true)),
             png,
             scale,
+            truncated,
+            next_cursor,
         })
     }
 
@@ -515,6 +530,43 @@ fn expect(holds: bool, arch: &str, what: &str) -> Result<(), String> {
     }
 }
 
+fn pages_ls(client: &mut Client) -> Result<(), String> {
+    let arch = client.arch;
+    let first = client.call("ls", r#"{"path":"/media/host","limit":1}"#)?;
+    expect(
+        !first.is_error && first.truncated == Some(true) && first.all().contains(" big.txt\n"),
+        arch,
+        &format!(
+            "ls's first page of one is not big.txt with more to follow: {}",
+            first.all()
+        ),
+    )?;
+    expect(
+        first.next_cursor.as_deref() == Some("big.txt"),
+        arch,
+        &format!(
+            "ls's first page names no next_cursor big.txt: {:?}",
+            first.next_cursor
+        ),
+    )?;
+    let rest = client.call(
+        "ls",
+        r#"{"path":"/media/host","limit":100,"after":"big.txt"}"#,
+    )?;
+    expect(
+        !rest.is_error
+            && rest.truncated == Some(false)
+            && rest.next_cursor.is_none()
+            && rest.all().contains(" readme.txt\n")
+            && !rest.all().contains(" big.txt\n"),
+        arch,
+        &format!(
+            "ls's page after big.txt is not the rest of the folder: {}",
+            rest.all()
+        ),
+    )
+}
+
 fn session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     client.send(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#)?;
@@ -594,6 +646,7 @@ fn session(client: &mut Client) -> Result<(), String> {
             ),
         )?;
     }
+    pages_ls(client)?;
     clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
@@ -839,6 +892,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         "trash",
         &format!(r#"{{"path":"{NOTE}"}}"#),
         "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "trash",
+        &format!(r#"{{"path":"{NOTE}","dry_run":true}}"#),
+        "Dry run: trash would move",
     )?;
     succeeds(
         client,

@@ -1,6 +1,7 @@
 use crate::lines::each_line;
 use crate::options::{parse_count, parse_defined};
-use crate::output::{FAILURE, Output};
+use crate::output::{FAILURE, Output, decimal};
+use crate::page::Page;
 use crate::system::System;
 use core::ffi::CStr;
 use core::ops::ControlFlow;
@@ -61,8 +62,11 @@ fn no_operands<S: System>(
 
 pub fn ps<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut json = false;
-    let Ok(operands) = parse_defined(output, arguments, &commands::PS, |_, given| {
-        json |= given.is_long("json");
+    let mut page = Page::default();
+    let Ok(operands) = parse_defined(output, arguments, &commands::PS, |output, given| {
+        if !page.take(output, given)? {
+            json |= given.is_long("json");
+        }
         Ok(())
     }) else {
         return FAILURE;
@@ -74,29 +78,53 @@ pub fn ps<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         );
         return FAILURE;
     }
-    if json {
-        return each_line(output, PROCESSES, |output, line| {
-            write_process(output, line);
-            ControlFlow::Continue(())
-        });
+    let Ok(after) = page.after_number(output) else {
+        return FAILURE;
+    };
+    if !json {
+        output.write(b"  PID  PPID  PGID S CMD\n");
     }
-    output.write(b"  PID  PPID  PGID S CMD\n");
-    each_line(output, PROCESSES, |output, line| {
-        for (index, field) in fields(line).enumerate() {
-            if index == 3 {
-                continue;
-            }
-            if index < NAME_COLUMN - 1 {
-                for _ in field.len()..5 {
-                    output.write(b" ");
-                }
-            }
-            output.write(field);
-            output.write(if index < NAME_COLUMN { b" " } else { b"" });
+    let mut shown = 0u64;
+    let mut last = None;
+    let mut more = false;
+    let status = each_line(output, PROCESSES, |output, line| {
+        let pid = fields(line).next().and_then(parse_count);
+        if after.is_some_and(|after| pid.is_none_or(|pid| pid <= after)) {
+            return ControlFlow::Continue(());
         }
-        output.write(b"\n");
+        if page.limit.is_some_and(|limit| shown == limit) {
+            more = true;
+            return ControlFlow::Break(());
+        }
+        shown += 1;
+        last = pid;
+        match json {
+            true => write_process(output, line),
+            false => write_process_text(output, line),
+        }
         ControlFlow::Continue(())
-    })
+    });
+    if let (true, Some(pid)) = (more, last) {
+        let mut digits = [0u8; 20];
+        output.more(decimal(pid, &mut digits));
+    }
+    status
+}
+
+fn write_process_text<S: System>(output: &mut Output<S>, line: &[u8]) {
+    for (index, field) in fields(line).enumerate() {
+        if index == 3 {
+            continue;
+        }
+        if index < NAME_COLUMN - 1 {
+            for _ in field.len()..5 {
+                output.write(b" ");
+            }
+        }
+        output.write(field);
+        output.write(if index < NAME_COLUMN { b" " } else { b"" });
+    }
+    output.write(b"\n");
 }
 
 fn write_process<S: System>(output: &mut Output<S>, line: &[u8]) {
@@ -331,6 +359,32 @@ mod tests {
         let (status, _, errors) = run(ps, Fake::default(), &[c"--json"]);
         assert_eq!(status, 1);
         assert!(errors.contains("\"code\":\"no_such_file\""), "{errors}");
+    }
+
+    #[test]
+    fn ps_pages_by_process_id() {
+        let (status, output, errors) = run(ps, proc(), &[c"--limit", c"2"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            output,
+            "  PID  PPID  PGID S CMD\n    1     0     1 R init\n    7     1     7 R eggsh\n"
+        );
+        assert_eq!(errors, "more: --after 7\n");
+        let (status, output, errors) = run(ps, proc(), &[c"--after", c"7", c"--limit", c"2"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            output,
+            "  PID  PPID  PGID S CMD\n   12     7    12 Z sleep\n"
+        );
+        assert_eq!(errors, "");
+        let (_, output, errors) = run(ps, proc(), &[c"--json", c"--limit", c"1"]);
+        assert_eq!(output.lines().count(), 1);
+        assert!(errors.contains("\"next_cursor\":\"1\""), "{errors}");
+        let (_, output, _) = run(ps, proc(), &[c"--after", c"12"]);
+        assert_eq!(output, "  PID  PPID  PGID S CMD\n");
+        let (status, _, errors) = run(ps, proc(), &[c"--after", c"x7"]);
+        assert_eq!(status, 1);
+        assert_eq!(errors, "t: invalid cursor 'x7'\n");
     }
 
     #[test]

@@ -443,12 +443,24 @@ mod tests {
     fn help_shows_one_command_s_usage_options_errors_and_gui() {
         let (status, output, _) = run(&[c"wm", c"list"]);
         assert_eq!(status, 0);
-        assert!(output.starts_with("usage: wm list [--json]\n"), "{output}");
-        assert!(output.contains("errors (exit status): usage 2, no_window_server 1\n"));
+        assert!(
+            output.starts_with("usage: wm list [--json] [--limit <count>] [--after <cursor>]\n"),
+            "{output}"
+        );
+        assert!(
+            output.contains("errors (exit status): usage 2, no_window_server 1, bad_cursor 2\n"),
+            "{output}"
+        );
         assert!(output.contains("GUI: the taskbar"));
         let (status, output, _) = run(&[c"ls"]);
         assert_eq!(status, 0);
-        assert!(output.starts_with("usage: ls [-a] [-A] [-l] [-d] [-1] [--json] [<path>...]\n"));
+        assert!(
+            output.starts_with(
+                "usage: ls [-a] [-A] [-l] [-d] [-1] [--json] [--limit <count>] \
+                 [--after <cursor>] [<path>...]\n"
+            ),
+            "{output}"
+        );
         let (_, output, _) = run(&[c"agentlog"]);
         assert!(output.contains("  -n <count>"), "{output}");
         let (status, output, _) = run(&[c"--json", c"app", c"list"]);

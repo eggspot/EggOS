@@ -4,7 +4,7 @@ use crate::json::{self, Value};
 const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     (
         "ls",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path in /home or /media/host.","default":"/home"}},"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path in /home or /media/host.","default":"/home"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"At most this many items; when more follow, the result's structuredContent.next_cursor names where the next page starts: call again with it as after."},"after":{"type":"string","pattern":"^[A-Za-z0-9._~@+,=:%][A-Za-z0-9._~@+,=:%-]*$","minLength":1,"maxLength":765,"description":"The next_cursor a page ended with: the items after it."}},"additionalProperties":false}"#,
     ),
     (
         "cat",
@@ -12,15 +12,15 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "ps",
-        r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":100,"description":"At most this many items; when more follow, the result's structuredContent.next_cursor names where the next page starts: call again with it as after."},"after":{"type":"string","pattern":"^[A-Za-z0-9._~@+,=:%][A-Za-z0-9._~@+,=:%-]*$","minLength":1,"maxLength":765,"description":"The next_cursor a page ended with: the items after it."}},"additionalProperties":false}"#,
     ),
     (
         "wm_list",
-        r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":100,"description":"At most this many items; when more follow, the result's structuredContent.next_cursor names where the next page starts: call again with it as after."},"after":{"type":"string","pattern":"^[A-Za-z0-9._~@+,=:%][A-Za-z0-9._~@+,=:%-]*$","minLength":1,"maxLength":765,"description":"The next_cursor a page ended with: the items after it."}},"additionalProperties":false}"#,
     ),
     (
         "app_list",
-        r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":100,"description":"At most this many items; when more follow, the result's structuredContent.next_cursor names where the next page starts: call again with it as after."},"after":{"type":"string","pattern":"^[A-Za-z0-9._~@+,=:%][A-Za-z0-9._~@+,=:%-]*$","minLength":1,"maxLength":765,"description":"The next_cursor a page ended with: the items after it."}},"additionalProperties":false}"#,
     ),
     (
         "clock_get",
@@ -40,11 +40,11 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "tee",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path below /home/root, outside its Trash."},"content":{"type":"string","description":"The text to write, at most 128 KiB."},"content_base64":{"type":"string","description":"The bytes to write, in base64, instead of content."},"append":{"type":"boolean","description":"Add to the end of the file instead of replacing it.","default":false},"confirm":{"type":"boolean","description":"Set to true to replace an existing file when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false}},"required":["path"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path below /home/root, outside its Trash."},"content":{"type":"string","description":"The text to write, at most 128 KiB."},"content_base64":{"type":"string","description":"The bytes to write, in base64, instead of content."},"append":{"type":"boolean","description":"Add to the end of the file instead of replacing it.","default":false},"confirm":{"type":"boolean","description":"Set to true to replace an existing file when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false},"dry_run":{"type":"boolean","description":"Set to true to see what the call would do: nothing is changed and the user is not asked.","default":false}},"required":["path"],"additionalProperties":false}"#,
     ),
     (
         "trash",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path below /home/root, outside its Trash."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false}},"required":["path"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path below /home/root, outside its Trash."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false},"dry_run":{"type":"boolean","description":"Set to true to see what the call would do: nothing is changed and the user is not asked.","default":false}},"required":["path"],"additionalProperties":false}"#,
     ),
     (
         "fetch",
@@ -76,7 +76,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "app_uninstall",
-        r#"{"type":"object","properties":{"name":{"type":"string","description":"The app's name, as app_list shows it."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false}},"required":["name"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"name":{"type":"string","description":"The app's name, as app_list shows it."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false},"dry_run":{"type":"boolean","description":"Set to true to see what the call would do: nothing is changed and the user is not asked.","default":false}},"required":["name"],"additionalProperties":false}"#,
     ),
     (
         "wm_capture",
@@ -325,7 +325,7 @@ fn the_shipped_tools_keep_their_annotations() {
 
 #[test]
 fn the_list_is_valid_json_with_annotations() {
-    let mut buffer = vec![0u8; 48 * 1024];
+    let mut buffer = vec![0u8; 64 * 1024];
     let mut out = JsonWriter::new(&mut buffer);
     write_list(&mut out);
     assert!(!out.overflowed());

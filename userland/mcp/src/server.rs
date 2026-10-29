@@ -6,9 +6,12 @@
 //! A tool call is checked in this order, each stop writing exactly one audit record (D137):
 //! the tool; the grant it needs; whether another call waits for the user's answer (then any
 //! call needing a grant is refused before its arguments are even decoded, so the waiting call's
-//! content stays as the user saw it); the arguments; the path, resolved; what is there; the
-//! user's yes for a destructive call (`elicitation/create` when the client can ask, else
-//! `confirm: true`); then `started`, the CLI twin, and its outcome. The answer is what the twin
+//! content stays as the user saw it); the arguments; the path, resolved; what is there; a dry
+//! run of a tool that asks for confirmation, answered here from what was checked without asking
+//! the user or running the twin (D164); the user's yes for a destructive call, by the
+//! registry's one rule (`elicitation/create` when the client can ask, else `confirm: true`);
+//! then `started`, the CLI twin, and its outcome. A list tool's page is the twin's, its next
+//! cursor read from the twin's last line of errors (D164). The answer is what the twin
 //! printed, framed as data from the machine; `wm_capture`'s is the PNG its twin wrote, as an
 //! image after a text that frames it (D143).
 
@@ -103,6 +106,11 @@ const BUDGET_USED: &str = "Refused: this server run has written as much to the a
     may (2 MiB); calls are refused until the server starts again.";
 const QUESTION_PREFIX: &str = "eggos-elicit-";
 const PERSON_BUSY: &str = "Busy: a person is using the machine; wait a moment and retry.";
+/// The audit log's detail for a dry run the server answered, after its target (D164).
+pub const DRY_RUN_DETAIL: &str = "dry run: nothing changed";
+const PAGE_CUT: &str = "The page was cut at the output's limit, so where the next page starts is \
+    unknown: call again with a smaller limit.";
+const PAGE_LIMIT_DIGITS: usize = 24;
 
 /// The buffers a call works in, each sized by the constant named after it.
 #[derive(Debug)]
@@ -850,11 +858,34 @@ impl Server {
         };
         let target_length = target.length;
         let state = target.state;
-        let needs_yes = match tool.confirmation {
-            Confirmation::Never => false,
-            Confirmation::WhenOverwriting => !checked.append && state != FileState::Missing,
-            Confirmation::Always => true,
-        };
+        if checked.dry_run && tool.definition.dry_run_by_server() {
+            let target = target_text(tool, scratch.resolved, target_length);
+            let mut would = [0u8; MAX_PATH_BYTES * 2 + 256];
+            let would_length = would_text(tool, &checked, state, target.unwrap_or(""), &mut would);
+            let would = text_prefix(&would, would_length);
+            let mut detail = [0u8; MAX_PATH_BYTES + 64];
+            let mut text = Text::new(&mut detail);
+            if let Some(target) = target {
+                text.put(target);
+                text.put("; ");
+            }
+            text.put(DRY_RUN_DETAIL);
+            let detail_length = text.length;
+            let detail = text_prefix(&detail, detail_length);
+            self.preview(
+                id,
+                number,
+                tool,
+                shown,
+                (would, detail),
+                system,
+                scratch,
+                out,
+            );
+            return;
+        }
+        let replaces = !checked.append && state != FileState::Missing;
+        let needs_yes = tool.confirmation.needed(replaces, checked.dry_run);
         let mut approval = Approval::NotNeeded;
         if needs_yes {
             if self.session.elicits() {
@@ -946,9 +977,9 @@ impl Server {
                 }
             };
             let length = resolved.len();
-            let state = match tool.kind {
-                Kind::Tee | Kind::Trash | Kind::Fetch => system.file_state(resolved),
-                _ => FileState::Missing,
+            let state = match tool.confirmation {
+                Confirmation::Never => FileState::Missing,
+                Confirmation::WhenOverwriting | Confirmation::Always => system.file_state(resolved),
             };
             match (tool.kind, state) {
                 (Kind::Tee, FileState::Directory) => {
@@ -986,6 +1017,57 @@ impl Server {
             length: 0,
             state: FileState::Missing,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preview(
+        &mut self,
+        id: &[u8],
+        number: u64,
+        tool: &Tool,
+        shown: &[u8],
+        (would, detail): (&str, &str),
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut JsonWriter<'_>,
+    ) {
+        if !self.record_call(
+            system,
+            scratch.record,
+            number,
+            tool.name.as_bytes(),
+            Outcome::Ok,
+            shown,
+            detail.as_bytes(),
+        ) {
+            refused(
+                out,
+                id,
+                &errors::AUDIT_FAILED,
+                "The call was not run: the audit log could not be written.",
+            );
+            return;
+        }
+        rpc::write_result(out, id, |out| {
+            out.begin_object();
+            out.key("content");
+            out.begin_array();
+            notice(out, tool.name);
+            out.begin_object();
+            out.key("type");
+            out.string("text");
+            out.key("text");
+            out.begin_string();
+            out.string_piece("Dry run: ");
+            out.string_piece(would);
+            out.string_piece(". Nothing was changed and the user was not asked.");
+            out.end_string();
+            out.end_object();
+            out.end_array();
+            out.key("isError");
+            out.bool(false);
+            out.end_object();
+        });
     }
 
     fn installed(&self, name: &str, system: &mut impl System) -> bool {
@@ -1316,10 +1398,27 @@ impl Server {
             );
             return;
         }
+        let mut limit_digits = [0u8; PAGE_LIMIT_DIGITS];
+        let limit_length = prepared.checked.limit.map(|limit| {
+            let mut text = Text::new(&mut limit_digits);
+            text.number(i64::from(limit));
+            text.length
+        });
         let mut words: [&str; MAX_COMMAND_WORDS] = [""; MAX_COMMAND_WORDS];
         let mut count = 0;
         for word in tool.twin.words {
             push_word(&mut words, &mut count, word);
+        }
+        if let Some(length) = limit_length {
+            push_word(&mut words, &mut count, "--limit");
+            push_word(&mut words, &mut count, text_prefix(&limit_digits, length));
+        }
+        if let Some(cursor) = arguments::after_text(&prepared.checked, buffers.words) {
+            push_word(&mut words, &mut count, "--after");
+            push_word(&mut words, &mut count, cursor);
+        }
+        if prepared.checked.dry_run {
+            push_word(&mut words, &mut count, "--dry-run");
         }
         if tool.kind == Kind::Tee && prepared.checked.append {
             push_word(&mut words, &mut count, "-a");
@@ -1450,6 +1549,11 @@ impl Server {
             content_length,
             append: prepared.checked.append,
             succeeded,
+            paged: prepared.checked.limit.is_some() || prepared.checked.after.is_some(),
+            dry_run: prepared.checked.dry_run,
+            setting: arguments::setting_key_text(&prepared.checked, buffers.words).zip(
+                arguments::setting_value_text(&prepared.checked, buffers.words),
+            ),
         };
         answer_with_output(out, &answer);
     }
@@ -1560,6 +1664,9 @@ impl Server {
             content_length: 0,
             append: false,
             succeeded,
+            paged: false,
+            dry_run: false,
+            setting: None,
         };
         answer_with_output(out, &answer);
     }
@@ -2062,13 +2169,17 @@ fn missing_grant(tool: &Tool, grant: Grant, out: &mut [u8]) -> usize {
 fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
     let mut text = Text::new(out);
     text.put("Refused: ");
-    text.put(match tool.kind {
-        Kind::Tee => "tee would replace an existing file",
-        Kind::Fetch => "fetch would replace an existing file",
-        Kind::Trash => "trash moves the file to the Trash",
-        Kind::ClockSet => "clock_set sets the machine's clock",
-        _ => "app_uninstall removes the app",
-    });
+    match tool.kind {
+        Kind::Tee => text.put("tee would replace an existing file"),
+        Kind::Fetch => text.put("fetch would replace an existing file"),
+        Kind::Trash => text.put("trash moves the file to the Trash"),
+        Kind::ClockSet => text.put("clock_set sets the machine's clock"),
+        Kind::AppUninstall => text.put("app_uninstall removes the app"),
+        _ => {
+            text.put(tool.name);
+            text.put(" needs the user's yes");
+        }
+    }
     text.put(
         ", and this client cannot ask the user. Call again with confirm: true once the \
                user agreed; it is a guard against accidents, not the user's approval.",
@@ -2125,7 +2236,7 @@ fn question_text(
             text.put(checked.time.as_ref().map_or("", |time| time.as_str()));
             text.put(" (UTC). Allow it?");
         }
-        _ => {
+        Kind::AppUninstall => {
             let mut name = [0u8; arguments::MAX_NAME_BYTES * 4];
             let raw = checked.name.as_ref().map_or("", |name| name.as_str());
             let length = audit::display_into(raw.as_bytes(), &mut name);
@@ -2133,10 +2244,86 @@ fn question_text(
             text.put(text_prefix(&name, length));
             text.put(". Allow it?");
         }
+        _ => {
+            text.put("An agent asks to run ");
+            text.put(tool.name);
+            text.put(". Allow it?");
+        }
     }
     text.put(" (EggOS, tool ");
     text.put(tool.name);
     text.put(")");
+    text.length
+}
+
+fn would_text(
+    tool: &Tool,
+    checked: &Checked,
+    state: FileState,
+    target: &str,
+    out: &mut [u8],
+) -> usize {
+    let mut shown = [0u8; MAX_PATH_BYTES * 2];
+    let shown_length = audit::display_into(target.as_bytes(), &mut shown);
+    let shown = text_prefix(&shown, shown_length);
+    let mut text = Text::new(out);
+    text.put(tool.name);
+    let size = |text: &mut Text<'_>| {
+        if let FileState::File(size) = state {
+            text.put(" (");
+            text.number(size as i64);
+            text.put(" bytes)");
+        }
+    };
+    match (tool.kind, state) {
+        (Kind::Tee, FileState::Missing) => {
+            text.put(" would create ");
+            text.put(shown);
+            text.put(" with ");
+            text.number(checked.content.unwrap_or(0) as i64);
+            text.put(" bytes");
+        }
+        (Kind::Tee, _) if checked.append => {
+            text.put(" would add ");
+            text.number(checked.content.unwrap_or(0) as i64);
+            text.put(" bytes to the end of ");
+            text.put(shown);
+            size(&mut text);
+        }
+        (Kind::Tee, _) => {
+            text.put(" would replace ");
+            text.put(shown);
+            size(&mut text);
+            text.put(" with ");
+            text.number(checked.content.unwrap_or(0) as i64);
+            text.put(" bytes");
+        }
+        (Kind::Trash, FileState::Directory) => {
+            text.put(" would move the folder ");
+            text.put(shown);
+            text.put(" and everything in it to the Trash");
+        }
+        (Kind::Trash, _) => {
+            text.put(" would move ");
+            text.put(shown);
+            size(&mut text);
+            text.put(" to the Trash");
+        }
+        (Kind::AppUninstall, _) => {
+            let mut name = [0u8; arguments::MAX_NAME_BYTES * 4];
+            let raw = checked.name.as_ref().map_or("", |name| name.as_str());
+            let length = audit::display_into(raw.as_bytes(), &mut name);
+            let name = text_prefix(&name, length);
+            text.put(" would uninstall the app ");
+            text.put(name);
+            text.put(", removing ");
+            text.put(APPLICATIONS);
+            text.put("/");
+            text.put(name);
+            text.put(" and everything in it");
+        }
+        _ => text.put(" would make its change"),
+    }
     text.length
 }
 
@@ -2200,6 +2387,18 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if tool.takes("confirm") {
         writer.key("confirm");
         writer.bool(checked.confirm);
+    }
+    if checked.dry_run {
+        writer.key("dry_run");
+        writer.bool(true);
+    }
+    if let Some(limit) = checked.limit {
+        writer.key("limit");
+        writer.u64(u64::from(limit));
+    }
+    if let Some(cursor) = arguments::after_text(checked, scratch.words) {
+        writer.key("after");
+        writer.string(cursor);
     }
     if let Some(window) = checked.window {
         writer.key("window");
@@ -2459,6 +2658,33 @@ pub fn write_error(out: &mut JsonWriter<'_>, error: &ErrorDefinition, message: &
     out.end_object();
 }
 
+/// Writes where a page of a list stands (D164, the command model's pages):
+/// `{"truncated":true,"truncated_by":"limit","next_cursor":"<cursor>"}` when more items follow
+/// it, `{"truncated":false}` when it was the last.
+pub fn write_page(out: &mut JsonWriter<'_>, next_cursor: Option<&str>) {
+    out.begin_object();
+    out.key("truncated");
+    out.bool(next_cursor.is_some());
+    if let Some(cursor) = next_cursor {
+        out.key("truncated_by");
+        out.string("limit");
+        out.key("next_cursor");
+        out.string(cursor);
+    }
+    out.end_object();
+}
+
+/// Writes a page whose end was cut, so that where the next page starts is unknown (D164):
+/// `{"truncated":true,"truncated_by":"bytes"}`.
+pub fn write_page_cut(out: &mut JsonWriter<'_>) {
+    out.begin_object();
+    out.key("truncated");
+    out.bool(true);
+    out.key("truncated_by");
+    out.string("bytes");
+    out.end_object();
+}
+
 fn text_item(out: &mut JsonWriter<'_>, text: &str) {
     out.begin_object();
     out.key("type");
@@ -2525,6 +2751,9 @@ struct Answered<'a> {
     content_length: usize,
     append: bool,
     succeeded: bool,
+    paged: bool,
+    dry_run: bool,
+    setting: Option<(&'a str, &'a str)>,
 }
 
 fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
@@ -2556,6 +2785,14 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece("Moved ");
             out.string_piece(target);
             out.string_piece(" to the Trash.");
+        }
+        Kind::SettingsSet => {
+            let (key, value) = answer.setting.unwrap_or(("", ""));
+            out.string_piece("Set ");
+            out.string_piece(key);
+            out.string_piece(" to ");
+            out.string_piece(value);
+            out.string_piece(".");
         }
         kind => {
             let mut digits = [0u8; 24];
@@ -2589,6 +2826,7 @@ fn has_done_text(kind: Kind) -> bool {
         kind,
         Kind::Tee
             | Kind::Trash
+            | Kind::SettingsSet
             | Kind::WmFocus
             | Kind::WmMove
             | Kind::WmSize
@@ -2604,12 +2842,19 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
     let tool = answer.tool;
     let outcome = answer.outcome;
     let failed = !answer.succeeded;
+    let done = !failed && !answer.dry_run && has_done_text(tool.kind);
+    let page_cut = outcome.stdout_cut || answer.stderr.len() >= ERROR_OUTPUT_LIMIT;
+    let next_cursor = match answer.paged && !failed && !page_cut {
+        true => eggos_commands::page::next_cursor(answer.stderr)
+            .and_then(|cursor| core::str::from_utf8(cursor).ok()),
+        false => None,
+    };
     rpc::write_result(out, answer.id, |out| {
         out.begin_object();
         out.key("content");
         out.begin_array();
         notice(out, tool.name);
-        if !failed && has_done_text(tool.kind) {
+        if done {
             done_text(answer, out);
         }
         if tool.kind == Kind::Cat && !failed {
@@ -2634,7 +2879,7 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
                     out.end_object();
                 }
             }
-        } else if !answer.stdout.is_empty() || (!failed && !has_done_text(tool.kind)) {
+        } else if !answer.stdout.is_empty() || (!failed && !done) {
             out.begin_object();
             out.key("type");
             out.string("text");
@@ -2644,6 +2889,23 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
         }
         if outcome.stdout_cut {
             text_item(out, "The output was cut at 131072 bytes: it was longer.");
+        }
+        if answer.paged && !failed && page_cut {
+            text_item(out, PAGE_CUT);
+        }
+        if let Some(cursor) = next_cursor {
+            out.begin_object();
+            out.key("type");
+            out.string("text");
+            out.key("text");
+            out.begin_string();
+            out.string_piece("More follow: call ");
+            out.string_piece(tool.name);
+            out.string_piece(" again with after: \"");
+            out.string_piece(cursor);
+            out.string_piece("\" and the same limit.");
+            out.end_string();
+            out.end_object();
         }
         if failed || tool.kind == Kind::Run {
             out.begin_object();
@@ -2665,6 +2927,13 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
             out.end_object();
         }
         out.end_array();
+        if answer.paged && !failed {
+            out.key("structuredContent");
+            match page_cut {
+                true => write_page_cut(out),
+                false => write_page(out, next_cursor),
+            }
+        }
         if tool.kind == Kind::Run {
             out.key("structuredContent");
             out.begin_object();

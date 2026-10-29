@@ -108,7 +108,15 @@ pub const FAILED: ErrorDefinition = error(
 pub const TOO_MANY_ENTRIES: ErrorDefinition = error(
     "too_many_entries",
     Category::TooLarge,
-    "List a smaller folder, or fewer entries with a narrower path.",
+    "List it a page at a time with --limit, then --after with the cursor each page ends with.",
+    None,
+);
+/// A list command's `--after` (or a list tool's `after`) is not a cursor a page ended with
+/// (D164).
+pub const BAD_CURSOR: ErrorDefinition = error(
+    "bad_cursor",
+    Category::Usage,
+    "Pass the cursor a page ended with, as it was written, or leave --after out to start again.",
     None,
 );
 /// `wm`: no window has the id.
@@ -329,7 +337,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 44] = [
+pub const ALL: [&ErrorDefinition; 45] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -344,6 +352,7 @@ pub const ALL: [&ErrorDefinition; 44] = [
     &OUT_OF_MEMORY,
     &FAILED,
     &TOO_MANY_ENTRIES,
+    &BAD_CURSOR,
     &NO_SUCH_WINDOW,
     &PERSON_ACTIVE,
     &NO_WINDOW_SERVER,

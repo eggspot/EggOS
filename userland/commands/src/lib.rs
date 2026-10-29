@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod errors;
+pub mod page;
 pub mod tools;
 
 #[cfg(test)]
@@ -253,6 +254,43 @@ pub const fn long_flag(name: &'static str, help: &'static str) -> OptionDefiniti
     }
 }
 
+/// A list command's `--limit <count>` (D164): a page of at most `maximum` items, after which the
+/// command names the next page's cursor on standard error ([`page::MORE_PREFIX`]).
+pub const fn limit_option(maximum: i64) -> OptionDefinition {
+    OptionDefinition {
+        short: None,
+        long: Some("limit"),
+        value: Some(OptionValue {
+            name: "count",
+            value: ValueType::Integer {
+                minimum: 1,
+                maximum,
+            },
+        }),
+        repeatable: false,
+        default: None,
+        help: "At most count items; when more follow, standard error ends with more: --after \
+               <cursor>.",
+    }
+}
+
+/// A list command's `--after <cursor>` (D164): the items after the one a page ended with.
+pub const AFTER_OPTION: OptionDefinition = OptionDefinition {
+    short: None,
+    long: Some("after"),
+    value: Some(OptionValue {
+        name: "cursor",
+        value: ValueType::Text,
+    }),
+    repeatable: false,
+    default: None,
+    help: "Only the items after this cursor, as the page before named it.",
+};
+
+/// `--dry-run` (D164): says what the command would do, checks what it can, and changes nothing.
+pub const DRY_RUN_OPTION: OptionDefinition =
+    long_flag("dry-run", "Say what would be done, and change nothing.");
+
 /// How many of an operand a command takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Count {
@@ -465,6 +503,19 @@ impl CommandDefinition {
     /// Whether it has a JSON form (`--json`).
     pub fn has_json(&self) -> bool {
         !matches!(self.outputs.json, Output::None)
+    }
+
+    /// The most items a page of it holds, when it takes `--limit` (D164).
+    pub fn page_limit(&self) -> Option<i64> {
+        match self.long_option(b"limit")?.value?.value {
+            ValueType::Integer { maximum, .. } => Some(maximum),
+            _ => None,
+        }
+    }
+
+    /// Whether it takes `--dry-run` (D164).
+    pub fn has_dry_run(&self) -> bool {
+        self.long_option(b"dry-run").is_some()
     }
 
     /// The exit status it ends with for `error`, if it declares it.

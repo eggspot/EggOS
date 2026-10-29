@@ -916,3 +916,53 @@ fn extracting_checks_reserved_names_and_the_size_again() {
     assert!(files.paths_under("/Applications/").is_empty());
     assert_eq!(files.open_count(), 0);
 }
+
+fn with_apps(names: &[&str]) -> FakeFiles {
+    let mut files = FakeFiles::new();
+    for name in names {
+        files.directory(&format!("/Applications/{name}"));
+        files.file(
+            &format!("/Applications/{name}/app.manifest"),
+            format!("eggos-app 1\nname={name}\nsource=linux\nrun={name}\n").as_bytes(),
+        );
+    }
+    files
+}
+
+fn page_of(
+    files: &mut FakeFiles,
+    limit: Option<usize>,
+    after: Option<&str>,
+) -> (Vec<String>, Option<String>) {
+    let mut names = Vec::new();
+    let next = for_each_installed_page(files, limit, after.map(str::as_bytes), |app| {
+        names.push(app.name.to_owned())
+    })
+    .unwrap();
+    (names, next.map(|name| name.as_str().to_owned()))
+}
+
+#[test]
+fn installed_apps_page_by_name_in_the_folder_s_order() {
+    let mut files = with_apps(&["pear", "apple", "fig", "kiwi"]);
+    assert_eq!(
+        page_of(&mut files, Some(2), None),
+        (
+            vec!["apple".to_owned(), "fig".to_owned()],
+            Some("fig".to_owned())
+        )
+    );
+    assert_eq!(
+        page_of(&mut files, Some(2), Some("fig")),
+        (vec!["pear".to_owned(), "kiwi".to_owned()], None)
+    );
+    assert_eq!(
+        page_of(&mut files, None, Some("kiwi")),
+        (vec!["pear".to_owned()], None)
+    );
+    assert_eq!(
+        page_of(&mut files, Some(9), Some("pear")),
+        (Vec::new(), None)
+    );
+    assert_eq!(page_of(&mut files, None, None).0.len(), 4);
+}

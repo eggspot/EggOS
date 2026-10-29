@@ -1,7 +1,7 @@
 //! The `settings` command's verbs (D132, D163; docs/ux/command-model.md): `settings list`,
 //! `settings get <key>` and `settings set <key> <value>`, defined in the command model's
 //! registry (`eggos_commands::commands::SETTINGS_LIST`, `SETTINGS_GET`, `SETTINGS_SET`), with
-//! `--json` for list and get and coded errors. The machine is a [`Machine`], so host tests run
+//! `--json` for list and get, `--dry-run` for set (D164) and coded errors. The machine is a [`Machine`], so host tests run
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
@@ -15,7 +15,7 @@ use eggos_toolkit::text::Text;
 
 /// The command's usage, printed for a usage error.
 pub const USAGE: &str =
-    "usage: settings [list [--json] | get [--json] <key> | set <key> <value>]\n";
+    "usage: settings [list [--json] | get [--json] <key> | set [--dry-run] <key> <value>]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -49,6 +49,7 @@ pub trait Machine {
 /// program opens its window); the exit status.
 pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
     let mut json = false;
+    let mut dry_run = false;
     let mut words = [""; MAX_WORDS];
     let mut count = 0;
     let mut options_end = false;
@@ -59,6 +60,10 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
         }
         if !options_end && argument == "--json" {
             json = true;
+            continue;
+        }
+        if !options_end && argument == "--dry-run" {
+            dry_run = true;
             continue;
         }
         if !options_end && argument.len() > 1 && argument.starts_with('-') {
@@ -74,9 +79,9 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
         count += 1;
     }
     match words[..count] {
-        ["list"] => list(machine, json),
-        ["get", name] => get(machine, json, name),
-        ["set", name, value] if !json => set(machine, name, value),
+        ["list"] if !dry_run => list(machine, json),
+        ["get", name] if !dry_run => get(machine, json, name),
+        ["set", name, value] if !json => set(machine, name, value, dry_run),
         _ => usage(machine, json),
     }
 }
@@ -165,9 +170,9 @@ fn get(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
     0
 }
 
-fn set(machine: &mut impl Machine, name: &str, value: &str) -> i32 {
-    let index = match keys::change(name, value) {
-        Ok((_, Change::Profile(index))) => index,
+fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i32 {
+    let (key, index) = match keys::change(name, value) {
+        Ok((key, Change::Profile(index))) => (key, index),
         Err(Refusal::NoSuchSetting) => return no_such_setting(machine, false, name),
         Err(Refusal::ReadOnly) => {
             let mut message = Message::new();
@@ -185,6 +190,17 @@ fn set(machine: &mut impl Machine, name: &str, value: &str) -> i32 {
             return INVALID_VALUE_STATUS;
         }
     };
+    if dry_run {
+        let facts = machine.facts();
+        let mut message = Message::new();
+        let _ = writeln!(
+            message,
+            "would set {name} from {} to {value}",
+            key.value(&facts).as_str()
+        );
+        machine.write_output(message.as_str().as_bytes());
+        return 0;
+    }
     let saved = machine.save_profile(index);
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -326,6 +342,26 @@ mod tests {
         assert_eq!(status, 1);
         assert_eq!(fake.applied, Some(2));
         assert!(errors.ends_with(": Read-only file system\n"), "{errors}");
+    }
+
+    #[test]
+    fn a_dry_run_checks_the_key_and_value_and_changes_nothing() {
+        let mut fake = Fake::default();
+        let (status, output, _) = settings(
+            &mut fake,
+            &["set", "--dry-run", "--", "shell.profile", "linux"],
+        );
+        assert_eq!(status, 0);
+        assert_eq!(output, "would set shell.profile from macos to linux\n");
+        assert_eq!((fake.saved, fake.applied), (None, None));
+        let (status, _, errors) =
+            settings(&mut fake, &["set", "--dry-run", "shell.profile", "amiga"]);
+        assert_eq!(status, 2);
+        assert!(errors.contains("invalid value 'amiga'"), "{errors}");
+        let (status, _, _) = settings(&mut fake, &["set", "--dry-run", "system.arch", "x"]);
+        assert_eq!(status, 1);
+        assert_eq!(settings(&mut fake, &["list", "--dry-run"]).0, 2);
+        assert_eq!(fake.saved, None);
     }
 
     #[test]

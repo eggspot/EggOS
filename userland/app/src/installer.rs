@@ -20,6 +20,7 @@ use crate::reader::{self, FileReader, Reader};
 use core::cell::RefCell;
 use eggos_app_manifest::icon as icon_file;
 use eggos_app_manifest::{self as manifest, Manifest, Source};
+use eggos_commands::page::Smallest;
 use eggos_png::inflate::{Sink, Window};
 use eggos_runtime::errno::Errno;
 
@@ -1500,6 +1501,44 @@ pub fn for_each_installed(
             each(&app);
         }
     }
+}
+
+/// The most apps a page of `app list` holds (D164).
+pub const PAGE_LIMIT: usize = eggos_commands::commands::LIST_PAGE_LIMIT as usize;
+
+const PAGE_SLOTS: usize = PAGE_LIMIT + 1;
+const NAME_KEY_BYTES: usize = manifest::NAME_CAPACITY;
+
+/// Calls `each` with the installed apps whose names come after `after`, in `/Applications`'
+/// order: with `limit`, only the next `limit` of them by name, and then the name the page ended
+/// with when more follow, the next page's cursor (D164).
+pub fn for_each_installed_page(
+    files: &mut impl Files,
+    limit: Option<usize>,
+    after: Option<&[u8]>,
+    mut each: impl FnMut(&Manifest<'_>),
+) -> Result<Option<Name>, Errno> {
+    let comes_after = |name: &str| after.is_none_or(|after| name.as_bytes() > after);
+    let Some(limit) = limit else {
+        for_each_installed(files, |app| {
+            if comes_after(app.name) {
+                each(app);
+            }
+        })?;
+        return Ok(None);
+    };
+    let mut page = Smallest::<NAME_KEY_BYTES, PAGE_SLOTS>::new(limit);
+    for_each_installed(files, |app| {
+        if comes_after(app.name) {
+            page.offer(app.name.as_bytes());
+        }
+    })?;
+    for_each_installed(files, |app| {
+        if page.holds(app.name.as_bytes()) {
+            each(app);
+        }
+    })?;
+    Ok(page.last().filter(|_| page.more()).map(Name::new))
 }
 
 const _: () = assert!(

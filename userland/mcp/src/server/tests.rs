@@ -2500,3 +2500,302 @@ fn the_settings_tools_run_settings_with_the_key_after_a_double_dash() {
     let answer = granted.call(7, "settings_set", "{\"key\":\"a\",\"value\":\"x\\ny\"}");
     assert_eq!(error_code(&answer), INVALID_PARAMS);
 }
+
+fn page_of(answer: &str) -> Option<Value<'_>> {
+    parsed(answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+}
+
+#[test]
+fn a_list_tool_pages_through_its_twin_and_names_the_next_cursor() {
+    let mut harness = Harness::initialized();
+    harness.system.outputs.insert(
+        "/bin/ls".into(),
+        (
+            b"total 0\n-rw-r--r-- 1 0 0 0 2026-01-01 00:00 a b\n".to_vec(),
+            b"more: --after a%20b\n".to_vec(),
+            Ended::Exited(0),
+        ),
+    );
+    let answer = harness.call(1, "ls", r#"{"path":"/home/root","limit":1}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ls", "-l", "--limit", "1", "--", "/home/root"]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(true)));
+    assert!(
+        page.get("truncated_by")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("limit")
+    );
+    assert!(
+        page.get("next_cursor")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("a%20b")
+    );
+    assert!(
+        texts(&answer)
+            .last()
+            .unwrap()
+            .contains(r#"call ls again with after: "a%20b" and the same limit"#),
+        "{answer}"
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root","limit":1}"#
+    );
+    harness.system.outputs.insert(
+        "/bin/ls".into(),
+        (b"total 0\n".to_vec(), Vec::new(), Ended::Exited(0)),
+    );
+    let answer = harness.call(
+        2,
+        "ls",
+        r#"{"path":"/home/root","limit":1,"after":"a%20b"}"#,
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/ls",
+            "-l",
+            "--limit",
+            "1",
+            "--after",
+            "a%20b",
+            "--",
+            "/home/root"
+        ]
+    );
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(false)));
+    assert!(page.get("next_cursor").is_none());
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root","limit":1,"after":"a%20b"}"#
+    );
+    let answer = harness.call(3, "ls", r#"{"path":"/home/root"}"#);
+    assert!(page_of(&answer).is_none(), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ls", "-l", "--", "/home/root"]
+    );
+}
+
+#[test]
+fn only_the_twin_s_last_line_of_errors_names_a_next_page() {
+    let mut harness = Harness::initialized();
+    for (id, errors, cursor) in [
+        (1, &b"more: --after 7\nps: oops\n"[..], None),
+        (2, b"more: --after -rf\n", None),
+        (3, b"more: --after 7\n", Some("7")),
+    ] {
+        harness.system.outputs.insert(
+            "/bin/ps".into(),
+            (b"  PID\n".to_vec(), errors.to_vec(), Ended::Exited(0)),
+        );
+        let answer = harness.call(id, "ps", r#"{"limit":1}"#);
+        let page = page_of(&answer).unwrap();
+        assert_eq!(
+            page.get("truncated"),
+            Some(Value::Bool(cursor.is_some())),
+            "{answer}"
+        );
+        if let Some(cursor) = cursor {
+            assert!(
+                page.get("next_cursor")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .equals(cursor)
+            );
+        }
+    }
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ps", "--limit", "1"]
+    );
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (Vec::new(), b"more: --after 3\n".to_vec(), Ended::Exited(1)),
+    );
+    let answer = harness.call(4, "wm_list", r#"{"limit":2,"after":"1"}"#);
+    assert!(is_error(&answer));
+    assert!(page_of(&answer).is_none(), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/wm", "list", "--limit", "2", "--after", "1"]
+    );
+    harness.system.outputs.insert(
+        "/bin/ps".into(),
+        (
+            b"  PID\n".to_vec(),
+            vec![b'x'; ERROR_OUTPUT_LIMIT + 10],
+            Ended::Exited(0),
+        ),
+    );
+    let answer = harness.call(5, "ps", r#"{"limit":1}"#);
+    let page = page_of(&answer).unwrap();
+    assert_eq!(page.get("truncated"), Some(Value::Bool(true)));
+    assert!(
+        page.get("truncated_by")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("bytes")
+    );
+    assert!(page.get("next_cursor").is_none());
+    assert!(texts(&answer).last().unwrap().contains("smaller limit"));
+    let answer = harness.call(6, "app_list", r#"{"limit":101}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("limit must be"));
+}
+
+#[test]
+fn a_dry_run_is_answered_by_the_server_without_asking_or_running_the_twin() {
+    let mut harness = asking();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.folders.push("/Applications/Paint".into());
+    for (id, tool, arguments, would) in [
+        (
+            1,
+            "trash",
+            r#"{"path":"/home/root/a.txt","dry_run":true}"#,
+            "Dry run: trash would move /home/root/a.txt (3 bytes) to the Trash.",
+        ),
+        (
+            2,
+            "tee",
+            r#"{"path":"/home/root/a.txt","content":"hello","dry_run":true}"#,
+            "Dry run: tee would replace /home/root/a.txt (3 bytes) with 5 bytes.",
+        ),
+        (
+            3,
+            "tee",
+            r#"{"path":"/home/root/new.txt","content":"hi","dry_run":true}"#,
+            "Dry run: tee would create /home/root/new.txt with 2 bytes.",
+        ),
+        (
+            4,
+            "tee",
+            r#"{"path":"/home/root/a.txt","content":"hi","append":true,"dry_run":true}"#,
+            "Dry run: tee would add 2 bytes to the end of /home/root/a.txt (3 bytes).",
+        ),
+        (
+            5,
+            "app_uninstall",
+            r#"{"name":"Paint","dry_run":true}"#,
+            "Dry run: app_uninstall would uninstall the app Paint, removing /Applications/Paint \
+             and everything in it.",
+        ),
+    ] {
+        let lines = harness.call_lines(id, tool, arguments);
+        assert_eq!(lines.len(), 1, "{tool}: {lines:?}");
+        let answer = &lines[0];
+        assert!(!is_error(answer), "{answer}");
+        assert!(texts(answer)[1].starts_with(would), "{answer}");
+        assert!(texts(answer)[1].contains("Nothing was changed"));
+        let (logged_tool, outcome, logged, detail) = last_record(&harness);
+        assert_eq!((logged_tool.as_str(), outcome.as_str()), (tool, "ok"));
+        assert!(logged.contains(r#""dry_run":true"#), "{logged}");
+        assert!(detail.ends_with(DRY_RUN_DETAIL), "{detail}");
+        assert_eq!(
+            detail.starts_with("/home/root/"),
+            tool != "app_uninstall",
+            "{detail}"
+        );
+    }
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(harness.system.files["/home/root/a.txt"], b"aaa");
+    assert!(!harness.system.files.contains_key("/home/root/new.txt"));
+    let answer = harness.call(6, "trash", r#"{"path":"/home/root/gone","dry_run":true}"#);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("nothing is there"));
+    let answer = harness.call(7, "app_uninstall", r#"{"name":"Nope","dry_run":true}"#);
+    assert!(answer.contains("\"code\":\"no_such_app\""), "{answer}");
+    let mut reader = Harness::initialized();
+    let answer = reader.call(8, "trash", r#"{"path":"/home/root/a.txt","dry_run":true}"#);
+    assert!(texts(&answer)[0].contains("needs the write grant"));
+    assert!(reader.system.runs.is_empty());
+}
+
+#[test]
+fn a_dry_run_of_a_tool_that_never_asks_runs_its_twin_with_dry_run() {
+    let mut granted = granted_only(&[crate::grants::Grant::Run]);
+    granted.system.outputs.insert(
+        "/bin/settings".into(),
+        (
+            b"would set shell.profile from macos to windows\n".to_vec(),
+            Vec::new(),
+            Ended::Exited(0),
+        ),
+    );
+    let answer = granted.call(
+        1,
+        "settings_set",
+        r#"{"key":"shell.profile","value":"windows","dry_run":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        granted.system.runs.last().unwrap(),
+        &[
+            "/bin/settings",
+            "set",
+            "--dry-run",
+            "--",
+            "shell.profile",
+            "windows"
+        ]
+    );
+    assert_eq!(
+        texts(&answer)[1],
+        "would set shell.profile from macos to windows\n"
+    );
+    assert_eq!(
+        last_record(&granted).2,
+        r#"{"key":"shell.profile","value":"windows","dry_run":true}"#
+    );
+    granted.system.outputs.insert(
+        "/bin/settings".into(),
+        (Vec::new(), Vec::new(), Ended::Exited(0)),
+    );
+    let answer = granted.call(
+        2,
+        "settings_set",
+        r#"{"key":"shell.profile","value":"linux"}"#,
+    );
+    assert_eq!(texts(&answer)[1], "Set shell.profile to linux.");
+}
+
+#[test]
+fn confirmation_texts_name_the_tool_whatever_it_is() {
+    let tool = tools::find("app_uninstall").unwrap();
+    let mut out = [0u8; 320];
+    let length = confirmation_needed(tool, &mut out);
+    assert!(text_prefix(&out, length).contains("app_uninstall removes the app"));
+    let tool = tools::find("settings_set").unwrap();
+    let length = confirmation_needed(tool, &mut out);
+    assert!(text_prefix(&out, length).contains("settings_set needs the user's yes"));
+    let mut question = [0u8; 512];
+    let length = question_text(
+        tool,
+        &Checked::default(),
+        FileState::Missing,
+        "",
+        &mut question,
+    );
+    assert_eq!(
+        text_prefix(&question, length),
+        "An agent asks to run settings_set. Allow it? (EggOS, tool settings_set)"
+    );
+}
