@@ -1,7 +1,7 @@
 use super::dma::DmaRegion;
 use super::{Binding, DeviceNode, Identity};
 use crate::console;
-use crate::display::{self, Mode, Rect};
+use crate::display::{self, Rect};
 use crate::input::{self, Button, InputEvent, Modifiers};
 use crate::memory::{FRAMES, Memory};
 use crate::terminal;
@@ -290,7 +290,7 @@ pub(crate) fn display_shows_the_first_frame<P: Platform>(
             false => Ok(()),
         };
     };
-    if mode != Mode::new(1280, 800) {
+    if mode != display::offscreen::DEFAULT_MODE {
         return Err("the display's mode is not the 1280x800 xtask asks QEMU for");
     }
     let first_frame = || display::draw(|framebuffer| display::pixel_hash(framebuffer.pixels()));
@@ -307,7 +307,8 @@ pub(crate) fn display_shows_the_first_frame<P: Platform>(
         if display::flush::<P>() != Ok(TEST_PATTERN.len()) {
             return Err("the display did not show a test pattern's three rectangles");
         }
-        let pattern = display::draw(|framebuffer| framebuffer.pixels()[1279 + 799 * 1280]);
+        let last = (mode.height - 1) as usize * mode.width as usize + (mode.width - 1) as usize;
+        let pattern = display::draw(|framebuffer| framebuffer.pixels()[last]);
         if colour.is_none() && pattern != Some(0x00e6_eaf0) {
             return Err("the test pattern was not drawn clipped to the screen");
         }

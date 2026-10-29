@@ -681,6 +681,29 @@ pub fn start_drawing<P: Platform>() -> Result<bool, SpawnError> {
     .map(|_| true)
 }
 
+/// Starts the thread that has the desktop look at its clock once a second ([`tick`]) when no
+/// input poller does it: a display without input devices, as an offscreen boot has (D144). It
+/// ends when the terminal stops; `Ok(false)`, and nothing started, without a terminal.
+pub fn start_clock<P: Platform>() -> Result<bool, SpawnError> {
+    if !is_active() {
+        return Ok(false);
+    }
+    thread::spawn::<P, _>(|| {
+        while is_active() {
+            thread::sleep_until::<P>(next_second(P::clock_ticks(), P::clock_frequency()));
+            tick::<P>(false);
+        }
+    })
+    .map(|_| true)
+}
+
+/// The clock tick the second after the one holding tick `now` starts at, on a clock of
+/// `frequency` ticks a second.
+pub fn next_second(now: u64, frequency: u64) -> u64 {
+    let frequency = frequency.max(1);
+    (now / frequency).saturating_add(1).saturating_mul(frequency)
+}
+
 /// What the terminal self-test writes: a prompt line and lines in SGR colours, with box
 /// drawing, blocks and an arrow.
 pub const TEST_SCREEN: &str = "eggsh:/# echo EggOS\nEggOS\n\x1b[1;31mred \x1b[32mgreen\x1b[0m \
@@ -695,6 +718,15 @@ pub const TEST_SCREEN_HASH_1280X800: u64 = 0xcc62_008e_3c66_4155;
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn the_clock_wakes_at_the_start_of_the_next_second() {
+        assert_eq!(next_second(0, 1000), 1000);
+        assert_eq!(next_second(999, 1000), 1000);
+        assert_eq!(next_second(1000, 1000), 2000);
+        assert_eq!(next_second(5, 0), 6);
+        assert_eq!(next_second(u64::MAX, 1000), u64::MAX);
+    }
 
     #[test]
     fn the_test_screen_s_hash_is_the_one_the_qemu_self_test_checks() {

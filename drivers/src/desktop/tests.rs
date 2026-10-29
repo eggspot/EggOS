@@ -77,6 +77,31 @@ fn the_window_starts_centred_in_the_work_area_as_the_design_places_it() {
 }
 
 #[test]
+fn a_screen_fits_exactly_when_the_desktop_can_be_made_on_it() {
+    let narrowest = (1..=1280).find(|&width| Desktop::fits(width, 800)).unwrap();
+    let lowest = (1..=800).find(|&height| Desktop::fits(1280, height)).unwrap();
+    for (width, height) in [
+        (1280, 800),
+        (1024, 768),
+        (640, 400),
+        (narrowest, 800),
+        (narrowest - 1, 800),
+        (1280, lowest),
+        (1280, lowest - 1),
+    ] {
+        assert_eq!(
+            Desktop::new(width, height).is_some(),
+            Desktop::fits(width, height),
+            "{width}x{height}"
+        );
+    }
+    assert!(!Desktop::fits(narrowest - 1, 800) && !Desktop::fits(1280, lowest - 1));
+    for (width, height) in [(99_999, 1), (1, 99_999), (0, 0), (99_999, 0), (0, 99_999)] {
+        assert!(!Desktop::fits(width, height), "{width}x{height}");
+    }
+}
+
+#[test]
 fn the_wallpaper_bar_and_window_show_their_tokens() {
     let desktop = Desktop::new(1280, 800).unwrap();
     let pixels = painted(&desktop);

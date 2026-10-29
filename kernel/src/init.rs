@@ -53,9 +53,13 @@ pub fn run<P: Platform, W: Write>(
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();
-    if let Err(error) = input::start_polling::<P>() {
-        writeln!(console, "input: not polled: {error:?}")?;
-    }
+    let polled = match input::start_polling::<P>() {
+        Ok(polled) => polled,
+        Err(error) => {
+            writeln!(console, "input: not polled: {error:?}")?;
+            false
+        }
+    };
     terminal::load_saved_profile();
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
         writeln!(
@@ -66,6 +70,8 @@ pub fn run<P: Platform, W: Write>(
         if let Err(error) = terminal::start_drawing::<P>() {
             terminal::stop();
             writeln!(console, "terminal: not drawn: {error:?}")?;
+        } else if !polled && let Err(error) = terminal::start_clock::<P>() {
+            writeln!(console, "terminal: no clock: {error:?}")?;
         }
     }
     let outcome = start_and_wait::<P>(memory);

@@ -222,6 +222,21 @@ mod tests {
     }
 
     #[test]
+    fn the_grants_are_found_beside_the_offscreen_display_in_either_order() {
+        for line in [
+            &b"eggos.display=offscreen eggos.mcp_allow=view,write,run,install"[..],
+            b"eggos.mcp_allow=view,write,run,install eggos.display=offscreen",
+            b"eggos.display=offscreen\teggos.mcp_allow=run\n",
+        ] {
+            let (grants, unknown) = from_command_line(line);
+            assert_eq!(grants, Grants::ALL, "{line:?}");
+            assert_eq!(unknown.as_bytes(), b"");
+        }
+        let (grants, _) = from_command_line(b"eggos.display=offscreen");
+        assert_eq!(grants, Grants::NONE);
+    }
+
+    #[test]
     fn the_first_parameter_wins_and_odd_names_grant_nothing() {
         let (grants, unknown) = from_command_line(b"eggos.mcp_allow=write eggos.mcp_allow=run");
         assert_eq!(described(grants), "read,write");

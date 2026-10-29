@@ -297,16 +297,21 @@ pub struct Desktop {
 }
 
 impl Desktop {
+    /// Whether a `width` by `height` screen has room for the terminal's window in every
+    /// profile's work area, as [`Desktop::new`] needs.
+    pub fn fits(width: u32, height: u32) -> bool {
+        Profile::ALL.into_iter().all(|profile| {
+            let work = layout(width, height, 1, profile).work_area;
+            work.width >= WINDOW_WIDTH && work.height >= WINDOW_HEIGHT
+        })
+    }
+
     /// The desktop of a `width` by `height` screen in the default profile with the terminal's
     /// window centred in the work area, shown and focused, the clock at `up 0:00`, and only the
     /// built-in apps in the catalogue; `None` when the window does not fit every profile's
     /// work area.
     pub fn new(width: u32, height: u32) -> Option<Self> {
-        let fits = Profile::ALL.into_iter().all(|profile| {
-            let work = layout(width, height, 1, profile).work_area;
-            work.width >= WINDOW_WIDTH && work.height >= WINDOW_HEIGHT
-        });
-        if !fits {
+        if !Self::fits(width, height) {
             return None;
         }
         let gradient = (0..height).map(|row| gradient_pixel(row, height)).collect();
