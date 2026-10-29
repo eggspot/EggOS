@@ -3,8 +3,9 @@
 //! A child process gets a new id, the caller as its parent, a copy of the caller's credentials,
 //! resource limits and signal actions, and one thread: the caller's registers returning 0, its
 //! blocked signals, FP/SIMD registers and alternate stack (not with `CLONE_VM` alone), nothing
-//! pending. Its memory is a copy of every page of the caller's, made at once
-//! ([`ChildMemory::Copied`]), or with `CLONE_VM` the caller's own ([`ChildMemory::Shared`]);
+//! pending. Its memory is the caller's pages copy on write ([`ChildMemory::Copied`], D169):
+//! shared memory stays shared, ranges marked `MADV_DONTFORK` are left out and ones marked
+//! `MADV_WIPEONFORK` are empty; or with `CLONE_VM` the caller's own ([`ChildMemory::Shared`]);
 //! its descriptor table and working directory are copies, or the caller's with `CLONE_FILES`
 //! and `CLONE_FS`. With `CLONE_VFORK` the calling thread sleeps until the child's `execve`
 //! passes its point of no return or the child ends ([`release_vfork_parent`]), or until the
@@ -78,7 +79,8 @@ pub fn vfork<P: Platform>(
 ///
 /// Errors: `EINVAL` for an exit signal past 64; `ENOSYS` for `CLONE_SIGHAND` (sharing signal
 /// actions between processes), `CLONE_PARENT` and unknown flags, and for a copy of memory
-/// that has had `MAP_SHARED` anonymous memory, which the copy would stop sharing; on x86_64,
+/// that has had `MAP_SHARED` anonymous memory with no access or executable, which the copy
+/// would stop sharing; on x86_64,
 /// `EPERM` for a thread pointer outside user space; `EAGAIN` when ids run out; `ENOMEM` without memory for
 /// the child, its copy of the caller's memory or its thread, with the caller untouched.
 pub fn clone_process<P: Platform>(

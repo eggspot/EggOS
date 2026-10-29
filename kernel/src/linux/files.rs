@@ -461,6 +461,7 @@ fn copy_out_through_buffer<P: Platform>(
                 Err(_) if copied > 0 => break,
                 Err(_) => return Err(Errno::EIO),
             };
+        crate::vfs::shared_pages::read_over(node, offset + copied, &mut chunk[..length]);
         if process.write_user_memory(at, &chunk[..length]).is_err() {
             return match copied {
                 0 => Err(Errno::EFAULT),

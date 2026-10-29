@@ -140,6 +140,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 58] {
         ("linux_openat_close", linux_openat_close::<P>),
         ("linux_file_read", linux_file_read::<P>),
         ("linux_fork", linux_fork::<P>),
+        ("linux_fork_touch", linux_fork_touch::<P>),
         ("linux_vfork_exec", linux_vfork_exec::<P>),
         ("linux_epoll_wake", linux_epoll_wake::<P>),
         ("gfx_glyph_cell", |_, n| gfx_glyph_cell(n)),
@@ -1355,6 +1356,10 @@ fn linux_fork<P: Platform>(memory: &mut Memory<P>, n: u64) {
     run_process_loop(memory, b"fork-loop", n);
 }
 
+fn linux_fork_touch<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    run_process_loop(memory, b"fork-touch-loop", n);
+}
+
 fn linux_vfork_exec<P: Platform>(memory: &mut Memory<P>, n: u64) {
     run_process_loop(memory, b"spawn-loop", n);
 }
@@ -1890,8 +1895,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 25..].split_at(18);
-        let benchmarks = &[&all[..all.len() - 25], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 26..].split_at(19);
+        let benchmarks = &[&all[..all.len() - 26], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1909,6 +1914,7 @@ mod tests {
             (linux_openat_close, _),
             (linux_file_read, _),
             (linux_fork, _),
+            (linux_fork_touch, _),
             (linux_vfork_exec, _),
             (linux_epoll_wake, _),
         ] = machine_only
@@ -1945,6 +1951,7 @@ mod tests {
                 *linux_openat_close,
                 *linux_file_read,
                 *linux_fork,
+                *linux_fork_touch,
                 *linux_vfork_exec,
                 *linux_epoll_wake
             ],
@@ -1965,6 +1972,7 @@ mod tests {
                 "linux_openat_close",
                 "linux_file_read",
                 "linux_fork",
+                "linux_fork_touch",
                 "linux_vfork_exec",
                 "linux_epoll_wake"
             ]

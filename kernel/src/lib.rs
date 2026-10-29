@@ -34,6 +34,7 @@ pub mod process;
 pub mod random;
 pub mod regions;
 pub mod selftest;
+pub mod shared_frames;
 pub mod sync;
 pub mod terminal;
 pub mod thread;
@@ -138,12 +139,15 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
-const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 4] = [
+const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 5] = [
     (b"/tmp", (0, 30)),
     (b"/home", (0, 31)),
     (b"/var", (0, 32)),
     (b"/run", (0, 33)),
+    (b"/dev/shm", (0, 34)),
 ];
+
+const SHARED_BY_EVERYONE: [&[u8]; 2] = [b"/tmp", b"/dev/shm"];
 
 fn mount_system_file_systems<P: Platform>() {
     use alloc::boxed::Box;
@@ -168,7 +172,10 @@ fn mount_system_file_systems<P: Platform>() {
         if !exists(path) || vfs::is_mount_point(path) {
             continue;
         }
-        let permissions = if path == b"/tmp" { 0o1777 } else { 0o755 };
+        let permissions = match SHARED_BY_EVERYONE.contains(&path) {
+            true => 0o1777,
+            false => 0o755,
+        };
         if let Some(file_system) = vfs::tmpfs::Tmpfs::new(budget, device, permissions) {
             let _ = vfs::mount(path, Box::leak(Box::new(file_system)));
         }

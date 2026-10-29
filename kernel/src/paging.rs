@@ -426,6 +426,30 @@ impl<F: Format> PageTables<F> {
         })
     }
 
+    /// For a user address space's tables (copy-on-write `fork`, D169): hands every 4 KiB page
+    /// of user space that is mapped, or kept ([`Entry::Kept`]), to `page` in address order, as
+    /// [`Self::for_each_mapped_user_page`] does, and gives a mapped page the attributes `page`
+    /// returns, if any, keeping its frame. The tables may be in use: the caller drops what CPUs
+    /// cached of the entries it changed. An error from `page` stops the walk.
+    pub fn fork_user_pages(
+        &mut self,
+        mut page: impl FnMut(u64, u64, Option<Attributes>) -> Result<Option<Attributes>, MapError>,
+    ) -> Result<(), MapError> {
+        if !self.user_half_only {
+            return Err(MapError::NotUser);
+        }
+        self.for_each_user_page(0, F::USER_END, |virt, entry, frame, attributes| {
+            match page(virt, frame, attributes)? {
+                Some(changed) if changed.user && attributes.is_some() => {
+                    entry.write(F::leaf(frame, 0, changed));
+                }
+                Some(_) => return Err(MapError::NotUser),
+                None => {}
+            }
+            Ok(())
+        })
+    }
+
     /// For a user address space's tables: maps the 4 KiB page at user address `virt` to
     /// `frame` with `attributes`, a user mapping, or keeps `frame` there with no access if
     /// `attributes` is `None` ([`Entry::Kept`]). Tables it lacks come from `frames`. Nothing may

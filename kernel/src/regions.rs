@@ -20,7 +20,9 @@
 //! Regions know what backs them (D167): a part of user space whose pages come from a file is a
 //! [`FileRange`] in the process's [`FileRanges`], kept apart from the regions, so the regions'
 //! hot paths stay as they were. A page there is read from the file when first touched, and
-//! again after `MADV_DONTNEED`; every other page of a region is zero when first touched.
+//! again after `MADV_DONTNEED`; every other page of a region is zero when first touched. What
+//! `madvise` asked `fork` to do with a range (`MADV_DONTFORK`, `MADV_WIPEONFORK`) is kept apart
+//! the same way, as [`ForkMarks`] (D169).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -508,6 +510,145 @@ impl FileRanges {
     }
 }
 
+/// What `madvise` asked `fork` to do with a range ([`ForkMarks`], D169), as bits.
+pub mod fork_mark {
+    /// The child does not get the range at all (`MADV_DONTFORK`).
+    pub const DONT_FORK: u8 = 0x1;
+    /// The child gets the range with no pages, zero when first touched (`MADV_WIPEONFORK`).
+    pub const WIPE_ON_FORK: u8 = 0x2;
+}
+
+/// One range of [`ForkMarks`]: user addresses `start..end`, page-aligned, with
+/// [`fork_mark`] bits, never none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForkMark {
+    pub start: u64,
+    pub end: u64,
+    pub marks: u8,
+}
+
+/// The ranges of a process's memory that `madvise` marked for `fork` (D169), sorted and
+/// disjoint, touching ones with the same marks joined. Taking a range out (`munmap`) clears
+/// its marks, as a mapping's flags go with it.
+#[derive(Debug, Default)]
+pub struct ForkMarks {
+    marks: Vec<ForkMark>,
+}
+
+impl ForkMarks {
+    pub const fn new() -> Self {
+        Self { marks: Vec::new() }
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.marks.is_empty()
+    }
+
+    /// Every marked range, in address order.
+    pub fn iter(&self) -> impl Iterator<Item = &ForkMark> {
+        self.marks.iter()
+    }
+
+    /// The marks of the page at `address`, 0 if none.
+    pub fn at(&self, address: u64) -> u8 {
+        let at = self.marks.partition_point(|mark| mark.end <= address);
+        self.marks
+            .get(at)
+            .filter(|mark| mark.start <= address)
+            .map_or(0, |mark| mark.marks)
+    }
+
+    /// Gives every page of `start..end`, page-aligned, the marks `change` makes of the ones it
+    /// has (0 for none); a range left with none is not kept. Nothing changes unless it all can:
+    /// [`RegionError::Invalid`] for an empty or unaligned range, [`RegionError::OutOfMemory`]
+    /// without memory.
+    pub fn update(
+        &mut self,
+        start: u64,
+        end: u64,
+        change: impl Fn(u8) -> u8,
+    ) -> Result<(), RegionError> {
+        if !is_page_range(start, end) {
+            return Err(RegionError::Invalid);
+        }
+        let mut updated: Vec<ForkMark> = Vec::new();
+        updated
+            .try_reserve_exact(2 * self.marks.len() + 3)
+            .map_err(|_| RegionError::OutOfMemory)?;
+        let mut push = |start: u64, end: u64, marks: u8| {
+            if start >= end || marks == 0 {
+                return;
+            }
+            match updated.last_mut() {
+                Some(last) if last.end == start && last.marks == marks => last.end = end,
+                _ => updated.push(ForkMark { start, end, marks }),
+            }
+        };
+        let mut covered = start;
+        for mark in &self.marks {
+            if mark.end <= start {
+                push(mark.start, mark.end, mark.marks);
+                continue;
+            }
+            if mark.start >= end {
+                push(covered, end, change(0));
+                covered = end;
+                push(mark.start, mark.end, mark.marks);
+                continue;
+            }
+            push(mark.start, start, mark.marks);
+            let from = mark.start.max(start);
+            push(covered, from, change(0));
+            let to = mark.end.min(end);
+            push(from, to, change(mark.marks));
+            covered = to;
+            push(end, mark.end, mark.marks);
+        }
+        push(covered, end, change(0));
+        self.marks = updated;
+        Ok(())
+    }
+
+    /// Clears every mark of `start..end`, page-aligned, as [`Self::update`] does.
+    pub fn remove(&mut self, start: u64, end: u64) -> Result<(), RegionError> {
+        self.update(start, end, |_| 0)
+    }
+
+    /// Gives the marks of `start..start + length` to `to..to + length` as well, which had none
+    /// (`mremap` moving a range, the [`crate::process::Process::remap_region`] that goes with
+    /// it), as [`Self::update`] does.
+    pub fn copy_to(&mut self, start: u64, length: u64, to: u64) -> Result<(), RegionError> {
+        let end = start + length;
+        let mut moved: Vec<ForkMark> = Vec::new();
+        moved
+            .try_reserve_exact(self.marks.len())
+            .map_err(|_| RegionError::OutOfMemory)?;
+        moved.extend(
+            self.marks
+                .iter()
+                .filter(|mark| mark.start < end && start < mark.end)
+                .map(|mark| ForkMark {
+                    start: mark.start.max(start) - start + to,
+                    end: mark.end.min(end) - start + to,
+                    marks: mark.marks,
+                }),
+        );
+        for part in moved {
+            self.update(part.start, part.end, |_| part.marks)?;
+        }
+        Ok(())
+    }
+
+    /// A copy of every mark, for a new process's memory (`fork`); `None` without memory.
+    pub fn try_copy(&self) -> Option<Self> {
+        let mut marks = Vec::new();
+        marks.try_reserve_exact(self.marks.len()).ok()?;
+        marks.extend_from_slice(&self.marks);
+        Some(Self { marks })
+    }
+}
+
 /// A file held in memory, for tests of what reads [`FilePages`].
 #[cfg(test)]
 #[derive(Debug)]
@@ -909,5 +1050,42 @@ mod tests {
         assert_eq!(&buffer[..4], b"6789");
         assert_eq!(file.read_at(10, &mut buffer), Some(0));
         assert_eq!(file.read_at(u64::MAX, &mut buffer), Some(0));
+    }
+
+    #[test]
+    fn fork_marks_split_join_clear_and_move_with_their_ranges() {
+        let page = FRAME_SIZE;
+        let listed = |marks: &ForkMarks| {
+            marks
+                .iter()
+                .map(|mark| (mark.start / page, mark.end / page, mark.marks))
+                .collect::<Vec<_>>()
+        };
+        let dont_fork = |marks| marks | fork_mark::DONT_FORK;
+        let wipe_on_fork = |marks| marks | fork_mark::WIPE_ON_FORK;
+        let mut marks = ForkMarks::new();
+        marks.update(0x10 * page, 0x14 * page, dont_fork).unwrap();
+        marks
+            .update(0x12 * page, 0x16 * page, wipe_on_fork)
+            .unwrap();
+        assert_eq!(
+            listed(&marks),
+            [(0x10, 0x12, 1), (0x12, 0x14, 3), (0x14, 0x16, 2)]
+        );
+        assert_eq!(marks.at(0x13 * page), 3);
+        assert_eq!(marks.at(0x16 * page), 0);
+        marks
+            .update(0x10 * page, 0x16 * page, |marks| {
+                marks & !fork_mark::WIPE_ON_FORK
+            })
+            .unwrap();
+        assert_eq!(listed(&marks), [(0x10, 0x14, 1)]);
+        marks.copy_to(0x11 * page, 2 * page, 0x40 * page).unwrap();
+        assert_eq!(listed(&marks), [(0x10, 0x14, 1), (0x40, 0x42, 1)]);
+        marks.remove(0x11 * page, 0x41 * page).unwrap();
+        assert_eq!(listed(&marks), [(0x10, 0x11, 1), (0x41, 0x42, 1)]);
+        assert_eq!(marks.update(1, page, dont_fork), Err(RegionError::Invalid));
+        let copy = marks.try_copy().unwrap();
+        assert_eq!(listed(&copy), listed(&marks));
     }
 }

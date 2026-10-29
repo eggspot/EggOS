@@ -27,6 +27,7 @@ pub mod devfs;
 pub mod eggfs;
 pub mod fat;
 pub mod initramfs;
+pub mod shared_pages;
 pub mod tmpfs;
 
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -339,6 +340,7 @@ impl crate::regions::FilePages for Node {
                 Err(StorageError) => return None,
             }
         }
+        shared_pages::read_over(*self, offset, &mut buffer[..filled]);
         Some(filled)
     }
 
@@ -692,7 +694,7 @@ fn add_mount(point: Node, file_system: &'static dyn FileSystem) -> Result<(), Mo
 /// Puts every mounted file system's changes on stable storage (`sync`, and before the
 /// machine goes down); [`StorageError`] if any failed, after trying them all.
 pub fn sync_all() -> Result<(), StorageError> {
-    let mut result = Ok(());
+    let mut result = shared_pages::write_back_all();
     for mounted in mounts() {
         if mounted.root.file_system.sync().is_err() {
             result = Err(StorageError);

@@ -43,11 +43,14 @@
 //!
 //! The frames user pages map belong to whoever mapped them, unless the address space was made
 //! to own them ([`AddressSpace::new_owning_frames`], as a process's is): then it frees them
-//! with its low half's tables when dropped.
+//! with its low half's tables when dropped, except a frame a `fork` shared with another address
+//! space ([`AddressSpace::share_pages_into`]), which the last one to drop it frees
+//! ([`crate::shared_frames`], D169).
 
 use crate::cpu::{self, Cpu};
 use crate::memory;
 use crate::paging::{MAX_ROOTS, MapError, PageChange, PageTables};
+use crate::shared_frames;
 use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
 use core::any::Any;
@@ -56,6 +59,19 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering, fence};
 use eggos_hal::Platform;
 use eggos_hal::paging::{Attributes, Format};
+
+/// What `fork` gives the child of one page of the parent's
+/// ([`AddressSpace::share_pages_into`], D169).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkPage {
+    /// The same frame, read-only on both sides until either writes it (copy on write).
+    Share,
+    /// The same frame with the same access: memory a device or a file lends (`MAP_SHARED`).
+    Lend,
+    /// Nothing: the child does not get the page (`MADV_DONTFORK`), or gets it zeroed when it
+    /// first touches it (`MADV_WIPEONFORK`).
+    Skip,
+}
 
 /// A user address space. See the module documentation.
 #[derive(Debug)]
@@ -136,44 +152,83 @@ impl<P: Platform> AddressSpace<P> {
     }
 
     /// Gives `copy`, an empty address space that owns its frames and is not shared yet (one
-    /// made with [`Self::new_owning_frames_beside`]), a page of its own at every user address
-    /// where this one maps or keeps a page, with the same attributes: `fill` is handed the
-    /// frame here, the new frame and the attributes (`None` for a kept page) and fills the new
-    /// frame. This address space is only read, under its lock, so its mappings stay as they are
-    /// and no CPU needs to drop anything; another CPU may write the pages meanwhile. On an error
-    /// ([`MapError::OutOfMemory`] when free frames are down to the reserve programs leave the
-    /// kernel, D155), `copy` keeps what it was given so far,
-    /// which dropping it frees.
-    pub fn copy_pages_into(
+    /// made with [`Self::new_owning_frames_beside`]), the pages of this one that `fork` hands a
+    /// child (D169), as [`ForkPage`] says for each user address: a page to share maps the same
+    /// frame in both, read-only, so the first write on either side copies it, unless the frame
+    /// cannot be counted ([`shared_frames::share`]): then `fill` is handed the frame, a new one
+    /// and the attributes (`None` for a kept page) and fills the new one. A lent page
+    /// maps the same frame with the same attributes, owned by its lender. Pages this one made
+    /// read-only are dropped from what CPUs cached before it returns. On an error
+    /// ([`MapError::OutOfMemory`] when free frames are down to the reserve, D155), `copy` keeps
+    /// what it was given so far, which dropping it releases, and the pages this one shared stay
+    /// read-only until written.
+    pub fn share_pages_into(
         &self,
         copy: &mut Self,
+        mut kind: impl FnMut(u64) -> ForkPage,
         mut fill: impl FnMut(u64, u64, Option<Attributes>),
     ) -> Result<(), MapError> {
         assert!(
             copy.owns_frames,
             "only an address space that owns its frames takes copies of pages"
         );
-        let source = self.tables.lock();
-        let destination = copy.tables.get_mut();
-        source.for_each_mapped_user_page(|virt, frame, attributes| {
-            let new = {
+        let mut protected = false;
+        let result = {
+            let mut source = self.tables.lock();
+            let destination = copy.tables.get_mut();
+            source.fork_user_pages(|virt, frame, attributes| {
+                let (mapped, allocated) = match kind(virt) {
+                    ForkPage::Skip => return Ok(None),
+                    ForkPage::Lend => (frame, None),
+                    ForkPage::Share if shared_frames::share(frame) => {
+                        let writable = attributes.is_some_and(|attributes| attributes.writable);
+                        let read_only = attributes.map(|attributes| Attributes {
+                            writable: false,
+                            ..attributes
+                        });
+                        let child = {
+                            let mut frames = memory::FRAMES.lock();
+                            let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
+                            destination.map_user_page(virt, frame, read_only, frames)
+                        };
+                        if child.is_err() {
+                            let _ = shared_frames::release(frame);
+                        }
+                        child?;
+                        protected |= writable;
+                        return Ok(read_only.filter(|_| writable));
+                    }
+                    ForkPage::Share => {
+                        let new = {
+                            let mut frames = memory::FRAMES.lock();
+                            let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
+                            frames.allocate_for_user().ok_or(MapError::OutOfMemory)?
+                        };
+                        fill(frame, new, attributes);
+                        (new, Some(new))
+                    }
+                };
                 let mut frames = memory::FRAMES.lock();
-                let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
-                frames.allocate_for_user().ok_or(MapError::OutOfMemory)?
-            };
-            fill(frame, new, attributes);
-            let mut frames = memory::FRAMES.lock();
-            let frames = frames
-                .as_mut()
-                .expect("the frame came from the frame allocator");
-            let mapped = destination.map_user_page(virt, new, attributes, frames);
-            if mapped.is_err() {
-                // SAFETY: the frame was just allocated from this allocator and could not be
-                // mapped, so nothing refers to it.
-                unsafe { frames.free(new) };
-            }
-            mapped
-        })
+                let frames = frames
+                    .as_mut()
+                    .expect("the frame came from the frame allocator");
+                let result = destination.map_user_page(virt, mapped, attributes, frames);
+                if let (Err(_), Some(new)) = (&result, allocated) {
+                    // SAFETY: the frame was just allocated from this allocator and could not be
+                    // mapped, so nothing refers to it.
+                    unsafe { frames.free(new) };
+                }
+                result.map(|()| None)
+            })
+        };
+        if protected {
+            self.drop_old_translations(
+                0,
+                <P::PageTableFormat as Format>::USER_END,
+                self.spread.load(Ordering::Relaxed),
+            );
+        }
+        result
     }
 
     /// From now on, threads using this address space may run on several CPUs at once: removed
@@ -641,10 +696,11 @@ impl<P: Platform> Drop for AddressSpace<P> {
             .as_mut()
             .expect("the address space's tables came from the frame allocator");
         let free_owned = |frames: &mut memory::FrameAllocator, frame, level| {
-            if owns_frames {
+            if owns_frames && shared_frames::release(frame) {
                 assert_eq!(level, 0, "an address space owns only 4 KiB frames");
-                // SAFETY: an owned frame came from this allocator and is the address space's
-                // alone, mapped once (`new_owning_frames`' contract); its tables are going, so
+                // SAFETY: an owned frame came from this allocator and is the address space's,
+                // mapped once (`new_owning_frames`' contract), and no other address space a
+                // `fork` shared it with maps it any more (`release`); its tables are going, so
                 // nothing maps it any more.
                 unsafe { frames.free(frame) };
             }

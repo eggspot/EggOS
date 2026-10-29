@@ -2,9 +2,11 @@
 //!
 //! A [`Process`] owns its memory: a user address space, the frames its pages map and its
 //! [`Regions`], what its program may use, behind an `Arc` that a child started with `CLONE_VM`
-//! shares, as Linux's tasks share an `mm`; a child started without it gets a copy of every page
-//! ([`Process::new_child`], D104). The memory's locks are taken in this order: the program
-//! break's, the regions', the address space's, the frame allocator's. It is built with `&mut` ([`Process::map_new_page`],
+//! shares, as Linux's tasks share an `mm`; a child started without it gets the pages copy on
+//! write ([`Process::new_child`], D104, D169): both map each frame read-only, and the first
+//! write on either side copies the page ([`crate::shared_frames`]). The memory's locks are
+//! taken in this order: the program break's, the regions', the address space's, the frame
+//! allocator's. It is built with `&mut` ([`Process::map_new_page`],
 //! [`Process::add_region`]), then shared as an `Arc` by the threads that run its program
 //! ([`spawn`]). From then on the first touch of a page in a region maps a zeroed frame there
 //! ([`Process::resolve_page_fault`], demand paging, D52), and the memory calls (D53) add,
@@ -29,7 +31,7 @@
 //! HAL's test program ([`Process::with_test_program`]) serves the boot self-tests and
 //! benchmarks. Reading images from files comes with the file system (M7).
 
-use crate::address_space::{self, AddressSpace};
+use crate::address_space::{self, AddressSpace, ForkPage};
 use crate::cpu;
 use crate::linux::credentials::Credentials;
 use crate::linux::limits::ResourceLimits;
@@ -38,9 +40,10 @@ use crate::linux::signals::Signals;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{
-    Access, FilePages, FileRange, FileRanges, Region, RegionError, Regions, WHOLE_FILE,
-    is_page_range,
+    Access, FilePages, FileRange, FileRanges, ForkMarks, Region, RegionError, Regions, WHOLE_FILE,
+    fork_mark, is_page_range,
 };
+use crate::shared_frames;
 use crate::sync::{LeafSpinLock, SpinLock};
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
@@ -259,6 +262,8 @@ struct Memory<P: Platform> {
     has_lent: AtomicBool,
     files: LeafSpinLock<FileRanges>,
     has_files: AtomicBool,
+    fork_marks: LeafSpinLock<ForkMarks>,
+    has_fork_marks: AtomicBool,
     image: ImageLayout,
 }
 
@@ -312,6 +317,11 @@ pub trait LentFrames: Send + Sync {
     fn writable(&self) -> bool {
         true
     }
+    /// Writes what the frames hold back to the file they are the pages of, at `now` (seconds
+    /// since the epoch), as `msync` asks: nothing to do for frames no file is behind (D169).
+    fn write_back(&self, _now: u64) -> Result<(), crate::vfs::StorageError> {
+        Ok(())
+    }
 }
 
 struct LentRange {
@@ -338,6 +348,8 @@ impl<P: Platform> Memory<P> {
             has_lent: AtomicBool::new(false),
             files: LeafSpinLock::new_leaf(FileRanges::new()),
             has_files: AtomicBool::new(false),
+            fork_marks: LeafSpinLock::new_leaf(ForkMarks::new()),
+            has_fork_marks: AtomicBool::new(false),
             image: ImageLayout::default(),
         }
     }
@@ -355,12 +367,40 @@ impl<P: Platform> Memory<P> {
         if self.shared_anonymous.load(Ordering::Relaxed) {
             return Err(CopyError::SharedAnonymous);
         }
-        let copied_regions = regions.try_copy().ok_or(CopyError::OutOfMemory)?;
-        let copied_files = self.files.lock().try_copy().ok_or(CopyError::OutOfMemory)?;
+        let mut copied_regions = regions.try_copy().ok_or(CopyError::OutOfMemory)?;
+        let mut copied_files = self.files.lock().try_copy().ok_or(CopyError::OutOfMemory)?;
+        let mut marks = match self.has_fork_marks.load(Ordering::Relaxed) {
+            true => self
+                .fork_marks
+                .lock()
+                .try_copy()
+                .ok_or(CopyError::OutOfMemory)?,
+            false => ForkMarks::new(),
+        };
+        let not_forked = Self::not_forked(&marks)?;
+        for &(start, end) in &not_forked {
+            let cut = copied_regions
+                .remove(start, end, |_| ())
+                .and_then(|()| copied_files.remove(start, end))
+                .and_then(|()| marks.remove(start, end));
+            cut.map_err(|_| CopyError::OutOfMemory)?;
+        }
+        let lent = self.lent.lock();
+        let copied_lent = Self::lent_outside(&lent, &not_forked)?;
         let frame_offset = self.frame_offset;
         let at = |frame: u64| (frame as usize).wrapping_add(frame_offset) as *mut u8;
+        let kind = |virt: u64| {
+            let within = |&(start, end): &(u64, u64)| start <= virt && virt < end;
+            if not_forked.iter().any(within) || marks.at(virt) & fork_mark::WIPE_ON_FORK != 0 {
+                ForkPage::Skip
+            } else if lent.iter().any(|range| within(&(range.start, range.end))) {
+                ForkPage::Lend
+            } else {
+                ForkPage::Share
+            }
+        };
         self.space
-            .copy_pages_into(&mut space, |frame, new, attributes| {
+            .share_pages_into(&mut space, kind, |frame, new, attributes| {
                 // SAFETY: both frames are reached through the frame allocator's offset: `frame`
                 // is mapped in this memory, whose regions' lock is held, so it stays the
                 // process's, and `new` was just allocated for the copy, so they are distinct and
@@ -373,6 +413,9 @@ impl<P: Platform> Memory<P> {
                 }
             })
             .map_err(|_| CopyError::OutOfMemory)?;
+        drop(lent);
+        let has_lent = !copied_lent.is_empty();
+        let has_fork_marks = !marks.is_empty();
         Ok(Self {
             space,
             regions: SpinLock::new(copied_regions),
@@ -380,18 +423,82 @@ impl<P: Platform> Memory<P> {
             frame_offset,
             futex_space,
             shared_anonymous: AtomicBool::new(false),
-            lent: SpinLock::new(Vec::new()),
-            has_lent: AtomicBool::new(false),
+            lent: SpinLock::new(copied_lent),
+            has_lent: AtomicBool::new(has_lent),
             has_files: AtomicBool::new(!copied_files.is_empty()),
             files: LeafSpinLock::new_leaf(copied_files),
+            fork_marks: LeafSpinLock::new_leaf(marks),
+            has_fork_marks: AtomicBool::new(has_fork_marks),
             image: self.image.clone(),
         })
+    }
+
+    fn not_forked(marks: &ForkMarks) -> Result<Vec<(u64, u64)>, CopyError> {
+        let mut ranges = Vec::new();
+        for mark in marks.iter() {
+            if mark.marks & fork_mark::DONT_FORK != 0 {
+                ranges.try_reserve(1).map_err(|_| CopyError::OutOfMemory)?;
+                ranges.push((mark.start, mark.end));
+            }
+        }
+        Ok(ranges)
+    }
+
+    fn lent_outside(
+        lent: &[LentRange],
+        not_forked: &[(u64, u64)],
+    ) -> Result<Vec<LentRange>, CopyError> {
+        let mut copied: Vec<LentRange> = Vec::new();
+        for range in lent {
+            let mut from = range.start;
+            for &(start, end) in not_forked {
+                if start < range.end && range.start < end {
+                    Self::keep_lent(&mut copied, from, start, range)?;
+                    from = from.max(end);
+                }
+            }
+            Self::keep_lent(&mut copied, from, range.end, range)?;
+        }
+        Ok(copied)
+    }
+
+    fn keep_lent(
+        copied: &mut Vec<LentRange>,
+        start: u64,
+        end: u64,
+        range: &LentRange,
+    ) -> Result<(), CopyError> {
+        if start >= end {
+            return Ok(());
+        }
+        copied.try_reserve(1).map_err(|_| CopyError::OutOfMemory)?;
+        copied.push(LentRange {
+            start,
+            end,
+            frames: Arc::clone(&range.frames),
+        });
+        Ok(())
     }
 
     #[cold]
     #[inline(never)]
     fn unmap_files(&self, start: u64, end: u64) -> Result<(), RegionError> {
         self.files.lock().remove(start, end)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn unmap_fork_marks(&self, start: u64, end: u64) -> Result<(), RegionError> {
+        self.fork_marks.lock().remove(start, end)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn move_fork_marks(&self, start: u64, length: u64, to: u64, keep_source: bool) {
+        let mut marks = self.fork_marks.lock();
+        if marks.copy_to(start, length, to).is_ok() && !keep_source {
+            let _ = marks.remove(start, start + length);
+        }
     }
 
     fn maps_file_in(&self, start: u64, end: u64) -> bool {
@@ -501,7 +608,9 @@ impl<P: Platform> Drop for PidRecord<P> {
 pub enum ChildMemory {
     /// The parent's own, shared (`CLONE_VM`).
     Shared,
-    /// A copy of every page of the parent's, made now (`fork`).
+    /// The parent's pages copy on write (`fork`, D169): the same frames, read-only on both
+    /// sides until either writes one, the lent ones shared, as `madvise`'s marks say
+    /// ([`Process::mark_for_fork`]).
     Copied,
 }
 
@@ -512,8 +621,9 @@ pub enum NewChildError {
     OutOfIds,
     /// There was no memory for the process or its copy of the parent's.
     OutOfMemory,
-    /// The parent's memory has had shared anonymous memory (`MAP_SHARED`), which a copy would
-    /// stop sharing ([`Process::mark_shared_anonymous`]).
+    /// The parent's memory has had shared anonymous memory that is not lent frames (`MAP_SHARED`
+    /// with `PROT_NONE` or `PROT_EXEC`), which a copy would stop sharing
+    /// ([`Process::mark_shared_anonymous`]).
     SharedAnonymousMemory,
 }
 
@@ -656,9 +766,11 @@ impl<P: Platform> Process<P> {
     /// sending no signal until `clone` sets one), a record of its own, the memory
     /// `memory` says, a copy of the
     /// credentials and resource limits and of the signal actions (nothing queued), and no
-    /// threads yet. This process is untouched, so the caller can drop the child if starting it
-    /// fails; a copy that runs out of frames frees every one it took. Pages other threads of
-    /// this process write during the copy are copied as they are at that moment.
+    /// threads yet. With [`ChildMemory::Copied`] this process's writable pages become
+    /// read-only until written (copy on write, D169); otherwise it is untouched, so the caller
+    /// can drop the child if starting it fails, and a copy that runs out of frames releases
+    /// every one it took. Pages other threads of this process write during the copy may be
+    /// seen by the child as they are at that moment.
     pub fn new_child(&self, memory: ChildMemory) -> Result<Self, NewChildError> {
         let id = ProcessId::allocate().ok_or(NewChildError::OutOfIds)?;
         let memory = match memory {
@@ -719,9 +831,10 @@ impl<P: Platform> Process<P> {
         self.memory.futex_space
     }
 
-    /// Records that the process's memory has shared anonymous memory (`mmap` with
-    /// `MAP_SHARED`), before it is mapped: from then on until `execve` gives the process new
-    /// memory, a child cannot get a copy of it ([`NewChildError::SharedAnonymousMemory`]).
+    /// Records that the process's memory has shared anonymous memory that is not lent frames
+    /// (`mmap` with `MAP_SHARED` and `PROT_NONE` or `PROT_EXEC`), before it is mapped: from
+    /// then on until `execve` gives the process new memory, a child cannot get a copy of it
+    /// ([`NewChildError::SharedAnonymousMemory`]).
     pub fn mark_shared_anonymous(&self) {
         self.memory.shared_anonymous.store(true, Ordering::Relaxed);
     }
@@ -957,8 +1070,8 @@ impl<P: Platform> Process<P> {
     /// or a memory file shares with the program (`MAP_SHARED` of a device, D127, or of a
     /// memfd, D139). The frames stay the lender's: unmapping the range, or the process's end,
     /// never frees them, and the process keeps `frames` until then. Such a range cannot be
-    /// moved (`mremap`) or discarded (`madvise`), and a process that has one is not copied by
-    /// `fork` ([`Self::mark_shared_anonymous`]).
+    /// moved (`mremap`) or discarded (`madvise`); `fork` gives the child the same frames
+    /// (D169).
     pub fn map_lent_frames(
         &self,
         placement: Placement,
@@ -970,7 +1083,6 @@ impl<P: Platform> Process<P> {
         if length > frames.length() {
             return Err(RegionError::Invalid);
         }
-        self.mark_shared_anonymous();
         let mut regions = memory.regions.lock();
         let start = Self::place_locked(memory, &mut regions, placement, length)?;
         regions.insert(start, start + length, Some(attributes))?;
@@ -1103,6 +1215,9 @@ impl<P: Platform> Process<P> {
         if memory.has_files.load(Ordering::Relaxed) {
             memory.unmap_files(start, end)?;
         }
+        if memory.has_fork_marks.load(Ordering::Relaxed) {
+            memory.unmap_fork_marks(start, end)?;
+        }
         regions.remove(start, end, |_| ())?;
         if memory.has_lent.load(Ordering::Relaxed) {
             memory.unmap_lent(start, end)?;
@@ -1118,10 +1233,14 @@ impl<P: Platform> Process<P> {
         let mut unmapped = FramesToFree::new();
         let frame_offset = memory.frame_offset;
         let result = memory.space.unmap_pages(start, end - start, |frame| {
+            if !shared_frames::release(frame) {
+                return;
+            }
             // SAFETY: the address space owns its frames (`Process::new`), so this one came from
             // the frame allocator, whose offset `frame_offset` is; its entry no longer refers to
-            // it, and no CPU writes it through what it cached of the entry (`unmap_pages`), so
-            // nothing writes it any more.
+            // it, no CPU writes it through what it cached of the entry (`unmap_pages`), and no
+            // other address space a `fork` shared it with maps it (`release`), so nothing writes
+            // it any more.
             unsafe { unmapped.push(frame, frame_offset) }
         });
         if !unmapped.is_empty() {
@@ -1182,6 +1301,75 @@ impl<P: Platform> Process<P> {
         } else {
             Err(RegionError::NotCovered)
         }
+    }
+
+    /// Gives the parts of user addresses `start..end`, page-aligned, that regions hold the
+    /// marks `change` makes of their [`fork_mark`] bits (`madvise`'s `MADV_DONTFORK`,
+    /// `MADV_DOFORK`, `MADV_WIPEONFORK` and `MADV_KEEPONFORK`, D169), which the next `fork`
+    /// follows ([`Self::new_child`]). With `anonymous_only`, a range that holds a file or lent
+    /// frames is [`RegionError::Invalid`] and nothing changes (`MADV_WIPEONFORK` is for
+    /// private anonymous memory). A part of the range in no region is
+    /// [`RegionError::NotCovered`], after the rest has changed; no memory for the marks is
+    /// [`RegionError::OutOfMemory`].
+    pub fn mark_for_fork(
+        &self,
+        start: u64,
+        end: u64,
+        change: impl Fn(u8) -> u8,
+        anonymous_only: bool,
+    ) -> Result<(), RegionError> {
+        let memory = &*self.memory;
+        if !is_page_range(start, end) {
+            return Err(RegionError::Invalid);
+        }
+        let regions = memory.regions.lock();
+        if anonymous_only && (memory.lends_in(start, end) || memory.maps_file_in(start, end)) {
+            return Err(RegionError::Invalid);
+        }
+        let mut marks = memory.fork_marks.lock();
+        let mut covered = start;
+        let mut whole = true;
+        let mut updated = Ok(());
+        for region in regions.overlapping(start, end) {
+            let (from, to) = (region.start.max(start), region.end.min(end));
+            whole &= from == covered;
+            updated = marks.update(from, to, &change);
+            if updated.is_err() {
+                break;
+            }
+            covered = to;
+        }
+        memory
+            .has_fork_marks
+            .store(!marks.is_empty(), Ordering::Relaxed);
+        updated?;
+        match whole && covered == end {
+            true => Ok(()),
+            false => Err(RegionError::NotCovered),
+        }
+    }
+
+    /// Writes the frames lent to user addresses `start..end` back to the files they are the
+    /// pages of (`msync` of a shared file mapping, D169), at `now` (seconds since the epoch):
+    /// [`crate::vfs::StorageError`] if a file could not be written, after trying them all.
+    pub fn write_back_lent(
+        &self,
+        start: u64,
+        end: u64,
+        now: u64,
+    ) -> Result<(), crate::vfs::StorageError> {
+        let memory = &*self.memory;
+        if !memory.has_lent.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let lent = memory.lent.lock();
+        let mut result = Ok(());
+        for range in lent.iter() {
+            if range.start < end && start < range.end && range.frames.write_back(now).is_err() {
+                result = Err(crate::vfs::StorageError);
+            }
+        }
+        result
     }
 
     /// How much of user addresses `start..end` regions hold.
@@ -1367,6 +1555,9 @@ impl<P: Platform> Process<P> {
                 .lock()
                 .finish_move(start, old_end, moved, keep_source)?;
         }
+        if memory.has_fork_marks.load(Ordering::Relaxed) {
+            memory.move_fork_marks(start, old_length, to, keep_source);
+        }
         if !keep_source {
             regions.remove(start, old_end, |_| ())?;
         }
@@ -1421,7 +1612,13 @@ impl<P: Platform> Process<P> {
                                 let page = (frame as usize).wrapping_add(frame_offset);
                                 P::make_instructions_visible(page, FRAME_SIZE as usize);
                             }
-                            PageChange::Map(new)
+                            match new.writable && shared_frames::is_shared(frame) {
+                                true => PageChange::Map(Attributes {
+                                    writable: false,
+                                    ..new
+                                }),
+                                false => PageChange::Map(new),
+                            }
                         }
                     },
                     |_| unreachable!("nothing is unmapped"),
@@ -1537,6 +1734,9 @@ impl<P: Platform> Process<P> {
             Some((frame, mapped)) if mapped_is_ready && access.allowed_by(mapped) => {
                 Ok((frame, mapped))
             }
+            Some((frame, mapped)) if access == Access::Write && !mapped.writable => {
+                Self::copy_on_write(memory, page, frame, attributes)
+            }
             Some(_) => Err(UnresolvedFault::NotAllowed),
             None => {
                 if memory.has_files.load(Ordering::Relaxed)
@@ -1549,6 +1749,65 @@ impl<P: Platform> Process<P> {
                     Err(MapError::OutOfMemory) => Err(UnresolvedFault::OutOfMemory),
                     Err(_) => Err(UnresolvedFault::NotAllowed),
                 }
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn copy_on_write(
+        memory: &Memory<P>,
+        page: u64,
+        frame: u64,
+        attributes: Attributes,
+    ) -> Result<(u64, Attributes), UnresolvedFault> {
+        if !shared_frames::is_shared(frame) {
+            memory
+                .space
+                .change_pages(
+                    page,
+                    FRAME_SIZE,
+                    |_, _| PageChange::Map(attributes),
+                    |_| unreachable!("nothing is unmapped"),
+                )
+                .map_err(|_| UnresolvedFault::NotAllowed)?;
+            return Ok((frame, attributes));
+        }
+        let new = {
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames.as_mut().ok_or(UnresolvedFault::OutOfMemory)?;
+            frames
+                .allocate_for_user()
+                .ok_or(UnresolvedFault::OutOfMemory)?
+        };
+        let at = |frame: u64| (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
+        // SAFETY: both frames are reached through the frame allocator's offset: `frame` is
+        // mapped read-only by this address space and every other that shares it, so nothing
+        // writes it, and the regions' lock keeps it mapped here; `new` was just allocated, so
+        // they are distinct and nothing else uses `new`.
+        unsafe { ptr::copy_nonoverlapping(at(frame), at(new), FRAME_SIZE as usize) };
+        if attributes.executable {
+            P::make_instructions_visible(at(new) as usize, FRAME_SIZE as usize);
+        }
+        let unmapped =
+            memory
+                .space
+                .change_pages(page, FRAME_SIZE, |_, _| PageChange::Unmap, |_| ());
+        if unmapped.is_err() {
+            free_frame(new);
+            return Err(UnresolvedFault::NotAllowed);
+        }
+        if shared_frames::release(frame) {
+            free_frame(frame);
+        }
+        match memory.space.map(page, new, FRAME_SIZE, attributes) {
+            Ok(()) => Ok((new, attributes)),
+            Err(error) => {
+                free_frame(new);
+                Err(match error {
+                    MapError::OutOfMemory => UnresolvedFault::OutOfMemory,
+                    _ => UnresolvedFault::NotAllowed,
+                })
             }
         }
     }
@@ -1858,8 +2117,8 @@ impl<P: Platform> Process<P> {
     ) -> Result<*mut u8, InvalidUserAddress> {
         let page = virt & !(FRAME_SIZE - 1);
         let (frame, attributes) = match memory.space.translate(page) {
-            Some(mapped) => mapped,
-            None => {
+            Some(mapped) if !write || mapped.1.writable => mapped,
+            _ => {
                 let access = if write { Access::Write } else { Access::Read };
                 Self::populate(memory, regions, page, access, true)
                     .map_err(|_| InvalidUserAddress)?
@@ -2128,8 +2387,9 @@ fn free_frame(frame: u64) {
     let frames = frames
         .as_mut()
         .expect("the frame came from the frame allocator");
-    // SAFETY: the frame came from this allocator in `Process::map_frame`, which could not map
-    // it, so nothing maps it and the address space does not own it.
+    // SAFETY: every caller's frame came from this allocator for a user page and nothing maps it
+    // any more: one that could not be mapped (`Process::map_frame`, `map_file_page`), or one
+    // copy on write unmapped and released as the last address space mapping it.
     unsafe { frames.free(frame) };
 }
 
@@ -2673,12 +2933,24 @@ mod tests {
             assert!(!parent.shares_memory() && !child.shares_memory());
             let (parent_frame, attributes) = parent.address_space().translate(DATA).unwrap();
             let (child_frame, child_attributes) = child.address_space().translate(DATA).unwrap();
-            assert_ne!(parent_frame, child_frame);
-            assert_eq!(attributes, child_attributes);
+            assert_eq!(parent_frame, child_frame);
+            assert!(!attributes.writable && !child_attributes.writable);
+            assert!(crate::shared_frames::is_shared(parent_frame));
             assert_eq!(&page_bytes(&child, DATA)[..11], b"parent data");
+            let shared = free();
             child.write_user_memory(DATA, b"child").unwrap();
+            assert_eq!(free(), shared - 1, "the child's write copied the page");
+            let (copied, copied_attributes) = child.address_space().translate(DATA).unwrap();
+            assert_ne!(copied, parent_frame);
+            assert!(copied_attributes.writable);
+            assert!(!crate::shared_frames::is_shared(parent_frame));
             assert_eq!(&page_bytes(&parent, DATA)[..11], b"parent data");
             assert_eq!(&page_bytes(&child, DATA)[..11], b"childt data");
+            parent.write_user_memory(DATA, b"P").unwrap();
+            assert_eq!(free(), shared - 1, "the parent's write took its frame back");
+            let (frame, attributes) = parent.address_space().translate(DATA).unwrap();
+            assert_eq!((frame, attributes.writable), (parent_frame, true));
+            assert_eq!(&page_bytes(&parent, DATA)[..11], b"Parent data");
             for address in [DATA, kept, untouched] {
                 assert_eq!(child.region(address), parent.region(address));
             }
@@ -2699,7 +2971,7 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_without_frames_enough_takes_none_and_leaves_the_parent_as_it_was() {
+    fn a_fork_without_frames_for_its_tables_takes_none_and_leaves_the_parent_as_it_was() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         // SAFETY: as above.
@@ -2714,7 +2986,7 @@ mod tests {
                 .unwrap();
         }
         let mut hoard = Vec::new();
-        while free() > 6 {
+        while free() > 1 {
             hoard.push(memory::FRAMES.lock().as_mut().unwrap().allocate().unwrap());
         }
         let before = free();
@@ -3055,10 +3327,15 @@ mod tests {
                 process.discard_pages(DATA, DATA + FRAME_SIZE),
                 Err(RegionError::Invalid)
             );
-            assert_eq!(
-                process.new_child(ChildMemory::Copied).err(),
-                Some(NewChildError::SharedAnonymousMemory)
-            );
+            let child = process.new_child(ChildMemory::Copied).unwrap();
+            let in_child = child
+                .address_space()
+                .translate(DATA + 2 * FRAME_SIZE)
+                .map(|(phys, _)| phys);
+            assert_eq!(in_child, Some(physical + 2 * FRAME_SIZE));
+            assert!(!crate::shared_frames::is_shared(physical));
+            drop(child);
+            assert_eq!(at(DATA + 2 * FRAME_SIZE), Some(physical + 2 * FRAME_SIZE));
             process
                 .unmap_range(DATA + FRAME_SIZE, DATA + 3 * FRAME_SIZE)
                 .unwrap();
@@ -3252,5 +3529,68 @@ mod tests {
             process.protect_range(to, to + FRAME_SIZE, Some(Attributes::USER_READ_WRITE)),
             Ok(())
         );
+    }
+
+    #[test]
+    fn fork_marks_leave_ranges_out_of_the_child_or_give_it_zeros() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let before = free();
+        {
+            // SAFETY: as above.
+            let parent = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
+            parent
+                .map_region(
+                    Placement::Exactly(DATA),
+                    3 * FRAME_SIZE,
+                    Some(Attributes::USER_READ_WRITE),
+                )
+                .unwrap();
+            for page in 0..3 {
+                parent
+                    .write_user_memory(DATA + page * FRAME_SIZE, b"parent")
+                    .unwrap();
+            }
+            let (kept, not_forked, wiped) = (DATA, DATA + FRAME_SIZE, DATA + 2 * FRAME_SIZE);
+            let dont_fork = |marks| marks | fork_mark::DONT_FORK;
+            let wipe_on_fork = |marks| marks | fork_mark::WIPE_ON_FORK;
+            parent
+                .mark_for_fork(not_forked, wiped, dont_fork, false)
+                .unwrap();
+            parent
+                .mark_for_fork(wiped, wiped + FRAME_SIZE, wipe_on_fork, true)
+                .unwrap();
+            assert_eq!(
+                parent.mark_for_fork(DATA, DATA + 8 * FRAME_SIZE, |marks| marks, false),
+                Err(RegionError::NotCovered)
+            );
+            let child = parent.new_child(ChildMemory::Copied).unwrap();
+            assert_eq!(&page_bytes(&child, kept)[..6], b"parent");
+            assert_eq!(child.region(not_forked), None);
+            assert!(child.region(wiped).is_some());
+            assert_eq!(child.address_space().translate(wiped), None);
+            let mut zeros = [1u8; 6];
+            child.read_user_memory(wiped, &mut zeros).unwrap();
+            assert_eq!(zeros, [0; 6]);
+            assert_eq!(&page_bytes(&parent, wiped)[..6], b"parent");
+            let grandchild = child.new_child(ChildMemory::Copied).unwrap();
+            assert_eq!(
+                grandchild.address_space().translate(wiped),
+                None,
+                "the child keeps the wipe-on-fork mark"
+            );
+            drop((grandchild, child));
+            parent
+                .mark_for_fork(
+                    not_forked,
+                    wiped,
+                    |marks| marks & !fork_mark::DONT_FORK,
+                    false,
+                )
+                .unwrap();
+            let child = parent.new_child(ChildMemory::Copied).unwrap();
+            assert_eq!(&page_bytes(&child, not_forked)[..6], b"parent");
+        }
+        assert_eq!(free(), before);
     }
 }

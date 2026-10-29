@@ -7,7 +7,8 @@
 //! controlling terminal, which is the console or none), the links `fd`, `stdin`, `stdout` and
 //! `stderr` into `/proc/self/fd`, `window`, the window server's device (docs/windows.md), and
 //! `agent`, the agent channel (D136, docs/mcp.md), only while a virtio console gave the kernel
-//! one. Each device has Linux's number and mode.
+//! one, and the directory `shm`, which the boot mounts a memory file system on for POSIX shared
+//! memory (`shm_open`, D169). Each device has Linux's number and mode.
 
 use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind};
 use alloc::vec::Vec;
@@ -69,15 +70,18 @@ const STDOUT: u64 = 17;
 
 const STDERR: u64 = 18;
 
+const SHM: u64 = 19;
+
 const DEVICE: (u32, u32) = (0, 5);
 
-const FILES: [(&[u8], u64); 13] = [
+const FILES: [(&[u8], u64); 14] = [
     (b"agent", AGENT),
     (b"console", CONSOLE),
     (b"fd", FD),
     (b"full", FULL),
     (b"null", NULL),
     (b"random", RANDOM),
+    (b"shm", SHM),
     (b"stderr", STDERR),
     (b"stdin", STDIN),
     (b"stdout", STDOUT),
@@ -112,7 +116,7 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 
 fn kind_of(node: u64) -> NodeKind {
     match node {
-        ROOT => NodeKind::Directory,
+        ROOT | SHM => NodeKind::Directory,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
         _ => NodeKind::CharacterDevice,
     }
@@ -136,11 +140,12 @@ impl FileSystem for DeviceFiles {
     }
 
     fn attributes(&self, node: u64) -> Attributes {
-        let directory = node == ROOT;
+        let directory = kind_of(node) == NodeKind::Directory;
         Attributes {
             kind: self.kind(node),
             permissions: match node {
                 ROOT => 0o755,
+                SHM => 0o1777,
                 AGENT | CONSOLE => 0o600,
                 _ if link_of(node).is_some() => 0o777,
                 _ => 0o666,
@@ -242,6 +247,7 @@ mod tests {
                 b"full",
                 b"null",
                 b"random",
+                b"shm",
                 b"stderr",
                 b"stdin",
                 b"stdout",

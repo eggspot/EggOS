@@ -153,6 +153,7 @@ pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno
         file_system
             .truncate(node.id(), 0, now::<P>())
             .map_err(refused)?;
+        vfs::shared_pages::truncated(node, 0);
     }
     Ok(())
 }
@@ -198,6 +199,7 @@ pub(super) fn write_regular<P: Platform>(
                 Ok(done) => done,
                 Err(error) => return partial(written, refused(error)),
             };
+            vfs::shared_pages::wrote(node, reached - count as u64, &chunk[..count]);
             offset = reached;
             if at.is_none() {
                 file.set_offset(reached);
@@ -289,8 +291,9 @@ pub fn ftruncate<P: Platform>(thread: &LinuxThread, fd: u64, length: u64) -> Res
     }
     node.file_system()
         .truncate(node.id(), length, now::<P>())
-        .map(|()| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    vfs::shared_pages::truncated(*node, length);
+    Ok(0)
 }
 
 /// `mkdirat(dirfd, path, mode)`: makes a directory. As Linux: the path's errors, `EEXIST` if
@@ -490,8 +493,10 @@ pub fn fsync(thread: &LinuxThread, fd: u64) -> Result<u64, Errno> {
         FileKind::MemoryFile(_) => return Ok(0),
         kind => kind.node().ok_or(Errno::EINVAL)?,
     };
+    let written = vfs::shared_pages::write_back(node);
     node.file_system()
         .sync()
+        .and(written)
         .map(|()| 0)
         .map_err(|_| Errno::EIO)
 }

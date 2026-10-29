@@ -83,7 +83,10 @@ pub fn run(startup: &Startup) -> i32 {
         return exec_loop(startup);
     }
     if mode == Some(FORK_LOOP) {
-        return fork_loop(startup);
+        return fork_loop(startup, false);
+    }
+    if mode == Some(FORK_TOUCH_LOOP) {
+        return fork_loop(startup, true);
     }
     if mode == Some(SPAWN_LOOP) {
         return spawn_loop(startup);
@@ -154,6 +157,10 @@ fn exec_loop(startup: &Startup) -> i32 {
 
 pub const FORK_LOOP: &CStr = c"fork-loop";
 
+pub const FORK_TOUCH_LOOP: &CStr = c"fork-touch-loop";
+
+static FORK_TOUCHED: AtomicU64 = AtomicU64::new(0);
+
 pub const SPAWN_LOOP: &CStr = c"spawn-loop";
 
 pub mod process_loop_status {
@@ -165,13 +172,17 @@ const CLONE_VM: usize = 0x100;
 const CLONE_VFORK: usize = 0x4000;
 const SIGCHLD: usize = 17;
 
-fn fork_loop(startup: &Startup) -> i32 {
+fn fork_loop(startup: &Startup, touch: bool) -> i32 {
     let Some(count) = startup.arguments().nth(2).and_then(decimal) else {
         return process_loop_status::BAD_COUNT;
     };
+    FORK_TOUCHED.store(1, Ordering::Relaxed);
     for _ in 0..count {
         let child = call(number::CLONE, [CLONE_VFORK | SIGCHLD, 0, 0, 0, 0, 0]);
         if child == 0 {
+            if touch {
+                FORK_TOUCHED.fetch_add(1, Ordering::Relaxed);
+            }
             syscall::exit(0);
         }
         if child < 0 {

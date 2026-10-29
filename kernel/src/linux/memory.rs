@@ -7,11 +7,14 @@
 //! A mapping of a regular file (D167) is a region whose pages are read from the file when first
 //! touched, each into a frame of its own: private, so writes stay the process's, and read again
 //! after `MADV_DONTNEED`; a page wholly past the file's end raises `SIGBUS`. `MAP_SHARED` of a
-//! regular file is read-only here: its pages are the file as it was read, and it can never be
-//! made writable. An anonymous mapping is a region whose pages are
-//! mapped, zeroed, as the program first touches them. `MAP_SHARED` anonymous memory behaves
-//! as private within one memory, which `CLONE_VM` children share; it marks the memory, and a
-//! `fork` that would copy it is refused with `ENOSYS` until copy-on-write (D104). Placement is top-down
+//! regular file that may be written, or of one another such mapping holds, shares the file's
+//! pages with every other such mapping ([`crate::vfs::shared_pages`], D169), written back by
+//! `msync`, `fsync` and its end; a read-only one of a file nobody maps so is its pages as they
+//! were read, and can never be made writable. An anonymous mapping is a region whose pages are
+//! mapped, zeroed, as the program first touches them. `MAP_SHARED` anonymous memory is a memory
+//! file of its own, lent to the program at once ([`super::memfd`]), so `fork` keeps it shared
+//! (D169); one with no access or executable is a plain region that `CLONE_VM` children share,
+//! and a `fork` that would copy it is refused with `ENOSYS` (D104). Placement is top-down
 //! from below the stack's guard gap, as Linux places mappings; the break starts at the end of
 //! the program's last segment ([`super::exec`]). Writable and executable at once is refused
 //! with `EACCES`, as Linux's `PR_SET_MDWE` and SELinux's `execmem` do (decided by research,
@@ -23,10 +26,12 @@
 use super::Errno;
 use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::exec::{MINIMUM_ADDRESS, STACK_GUARD_GAP, STACK_RESERVE};
+use super::file_changes::now;
 use super::memory_devices::MemoryDevice;
 use crate::process::{Coverage, Placement, PopulateError, Process, Remap};
-use crate::regions::{Access, RegionError};
+use crate::regions::{Access, RegionError, fork_mark};
 use crate::vfs::Node;
+use crate::vfs::shared_pages::{self, SharedError};
 use alloc::sync::Arc;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
@@ -219,11 +224,11 @@ pub fn mmap<P: Platform>(
 /// mappings of a window's pixels on `/dev/window` (D127; `EACCES` with `MAP_PRIVATE`,
 /// `EPERM` executable or inaccessible), mappings of a memfd (D139: shared, or private
 /// and read-only; `ENODEV` private and writable, `EPERM` executable or inaccessible), and
-/// mappings of a regular file (D167: private, or shared and read-only; `EACCES` for a file not
-/// open for reading, or shared and writable without write access to it; `ENODEV` shared and
-/// writable; `EOVERFLOW` past the largest offset). A mapping of `/dev/zero` is anonymous
-/// memory, shared or private, as on Linux (D168); a file made when it is opened (`/proc`) and
-/// the other memory devices are `ENODEV`; any other descriptor is `EBADF`. Returns the
+/// mappings of a regular file (D167, D169: private, or shared through the file's shared pages;
+/// `EACCES` for a file not open for reading, or shared and writable without write access to
+/// it; `EOVERFLOW` past the largest offset). A mapping of `/dev/zero` is anonymous memory,
+/// shared or private, as on Linux (D168); a file made when it is opened (`/proc`), the other
+/// memory devices and event files are `ENODEV`; any other descriptor is `EBADF`. Returns the
 /// mapping's start.
 pub fn mmap_file<P: Platform>(
     process: &Process<P>,
@@ -268,10 +273,13 @@ fn map_memory<P: Platform>(
         return Err(Errno::ENOMEM);
     }
     let attributes = attributes(prot)?;
+    let placement = placement::<P>(address, length, flags)?;
     if kind != map::PRIVATE {
+        if let Some(lent) = attributes.filter(|attributes| !attributes.executable) {
+            return map_shared_anonymous(process, placement, length, lent);
+        }
         process.mark_shared_anonymous();
     }
-    let placement = placement::<P>(address, length, flags)?;
     process
         .map_region(placement, length, attributes)
         .map_err(|error| match error {
@@ -282,6 +290,18 @@ fn map_memory<P: Platform>(
             | RegionError::OutOfMemory
             | RegionError::NotWritable => Errno::ENOMEM,
         })
+}
+
+#[inline(never)]
+fn map_shared_anonymous<P: Platform>(
+    process: &Process<P>,
+    placement: Placement,
+    length: u64,
+    attributes: Attributes,
+) -> Result<u64, Errno> {
+    let memory = super::memfd::MemoryFile::new(super::memfd::seal::SEAL);
+    memory.truncate(length).map_err(|_| Errno::ENOMEM)?;
+    super::memfd::map(process, &memory, placement, length, attributes, 0, true)
 }
 
 #[inline(never)]
@@ -346,13 +366,13 @@ struct Wanted {
     offset: u64,
 }
 
-/// `mmap` of `node`, a regular file open as `file`, as `wanted` says (D167): a region whose
-/// pages are read from the file when first touched ([`Process::map_file_region`]). As Linux,
-/// in this order: `EACCES` for a file not open for reading, or a shared writable mapping of a
-/// file not open for writing; `EOVERFLOW` for a range past the largest offset. A shared
-/// mapping is read-only here: writable is `ENODEV`, and it can never be made writable
-/// (`mprotect`'s `EACCES`). Executable mappings are allowed: they are how a dynamic loader maps
-/// a library's code.
+/// `mmap` of `node`, a regular file open as `file`, as `wanted` says (D167, D169). As Linux:
+/// `EACCES` for a file not open for reading, or a shared writable mapping of a file not open
+/// for writing or on a file system that cannot be changed; then `EOVERFLOW` past the largest
+/// offset. A writable shared mapping, or a readable one of a file such a mapping holds, maps
+/// the file's shared pages ([`shared_pages`]); any other shared mapping is the file as it was
+/// read, never writable; a private one is the process's own pages read when first touched.
+/// Executable mappings are allowed: they are how a dynamic loader maps a library's code.
 fn map_regular<P: Platform>(
     process: &Process<P>,
     node: Node,
@@ -363,7 +383,8 @@ fn map_regular<P: Platform>(
     let writes = wanted
         .attributes
         .is_some_and(|attributes| attributes.writable);
-    if !file.is_readable() || (shared && writes && !file.is_writable()) {
+    let may_write = file.is_writable() && node.file_system().is_writable();
+    if !file.is_readable() || (shared && writes && !may_write) {
         return Err(Errno::EACCES);
     }
     if wanted
@@ -373,10 +394,30 @@ fn map_regular<P: Platform>(
     {
         return Err(Errno::EOVERFLOW);
     }
-    if shared && writes {
-        return Err(Errno::ENODEV);
-    }
     let placement = placement::<P>(wanted.address, wanted.length, wanted.flags)?;
+    if let Some(attributes) = wanted
+        .attributes
+        .filter(|attributes| !attributes.executable)
+        && shared
+        && (writes || shared_pages::is_mapped(node))
+    {
+        let mapping =
+            shared_pages::mapping(node, wanted.offset, wanted.length, may_write, now::<P>())
+                .map_err(|error| match error {
+                    SharedError::OutOfMemory => Errno::ENOMEM,
+                    SharedError::Storage => Errno::EIO,
+                })?;
+        return process
+            .map_lent_frames(placement, wanted.length, attributes, mapping)
+            .map_err(|error| match error {
+                RegionError::Overlaps => Errno::EEXIST,
+                RegionError::Invalid
+                | RegionError::NotCovered
+                | RegionError::NoRoom
+                | RegionError::OutOfMemory
+                | RegionError::NotWritable => Errno::ENOMEM,
+            });
+    }
     process
         .map_file_region(
             placement,
@@ -490,9 +531,10 @@ pub mod sync {
 
 /// `msync(address, length, flags)` (D167): as Linux, `EINVAL` for an unknown flag,
 /// `MS_ASYNC` with `MS_SYNC`, or an unaligned address; `ENOMEM` for a length that wraps when
-/// rounded up to pages or a range not all mapped; 0 for an empty range. Nothing is ever written
-/// back: every mapping here is anonymous, private, a shared read-only file mapping, or memory
-/// a device or a memory file lends, none of which has changes a file waits for.
+/// rounded up to pages or a range not all mapped; 0 for an empty range. With `MS_SYNC` or
+/// `MS_ASYNC`, the shared file mappings in the range are written back to their files at once
+/// (D169; `EIO` if one could not be written); nothing else in a process has changes a file
+/// waits for.
 pub fn msync<P: Platform>(
     process: &Process<P>,
     address: u64,
@@ -511,9 +553,16 @@ pub fn msync<P: Platform>(
         return Ok(0);
     }
     match process.coverage(address, end) {
-        Coverage::Whole => Ok(0),
-        Coverage::Part | Coverage::Nothing => Err(Errno::ENOMEM),
+        Coverage::Whole => {}
+        Coverage::Part | Coverage::Nothing => return Err(Errno::ENOMEM),
     }
+    if flags & (sync::ASYNC | sync::SYNC) == 0 {
+        return Ok(0);
+    }
+    process
+        .write_back_lent(address, end, now::<P>())
+        .map(|()| 0)
+        .map_err(|_| Errno::EIO)
 }
 
 /// `madvise(address, length, advice)` on anonymous memory, checked in Linux's order:
@@ -521,9 +570,12 @@ pub fn msync<P: Platform>(
 /// when rounded up to pages or past the end of the address space; then nothing to do for an
 /// empty range. Pages are discarded (`DONTNEED`, `DONTNEED_LOCKED`, `FREE`) or made ready
 /// (`POPULATE_READ`, `POPULATE_WRITE`) in the regions the range meets, and a part of it in no
-/// region is `ENOMEM` once the rest is done. Advice about paging, sharing, merging, huge pages,
-/// core dumps and `fork` is accepted and changes nothing: there is no swap, no `fork` and no
-/// core dump yet, and anonymous memory is private (D53). `REMOVE` needs shared memory and
+/// region is `ENOMEM` once the rest is done. `DONTFORK` and `DOFORK`, `WIPEONFORK` and
+/// `KEEPONFORK` mark the regions in the range for `fork` (D169, [`Process::mark_for_fork`]):
+/// the child does not get them, or gets them with no pages; `WIPEONFORK` on a range that maps a
+/// file or shared memory is `EINVAL`, as on Linux. Advice about paging, sharing, merging, huge
+/// pages and core dumps is accepted and changes nothing: there is no swap and no core dump yet
+/// (D53). `REMOVE` needs shared memory and
 /// `COLLAPSE` huge pages: `EINVAL`. `HWPOISON` and `SOFT_OFFLINE` are `EPERM` for an
 /// unprivileged process and `EINVAL` for root, as no page is ever taken offline (D77). A page
 /// of a file mapping that `DONTNEED` discards is read from the file again when next touched;
@@ -565,6 +617,23 @@ pub fn madvise<P: Platform>(
                 Err(PopulateError::NotAllowed) => Err(Errno::EINVAL),
                 Err(PopulateError::OutOfMemory | PopulateError::NotCovered) => Err(Errno::ENOMEM),
                 Err(PopulateError::BusError) => Err(Errno::EFAULT),
+            }
+        }
+        advice::DONTFORK | advice::DOFORK | advice::WIPEONFORK | advice::KEEPONFORK => {
+            let (mark, set) = match advice {
+                advice::DONTFORK => (fork_mark::DONT_FORK, true),
+                advice::DOFORK => (fork_mark::DONT_FORK, false),
+                advice::WIPEONFORK => (fork_mark::WIPE_ON_FORK, true),
+                _ => (fork_mark::WIPE_ON_FORK, false),
+            };
+            let change = |marks: u8| match set {
+                true => marks | mark,
+                false => marks & !mark,
+            };
+            match process.mark_for_fork(address, end, change, advice == advice::WIPEONFORK) {
+                Ok(()) => Ok(0),
+                Err(RegionError::Invalid) => Err(Errno::EINVAL),
+                Err(_) => Err(Errno::ENOMEM),
             }
         }
         advice::REMOVE | advice::COLLAPSE => match process.coverage(address, end) {
@@ -1185,6 +1254,38 @@ mod tests {
     }
 
     #[test]
+    fn shared_anonymous_memory_stays_shared_with_a_forked_child_and_is_never_wiped() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let shared = mmap(&process, 0, PAGE, READ_WRITE, map::SHARED | map::ANONYMOUS);
+        let private = mmap(&process, 0, PAGE, READ_WRITE, ANONYMOUS);
+        assert!(store(&process, shared, 1) && store(&process, private, 1));
+        assert_eq!(
+            madvise(&process, shared, PAGE, advice::WIPEONFORK),
+            Errno::EINVAL.result()
+        );
+        let child = process
+            .new_child(crate::process::ChildMemory::Copied)
+            .unwrap();
+        assert_eq!(
+            (word(&child, shared), word(&child, private)),
+            (Some(1), Some(1))
+        );
+        assert!(store(&child, shared, 2) && store(&child, private, 2));
+        assert_eq!(
+            word(&process, shared),
+            Some(2),
+            "shared memory stays shared"
+        );
+        assert_eq!(
+            word(&process, private),
+            Some(1),
+            "private memory is copied on write"
+        );
+    }
+
+    #[test]
     fn madvise_dontneed_and_free_give_frames_back_and_the_pages_read_zero_again() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
@@ -1546,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn regular_files_map_privately_or_shared_read_only_with_linux_errors() {
+    fn regular_files_map_privately_shared_read_only_or_shared_through_their_pages() {
         use crate::linux::descriptors::open_flag;
         use alloc::vec::Vec;
         let _frames = frames_for_test();
@@ -1602,10 +1703,34 @@ mod tests {
             files: &writable,
             fd,
         };
-        assert_eq!(
-            mmap_file::<P>(&process, 0, PAGE, READ_WRITE, map::SHARED, both, 0),
-            Err(Errno::ENODEV)
+        let written = mmap_file::<P>(&process, 0, PAGE, READ_WRITE, map::SHARED, both, 0).unwrap();
+        let seen = mmap_file::<P>(&process, 0, PAGE, prot::READ, map::SHARED, both, 0).unwrap();
+        assert!(
+            store(&process, written, 7),
+            "a shared mapping may be written"
         );
+        assert_eq!(
+            word(&process, seen),
+            Some(7),
+            "another shared mapping sees it"
+        );
+        let node = match writable.file(fd).unwrap().kind() {
+            FileKind::Regular(node) => *node,
+            _ => unreachable!("open_file opens a regular file"),
+        };
+        let mut start = [0u8; 8];
+        crate::regions::FilePages::read_at(&node, 0, &mut start).unwrap();
+        assert_eq!(
+            u64::from_ne_bytes(start),
+            7,
+            "reads see the mapping's bytes"
+        );
+        assert_eq!(msync(&process, written, PAGE, sync::SYNC), Ok(0));
+        let mut on_file = [0u8; 8];
+        node.file_system()
+            .read_into(node.id(), 0, &mut on_file)
+            .unwrap();
+        assert_eq!(u64::from_ne_bytes(on_file), 7, "written back");
         let (unreadable, fd) = open_file(&contents, open_flag::WRONLY);
         let write_only = MappedFile {
             files: &unreadable,
