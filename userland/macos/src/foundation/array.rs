@@ -521,13 +521,17 @@ fn grow(mutable: &mut MutableArrayObject, needed: usize) -> bool {
     true
 }
 
-fn insert_at(this: Id, object: Id, index: usize) {
+fn refuse_nil(object: Id, method: &[u8]) {
     if object.is_null() {
         terminate_uncaught(
             b"NSInvalidArgumentException",
-            &[b"*** -[NSMutableArray insertObject:atIndex:]: object cannot be nil"],
+            &[b"*** -[NSMutableArray ", method, b"]: object cannot be nil"],
         );
     }
+}
+
+fn insert_at(this: Id, object: Id, index: usize) {
+    refuse_nil(object, b"insertObject:atIndex:");
     if index > count_of(this) {
         out_of_range(this, b"insertObject:atIndex:", index);
     }
@@ -612,6 +616,7 @@ extern "C" fn remove_all_objects(this: Id, _: Sel) {
 }
 
 extern "C" fn replace_object_at_index(this: Id, _: Sel, index: usize, object: Id) {
+    refuse_nil(object, b"replaceObjectAtIndex:withObject:");
     if index >= count_of(this) {
         out_of_range(this, b"replaceObjectAtIndex:withObject:", index);
     }
