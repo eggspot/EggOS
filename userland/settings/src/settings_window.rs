@@ -899,7 +899,14 @@ mod tests {
             window.status_shown(),
             Some("From the hardware clock, read at boot.")
         );
-        for word in ["clock", "UTC", "rtc", "hwclock", "time zone", "set to"] {
+        for word in [
+            "clock",
+            "UTC",
+            "hardware clock",
+            "hwclock",
+            "time zone",
+            "set to",
+        ] {
             for pane in 0..PANES.len() {
                 assert_eq!(
                     pane_matches(pane, word),

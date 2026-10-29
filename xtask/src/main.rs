@@ -1888,7 +1888,8 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, arch_option, host_folder, json_string_field, with_value, without_flag,
+        APP_PATH, COREUTILS, EDIT_PATH, arch_option, host_folder, json_string_field, with_value,
+        without_flag,
     };
 
     #[test]
@@ -1896,7 +1897,7 @@ mod tests {
         let programs: Vec<String> = COREUTILS
             .iter()
             .map(|name| format!("/bin/{name}"))
-            .chain([format!("/{APP_PATH}")])
+            .chain([format!("/{APP_PATH}"), format!("/{EDIT_PATH}")])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {
             match tool.twin.program {

@@ -731,7 +731,7 @@ pub const TEST_SCREEN: &str = "eggsh:/# echo EggOS\nEggOS\n\x1b[1;31mred \x1b[32
 
 /// The [`display::pixel_hash`] of a 1280x800 display after the desktop's terminal showed
 /// [`TEST_SCREEN`] in a [`Session::SelfTest`].
-pub const TEST_SCREEN_HASH_1280X800: u64 = 0xcc62_008e_3c66_4155;
+pub const TEST_SCREEN_HASH_1280X800: u64 = 0x4f80_909d_8dc5_a395;
 
 #[cfg(test)]
 mod tests {

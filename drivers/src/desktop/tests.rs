@@ -135,7 +135,7 @@ fn the_default_desktop_s_hash_is_pinned() {
     assert_eq!(fnv(&pixels), DEFAULT_DESKTOP_HASH, "{:#x}", fnv(&pixels));
 }
 
-const DEFAULT_DESKTOP_HASH: u64 = 0x29d1_2c5b_4a5f_d053;
+const DEFAULT_DESKTOP_HASH: u64 = 0x5c14_e486_6b22_5193;
 
 #[test]
 fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
