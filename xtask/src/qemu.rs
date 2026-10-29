@@ -140,7 +140,8 @@ pub enum Expect {
     /// `relocation-model=pie` (a static PIE on x86_64), boots to the shell's prompt; the test
     /// types a line at each prompt that runs one of them, by name or by its path, and each
     /// command must write its lines in order before the next prompt; the shell exits with 7 and
-    /// init powers off (D117).
+    /// init powers off (D117). The machine has the offscreen display, and `linux-memory` uses
+    /// memory up four ways while the kernel keeps its reserve (D155).
     LinuxPrograms,
     /// The release kernel with Windows console programs built for this CPU's Windows target
     /// (`x86_64-pc-windows-msvc` or `aarch64-pc-windows-msvc`, x64's on riscv64) and one built
@@ -239,12 +240,13 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"exit 7\r",
 ];
 
-const LINUX_PROGRAM_SESSION: [&[u8]; 6] = [
+const LINUX_PROGRAM_SESSION: [&[u8]; 7] = [
     b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
     b"GREETING=hi /bin/linux-static-pie a 'b c'; echo LINUX-STATIC status $?\r",
     b"linux-static exit 42; echo LINUX-STATIC status $?\r",
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
     b"linux-sockets; echo LINUX-SOCKETS status $?\r",
+    b"linux-memory; echo LINUX-MEMORY status $?\r",
     b"exit 7\r",
 ];
 
@@ -260,6 +262,16 @@ const LINUX_SOCKETS_LINES: [&str; 10] = [
     "LINUX-SOCKETS large 1048576 bytes ok",
     "LINUX-SOCKETS peer closed eof EPIPE child 0",
     "LINUX-SOCKETS status 0",
+];
+
+const LINUX_MEMORY_LINES: [&str; 7] = [
+    "LINUX-MEMORY memfd ENOMEM for a mapping as large as memory",
+    "LINUX-MEMORY memfd ENOMEM with the reserve still free",
+    "LINUX-MEMORY anonymous killed by SIGKILL",
+    "LINUX-MEMORY sockets ENOMEM within an eighth of memory",
+    "LINUX-MEMORY windows ENOMEM within a quarter of memory",
+    "LINUX-MEMORY memory back",
+    "LINUX-MEMORY status 0",
 ];
 
 const HOST_FOLDER_SESSION: [&[u8]; 7] = [
@@ -987,6 +999,10 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
             .iter()
             .map(|line| Line::Whole((*line).into()))
             .collect(),
+        LINUX_MEMORY_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
         vec![
             Line::Whole(SHELL_EXIT_LINE.into()),
             Line::Whole(POWER_DOWN_LINE.into()),
@@ -1182,7 +1198,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
         whole(&[
-            "cmdline", "driver", "meminfo", "net", "ps", "uptime", "/proc", "/", "3",
+            "cmdline", "driver", "meminfo", "net", "ps", "uptime", "/proc", "/", "4",
         ]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
@@ -3660,6 +3676,7 @@ mod tests {
             "LINUX-STATIC stderr",
             "LINUX-SOCKETS poll woken by the client",
             "LINUX-SOCKETS status 0",
+            "LINUX-MEMORY anonymous killed by SIGKILL",
         ] {
             let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
             assert!(

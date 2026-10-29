@@ -30,8 +30,8 @@ its close request.
    unmapped, even after the window is destroyed or resized; it cannot be moved (`mremap`),
    discarded (`madvise`) or made executable or inaccessible (`mprotect`, `EINVAL`), and a
    process with one cannot `fork` (it can `vfork` and `execve`). Unmap the old buffer after a
-   resize: a client's buffers, mapped or shown, hold at most 32 MiB together (`ENOMEM` past
-   it).
+   resize: a client's buffers, mapped or shown, hold at most 32 MiB together, every client's
+   at most a quarter of memory, and none takes the kernel's reserve (`ENOMEM` past them, D155).
 4. Draw, then `ioctl(fd, COMMIT, &commit)`: the first commit shows the window on top, focused,
    cascaded below the window under it (or centred when it is the first). Each commit copies the
    rectangles it names (or the whole content) to the screen during the call, so the program may
@@ -83,7 +83,7 @@ Errors: a window that is not the client's, an unknown role, state, shape or acti
 flags, a title too long or not UTF-8, a menu pool `SET_MENU` refuses, more than 8 rects: `EINVAL`; a role the client may not
 make, or a management request from a process that is not root: `EPERM`; 16 windows for the
 client or 64 in all (the terminal's included): `ENOSPC`; no memory for a buffer (at most 4 MiB
-each in 0.3.0, 32 MiB for all of a client's): `ENOMEM`; an argument outside the program's
+each in 0.3.0, 32 MiB for all of a client's, a quarter of memory for every client's, D155): `ENOMEM`; an argument outside the program's
 memory: `EFAULT`; any other request: `ENOTTY`.
 
 ## Events

@@ -243,6 +243,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-std-selftest",
     "eggos-linux-static",
     "eggos-linux-sockets",
+    "eggos-linux-memory",
     "eggos-linux-gui-tests",
     "eggos-windows",
     "eggos-windows-gui",
@@ -640,13 +641,20 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         &[],
     )?;
     let kernel = build_linux_programs_test_kernel(arch)?;
+    let mut offscreen: Vec<String> = arch
+        .offscreen_args
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    offscreen.extend(qemu::command_line_args(qemu::OFFSCREEN_WORD));
+    let offscreen: Vec<&str> = offscreen.iter().map(String::as_str).collect();
     qemu::boot_test(
         arch,
         &kernel,
         qemu::Expect::LinuxPrograms,
         qemu::TEST_CPUS,
         qemu::Display::Absent,
-        &[],
+        &offscreen,
     )?;
     let (kernel, folder) = build_host_folder_test(arch)?;
     let folder_args = qemu::host_folder_args(arch, &folder);
@@ -1336,6 +1344,10 @@ const LINUX_SOCKETS_PACKAGE: &str = "eggos-linux-sockets";
 
 const LINUX_SOCKETS_PATH: &str = "bin/linux-sockets";
 
+const LINUX_MEMORY_PACKAGE: &str = "eggos-linux-memory";
+
+const LINUX_MEMORY_PATH: &str = "bin/linux-memory";
+
 const LINUX_GUI_PACKAGE: &str = "eggos-linux-gui-tests";
 
 const LINUX_PAINT_PATH: &str = "bin/linux-paint";
@@ -1374,6 +1386,10 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
     added.push(image::AddedFile {
         host: build_linux_test_program(arch, LINUX_SOCKETS_PACKAGE, "static")?,
         path: LINUX_SOCKETS_PATH.to_owned(),
+    });
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_MEMORY_PACKAGE, "static")?,
+        path: LINUX_MEMORY_PATH.to_owned(),
     });
     let mut extra = vec![(
         "etc/eggos/init.conf",

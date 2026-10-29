@@ -16,7 +16,9 @@
 //!   for each of the last four directories) that also remember the two clusters behind them,
 //!   so sequential reads, listings and lookups follow a chain once, long names that start in
 //!   an earlier cluster included. Whole sectors of file data go from the disk straight to the
-//!   caller, in runs of contiguous clusters.
+//!   caller, in runs of contiguous clusters. A chain that comes back to a cluster it passed is
+//!   an I/O error, found within twice its length by keeping one cluster to compare with at
+//!   doubling distances (Brent's method: a compare a hop, D155).
 //! - **Read-only.** Every change is refused with `EROFS` (the trait's defaults). Permissions
 //!   are 0755 (0555 for a file marked read-only), owner and group 0, times the last write time
 //!   read as UTC; a directory reports one link and size 0, as its subdirectories are not
@@ -271,6 +273,9 @@ struct ChainCursor {
     index: u64,
     cluster: u32,
     behind: [u32; CLUSTERS_BEHIND],
+    mark: u32,
+    since_mark: u32,
+    next_mark: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -539,15 +544,25 @@ impl Volume {
                 index: 0,
                 cluster: first,
                 behind: [0; CLUSTERS_BEHIND],
+                mark: first,
+                since_mark: 0,
+                next_mark: 1,
             },
         };
         while at.index < index {
             match self.next_cluster(layout, at.cluster)? {
+                Some(next) if next == at.mark => return Err(StorageError),
                 Some(next) => {
                     at.behind.rotate_right(1);
                     at.behind[0] = at.cluster;
                     at.cluster = next;
                     at.index += 1;
+                    at.since_mark += 1;
+                    if at.since_mark == at.next_mark {
+                        at.mark = next;
+                        at.next_mark = at.next_mark.saturating_mul(2);
+                        at.since_mark = 0;
+                    }
                 }
                 None => return Ok(None),
             }

@@ -8,7 +8,9 @@
 //! [`PixelBuffer`]: physically contiguous frames the server owns, zeroed, which the client maps
 //! with `mmap` at the offset `Create` and `SetSize` return ([`Process::map_lent_frames`]) and
 //! the compositor reads through the direct map. A client's buffers, those its windows show and
-//! those its process still maps, hold at most [`CLIENT_PIXEL_LIMIT`] bytes together. `Commit`
+//! those its process still maps, hold at most [`CLIENT_PIXEL_LIMIT`] bytes together, every
+//! client's at most [`PIXEL_MEMORY_SHARE`] of memory, and none takes the free frames below the
+//! reserve programs leave the kernel (D155). `Commit`
 //! composes the rectangles it names into the framebuffer during the call, under the display's
 //! and the screen's locks, and has the drawing thread flush them. Requests, reads and polls
 //! never allocate but for a window's buffer and a client's queue; composing never does.
@@ -34,6 +36,12 @@ use eggos_hal::memory::FRAME_SIZE;
 /// its process still maps after a resize or a destroy (32 MiB, eight buffers of a maximised
 /// window on a 1280x800 screen).
 pub const CLIENT_PIXEL_LIMIT: u64 = 32 << 20;
+
+/// Every client's pixel buffers together hold at most `1 / PIXEL_MEMORY_SHARE` of memory: a
+/// quarter (D155).
+pub const PIXEL_MEMORY_SHARE: u64 = 4;
+
+static PINNED_PIXELS: AtomicU64 = AtomicU64::new(0);
 
 /// The pixels of one window: `width` by `height` `0x00RRGGBB` pixels, rows packed, in
 /// physically contiguous frames the server owns, freed when the last holder lets go (the
@@ -61,21 +69,22 @@ impl core::fmt::Debug for PixelBuffer {
 
 impl PixelBuffer {
     /// A zeroed buffer of `width` by `height` pixels for `owner`; `None` without contiguous
-    /// frames for it (at most 4 MiB, the frame allocator's largest block) or when it would take
-    /// `owner` past [`CLIENT_PIXEL_LIMIT`].
+    /// frames for it (at most 4 MiB, the frame allocator's largest block, above the reserve
+    /// programs leave the kernel) or when it would take `owner` past [`CLIENT_PIXEL_LIMIT`] or
+    /// every client past [`PIXEL_MEMORY_SHARE`] of memory.
     pub fn new(width: u32, height: u32, owner: &Arc<Client>) -> Option<Arc<Self>> {
         let bytes = u64::from(width) * u64::from(height) * 4;
         let frames = bytes.div_ceil(FRAME_SIZE).max(1);
         let order = frames.next_power_of_two().trailing_zeros();
         let block = FRAME_SIZE << order;
-        if !owner.pin(block) {
+        if !owner.pin(block, crate::memory::share_of_memory(PIXEL_MEMORY_SHARE)) {
             return None;
         }
         let allocated = {
             let mut allocator = FRAMES.lock();
             allocator.as_mut().and_then(|allocator| {
                 Some((
-                    allocator.allocate_contiguous(order)?,
+                    allocator.allocate_contiguous_for_user(order)?,
                     allocator.physical_memory_offset(),
                 ))
             })
@@ -170,18 +179,33 @@ impl Client {
         self.pinned.load(Ordering::Relaxed)
     }
 
-    fn pin(&self, bytes: u64) -> bool {
-        self.pinned
+    fn pin(&self, bytes: u64, every_client_limit: u64) -> bool {
+        let own = self
+            .pinned
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |pinned| {
                 pinned
                     .checked_add(bytes)
                     .filter(|&total| total <= CLIENT_PIXEL_LIMIT)
             })
-            .is_ok()
+            .is_ok();
+        if !own {
+            return false;
+        }
+        let everyone = PINNED_PIXELS
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |all| {
+                all.checked_add(bytes)
+                    .filter(|&total| total <= every_client_limit)
+            })
+            .is_ok();
+        if !everyone {
+            self.pinned.fetch_sub(bytes, Ordering::Relaxed);
+        }
+        everyone
     }
 
     fn unpin(&self, bytes: u64) {
         self.pinned.fetch_sub(bytes, Ordering::Relaxed);
+        PINNED_PIXELS.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     /// Whether an event waits to be read.
@@ -566,7 +590,7 @@ mod tests {
         let mut clients = Clients::new();
         let owner = client(&mut clients);
         let other = client(&mut clients);
-        assert!(owner.pin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE));
+        assert!(owner.pin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE, u64::MAX));
         let first = PixelBuffer::new(32, 32, &owner).unwrap();
         let second = PixelBuffer::new(32, 32, &owner).unwrap();
         assert_eq!(owner.pinned_bytes(), CLIENT_PIXEL_LIMIT);
@@ -584,8 +608,29 @@ mod tests {
         drop((second, third, theirs));
         owner.unpin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE);
         assert_eq!((owner.pinned_bytes(), other.pinned_bytes()), (0, 0));
-        assert!(!owner.pin(CLIENT_PIXEL_LIMIT + 1));
+        assert!(!owner.pin(CLIENT_PIXEL_LIMIT + 1, u64::MAX));
         assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn every_client_s_buffers_together_stay_within_their_share_of_memory() {
+        let _frames = frames_for_test();
+        let mut clients = Clients::new();
+        let first = client(&mut clients);
+        let second = client(&mut clients);
+        let limit = PINNED_PIXELS.load(Ordering::Relaxed) + 3 * FRAME_SIZE;
+        assert!(first.pin(2 * FRAME_SIZE, limit));
+        assert!(
+            !second.pin(2 * FRAME_SIZE, limit),
+            "past every client's share"
+        );
+        assert_eq!(second.pinned_bytes(), 0, "a refused pin takes nothing");
+        assert!(second.pin(FRAME_SIZE, limit));
+        assert!(!first.pin(FRAME_SIZE, limit));
+        first.unpin(2 * FRAME_SIZE);
+        assert!(second.pin(2 * FRAME_SIZE, limit));
+        second.unpin(3 * FRAME_SIZE);
+        assert_eq!((first.pinned_bytes(), second.pinned_bytes()), (0, 0));
     }
 
     #[test]

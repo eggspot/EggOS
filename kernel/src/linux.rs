@@ -732,12 +732,16 @@ pub fn spawn<P: Platform>(
 /// loop and handed to [`handle`] with each exit from user mode. The state is boxed: the loop
 /// keeps one pointer to it, and its own variables stay in registers (in the loop's closure
 /// with them, the system calls taking its address kept them in memory: +3 to +5% on the
-/// system-call round trip).
+/// system-call round trip). [`SpawnError::OutOfMemory`] when its stack would take the free
+/// frames below the reserve programs leave the kernel (D155).
 pub(crate) fn spawn_thread<P: Platform>(
     process: Arc<Process<P>>,
     thread: LinuxThread,
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
+    if !crate::heap::may_grow_for_user(crate::thread::STACK_SIZE) {
+        return Err(SpawnError::OutOfMemory);
+    }
     let mut thread = Box::new(thread);
     process.add_thread();
     let counted = Arc::clone(&process);

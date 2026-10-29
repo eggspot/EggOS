@@ -1254,7 +1254,7 @@ impl<P: Platform> Process<P> {
         let frame = {
             let mut frames = memory::FRAMES.lock();
             let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
-            frames.allocate().ok_or(MapError::OutOfMemory)?
+            frames.allocate_for_user().ok_or(MapError::OutOfMemory)?
         };
         let page = (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
         // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches

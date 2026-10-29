@@ -141,7 +141,8 @@ impl<P: Platform> AddressSpace<P> {
     /// frame here, the new frame and the attributes (`None` for a kept page) and fills the new
     /// frame. This address space is only read, under its lock, so its mappings stay as they are
     /// and no CPU needs to drop anything; another CPU may write the pages meanwhile. On an error
-    /// ([`MapError::OutOfMemory`] when frames run out), `copy` keeps what it was given so far,
+    /// ([`MapError::OutOfMemory`] when free frames are down to the reserve programs leave the
+    /// kernel, D155), `copy` keeps what it was given so far,
     /// which dropping it frees.
     pub fn copy_pages_into(
         &self,
@@ -158,7 +159,7 @@ impl<P: Platform> AddressSpace<P> {
             let new = {
                 let mut frames = memory::FRAMES.lock();
                 let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
-                frames.allocate().ok_or(MapError::OutOfMemory)?
+                frames.allocate_for_user().ok_or(MapError::OutOfMemory)?
             };
             fill(frame, new, attributes);
             let mut frames = memory::FRAMES.lock();

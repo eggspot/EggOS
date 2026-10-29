@@ -340,6 +340,10 @@ impl<D: Disk> Volume<D> {
         if !self.geometry.is_data_block(block) {
             return Err(Error::Corrupt);
         }
+        let (bitmap, byte, mask) = Self::bit_location(self.geometry.block_bitmap, block);
+        if self.cache.get(&mut self.disk, bitmap)?[byte] & mask == 0 {
+            return Err(Error::Corrupt);
+        }
         if !self.is_fresh(block) {
             self.freed_waiting += 1;
         }

@@ -10038,3 +10038,74 @@ the license, by an explicit instruction recorded here.
   release notes must say `-Mcp` does not work on Windows and `run-eggos.ps1 -Mcp` must say so
   instead of hanging (issue #145's fallback); that is decided by the first run. aarch64 Windows
   hosts and riscv64 are not run on Windows.
+
+## D155 A program that uses up memory, or a damaged disk, can't crash EggOS: a kernel reserve, global caps on window and socket buffers, and hostile-disk checks (issue #143; extends D28, D30, D31, D104, D125, D127, D130, D131, D138, D139) — Decided by the build loop (the numbers checked by research)
+- **Why.** The kernel's own allocations cannot fail: a `Box` or `Vec` that finds no memory
+  stops the kernel. Until now every allocation a program drives went down to the last free
+  frame, so a program that used up memory (a 100 MiB memory file mapped `MAP_SHARED`, a few
+  large windows, socket queues, or just touching pages) left the next kernel allocation with
+  nothing. Any installed app, or an agent with the `run` grant, could stop EggOS.
+- **The reserve** (`kernel/src/memory.rs`). The frame allocator keeps a reserve programs never
+  get: `user_reserve_for(total)` is a thirty-second of the frames at boot, at least 512 (2 MiB)
+  and at most 4096 (16 MiB), never more than a quarter of memory: 4 MiB at the run scripts'
+  128 MiB. `paging::enable` sets it. `FrameAllocator::allocate_for_user` and
+  `allocate_contiguous_for_user` stop there, `user_may_take` asks, and `heap::may_grow_for_user`
+  asks for heap growth a program drives (the heap itself still serves the kernel down to the
+  last frame). What goes through them: a page at fault time (`Process::map_frame`, also exec's
+  pages) and `fork`'s copies, memory files' frames and page list, window buffers, pipe
+  buffers, `/tmp` and other memory file systems' pages, a new Linux thread's 16 KiB stack, and
+  socket queues. At a page fault with no frame the program ends with `SIGKILL` as before (the
+  one that faulted, not the largest); the calls fail with `ENOMEM` (`ENOSPC` for memory files'
+  writes and `fallocate`, and for `/tmp`, as before). The check is not a reservation: CPUs that
+  pass it at once may each take their part, which the reserve's size absorbs. On the host the
+  heap is not the frame allocator's, so `may_grow_for_user` and the global caps do nothing in
+  host tests; the frame allocator's own checks are tested there with a reserve set by hand.
+- **Global caps.** Window pixel buffers of every client together hold at most a quarter of
+  memory (`window::PIXEL_MEMORY_SHARE`, beside each client's 32 MiB), counted when a buffer is
+  pinned and freed when its last holder lets go. `AF_UNIX` queues together hold at most an
+  eighth (`unix_socket::QUEUE_MEMORY_SHARE`), counted as their buffers' capacity: a queue grows
+  by doubling, exactly, up to its 256 KiB, and gives back all but 4 KiB once a read empties it.
+  When it cannot grow, a queue that holds bytes makes its writer wait for the reader (a write
+  that would wait, `EAGAIN` without blocking, `poll` not writable), and an empty one is
+  `ENOMEM`, so a writer never waits for a reader with nothing to read. `memory::share_of_memory`
+  gives the caps.
+- **Shown to users and agents.** `/proc/meminfo` gains EggOS's `KernelReserve` line and its
+  `MemAvailable` leaves the reserve out; `free` prints a `Reserve:` line. Agents read it with
+  `cat /proc/meminfo` or `free` through the MCP server's `run` (no GUI: the memory figures have
+  none yet, as before).
+- **Damaged disks.** EggFS's hostile-image test flipped random bytes, which the checksums
+  rejected before anything was parsed; new host tests write inodes with valid checksums and
+  out-of-range, metadata, shared and self-pointing block pointers, impossible parents, kinds,
+  sizes and entry counts, and superblocks with valid checksums and impossible geometry, then
+  mount, walk, read, write, truncate, rename, remove and check: nothing may panic or hang.
+  Freeing a block that is already free is now `Corrupt` instead of counting it twice. FAT's
+  chain walk (`cluster_in_chain`) finds a chain that comes back on itself (Brent's method: one
+  cluster kept to compare with, moved at doubling distances, the state in the chain's cursor so
+  sequential reads find it too) and answers an I/O error; before, it walked up to the volume's
+  cluster count each time.
+- **The check.** The Linux programs boot test now runs with the offscreen display (D144) and
+  adds `linux-memory` (`tests/linux-memory`, our own source on musl): it maps a memory file as
+  large as memory (`ENOMEM`), maps 1 MiB pieces of one until `ENOMEM` and checks
+  `/proc/meminfo` still shows the reserve free, starts itself to touch twice memory's size of
+  anonymous memory and sees it ended by `SIGKILL`, fills socket pairs until `ENOMEM` within an
+  eighth of memory, opens window clients until `ENOMEM` within a quarter, and checks the memory
+  came back; the shell then answers the next line, on all three architectures.
+- **Decided by research.** The reserve's share and floor were kept and its ceiling lowered from
+  32 to 16 MiB: Linux's `min_free_kbytes` is about 1.3 MiB at 128 MiB, but EggOS has no reclaim
+  or swap, so the reserve is all its headroom, while the kernel's own transient needs grow with
+  CPUs and processes rather than memory. The quarter for window buffers was kept; a smaller
+  per-client cap was not taken, as a quarter of 128 MiB is about one client's 32 MiB anyway and
+  apps hold two buffers while resizing. The eighth for socket queues was kept, with the waiting
+  above instead of `ENOMEM` for a queue its reader can drain, so local IPC under load slows
+  down instead of failing.
+- **Benchmarks.** The fault path's frame comes from `allocate_for_user`, one compare more than
+  `allocate`; forking a thread asks the frame allocator once more. Both are expected within
+  noise of `linux_page_fault` and `linux_fork`; the build phase reports them (D122).
+- **Not yet.** Per-user and per-process memory limits (`RLIMIT_AS`, `RLIMIT_DATA`, cgroups)
+  come with users (M10) and part 54; an out-of-memory killer that picks the largest program;
+  a second tier that lets an ending program dip into half the reserve; page tables, kernel
+  objects and file descriptors are not counted against the reserve (they are bounded by the
+  other limits); the memory figures in a GUI (the task manager, part 48). The reserve and caps
+  were sized by reasoning and research, not by measuring the kernel's low-water mark during the
+  exhaustion test; the build phase measures it and adjusts the numbers if the kernel comes
+  within a frame of the bottom.

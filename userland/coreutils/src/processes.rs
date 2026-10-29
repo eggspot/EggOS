@@ -67,13 +67,14 @@ pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let Some([bytes, _, mebibytes, _]) = no_operands(output, arguments, b"bkm") else {
         return FAILURE;
     };
-    let mut values = [None::<u64>; 3];
+    let mut values = [None::<u64>; 4];
     let status = each_line(output, MEMORY, |_, line| {
         let mut parts = fields(line);
         let index = match parts.next() {
             Some(b"MemTotal:") => 0,
             Some(b"MemFree:") => 1,
             Some(b"MemAvailable:") => 2,
+            Some(b"KernelReserve:") => 3,
             _ => return ControlFlow::Continue(()),
         };
         values[index] = parts.next().and_then(parse_count);
@@ -82,7 +83,7 @@ pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     if status != 0 {
         return status;
     }
-    let [Some(total), Some(free), Some(available)] = values else {
+    let [Some(total), Some(free), Some(available), reserve] = values else {
         output.error(&[b"/proc/meminfo: no MemTotal, MemFree or MemAvailable"]);
         return FAILURE;
     };
@@ -99,6 +100,11 @@ pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.write_number(unit(value), 12);
     }
     output.write(b"\n");
+    if let Some(reserve) = reserve {
+        output.write(b"Reserve:");
+        output.write_number(unit(reserve), 11);
+        output.write(b"\n");
+    }
     0
 }
 
@@ -218,6 +224,25 @@ mod tests {
         let (status, _, errors) = run(free, proc(), &[c"x"]);
         assert_eq!(status, 1);
         assert_eq!(errors, "t: extra operand 'x'\n");
+    }
+
+    #[test]
+    fn free_shows_the_reserve_kept_for_the_kernel_when_there_is_one() {
+        let fake = Fake::default().with_directory("/proc", 0).with_file(
+            "/proc/meminfo",
+            0o444,
+            b"MemTotal:         131072 kB\nMemFree:          100000 kB\nMemAvailable:      95904 kB\n\
+              KernelReserve:      4096 kB\n",
+            0,
+        );
+        let (status, output, _) = run(free, fake, &[c"-m"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            output,
+            "               total        used        free      shared  buff/cache   available\n\
+             Mem:            128          30          97           0           0          93\n\
+             Reserve:          4\n"
+        );
     }
 
     #[test]

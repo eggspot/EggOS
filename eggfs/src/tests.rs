@@ -1,4 +1,4 @@
-use crate::layout::{BLOCK_SIZE, Geometry};
+use crate::layout::{BLOCK_SIZE, Geometry, INODE_SIZE, Inode, InodeKind};
 use crate::memory::MemoryDisk;
 use crate::{Contents, Error, Kind, MountError, Volume, format, probe};
 use std::collections::BTreeMap;
@@ -637,8 +637,7 @@ fn a_power_cut_after_any_write_recovers_a_committed_state() {
     }
 }
 
-#[test]
-fn corrupt_images_never_panic_or_hang() {
+fn sample_image() -> (Geometry, Vec<u8>) {
     let mut volume = mounted(512);
     let root = volume.root();
     let directory = volume
@@ -668,7 +667,53 @@ fn corrupt_images_never_panic_or_hang() {
         .unwrap();
     volume.commit().unwrap();
     let geometry = volume.geometry;
-    let base = volume.into_disk().image().to_vec();
+    (geometry, volume.into_disk().image().to_vec())
+}
+
+fn exercise(mut volume: Volume<MemoryDisk>) {
+    let _ = volume.check();
+    let mut pending = vec![volume.root()];
+    let mut visited = 0;
+    while let Some(directory) = pending.pop() {
+        visited += 1;
+        if visited > 200 {
+            break;
+        }
+        for position in 0..64 {
+            let Ok(Some(entry)) = volume.entry(directory, position) else {
+                break;
+            };
+            let _ = volume.attributes(entry.node);
+            let _ = volume.parent(entry.node);
+            let mut name = [0u8; crate::MAX_NAME];
+            let _ = volume.name(entry.node, &mut name);
+            match crate::kind_of(entry.node) {
+                Kind::Directory => pending.push(entry.node),
+                Kind::Regular => {
+                    let mut buffer = [0u8; 9000];
+                    let mut offset = 0;
+                    while offset < 200_000 {
+                        match volume.read(entry.node, offset, &mut buffer) {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => offset += read as u64,
+                        }
+                    }
+                    let _ = volume.write(entry.node, Some(10), b"overwrite", 1);
+                    let _ = volume.truncate(entry.node, 5, 1);
+                }
+            }
+        }
+        let _ = volume.create(directory, b"new", Kind::Regular, 0o644, 1);
+        let _ = volume.rename(directory, b"new", volume.root(), b"moved", false, 1);
+        let _ = volume.remove(directory, b"file3", false, 1);
+    }
+    let _ = volume.commit();
+    let _ = volume.check();
+}
+
+#[test]
+fn corrupt_images_never_panic_or_hang() {
+    let (geometry, base) = sample_image();
     let metadata_end = (geometry.data_start as usize + 24) * BLOCK_SIZE;
     let mut random = Random(0xdead_beef_cafe_f00d);
     let mut mounted_count = 0;
@@ -689,49 +734,120 @@ fn corrupt_images_never_panic_or_hang() {
                 *byte = random.next() as u8;
             }
         }
-        let Ok((mut volume, _)) = Volume::mount(MemoryDisk::from_image(image)) else {
+        let Ok((volume, _)) = Volume::mount(MemoryDisk::from_image(image)) else {
             continue;
         };
         mounted_count += 1;
-        let _ = volume.check();
-        let mut pending = vec![volume.root()];
-        let mut visited = 0;
-        while let Some(directory) = pending.pop() {
-            visited += 1;
-            if visited > 200 {
-                break;
-            }
-            for position in 0..64 {
-                let Ok(Some(entry)) = volume.entry(directory, position) else {
-                    break;
-                };
-                let _ = volume.attributes(entry.node);
-                let _ = volume.parent(entry.node);
-                let mut name = [0u8; crate::MAX_NAME];
-                let _ = volume.name(entry.node, &mut name);
-                match crate::kind_of(entry.node) {
-                    Kind::Directory => pending.push(entry.node),
-                    Kind::Regular => {
-                        let mut buffer = [0u8; 9000];
-                        let mut offset = 0;
-                        while offset < 200_000 {
-                            match volume.read(entry.node, offset, &mut buffer) {
-                                Ok(0) | Err(_) => break,
-                                Ok(read) => offset += read as u64,
-                            }
-                        }
-                        let _ = volume.write(entry.node, Some(10), b"overwrite", 1);
-                        let _ = volume.truncate(entry.node, 5, 1);
-                    }
-                }
-            }
-            let _ = volume.create(directory, b"new", Kind::Regular, 0o644, 1);
-            let _ = volume.rename(directory, b"new", volume.root(), b"moved", false, 1);
-            let _ = volume.remove(directory, b"file3", false, 1);
-        }
-        let _ = volume.commit();
-        let _ = volume.check();
+        exercise(volume);
     }
     assert!(mounted_count > 100);
     let _ = Geometry::decode(&base);
+}
+
+fn inode_bytes(geometry: &Geometry, number: u32) -> core::ops::Range<usize> {
+    let (block, at) = geometry.inode_location(number);
+    let start = block as usize * BLOCK_SIZE + at;
+    start..start + INODE_SIZE
+}
+
+fn live_inodes(geometry: &Geometry, image: &[u8]) -> Vec<(u32, Inode)> {
+    (1..geometry.inodes)
+        .filter_map(|number| {
+            let inode = Inode::decode(number, &image[inode_bytes(geometry, number)])?;
+            (inode.kind != InodeKind::Free).then_some((number, inode))
+        })
+        .collect()
+}
+
+#[test]
+fn hostile_inodes_with_valid_checksums_never_panic_or_hang() {
+    let (geometry, base) = sample_image();
+    let live = live_inodes(&geometry, &base);
+    assert!(live.len() > 14, "the root, two directories and the files");
+    let data_blocks = u64::from(geometry.blocks - geometry.data_start);
+    let mut random = Random(0x0bad_cafe_f00d_d00d);
+    let mut mounted_count = 0;
+    for _ in 0..500 {
+        let mut image = base.clone();
+        for _ in 0..1 + random.below(4) {
+            let (number, mut inode) = live[random.below(live.len() as u64) as usize];
+            let wild = random.next() as u32;
+            let data_block = geometry.data_start + random.below(data_blocks) as u32;
+            let metadata_block = random.below(u64::from(geometry.data_start)) as u32;
+            let slot = random.below(crate::layout::DIRECT_POINTERS as u64) as usize;
+            let level = random.below(3) as usize;
+            let other = live[random.below(live.len() as u64) as usize].0;
+            let sizes = [
+                u64::MAX,
+                u64::from(wild) << 20,
+                crate::volume::MAX_FILE_BYTES,
+            ];
+            match random.below(12) {
+                0 => inode.direct[slot] = wild,
+                1 => inode.direct[slot] = metadata_block,
+                2 => inode.direct[slot] = geometry.blocks,
+                3 => inode.indirect[level] = metadata_block,
+                4 => {
+                    inode.indirect[level] = data_block;
+                    let at = data_block as usize * BLOCK_SIZE;
+                    image[at..at + 4].copy_from_slice(&data_block.to_le_bytes());
+                }
+                5 => inode.indirect[level] = inode.direct[0],
+                6 => inode.parent = [0, number, other, wild, geometry.inodes][slot % 5],
+                7 => inode.entries = [u32::MAX, wild][slot % 2],
+                8 => inode.size = sizes[slot % 3],
+                9 => inode.child_directories = u32::MAX,
+                10 => {
+                    inode.kind = match inode.kind {
+                        InodeKind::Directory => InodeKind::Regular,
+                        _ => InodeKind::Directory,
+                    }
+                }
+                _ => {
+                    inode.size = (BLOCK_SIZE as u64) * u64::from(wild % 20_000);
+                    inode.direct = [data_block; crate::layout::DIRECT_POINTERS];
+                }
+            }
+            inode.encode(number, &mut image[inode_bytes(&geometry, number)]);
+        }
+        let Ok((volume, _)) = Volume::mount(MemoryDisk::from_image(image)) else {
+            continue;
+        };
+        mounted_count += 1;
+        exercise(volume);
+    }
+    assert!(mounted_count > 250);
+}
+
+#[test]
+fn a_superblock_with_a_valid_checksum_and_impossible_geometry_is_refused() {
+    let (geometry, base) = sample_image();
+    let impossible = [
+        Geometry {
+            blocks: u32::MAX,
+            ..geometry
+        },
+        Geometry {
+            data_start: geometry.blocks,
+            ..geometry
+        },
+        Geometry {
+            inode_table_blocks: geometry.inode_table_blocks + 1,
+            ..geometry
+        },
+        Geometry {
+            inodes: 0,
+            ..geometry
+        },
+        Geometry {
+            journal_blocks: 1,
+            ..geometry
+        },
+    ];
+    for hostile in impossible {
+        let mut image = base.clone();
+        image[..BLOCK_SIZE].copy_from_slice(&hostile.encode()[..]);
+        assert!(Geometry::decode(&image).is_none(), "{hostile:?}");
+        assert!(Volume::mount(MemoryDisk::from_image(image)).is_err());
+    }
 }

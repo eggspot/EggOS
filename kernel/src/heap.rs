@@ -16,6 +16,11 @@
 //! Interrupt and exception handlers must not allocate: the heap's lock does not mask
 //! interrupts (see [`LeafSpinLock`]), so a handler allocating while the code it interrupted holds
 //! the lock would wait forever. Threads on other CPUs wait for it (D43).
+//!
+//! The heap serves the kernel down to the last free frame: an allocation that fails stops the
+//! kernel. Growth a program drives (file contents in memory, socket and pipe buffers, new
+//! threads) asks [`may_grow_for_user`] first and fails with `ENOMEM` instead, leaving the
+//! frame allocator's reserve to the kernel (D155).
 
 use crate::memory::{self, FrameAllocator, MAX_ORDER};
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
@@ -259,6 +264,18 @@ impl Heap {
         class.next = frame;
         class.end = frame + FRAME_SIZE as usize;
         Some(())
+    }
+}
+
+/// Whether the kernel heap may grow by `bytes` for an allocation a program drives: the frame
+/// allocator keeps its reserve after it ([`memory::user_may_take_frames`], D155). A check, not
+/// a reservation: CPUs growing at once may each pass it, which the reserve's size absorbs. On
+/// the host, where the heap is not the global allocator, always true.
+pub fn may_grow_for_user(bytes: usize) -> bool {
+    if cfg!(target_os = "none") {
+        memory::user_may_take_frames((bytes as u64).div_ceil(FRAME_SIZE))
+    } else {
+        true
     }
 }
 

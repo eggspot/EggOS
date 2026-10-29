@@ -66,6 +66,18 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   services. Without a real-time clock the wall clock starts at 1970 at boot and the desktop's
   clock shows the uptime until the clock is set (D73). `/proc/driver/rtc` reads the hardware
   clock at most once a second and may be up to a second behind it in between.
+- **Memory has firm limits, and no swap** (D155). The kernel keeps a reserve for itself, a
+  thirty-second of memory (4 MiB at the run scripts' 128 MiB, at least 2 and at most 16 MiB),
+  that programs never get: `free` shows it on its `Reserve:` line and `/proc/meminfo` as
+  `KernelReserve`. A program that touches more memory than is left is ended with `SIGKILL`
+  (whichever program faulted, not the largest, as Linux's out-of-memory killer would choose);
+  a memory file, a window buffer, a pipe, a file in `/tmp`, a new thread or a socket's queue
+  that would take the reserve fails with `ENOMEM` (`ENOSPC` for writes to memory files and
+  `/tmp`). Window buffers hold at most 32 MiB per program and a quarter of memory for all
+  programs; local socket queues at most an eighth of memory together (a full queue makes its
+  writer wait for the reader; an empty one that cannot grow is `ENOMEM`). Disks are read
+  defensively: a damaged EggFS disk or a FAT volume whose cluster chain loops gives I/O errors
+  instead of hanging or crashing EggOS.
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
   Linux system-call layer, from the host folder (`--apps`), installed as apps (`app install`),
   or built into an image by `cargo xtask image --add` ([Linux programs](linux-programs.md),

@@ -59,6 +59,9 @@ fn grow_index(budget: &Budget, pages: &mut Vec<Option<Page>>, entries: usize) ->
 }
 
 fn zeroed_page() -> Option<Page> {
+    if !crate::heap::may_grow_for_user(PAGE_SIZE) {
+        return None;
+    }
     let mut page = Vec::new();
     page.try_reserve_exact(PAGE_SIZE).ok()?;
     page.resize(PAGE_SIZE, 0);

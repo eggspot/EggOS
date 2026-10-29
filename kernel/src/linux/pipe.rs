@@ -92,6 +92,9 @@ impl core::fmt::Debug for Pipe {
 impl Pipe {
     fn new(wake: fn()) -> Result<Arc<Self>, Errno> {
         static NEXT_INODE: AtomicU64 = AtomicU64::new(1);
+        if !crate::heap::may_grow_for_user(CAPACITY) {
+            return Err(Errno::ENOMEM);
+        }
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(CAPACITY)

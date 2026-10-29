@@ -136,6 +136,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-linux-memory"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-linux-sockets"
 version = "0.2.0"
 

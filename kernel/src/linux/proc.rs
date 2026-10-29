@@ -4,9 +4,10 @@
 //!
 //! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
 //!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
-//! - `meminfo`: `MemTotal`, `MemFree` and `MemAvailable` in kB, as Linux writes them: the
-//!   frames the allocator had once the kernel's page tables were built, and the frames it has
-//!   now (every free frame is available: there is no page cache to reclaim).
+//! - `meminfo`: `MemTotal`, `MemFree` and `MemAvailable` in kB, as Linux writes them, and
+//!   EggOS's `KernelReserve`: the frames the allocator had once the kernel's page tables were
+//!   built, the frames it has now, those programs can still take (every free frame but the
+//!   reserve kept for the kernel, D155: there is no page cache to reclaim) and the reserve.
 //! - `uptime`: the seconds since boot and the seconds CPUs spent idle, with two decimals, as
 //!   Linux writes them; idle time is not counted yet, so it is `0.00`.
 //! - `ps`: EggOS's own, one line per process in the process table, by id: its id, its
@@ -112,14 +113,16 @@ impl Write for Text {
     }
 }
 
-/// `/proc/meminfo`'s text for `total` and `free` frames.
-pub fn meminfo(total: u64, free: u64) -> Option<Vec<u8>> {
+/// `/proc/meminfo`'s text for `total` and `free` frames, `reserve` of them kept for the kernel
+/// (D155): what programs can still take is `MemAvailable`.
+pub fn meminfo(total: u64, free: u64, reserve: u64) -> Option<Vec<u8>> {
     let kilobytes = |frames: u64| frames * (FRAME_SIZE / 1024);
     let mut text = Text(Vec::new());
     for (name, frames) in [
         ("MemTotal", total),
         ("MemFree", free),
-        ("MemAvailable", free),
+        ("MemAvailable", free.saturating_sub(reserve)),
+        ("KernelReserve", reserve),
     ] {
         writeln!(
             text,
@@ -250,11 +253,10 @@ impl<P: Platform> FileSystem for Proc<P> {
     fn generate(&self, node: u64) -> Result<Option<Vec<u8>>, StorageError> {
         let generated = match node {
             MEMINFO => {
-                let free = memory::FRAMES
-                    .lock()
-                    .as_ref()
-                    .map_or(0, |frames| frames.free_frames());
-                meminfo(memory::total_frames(), free)
+                let (free, reserve) = memory::FRAMES.lock().as_ref().map_or((0, 0), |frames| {
+                    (frames.free_frames(), frames.user_reserve())
+                });
+                meminfo(memory::total_frames(), free, reserve)
             }
             UPTIME => uptime(P::clock_ticks(), P::clock_frequency()),
             PS => ps(),
@@ -288,10 +290,17 @@ mod tests {
 
     #[test]
     fn meminfo_is_in_kilobytes_aligned_as_linux_s() {
-        let text = meminfo(32768, 1000).unwrap();
+        let text = meminfo(32768, 1000, 0).unwrap();
         assert_eq!(
             core::str::from_utf8(&text).unwrap(),
-            "MemTotal:         131072 kB\nMemFree:            4000 kB\nMemAvailable:       4000 kB\n"
+            "MemTotal:         131072 kB\nMemFree:            4000 kB\nMemAvailable:       4000 kB\n\
+             KernelReserve:         0 kB\n"
+        );
+        let text = meminfo(32768, 1000, 1024 + 600).unwrap();
+        assert!(
+            core::str::from_utf8(&text)
+                .unwrap()
+                .ends_with("MemAvailable:          0 kB\nKernelReserve:      6496 kB\n")
         );
     }
 

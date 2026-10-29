@@ -29,6 +29,13 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// The most bytes queued towards one side of a connection.
 pub const QUEUE_CAPACITY: usize = 256 * 1024;
 
+/// Every connection's queues together hold at most `1 / QUEUE_MEMORY_SHARE` of memory: an
+/// eighth (D155). A queue that cannot grow past it, or past the reserve programs leave the
+/// kernel, makes its writer wait while it holds bytes, and is `ENOMEM` when it is empty.
+pub const QUEUE_MEMORY_SHARE: u64 = 8;
+
+static QUEUE_MEMORY: AtomicU64 = AtomicU64::new(0);
+
 /// The room a side's send queue needs for `poll` to report it writable, as pipes need
 /// `PIPE_BUF`.
 pub const WRITE_ROOM: usize = 4096;
@@ -196,9 +203,68 @@ impl Direction {
     }
 
     fn clear(&mut self) -> Vec<InFlightRights> {
-        self.bytes = VecDeque::new();
+        self.let_go_of_bytes();
         self.queued_rights = 0;
         self.rights.drain(..).collect()
+    }
+
+    fn growth_for(&self, count: usize) -> usize {
+        let held = self.bytes.capacity();
+        let needed = self.bytes.len() + count;
+        if needed <= held {
+            return 0;
+        }
+        (held * 2).clamp(needed, QUEUE_CAPACITY.max(needed)) - held
+    }
+
+    fn may_grow(growth: usize, every_queue_limit: u64) -> bool {
+        growth == 0
+            || (QUEUE_MEMORY
+                .load(Ordering::Relaxed)
+                .saturating_add(growth as u64)
+                <= every_queue_limit
+                && crate::heap::may_grow_for_user(growth))
+    }
+
+    fn can_take(&self, room: usize, every_queue_limit: u64) -> bool {
+        self.room() >= room
+            && (self.bytes.is_empty() || Self::may_grow(self.growth_for(1), every_queue_limit))
+    }
+
+    fn make_room(&mut self, count: usize, every_queue_limit: u64) -> Result<(), Errno> {
+        let growth = self.growth_for(count);
+        if growth == 0 {
+            return Ok(());
+        }
+        if !Self::may_grow(growth, every_queue_limit) {
+            return Err(Errno::ENOMEM);
+        }
+        let held = self.bytes.capacity();
+        self.bytes
+            .try_reserve_exact(held + growth - self.bytes.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        QUEUE_MEMORY.fetch_add((self.bytes.capacity() - held) as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn shrink_when_empty(&mut self) {
+        let held = self.bytes.capacity();
+        if !self.bytes.is_empty() || held <= WRITE_ROOM {
+            return;
+        }
+        self.bytes.shrink_to(WRITE_ROOM);
+        QUEUE_MEMORY.fetch_sub((held - self.bytes.capacity()) as u64, Ordering::Relaxed);
+    }
+
+    fn let_go_of_bytes(&mut self) {
+        QUEUE_MEMORY.fetch_sub(self.bytes.capacity() as u64, Ordering::Relaxed);
+        self.bytes = VecDeque::new();
+    }
+}
+
+impl Drop for Direction {
+    fn drop(&mut self) {
+        self.let_go_of_bytes();
     }
 }
 
@@ -293,9 +359,11 @@ impl Connection {
     }
 
     /// Queues up to all of `bytes` from `from` towards its peer, with `rights` before the
-    /// first of them if given (taken then): how many, 0 when the queue is full. `EPIPE` once
-    /// the peer is gone or either side shut the way down, `ETOOMANYREFS` past the limits on
-    /// queued descriptors, `ENOMEM` without memory for the queue.
+    /// first of them if given (taken then): how many, 0 when the queue is full, or when it
+    /// cannot grow (every queue at [`QUEUE_MEMORY_SHARE`] of memory, or the free frames at the
+    /// reserve) while it holds bytes its peer will read. `EPIPE` once the peer is gone or either
+    /// side shut the way down, `ETOOMANYREFS` past the limits on queued descriptors, `ENOMEM`
+    /// when an empty queue cannot grow.
     pub fn send(
         &self,
         from: Side,
@@ -312,10 +380,15 @@ impl Connection {
             return Ok(0);
         }
         let direction = &mut state.towards[to];
-        direction
-            .bytes
-            .try_reserve(count)
-            .map_err(|_| Errno::ENOMEM)?;
+        let limit = crate::memory::share_of_memory(QUEUE_MEMORY_SHARE);
+        let count = match direction.make_room(count, limit) {
+            Ok(()) => count,
+            Err(error) => match direction.make_room(1, limit) {
+                Ok(()) => count.min(direction.bytes.capacity() - direction.bytes.len()),
+                Err(_) if !direction.bytes.is_empty() => return Ok(0),
+                Err(_) => return Err(error),
+            },
+        };
         if let Some(outgoing) = rights.as_ref() {
             let files = outgoing.files.len();
             if direction.queued_rights + files > MAX_QUEUED_RIGHTS {
@@ -392,6 +465,7 @@ impl Connection {
         direction.copy_out(0, &mut out[..count]);
         direction.bytes.drain(..count);
         direction.taken += count as u64;
+        direction.shrink_when_empty();
         let rights = group.map(|group| state.let_go(alloc::vec![group]));
         Taken::Bytes { count, rights }
     }
@@ -440,7 +514,8 @@ impl Connection {
     /// Whether a write on `side` would not wait: room queued towards the peer, or an error.
     pub fn can_send(&self, side: Side) -> bool {
         let state = self.state.lock();
-        state.send_shut(side) || state.towards[side.other().index()].room() > 0
+        let limit = crate::memory::share_of_memory(QUEUE_MEMORY_SHARE);
+        state.send_shut(side) || state.towards[side.other().index()].can_take(1, limit)
     }
 
     /// The bytes queued towards `side` (`FIONREAD`).
@@ -515,7 +590,8 @@ impl Connection {
         if state.reset[index] {
             events |= event::ERR;
         }
-        if state.towards[side.other().index()].room() >= WRITE_ROOM {
+        let limit = crate::memory::share_of_memory(QUEUE_MEMORY_SHARE);
+        if state.towards[side.other().index()].can_take(WRITE_ROOM, limit) {
             events |= requested & (event::OUT | event::WRNORM);
         }
         events

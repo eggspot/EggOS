@@ -168,6 +168,29 @@ fn a_sparse_file_takes_no_frames_and_allocate_fills_and_grows_it() {
 }
 
 #[test]
+fn mappings_and_writes_stop_at_the_reserve_programs_leave_the_kernel() {
+    let _frames = frames_for_test();
+    let free = free_frames();
+    FRAMES.lock().as_mut().unwrap().set_user_reserve(free - 3);
+    let file = MemoryFile::new(0);
+    file.truncate(16 * PAGE_BYTES).unwrap();
+    assert!(matches!(
+        file.mapping(0, 4 * PAGE_BYTES, true),
+        Err(Errno::ENOMEM)
+    ));
+    assert_eq!(file.frames_held(), 0);
+    let mapping = file.mapping(0, 3 * PAGE_BYTES, true).unwrap();
+    assert_eq!(file.frames_held(), 3);
+    assert_eq!(free_frames(), free - 3);
+    assert_eq!(file.write_at(5 * PAGE_BYTES, b"x"), Err(Errno::ENOSPC));
+    assert_eq!(file.allocate(8 * PAGE_BYTES, 1), Err(Errno::ENOSPC));
+    drop(mapping);
+    drop(file);
+    FRAMES.lock().as_mut().unwrap().set_user_reserve(0);
+    assert_eq!(free_frames(), free);
+}
+
+#[test]
 fn a_file_s_frames_go_back_when_it_is_dropped() {
     let _frames = frames_for_test();
     let warm = MemoryFile::new(0);

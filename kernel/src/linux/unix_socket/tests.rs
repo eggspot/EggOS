@@ -514,3 +514,41 @@ fn descriptors_in_flight_are_capped_in_all_and_per_direction() {
     drop((connection, last, back));
     assert_eq!(in_flight(), 0);
 }
+
+#[test]
+fn a_queue_grows_only_within_every_queue_s_limit_and_shrinks_once_read() {
+    let mut direction = Direction::default();
+    assert_eq!(direction.make_room(10, 0), Err(Errno::ENOMEM));
+    assert_eq!(
+        direction.bytes.capacity(),
+        0,
+        "a refused growth takes nothing"
+    );
+    direction.make_room(3 * WRITE_ROOM, u64::MAX).unwrap();
+    let grown = direction.bytes.capacity();
+    assert!(grown >= 3 * WRITE_ROOM);
+    direction.bytes.extend(&vec![7u8; 3 * WRITE_ROOM]);
+    let spare = grown - direction.bytes.len();
+    assert!(direction.can_take(1, u64::MAX));
+    if spare == 0 {
+        assert!(
+            !direction.can_take(1, 0),
+            "full, and every queue at its cap"
+        );
+    }
+    assert_eq!(
+        direction.make_room(spare, 0),
+        Ok(()),
+        "room the buffer has needs no growth"
+    );
+    direction.bytes.drain(..WRITE_ROOM);
+    direction.shrink_when_empty();
+    assert_eq!(direction.bytes.capacity(), grown, "not empty yet");
+    direction.bytes.drain(..);
+    direction.shrink_when_empty();
+    assert!(direction.bytes.capacity() < grown);
+    assert!(direction.bytes.capacity() >= WRITE_ROOM.min(grown));
+    let rights = direction.clear();
+    assert!(rights.is_empty());
+    assert_eq!(direction.bytes.capacity(), 0);
+}

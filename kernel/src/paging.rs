@@ -917,6 +917,7 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     unsafe { P::activate_page_tables(page_tables.roots()) };
     page_tables.mark_active();
     memory::record_total_frames(frames.free_frames());
+    frames.set_user_reserve(memory::user_reserve_for(frames.free_frames()));
     *memory::FRAMES.lock() = Some(frames);
     Ok(Memory { page_tables })
 }

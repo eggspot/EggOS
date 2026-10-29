@@ -8,6 +8,12 @@
 //! contiguous frames (heap allocations over a frame, DMA, huge pages) come from a buddy
 //! allocator behind those fast paths, whose one bit of metadata per frame is written only once
 //! it is first used (D31).
+//!
+//! Allocations a program drives (its pages at fault time, shared memory files, window buffers,
+//! socket and pipe buffers, file contents in memory, new threads) leave the kernel a reserve
+//! of free frames ([`user_reserve_for`], D155): they fail with `ENOMEM` (or end the program,
+//! at a page fault) once free frames would drop below it, so the kernel's own allocations,
+//! which cannot fail, always find memory.
 
 use crate::paging::PageTables;
 use crate::sync::LeafSpinLock;
@@ -39,6 +45,49 @@ pub fn total_frames() -> u64 {
     TOTAL_FRAMES.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// `1 / divisor` of the memory programs can have ([`total_frames`]), in bytes: what the global
+/// caps on window buffers and socket buffers are; no cap (`u64::MAX`) before the total is
+/// recorded, and on the host, where the frame allocator is not the machine's memory.
+pub fn share_of_memory(divisor: u64) -> u64 {
+    match total_frames() {
+        frames if frames > 0 && cfg!(target_os = "none") => frames * FRAME_SIZE / divisor.max(1),
+        _ => u64::MAX,
+    }
+}
+
+/// The part of memory the reserve is: 1/32 (D155).
+pub const USER_RESERVE_SHARE: u64 = 32;
+/// The smallest reserve: 512 frames, 2 MiB (D155).
+pub const MIN_USER_RESERVE_FRAMES: u64 = 512;
+/// The largest reserve: 4096 frames, 16 MiB (D155).
+pub const MAX_USER_RESERVE_FRAMES: u64 = 4096;
+
+/// The frames allocations programs drive leave free for the kernel, on a machine whose
+/// programs can have `total` frames: [`USER_RESERVE_SHARE`] of them, at least
+/// [`MIN_USER_RESERVE_FRAMES`] and at most [`MAX_USER_RESERVE_FRAMES`], but never more than a
+/// quarter of `total` (D155).
+pub const fn user_reserve_for(total: u64) -> u64 {
+    let share = total / USER_RESERVE_SHARE;
+    let clamped = if share < MIN_USER_RESERVE_FRAMES {
+        MIN_USER_RESERVE_FRAMES
+    } else if share > MAX_USER_RESERVE_FRAMES {
+        MAX_USER_RESERVE_FRAMES
+    } else {
+        share
+    };
+    let quarter = total / 4;
+    if clamped < quarter { clamped } else { quarter }
+}
+
+/// Whether a program may take `frames` more frames now: the free frames stay at or above the
+/// reserve after it. True before there is a frame allocator.
+pub fn user_may_take_frames(frames: u64) -> bool {
+    FRAMES
+        .lock()
+        .as_ref()
+        .is_none_or(|allocator| allocator.user_may_take(frames))
+}
+
 /// Marks the end of the free stack. Never a frame address: frames are aligned to
 /// [`FRAME_SIZE`].
 const NO_FRAME: u64 = u64::MAX;
@@ -57,6 +106,7 @@ pub struct FrameAllocator {
     free_stack: u64,
     /// Frames that [`Self::allocate`] can still return.
     free_frames: u64,
+    user_reserve: u64,
     physical_memory_offset: usize,
     /// Free blocks of contiguous frames (D31).
     buddy: Buddy,
@@ -78,6 +128,7 @@ impl FrameAllocator {
             untouched_ranges: rest.len(),
             free_stack: NO_FRAME,
             free_frames: map.total() / FRAME_SIZE,
+            user_reserve: 0,
             physical_memory_offset,
             buddy: Buddy::new(PhysicalRange::default(), 0),
         };
@@ -122,6 +173,42 @@ impl FrameAllocator {
     /// Frames that [`Self::allocate`] can still return.
     pub fn free_frames(&self) -> u64 {
         self.free_frames
+    }
+
+    /// Makes the `*_for_user` allocations leave `frames` free frames (0 at first:
+    /// [`crate::paging::enable`] sets [`user_reserve_for`] the machine's frames).
+    pub fn set_user_reserve(&mut self, frames: u64) {
+        self.user_reserve = frames;
+    }
+
+    /// The frames the `*_for_user` allocations leave free.
+    pub fn user_reserve(&self) -> u64 {
+        self.user_reserve
+    }
+
+    /// Whether `frames` more frames can go to a program: the free frames stay at or above the
+    /// reserve after it.
+    pub fn user_may_take(&self, frames: u64) -> bool {
+        self.free_frames >= self.user_reserve.saturating_add(frames)
+    }
+
+    /// As [`Self::allocate`], for memory a program drives: `None` too when the free frames are
+    /// down to the reserve.
+    #[inline]
+    pub fn allocate_for_user(&mut self) -> Option<u64> {
+        if self.free_frames <= self.user_reserve {
+            return None;
+        }
+        self.allocate()
+    }
+
+    /// As [`Self::allocate_contiguous`], for memory a program drives: `None` too when the
+    /// block would take the free frames below the reserve.
+    pub fn allocate_contiguous_for_user(&mut self, order: u32) -> Option<u64> {
+        if order > MAX_ORDER || !self.user_may_take(1 << order) {
+            return None;
+        }
+        self.allocate_contiguous(order)
     }
 
     /// The physical address of a free frame, now owned by the caller; `None` when memory is
@@ -862,6 +949,50 @@ mod tests {
             let used: u64 = owned.iter().map(|&(_, order)| 1 << order).sum();
             assert_eq!(frames.free_frames() + used, total);
         }
+    }
+
+    #[test]
+    fn allocations_for_programs_stop_at_the_reserve_and_the_kernel_s_do_not() {
+        let mut arena = Arena::new(0x40_0000, 64);
+        let b = arena.base;
+        let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 64 * K)]), arena.offset());
+        let total = frames.free_frames();
+        frames.set_user_reserve(total - 6);
+        assert_eq!(frames.user_reserve(), total - 6);
+        assert!(frames.user_may_take(6));
+        assert!(!frames.user_may_take(7));
+        assert_eq!(frames.allocate_contiguous_for_user(3), None);
+        let block = frames.allocate_contiguous_for_user(2).unwrap();
+        assert_eq!(block % (4 * K), 0);
+        let user: Vec<u64> = core::iter::from_fn(|| frames.allocate_for_user()).collect();
+        assert_eq!(user.len(), 2);
+        assert_eq!(frames.free_frames(), frames.user_reserve());
+        assert_eq!(frames.allocate_contiguous_for_user(MAX_ORDER + 1), None);
+        let kernel = frames.allocate().unwrap();
+        assert_eq!(frames.free_frames(), frames.user_reserve() - 1);
+        assert_eq!(frames.allocate_for_user(), None);
+        for frame in user.into_iter().chain([kernel]) {
+            // SAFETY: every frame came from this allocator and is not used any more.
+            unsafe { frames.free(frame) };
+        }
+        // SAFETY: allocated above with order 2, not used any more.
+        unsafe { frames.free_contiguous(block, 2) };
+        assert_eq!(frames.free_frames(), total);
+        frames.set_user_reserve(0);
+        assert_eq!(
+            core::iter::from_fn(|| frames.allocate_for_user()).count() as u64,
+            total
+        );
+    }
+
+    #[test]
+    fn the_reserve_is_a_thirty_second_of_memory_within_its_bounds() {
+        assert_eq!(user_reserve_for(32_768), 1024);
+        assert_eq!(user_reserve_for(30_000), 937);
+        assert_eq!(user_reserve_for(8192), MIN_USER_RESERVE_FRAMES);
+        assert_eq!(user_reserve_for(1 << 22), MAX_USER_RESERVE_FRAMES);
+        assert_eq!(user_reserve_for(1000), 250, "never more than a quarter");
+        assert_eq!(user_reserve_for(0), 0);
     }
 
     #[test]
