@@ -114,7 +114,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       volumes:
         - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk:ro
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
@@ -135,48 +135,9 @@ jobs:
             target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
             target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
-      - name: Wait for the Mach-O test programs
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run=${{ github.run_id }}; repo=${{ github.repository }}
-          for attempt in $(seq 1 120); do
-            if gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx macos-programs; then
-              gh run download "$run" --repo "$repo" --name macos-programs --dir target/macos-programs
-              exit 0
-            fi
-            state=$(gh api "repos/$repo/actions/runs/$run/jobs" --jq '.jobs[] | select(.name == "macos-programs") | .conclusion // ""')
-            case "$state" in
-              failure|cancelled|skipped|timed_out) echo "macos-programs: $state"; exit 1;;
-              success) gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx macos-programs || { echo "macos-programs finished without its artifact"; exit 1; };;
-            esac
-            sleep 5
-          done
-          echo "macos-programs: no artifact after 10 minutes"; exit 1
-
-      - name: Wait for the MSVC test programs
-        if: github.event_name == 'pull_request' && matrix.arch != 'riscv64'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run=${{ github.run_id }}; repo=${{ github.repository }}
-          for attempt in $(seq 1 120); do
-            if gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx windows-programs; then
-              gh run download "$run" --repo "$repo" --name windows-programs --dir target/windows-programs
-              exit 0
-            fi
-            state=$(gh api "repos/$repo/actions/runs/$run/jobs" --jq '.jobs[] | select(.name == "windows-programs") | .conclusion // ""')
-            case "$state" in
-              failure|cancelled|skipped|timed_out) echo "windows-programs: $state"; exit 1;;
-              success) gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx windows-programs || { echo "windows-programs finished without its artifact"; exit 1; };;
-            esac
-            sleep 5
-          done
-          echo "windows-programs: no artifact after 10 minutes"; exit 1
-
       - name: QEMU boot tests
         env:
+          GH_TOKEN: ${{ github.token }}
           EGGOS_MACOS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/macos-programs' || '' }}
           EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && matrix.arch != 'riscv64' && 'target/windows-programs' || '' }}
         run: cargo xtask qemu --arch ${{ matrix.arch }}

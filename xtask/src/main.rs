@@ -6,6 +6,7 @@
 
 mod android;
 mod bench;
+mod ci_artifact;
 mod elf;
 mod image;
 mod initramfs;

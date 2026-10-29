@@ -14,6 +14,7 @@ use super::super::console::standard_handle;
 use super::super::file::fd_of;
 use super::super::heap as process_heap;
 use super::runtime::{binary_by_default, errno, errno_for_linux, set_errno};
+use crate::counted_print::{self, Convention, Fault};
 use crate::library::Export;
 use crate::linux;
 use crate::stream::{Backing, Buffering, Mode, Origin, Stream};
@@ -28,7 +29,6 @@ const LINUX_EBADF: u16 = 9;
 const LINUX_EACCES: u16 = 13;
 const O_APPEND: usize = 0o2000;
 const LEGACY_WIDE_SPECIFIERS: u64 = 0x4;
-const STANDARD_SNPRINTF_BEHAVIOR: u64 = 0x2;
 const TRUNCATE: usize = usize::MAX;
 
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +65,7 @@ type File = Stream<Descriptor>;
 struct Streams {
     open: [*mut File; MAX_STREAMS],
     last_used: usize,
+    standard_closed: [bool; STANDARD_STREAMS],
 }
 
 impl Streams {
@@ -98,8 +99,9 @@ unsafe impl Send for Streams {}
 static STREAMS: SpinLock<Streams> = SpinLock::new(Streams {
     open: [ptr::null_mut(); MAX_STREAMS],
     last_used: 0,
+    standard_closed: [false; STANDARD_STREAMS],
 });
-const EXIT_LOCK_ATTEMPTS: u32 = 1024;
+const EXIT_LOCK_WAIT_NANOSECONDS: u64 = 100_000_000;
 
 fn letters(text: &[u8]) -> impl Iterator<Item = u32> + Clone + '_ {
     text.iter().map(|&byte| u32::from(byte))
@@ -115,7 +117,7 @@ fn new_stream(stream: File) -> *mut File {
 }
 
 fn standard_stream(streams: &mut Streams, index: usize) -> *mut File {
-    if streams.open[index].is_null() {
+    if streams.open[index].is_null() && !streams.standard_closed[index] {
         let fd = fd_of(standard_handle(index));
         let (letter, buffering) = match index {
             0 => (b"r", Buffering::Full),
@@ -147,20 +149,13 @@ fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut File) ->
 }
 
 /// Writes out every stream's buffer and gives back what reading streams read ahead, as `exit`
-/// does.
-pub fn flush_all() {
-    STREAMS.with(|streams| {
-        streams.each_open(|file| {
-            let _ = file.flush();
-        })
-    });
-}
-
-/// Writes out every stream's buffer as [`flush_all`] does, for `ExitProcess`, unless another
-/// thread keeps the streams' lock past a short wait (blocked reading `stdin`, say): the process
-/// ends then rather than waiting for it.
-pub fn flush_all_at_process_exit() {
-    let _ = STREAMS.try_with(EXIT_LOCK_ATTEMPTS, |streams| {
+/// and `ExitProcess` do, unless another thread keeps the streams' lock for 100 ms (blocked
+/// reading `stdin`, say): the process ends then rather than waiting for it.
+pub fn flush_all_at_exit() {
+    let deadline =
+        linux::clock_nanoseconds(linux::CLOCK_MONOTONIC).saturating_add(EXIT_LOCK_WAIT_NANOSECONDS);
+    let past_deadline = || linux::clock_nanoseconds(linux::CLOCK_MONOTONIC) >= deadline;
+    let _ = STREAMS.try_with(past_deadline, |streams| {
         streams.each_open(|file| {
             let _ = file.flush();
         })
@@ -223,8 +218,11 @@ fn open(
         let _ = linux::close(fd);
         return refuse_linux(LINUX_EACCES);
     }
-    if mode.temporary {
-        let _ = linux::remove(&eggos_path[..length], 0);
+    if mode.temporary
+        && let Err(error) = linux::remove(&eggos_path[..length], 0)
+    {
+        let _ = linux::close(fd);
+        return refuse_linux(error.0);
     }
     let block = new_stream(Stream::new(
         Descriptor { fd: Some(fd) },
@@ -324,11 +322,14 @@ unsafe extern "efiapi" fn wfopen_s(out: *mut *mut File, path: *const u16, mode: 
 
 unsafe extern "efiapi" fn fclose(stream: *mut File) -> i32 {
     let closed = STREAMS.with(|streams| {
-        let slot = streams
+        let index = streams
             .open
-            .iter_mut()
-            .find(|slot| **slot == stream && !stream.is_null())?;
-        *slot = ptr::null_mut();
+            .iter()
+            .position(|&open| open == stream && !stream.is_null())?;
+        streams.open[index] = ptr::null_mut();
+        if let Some(closed) = streams.standard_closed.get_mut(index) {
+            *closed = true;
+        }
         // SAFETY: an open stream of the table, which is now out of it.
         let file = unsafe { &mut *stream };
         let flushed = file.flush();
@@ -726,15 +727,37 @@ impl Output for BufferOutput<u8> {
     }
 }
 
+impl BufferOutput<u16> {
+    fn push_character(&mut self, character: char) {
+        let mut units = [0u16; 2];
+        for &unit in character.encode_utf16(&mut units).iter() {
+            self.push(unit);
+        }
+    }
+}
+
 impl Output for BufferOutput<u16> {
     fn write(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             for character in self.decoder.push(byte).into_iter().flatten() {
-                let mut units = [0u16; 2];
-                for &unit in character.encode_utf16(&mut units).iter() {
-                    self.push(unit);
-                }
+                self.push_character(character);
             }
+        }
+    }
+}
+
+trait FinishedOutput: Output {
+    fn finish(&mut self);
+}
+
+impl FinishedOutput for BufferOutput<u8> {
+    fn finish(&mut self) {}
+}
+
+impl FinishedOutput for BufferOutput<u16> {
+    fn finish(&mut self) {
+        if let Some(replacement) = self.decoder.finish() {
+            self.push_character(replacement);
         }
     }
 }
@@ -871,35 +894,35 @@ unsafe fn format_into<T: Copy + Default>(
     capacity: usize,
 ) -> BufferOutput<T>
 where
-    BufferOutput<T>: Output,
+    BufferOutput<T>: FinishedOutput,
 {
     let mut output = BufferOutput::new(buffer, capacity);
     // SAFETY: the caller's duty: `capacity` writable units and a matching `va_list`.
     unsafe { render(dialect, format, arguments, &mut output) };
+    output.finish();
     output
 }
 
 fn counted_result<T: Copy + Default>(
     output: &mut BufferOutput<T>,
     count: usize,
-    standard: bool,
+    options: u64,
 ) -> i32 {
-    let produced = output.length;
-    if output.capacity == 0 {
-        return if count == 0 { produced as i32 } else { -1 };
+    let ending = counted_print::ending(
+        Convention::of_options(options),
+        output.length,
+        count,
+        !output.start.is_null(),
+    );
+    if let Some(at) = ending.terminator_at {
+        output.terminate_at(at);
     }
-    if standard {
-        output.terminate_at(produced.min(count - 1));
-        return produced as i32;
+    match ending.fault {
+        Some(Fault::InvalidParameter) => set_errno(errno::EINVAL),
+        Some(Fault::Range) => set_errno(errno::ERANGE),
+        None => {}
     }
-    match produced.cmp(&count) {
-        core::cmp::Ordering::Less => {
-            output.terminate_at(produced);
-            produced as i32
-        }
-        core::cmp::Ordering::Equal => produced as i32,
-        core::cmp::Ordering::Greater => -1,
-    }
+    ending.result
 }
 
 fn checked_result<T: Copy + Default>(
@@ -938,11 +961,7 @@ unsafe extern "efiapi" fn vsprintf(
     };
     // SAFETY: its contract: `count` writable bytes and a matching `va_list`.
     let mut output = unsafe { format_into(narrow_dialect(), format, arguments, buffer, count) };
-    counted_result(
-        &mut output,
-        count,
-        options & STANDARD_SNPRINTF_BEHAVIOR != 0,
-    )
+    counted_result(&mut output, count, options)
 }
 
 unsafe extern "efiapi" fn vsprintf_s(
@@ -1004,11 +1023,7 @@ unsafe extern "efiapi" fn vswprintf(
     let dialect = wide_dialect(options);
     // SAFETY: its contract: `count` writable units and a matching `va_list`.
     let mut output = unsafe { format_into(dialect, format.bytes(), arguments, buffer, count) };
-    counted_result(
-        &mut output,
-        count,
-        options & STANDARD_SNPRINTF_BEHAVIOR != 0,
-    )
+    counted_result(&mut output, count, options)
 }
 
 unsafe extern "efiapi" fn vswprintf_s(

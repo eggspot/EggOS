@@ -2,7 +2,8 @@
 //! starts with `MZ`, and it runs that Windows console or GUI program (D129) natively on x86_64
 //! (x64 programs) and aarch64 (ARM64 programs, D124). The PE format, the image's layout,
 //! relocations and imports, UTF-16 text, the command line, the GUI's tables (`gui/`) and the C
-//! runtime's streams and numbers (`stream.rs`, `c_text.rs`) are pure logic with host tests;
+//! runtime's streams, numbers and counted `printf` endings (`stream.rs`, `c_text.rs`,
+//! `counted_print.rs`) are pure logic with host tests;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports.
 
@@ -15,6 +16,8 @@ mod c_text;
 mod calendar;
 #[cfg(any(test, runs_windows_programs))]
 mod command_line;
+#[cfg(any(test, runs_windows_programs))]
+mod counted_print;
 #[cfg(any(test, runs_windows_programs))]
 mod errors;
 #[cfg(any(test, runs_windows_programs))]

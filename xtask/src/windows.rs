@@ -47,6 +47,7 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         let programs = Programs {
             directory: PathBuf::from(directory),
         };
+        crate::ci_artifact::fetch_when_built("windows-programs", &programs.directory)?;
         for program in PROGRAMS {
             for target in TARGETS {
                 let path = programs.path(program, target);

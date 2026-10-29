@@ -123,8 +123,10 @@ holds what used to be written in them.
   programs come from `EGGOS_WINDOWS_PROGRAMS` (a folder of `<program>-<x64|arm64>.exe` files)
   or, on a Windows host with Visual Studio's C++ tools, `cargo xtask windows-programs` builds
   them (`vswhere`, `vcvarsall.bat`, `cl /MD /O2 /W3 /WX`); otherwise the test is skipped with a
-  message, but fails when `CI` is set. CI builds them in its `windows-programs` job, and the
-  `qemu` jobs wait for that artifact before their boot tests (D146).
+  message, but fails when `CI` is set. CI builds them in its `windows-programs` job; in the
+  `qemu` jobs xtask waits for that artifact (up to 25 minutes, `xtask/src/ci_artifact.rs`) just
+  before this boot test, so the MSVC build overlaps the kernels' build and the earlier boot tests
+  (D146).
 - **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
   `no_std` static library defining `main`, for `aarch64-linux-android` or
   `x86_64-linux-android`, links it with the Android NDK's clang (`--target=<triple>29 -static`,
@@ -145,8 +147,8 @@ holds what used to be written in them.
   `Exec format error` and 126. The programs come from `EGGOS_MACOS_PROGRAMS` (a folder of
   `<program>-<cpu>` files) or, on a macOS host, `cargo xtask macos-programs` builds them;
   otherwise the test is skipped with a message, but fails when `CI` is set. CI builds them in
-  its `macos-programs` job, and the `qemu` jobs wait for that artifact before their boot tests
-  (D120).
+  its `macos-programs` job; in the `qemu` jobs xtask waits for that artifact just before the
+  first boot test that needs it (D120, D146).
 - **The macOS GUI boot test** (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64) takes
   `mac-paint`, our AppKit test app built from `tests/macos-gui/main.m` with the other macOS
   programs (`-framework AppKit -framework Foundation`), writes `mac-paint.app` (its
@@ -310,8 +312,10 @@ holds what used to be written in them.
 - **Jobs run in the CI image** (below), with QEMU, OpenSBI and the pinned toolchain preinstalled
   (`packages: read` to pull it). CI always runs in `main`'s image, so a change that needs something
   new in the image lands in its own PR first. The `qemu` jobs mount the runner's Android NDKs for
-  the Android programs boot test (D119) and, on PRs, wait for the `macos-programs` and
-  `windows-programs` artifacts before their boot tests (D120, D146).
+  the Android programs boot test (D119) and, on PRs, fetch the `macos-programs` and
+  `windows-programs` artifacts through xtask just before the boot tests that run them, waiting
+  for them when their jobs are still building (D120, D146); their 40-minute timeout covers the
+  boot tests plus a Windows job that takes its whole 15 minutes.
 - **Benchmarks are report-only (D122).** Each `bench` job runs `cargo xtask bench --arch <arch>
   --report-only`: every result is compared with `benchmarks/baseline.txt` and written to the job
   summary and to `target/bench/report.json` and `report.md`; the job fails only for a result more

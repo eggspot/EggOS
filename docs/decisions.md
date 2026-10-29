@@ -9201,9 +9201,18 @@ the license, by an explicit instruction recorded here.
   default `_CRT_INTERNAL_PRINTF_LEGACY_WIDE_SPECIFIERS`), `%s` and `%c` wide. `printf` itself
   is inline in Microsoft's headers; programs import `__stdio_common_vfprintf` and its family,
   whose `va_list` is a pointer to 8-byte slots on x64 and ARM64 alike. The wide functions
-  format UTF-8: `swprintf` and its family convert it to UTF-16 in the caller's buffer, while
-  `fwprintf` and `wprintf` write the UTF-8 bytes to the stream (streams are byte streams; wide
-  streams are in "Not yet") and return the count of UTF-16 units. A width and a number's
+  format UTF-8: `swprintf` and its family convert it to UTF-16 in the caller's buffer (an
+  output that ends inside a UTF-8 sequence, from a narrow `%hs` argument, ends with U+FFFD),
+  while `fwprintf` and `wprintf` write the UTF-8 bytes to the stream (streams are byte streams;
+  wide streams are in "Not yet") and return the count of UTF-16 units. The counted functions
+  follow the options word's convention, as Microsoft documents each (`counted_print.rs`, host
+  tests): `snprintf` (`STANDARD_SNPRINTF_BEHAVIOR`) always ends the buffer at `count - 1` at
+  most and returns the whole length; `_snprintf`, `_vsnwprintf` and `sprintf`
+  (`LEGACY_VSPRINTF_NULL_TERMINATION`) end it only when the output is shorter than `count`,
+  return `count` for an exact fit and -1 for a longer output, and -1 with `ERANGE` for a buffer
+  with a count of 0; ISO `swprintf` and `vswprintf` (neither bit) always end it at `count - 1`
+  at most and return -1 when the output takes `count` units or more. A null buffer with a count
+  of 0 measures; with a count it is `EINVAL`. A width and a number's
   precision are capped at 4096 characters of padding, but a string's precision only bounds
   how much is read, so `%.*s` with 10000 writes all 10000 bytes; this holds for the macOS
   layer's `printf` too.
@@ -9213,16 +9222,20 @@ the license, by an explicit instruction recorded here.
   Ctrl+Z, as Microsoft documents for `fopen`; `ftell` and `fseek` count the file's own bytes in
   either mode. `stdin`, `stdout` and `stderr` are descriptors 0 to 2, made on first use: a GUI
   program's are missing where they would be the terminal, as its standard handles are (D129);
-  a terminal's `stdout` is line buffered, `stderr` unbuffered. `exit` runs the `atexit` table,
-  then flushes every stream; `ExitProcess` flushes them too, as the Universal C Runtime does
-  when the process detaches it (unless another thread keeps the streams' lock, say blocked
-  reading `stdin`: the process then ends without waiting). `fflush(NULL)` writes out only
+  a terminal's `stdout` is line buffered, `stderr` unbuffered. Once the program closes one with
+  `fclose`, it stays closed (`EINVAL` from then on), so a later `fopen` that gets descriptor 1
+  does not become `stdout`. `exit` runs the `atexit` table, then flushes every stream;
+  `ExitProcess` flushes them too, as the Universal C Runtime does when the process detaches it.
+  Both wait at most 100 ms (by the monotonic clock) for the streams' lock: when another thread
+  keeps it longer, say blocked reading `stdin`, the process ends without flushing rather than
+  waiting for a line. `fflush(NULL)` writes out only
   streams whose last operation was a write, as C11 and Microsoft define it; `fflush` on a
   reading stream gives back what it read ahead when the file can seek and otherwise keeps it
   for the next read (a pipe or terminal loses no input), dropping only an `ungetc` byte.
   `fopen`'s `D` (temporary) removes the file's name right after opening, so the file goes when
-  the stream closes; other programs cannot open it by name meanwhile, as they could on
-  Windows until the close.
+  the stream closes, and refuses the open with the removal's error when the name cannot be
+  removed; other programs cannot open it by name meanwhile, as they could on Windows until the
+  close.
 - **`errno`** lives in each thread's TEB, past the documented part (after the thread object,
   at `teb::ERRNO`, with `_doserrno` at `teb::DOS_ERRNO`), so threads have their own without a
   TLS slot. Linux's numbers up to `ERANGE` (34) are Windows' too; others become `EINVAL`.
@@ -9249,8 +9262,10 @@ the license, by an explicit instruction recorded here.
   foreign programs it runs. `cargo xtask windows-programs` builds it on a Windows host with
   `cl.exe /MD /O2 /W3 /WX` for x64 and ARM64, found through `vswhere` and set up by
   `vcvarsall.bat`; CI's new `windows-programs` job (windows-latest, pull requests only, like
-  `macos-programs`) uploads them and the x86_64 and aarch64 QEMU jobs wait for them through
-  `EGGOS_WINDOWS_PROGRAMS`; without them (a push to `main`, a host that is not Windows) the boot
+  `macos-programs`) uploads them and the x86_64 and aarch64 QEMU jobs get them through
+  `EGGOS_WINDOWS_PROGRAMS`: xtask (`ci_artifact.rs`) waits for the artifact, up to 25 minutes,
+  just before the boot test that runs them, and the Mach-O programs' likewise, so their builds
+  overlap the kernels' build and the earlier boot tests (the QEMU jobs' timeout is 40 minutes); without them (a push to `main`, a host that is not Windows) the boot
   test is skipped and says so, and in CI a missing set fails.
 - **Check.** `WindowsCrt` boot test on x86_64 and aarch64: the shell writes
   `/tmp/note.txt`, runs `eggpad.exe 'C:\tmp\note.txt'`; the display is compared with the host's
@@ -9270,7 +9285,9 @@ the license, by an explicit instruction recorded here.
   on it, yielding every 128 tries, which burns CPU while they wait: a per-stream lock that
   `fclose` can take safely, and a lock that sleeps, are a later part); caching `target` in CI's
   `windows-programs` job (it runs on pull requests only, whose caches other pull requests
-  cannot restore, so it would need a save from `main` first).
+  cannot restore, so it would need a save from `main` first); the wide `printf` functions
+  convert their format to UTF-8 in a heap block per call (`Utf8Format::of`), where a stack
+  buffer for short formats would save the allocation.
 
 ## D147 macOS GUI apps: AppKit in the macOS layer on the window server, `.app` bundles, controls, alerts and the main menu in the top bar (v0.3.0 items 41 and 44; extends D120, D127, D133, D134, D142) — Decided by the build loop (design by Claude Fable, `docs/ux/macos-gui-v0.3.md`)
 - **What.** Item 41 (macOS GUI apps, part 1, moved after the release on 2026-10-28 and brought

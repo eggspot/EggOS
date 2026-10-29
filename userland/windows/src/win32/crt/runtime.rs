@@ -167,7 +167,7 @@ fn run_exit_work() {
     }
     // SAFETY: the process's own table.
     unsafe { execute(AT_EXIT.0.get()) };
-    stdio::flush_all();
+    stdio::flush_all_at_exit();
 }
 
 unsafe extern "efiapi" fn initterm(first: *const usize, last: *const usize) {

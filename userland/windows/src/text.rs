@@ -58,6 +58,13 @@ impl Utf8Decoder {
         [cut_short, self.take(byte)]
     }
 
+    /// Ends the input: U+FFFD when a sequence is still open, which it closes; `None` otherwise.
+    pub fn finish(&mut self) -> Option<char> {
+        let open = self.length > 0;
+        self.length = 0;
+        open.then_some(REPLACEMENT)
+    }
+
     fn take(&mut self, byte: u8) -> Option<char> {
         if self.length == 0 {
             self.needed = match byte {
@@ -296,6 +303,18 @@ mod tests {
         assert_eq!(decoded(b"a\xffb"), "a\u{fffd}b");
         assert_eq!(decoded(b"\xe0\x80\x80z"), "\u{fffd}z");
         assert_eq!(decoded("\u{e9}\u{1f95a}".as_bytes()), "\u{e9}\u{1f95a}");
+    }
+
+    #[test]
+    fn finishing_the_byte_decoder_ends_an_open_sequence_with_a_replacement() {
+        let mut decoder = Utf8Decoder::default();
+        assert_eq!(decoder.push(b'a'), [None, Some('a')]);
+        assert_eq!(decoder.finish(), None);
+        assert_eq!(decoder.push(0xe2), [None, None]);
+        assert_eq!(decoder.push(0x82), [None, None]);
+        assert_eq!(decoder.finish(), Some('\u{fffd}'));
+        assert_eq!(decoder.finish(), None);
+        assert_eq!(decoder.push(b'b'), [None, Some('b')]);
     }
 
     #[test]

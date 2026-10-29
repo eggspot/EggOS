@@ -109,9 +109,13 @@ impl<T> SpinLock<T> {
         result
     }
 
-    /// Runs `work` as [`SpinLock::with`] does, unless the lock is still held after `attempts`
-    /// tries (yielding as `with` does), when it returns `None` without running it.
-    pub fn try_with<R>(&self, attempts: u32, work: impl FnOnce(&mut T) -> R) -> Option<R> {
+    /// Runs `work` as [`SpinLock::with`] does, unless `give_up`, asked each time the wait
+    /// yields, says to stop waiting for the lock: it then returns `None` without running `work`.
+    pub fn try_with<R>(
+        &self,
+        mut give_up: impl FnMut() -> bool,
+        work: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
         use core::sync::atomic::Ordering;
         let mut spins = 0u32;
         while self
@@ -119,11 +123,11 @@ impl<T> SpinLock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            spins += 1;
-            if spins >= attempts {
-                return None;
-            }
+            spins = spins.wrapping_add(1);
             if spins.is_multiple_of(SPINS_BEFORE_YIELD) {
+                if give_up() {
+                    return None;
+                }
                 crate::linux::yield_now();
             } else {
                 core::hint::spin_loop();

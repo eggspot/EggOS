@@ -249,6 +249,7 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         let programs = Programs {
             directory: PathBuf::from(directory),
         };
+        crate::ci_artifact::fetch_when_built("macos-programs", &programs.directory)?;
         let objc_names = OBJC_PROGRAMS.into_iter().map(|program| program.name);
         for program in PROGRAMS.into_iter().chain(objc_names) {
             for cpu in ["arm64", "x86_64"] {
