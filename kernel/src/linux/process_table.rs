@@ -14,6 +14,7 @@
 //! its first thread's wait slot, through which a signal sent to it from outside reaches it.
 
 use super::Errno;
+use super::descriptors::WeakDescriptors;
 use super::futex::WaitSlot;
 use crate::process::ProcessExit;
 use crate::sync::SpinLock;
@@ -28,11 +29,13 @@ pub const SIGCHLD: u8 = super::signal::SIGCHLD as u8;
 pub static TABLE: SpinLock<Table> = SpinLock::new(Table::new());
 
 /// A process's current program, type-erased (a `Process<P>`), and its first thread's wait slot:
-/// what a signal sent from outside the process needs to reach it.
+/// what a signal sent from outside the process needs to reach it; and that thread's descriptor
+/// table, which `/proc/<pid>/fd` lists (D168).
 #[derive(Debug, Clone)]
 pub struct Running {
     pub process: Weak<dyn Any + Send + Sync>,
     pub first_thread: Arc<WaitSlot>,
+    pub files: WeakDescriptors,
 }
 
 /// A process a signal is sent to: its id, and how to reach it while it runs (`None` once it
@@ -96,6 +99,22 @@ pub struct Listed {
     pub session: u32,
     pub ended: bool,
     pub name: Name,
+    /// The signal its end sends its parent (D168, `/proc/<pid>/stat`).
+    pub exit_signal: u8,
+}
+
+impl Listed {
+    fn of(entry: &Entry) -> Self {
+        Self {
+            id: entry.id,
+            parent: entry.parent,
+            group: entry.group,
+            session: entry.session,
+            ended: entry.exit.is_some(),
+            name: entry.name,
+            exit_signal: entry.exit_signal,
+        }
+    }
 }
 
 /// Which children a wait looks at: Linux's `pid` argument.
@@ -297,14 +316,7 @@ impl Table {
 
     /// Every process in the table, by id: what `/proc` lists.
     pub fn list(&self) -> impl Iterator<Item = Listed> + '_ {
-        self.entries.iter().map(|entry| Listed {
-            id: entry.id,
-            parent: entry.parent,
-            group: entry.group,
-            session: entry.session,
-            ended: entry.exit.is_some(),
-            name: entry.name,
-        })
+        self.entries.iter().map(Listed::of)
     }
 
     /// Records that process `id` ran `execve`: its parent may no longer move it to another
@@ -711,6 +723,13 @@ impl Table {
         self.entry(id).map(Target::of)
     }
 
+    /// What `/proc/<id>` says of process `id` and how to reach its program while it runs, if
+    /// the process is in the table (D168).
+    pub fn describe(&self, id: u32) -> Option<(Listed, Option<Running>)> {
+        let entry = self.entry(id)?;
+        Some((Listed::of(entry), Target::of(entry).running))
+    }
+
     /// Every process of group `group` as a signal sent to the group finds it, ended or not.
     pub fn group_targets(&self, group: u32) -> Vec<Target> {
         let mut targets = Vec::new();
@@ -984,6 +1003,7 @@ mod tests {
             Running {
                 process: Weak::<()>::new(),
                 first_thread: Arc::clone(&slot),
+                files: WeakDescriptors::default(),
             },
         );
         assert_eq!(table.console_foreground_members().len(), 1);
@@ -1003,6 +1023,7 @@ mod tests {
                 Running {
                     process: Weak::<()>::new(),
                     first_thread: Arc::new(WaitSlot::new()),
+                    files: WeakDescriptors::default(),
                 },
             );
         }

@@ -277,6 +277,16 @@ pub trait FilePages: Send + Sync {
     /// Copies the file's bytes from `offset` into `buffer`: how many, fewer at its end and 0
     /// past it; `None` if the storage under the file failed.
     fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize>;
+    /// Writes the file's absolute path to the end of `buffer` and returns where it starts, as
+    /// `/proc/<pid>/maps` and `/proc/<pid>/exe` name it (D168); `None` if it has none or it
+    /// does not fit.
+    fn path_into(&self, _buffer: &mut [u8]) -> Option<usize> {
+        None
+    }
+    /// The file's device (major, minor) and inode number, as `/proc/<pid>/maps` shows them.
+    fn identity(&self) -> ((u32, u32), u64) {
+        ((0, 0), 0)
+    }
 }
 
 /// [`FileRange::file_bytes_end`] of a range that maps the whole file: its pages past the

@@ -143,7 +143,7 @@ fn number(slot: u32, generation: u32, kind: NodeKind) -> u64 {
     let kind = match kind {
         NodeKind::Directory => DIRECTORY_BIT,
         NodeKind::Socket => SOCKET_BIT,
-        NodeKind::Regular | NodeKind::CharacterDevice => 0,
+        NodeKind::Regular | NodeKind::CharacterDevice | NodeKind::SymbolicLink => 0,
     };
     u64::from(generation & GENERATION_MASK) << GENERATION_SHIFT | kind | u64::from(slot)
 }
@@ -516,7 +516,7 @@ impl FileSystem for Tmpfs {
         now: u64,
     ) -> Result<u64, Refused> {
         check_name(name)?;
-        if kind == NodeKind::CharacterDevice {
+        if matches!(kind, NodeKind::CharacterDevice | NodeKind::SymbolicLink) {
             return Err(Refused::InvalidArgument);
         }
         let mut state = self.state.lock();
@@ -551,12 +551,13 @@ impl FileSystem for Tmpfs {
             socket: kind == NodeKind::Socket,
             contents: match kind {
                 NodeKind::Directory => Contents::Directory(Vec::new()),
-                NodeKind::Regular | NodeKind::CharacterDevice | NodeKind::Socket => {
-                    Contents::File {
-                        pages: Vec::new(),
-                        size: 0,
-                    }
-                }
+                NodeKind::Regular
+                | NodeKind::CharacterDevice
+                | NodeKind::Socket
+                | NodeKind::SymbolicLink => Contents::File {
+                    pages: Vec::new(),
+                    size: 0,
+                },
             },
         };
         let slot = match state.free.pop() {

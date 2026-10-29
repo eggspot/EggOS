@@ -242,6 +242,13 @@ pub fn pwrite64<P: Platform>(
             let buffers = Iovecs::one(buffer, count);
             return super::memfd::write(process, &file, memory, &buffers, Some(offset));
         }
+        FileKind::MemoryDevice(device, _) => {
+            if !super::ends_in_user_space::<P>(buffer, count) {
+                return Err(Errno::EFAULT);
+            }
+            let buffers = core::iter::once((buffer, count));
+            return super::memory_devices::write(process, *device, buffers);
+        }
         _ => return Err(Errno::EBADF),
     };
     if !super::ends_in_user_space::<P>(buffer, count) {

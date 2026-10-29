@@ -13,6 +13,7 @@ pub mod persistent;
 pub mod real_time;
 pub mod reboot;
 pub mod run_scripts;
+pub mod rustc_version;
 pub mod settings;
 pub mod shell;
 pub mod text_editor;
@@ -411,7 +412,7 @@ pub fn reset_disk_image(path: &Path, bytes: u64) -> Result<(), String> {
 }
 
 const PROGRAM_WINDOW_SESSION: [&[u8]; 4] = [
-    b"ls /dev\r",
+    b"ls /dev/window\r",
     b"/usr/libexec/hello-window -o first | /usr/libexec/hello-window -i second; \
       echo EGGOS-WINDOWS status $?\r",
     b"wm list\r",
@@ -427,7 +428,7 @@ const WINDOW_CONTENT: (u32, u32) = (400, 300);
 fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
     let line = |text: &str| Line::Whole(text.to_owned());
     [
-        vec![line("window")],
+        vec![line("/dev/window")],
         vec![
             line("hello-window first: shown"),
             line("hello-window second: shown"),

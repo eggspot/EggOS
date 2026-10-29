@@ -22,7 +22,7 @@ use super::{Errno, limits};
 use crate::process::Process;
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use crate::vfs::Node;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use eggos_hal::Platform;
@@ -145,6 +145,8 @@ pub enum FileKind {
     InetSocket(Arc<super::socket::inet::InetSocket>),
     /// A memory file (`memfd_create`, D139).
     MemoryFile(Arc<super::memfd::MemoryFile>),
+    /// A memory device (`/dev/null`, `/dev/zero`, ..., D168) and its node in `/dev`.
+    MemoryDevice(super::memory_devices::MemoryDevice, Node),
 }
 
 /// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
@@ -166,7 +168,8 @@ impl FileKind {
             | Self::AgentChannel(_)
             | Self::Socket(_)
             | Self::InetSocket(_)
-            | Self::MemoryFile(_) => None,
+            | Self::MemoryFile(_)
+            | Self::MemoryDevice(..) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),
         }
@@ -307,6 +310,19 @@ impl DescriptorTable {
             slots,
             first_maybe_free: 3,
         }
+    }
+
+    /// Each open descriptor and its number, lowest first.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &Descriptor)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(fd, slot)| Some((fd as u32, slot.as_ref()?)))
+    }
+
+    /// How many descriptors it has room for without growing (`FDSize` in `/proc/<pid>/status`).
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 
     /// Descriptor `fd`, if it is open.
@@ -489,6 +505,44 @@ impl DescriptorTable {
     }
 }
 
+/// A descriptor table as `/proc/<pid>/fd` reaches it (D168): it does not keep the table, which
+/// goes with the last thread that holds it.
+#[derive(Debug, Clone, Default)]
+pub struct WeakDescriptors(Weak<LeafSpinLock<DescriptorTable>>);
+
+impl WeakDescriptors {
+    /// Each open descriptor, lowest first, with the description it names, while the table is
+    /// there; `None` once it is gone or without memory for the list.
+    pub fn open_files(&self) -> Option<Vec<(u32, Arc<OpenFile>)>> {
+        let table = self.0.upgrade()?;
+        let count = table.lock().iter().count();
+        let mut open = Vec::new();
+        open.try_reserve_exact(count).ok()?;
+        open.extend(
+            table
+                .lock()
+                .iter()
+                .take(count)
+                .map(|(fd, descriptor)| (fd, Arc::clone(&descriptor.file))),
+        );
+        Some(open)
+    }
+
+    /// How many descriptors the table has room for, while it is there.
+    pub fn slot_count(&self) -> Option<usize> {
+        Some(self.0.upgrade()?.lock().slot_count())
+    }
+
+    /// The description descriptor `fd` names, if the table is there and `fd` is open.
+    pub fn file(&self, fd: u32) -> Option<Arc<OpenFile>> {
+        let table = self.0.upgrade()?;
+        table
+            .lock()
+            .get(fd)
+            .map(|descriptor| Arc::clone(&descriptor.file))
+    }
+}
+
 /// A thread's descriptor table, which the threads that share it each hold. See the module
 /// documentation.
 #[derive(Debug)]
@@ -521,6 +575,11 @@ impl Descriptors {
     /// Whether another thread shares the table.
     pub fn is_shared(&self) -> bool {
         Arc::strong_count(&self.0) > 1
+    }
+
+    /// A handle that does not keep the table, for `/proc/<pid>/fd` (D168).
+    pub fn downgrade(&self) -> WeakDescriptors {
+        WeakDescriptors(Arc::downgrade(&self.0))
     }
 
     /// The open file description descriptor `fd` names, `EBADF` if it is not open. `fd` is an

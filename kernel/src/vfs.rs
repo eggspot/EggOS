@@ -8,6 +8,12 @@
 //! directory, empty and `.` components skipped, `..` to the parent (the root's own parent is
 //! the root), every component but the last required to be a directory, and a trailing slash
 //! or `/.` requiring the last to be one too. Errors come in the order a walk meets them.
+//! A symbolic link met on the way is followed (D168): its target, which its file system makes
+//! for the walking process ([`FileSystem::link_target`]: `/proc/self` names the caller's
+//! directory), is walked from the link's directory, or from the root if it is absolute; the
+//! last component is followed only when the caller asks ([`resolve_as`]); more than
+//! [`MAX_LINKS`] links in one walk, or links nested deeper than [`MAX_NESTED_LINKS`], are
+//! [`Error::TooManyLinks`] (`ELOOP`), as on Linux.
 //!
 //! The root is mounted once at boot ([`mount_embedded_initramfs`]) and never unmounted, so a
 //! node holds a `'static` reference to its file system and costs no reference count; mounts
@@ -40,7 +46,18 @@ pub enum Error {
     NotDirectory,
     /// A component is longer than [`NAME_MAX`] (`ENAMETOOLONG`).
     NameTooLong,
+    /// The walk met more symbolic links than it follows (`ELOOP`).
+    TooManyLinks,
 }
+
+/// The most symbolic links one walk follows (Linux's `MAXSYMLINKS`).
+pub const MAX_LINKS: u32 = 40;
+
+/// The most symbolic links a walk follows inside one another's targets.
+pub const MAX_NESTED_LINKS: u32 = 8;
+
+/// The process a walk is for, which `/proc/self` names: none for the kernel's own walks.
+pub const KERNEL_CALLER: u32 = 0;
 
 /// Why a file system refused a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +114,8 @@ pub enum NodeKind {
     /// A socket file (D138): `bind` makes it, `connect` finds its socket by it, and opening it
     /// is refused.
     Socket,
+    /// A symbolic link (D168): a walk goes on at its target ([`FileSystem::link_target`]).
+    SymbolicLink,
 }
 
 /// A node's attributes, as `stat` reports them.
@@ -262,6 +281,11 @@ pub trait FileSystem: Sync + Send {
     fn character_device(&self, _node: u64) -> Option<(u32, u32)> {
         None
     }
+    /// The target of symbolic link `node` as a walk for process `caller` reads it (`readlink`
+    /// and the walk, D168); `None` if it names nothing now (a process's link once it ended).
+    fn link_target(&self, _node: u64, _caller: u32) -> Option<alloc::vec::Vec<u8>> {
+        None
+    }
 
     /// Sets when `node`'s contents last changed.
     fn set_modified(&self, _node: u64, _time: u64) -> Result<(), Refused> {
@@ -317,6 +341,14 @@ impl crate::regions::FilePages for Node {
         }
         Some(filled)
     }
+
+    fn path_into(&self, buffer: &mut [u8]) -> Option<usize> {
+        Node::path_into(self, buffer)
+    }
+
+    fn identity(&self) -> ((u32, u32), u64) {
+        (self.file_system.device(), self.attributes().file_id)
+    }
 }
 
 impl Node {
@@ -351,6 +383,12 @@ impl Node {
     /// The device number of the character device it is, if it is one.
     pub fn character_device(&self) -> Option<(u32, u32)> {
         self.file_system.character_device(self.id)
+    }
+
+    /// Its target, if it is a symbolic link, as process `caller` reads it
+    /// ([`FileSystem::link_target`]).
+    pub fn link_target(&self, caller: u32) -> Option<alloc::vec::Vec<u8>> {
+        self.file_system.link_target(self.id, caller)
     }
 
     /// Whether it is a directory.
@@ -439,15 +477,42 @@ impl Node {
 }
 
 /// The node `path` names, from `start` if it is relative, from `root` if it is absolute: the
-/// module documentation's walk. An empty path names `start`; callers that refuse one (`ENOENT`)
-/// check first.
+/// module documentation's walk, for the kernel, following a last component that is a link. An
+/// empty path names `start`; callers that refuse one (`ENOENT`) check first.
 pub fn resolve(root: Node, start: Node, path: &[u8]) -> Result<Node, Error> {
+    resolve_as(root, start, path, KERNEL_CALLER, true)
+}
+
+/// [`resolve`] for process `caller` (`/proc/self` is its directory), following the last
+/// component if it is a symbolic link only when `follow_last` (not for `lstat`, `readlink`,
+/// `O_NOFOLLOW`).
+pub fn resolve_as(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    caller: u32,
+    follow_last: bool,
+) -> Result<Node, Error> {
+    let mut links = 0;
+    walk(root, start, path, caller, follow_last, 0, &mut links)
+}
+
+fn walk(
+    root: Node,
+    start: Node,
+    path: &[u8],
+    caller: u32,
+    follow_last: bool,
+    nesting: u32,
+    links: &mut u32,
+) -> Result<Node, Error> {
     let mut node = match path.first() {
         Some(b'/') => root,
         _ => start,
     };
     let mut must_be_directory = false;
-    for component in path.split(|&byte| byte == b'/') {
+    let mut components = path.split(|&byte| byte == b'/');
+    while let Some(component) = components.next() {
         match component {
             b"" => {
                 must_be_directory = true;
@@ -463,8 +528,13 @@ pub fn resolve(root: Node, start: Node, path: &[u8]) -> Result<Node, Error> {
                 must_be_directory = true;
             }
             name => {
+                let directory = node;
                 node = node.lookup(name)?;
                 must_be_directory = false;
+                let is_last = components.clone().next().is_none();
+                if node.kind() == NodeKind::SymbolicLink && (!is_last || follow_last) {
+                    node = follow(root, directory, node, caller, nesting, links)?;
+                }
             }
         }
     }
@@ -472,6 +542,27 @@ pub fn resolve(root: Node, start: Node, path: &[u8]) -> Result<Node, Error> {
         return Err(Error::NotDirectory);
     }
     Ok(node)
+}
+
+#[cold]
+#[inline(never)]
+fn follow(
+    root: Node,
+    directory: Node,
+    link: Node,
+    caller: u32,
+    nesting: u32,
+    links: &mut u32,
+) -> Result<Node, Error> {
+    *links += 1;
+    if *links > MAX_LINKS || nesting >= MAX_NESTED_LINKS {
+        return Err(Error::TooManyLinks);
+    }
+    let target = link.link_target(caller).ok_or(Error::NotFound)?;
+    if target.is_empty() {
+        return Err(Error::NotFound);
+    }
+    walk(root, directory, &target, caller, true, nesting + 1, links)
 }
 
 /// The last component of `path` and the path of the directory that holds it (`.` for a
@@ -770,5 +861,113 @@ mod tests {
         assert_eq!(file.path_into(&mut small[..12]), None);
         assert_eq!(root.path_into(&mut small[..1]), Some(0));
         assert_eq!(root.path_into(&mut []), None);
+    }
+    #[derive(Debug)]
+    struct Links;
+
+    const LINKS_ROOT: u64 = 1;
+    const LINKS_DIRECTORY: u64 = 2;
+    const LINKS_FILE: u64 = 3;
+    const LINKS: [(&[u8], u64, &[u8]); 5] = [
+        (b"loop", 4, b"loop"),
+        (b"up", 5, b"/d"),
+        (b"near", 6, b"d/file"),
+        (b"mine", 7, b""),
+        (b"gone", 8, b"nothing"),
+    ];
+
+    impl FileSystem for Links {
+        fn root(&self) -> u64 {
+            LINKS_ROOT
+        }
+
+        fn device(&self) -> (u32, u32) {
+            (0, 99)
+        }
+
+        fn kind(&self, node: u64) -> NodeKind {
+            match node {
+                LINKS_ROOT | LINKS_DIRECTORY => NodeKind::Directory,
+                LINKS_FILE => NodeKind::Regular,
+                _ => NodeKind::SymbolicLink,
+            }
+        }
+
+        fn attributes(&self, node: u64) -> Attributes {
+            Attributes {
+                kind: self.kind(node),
+                permissions: 0o777,
+                file_id: node,
+                links: 1,
+                owner: 0,
+                group: 0,
+                size: 0,
+                modified: 0,
+            }
+        }
+
+        fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
+            match (directory, name) {
+                (LINKS_ROOT, b"d") => Some(LINKS_DIRECTORY),
+                (LINKS_DIRECTORY, b"file") => Some(LINKS_FILE),
+                (LINKS_ROOT, name) => LINKS
+                    .iter()
+                    .find(|(link, _, _)| *link == name)
+                    .map(|&(_, node, _)| node),
+                _ => None,
+            }
+        }
+
+        fn parent(&self, node: u64) -> u64 {
+            match node {
+                LINKS_FILE => LINKS_DIRECTORY,
+                _ => LINKS_ROOT,
+            }
+        }
+
+        fn name(&self, _node: u64) -> Name {
+            Name::new(b"")
+        }
+
+        fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
+            &[]
+        }
+
+        fn link_target(&self, node: u64, caller: u32) -> Option<Vec<u8>> {
+            if node == 7 {
+                return (caller != KERNEL_CALLER).then(|| b"d".to_vec());
+            }
+            LINKS
+                .iter()
+                .find(|&&(_, link, _)| link == node)
+                .map(|(_, _, target)| target.to_vec())
+        }
+
+        fn entry(&self, _directory: u64, _position: u64) -> Option<DirectoryEntry> {
+            None
+        }
+    }
+
+    #[test]
+    fn links_are_followed_from_their_directory_up_to_linux_s_limits() {
+        let root = Node::root_of(Box::leak(Box::new(Links)));
+        let at = |path: &[u8], follow_last| resolve_as(root, root, path, 7, follow_last);
+        assert_eq!(at(b"/up/file", true).map(|node| node.id()), Ok(LINKS_FILE));
+        assert_eq!(at(b"near", true).map(|node| node.id()), Ok(LINKS_FILE));
+        assert_eq!(at(b"near", false).map(|node| node.id()), Ok(6));
+        assert_eq!(at(b"up/", false).map(|node| node.id()), Ok(LINKS_DIRECTORY));
+        assert_eq!(
+            at(b"mine/file", false).map(|node| node.id()),
+            Ok(LINKS_FILE)
+        );
+        assert_eq!(
+            resolve(root, root, b"mine/file"),
+            Err(Error::NotFound),
+            "the kernel has no directory of its own"
+        );
+        assert_eq!(at(b"loop", true), Err(Error::TooManyLinks));
+        assert_eq!(at(b"loop", false).map(|node| node.id()), Ok(4));
+        assert_eq!(at(b"gone", true), Err(Error::NotFound));
+        assert_eq!(at(b"near/x", true), Err(Error::NotDirectory));
     }
 }

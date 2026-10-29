@@ -89,7 +89,8 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
             FileKind::Regular(_)
             | FileKind::Directory(_)
             | FileKind::Snapshot(_)
-            | FileKind::MemoryFile(_),
+            | FileKind::MemoryFile(_)
+            | FileKind::MemoryDevice(..),
         ) => requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM),
         Some(FileKind::Path(_)) => event::NVAL,
         Some(FileKind::Pipe(end)) => end.events(requested),

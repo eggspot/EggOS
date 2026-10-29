@@ -23,6 +23,7 @@
 use super::Errno;
 use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::exec::{MINIMUM_ADDRESS, STACK_GUARD_GAP, STACK_RESERVE};
+use super::memory_devices::MemoryDevice;
 use crate::process::{Coverage, Placement, PopulateError, Process, Remap};
 use crate::regions::{Access, RegionError};
 use crate::vfs::Node;
@@ -176,8 +177,11 @@ fn mapped_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
     let file = file.ok_or(Errno::EBADF)?;
     let open = file.files.file(file.fd)?;
     match open.kind() {
-        FileKind::Window(_) | FileKind::MemoryFile(_) | FileKind::Regular(_) => Ok(open),
-        FileKind::Snapshot(_) => Err(Errno::ENODEV),
+        FileKind::Window(_)
+        | FileKind::MemoryFile(_)
+        | FileKind::Regular(_)
+        | FileKind::MemoryDevice(MemoryDevice::Zero, _) => Ok(open),
+        FileKind::Snapshot(_) | FileKind::MemoryDevice(..) => Err(Errno::ENODEV),
         _ => Err(Errno::EBADF),
     }
 }
@@ -215,8 +219,10 @@ pub fn mmap<P: Platform>(
 /// and read-only; `ENODEV` private and writable, `EPERM` executable or inaccessible), and
 /// mappings of a regular file (D167: private, or shared and read-only; `EACCES` for a file not
 /// open for reading, or shared and writable without write access to it; `ENODEV` shared and
-/// writable; `EOVERFLOW` past the largest offset). A file made when it is opened (`/proc`)
-/// is `ENODEV`; any other descriptor is `EBADF`. Returns the mapping's start.
+/// writable; `EOVERFLOW` past the largest offset). A mapping of `/dev/zero` is anonymous
+/// memory, shared or private, as on Linux (D168); a file made when it is opened (`/proc`) and
+/// the other memory devices are `ENODEV`; any other descriptor is `EBADF`. Returns the
+/// mapping's start.
 pub fn mmap_file<P: Platform>(
     process: &Process<P>,
     address: u64,
@@ -290,6 +296,9 @@ fn map_file<P: Platform>(
     let file = mapped_file(file)?;
     if flags & map::HUGETLB != 0 {
         return Err(Errno::ENOMEM);
+    }
+    if let FileKind::MemoryDevice(MemoryDevice::Zero, _) = file.kind() {
+        return mmap::<P>(process, address, length, prot, flags | map::ANONYMOUS, 0);
     }
     let attributes = attributes(prot)?;
     let shared = kind != map::PRIVATE;

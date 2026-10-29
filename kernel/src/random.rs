@@ -127,6 +127,16 @@ fn add_input(tag: u8, bytes: &[u8], bits: u32) {
 /// The tag of the clock reads hashed in at each [`reseed`]: after every [`SeedSource`]'s.
 const CLOCK_TAG: u8 = 0x80;
 
+/// The tag of what programs write to `/dev/random` and `/dev/urandom` (D168).
+const USER_INPUT_TAG: u8 = 0x81;
+
+/// Hashes `bytes` a program wrote to `/dev/random` or `/dev/urandom` into the input without
+/// crediting them, as Linux does: they can only add to what the generator knows. Takes effect
+/// at the next [`reseed`].
+pub fn add_user_input(bytes: &[u8]) {
+    add_input(USER_INPUT_TAG, bytes, 0);
+}
+
 /// Extracts the input into the base key, and moves its generation on so that every CPU
 /// derives a new key at its next draw. The clock is hashed in first, uncredited, and each
 /// extraction is hashed into the input again, so the next one depends on it too. Returns

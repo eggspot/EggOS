@@ -128,6 +128,7 @@ fn running<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxThread) -> proc
     process_table::Running {
         process: Arc::downgrade(process) as _,
         first_thread: Arc::clone(thread.wait_slot()),
+        files: thread.files().downgrade(),
     }
 }
 

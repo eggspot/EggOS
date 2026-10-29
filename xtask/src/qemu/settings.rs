@@ -114,6 +114,7 @@ pub(super) struct Boot<'a> {
     port: u16,
     started: Instant,
     typed: usize,
+    timeout: Duration,
 }
 
 impl<'a> Boot<'a> {
@@ -147,7 +148,14 @@ impl<'a> Boot<'a> {
             port,
             started: Instant::now(),
             typed: 0,
+            timeout: SETTINGS_TIMEOUT,
         })
+    }
+
+    /// The same boot, given `timeout` from its start to power off instead of the settings
+    /// boot's.
+    pub(super) fn with_timeout(self, timeout: Duration) -> Self {
+        Self { timeout, ..self }
     }
 
     pub(super) fn fail(&mut self, error: String) -> String {
@@ -180,11 +188,11 @@ impl<'a> Boot<'a> {
                     self.arch.name
                 )));
             }
-            if self.started.elapsed() > SETTINGS_TIMEOUT {
+            if self.started.elapsed() > self.timeout {
                 return Err(self.fail(format!(
                     "{}: no prompt {count} within {}s",
                     self.arch.name,
-                    SETTINGS_TIMEOUT.as_secs()
+                    self.timeout.as_secs()
                 )));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -207,11 +215,11 @@ impl<'a> Boot<'a> {
                 break status;
             }
             self.console.extend(self.output.try_iter().flatten());
-            if self.started.elapsed() > SETTINGS_TIMEOUT {
+            if self.started.elapsed() > self.timeout {
                 return Err(self.fail(format!(
                     "{}: no power-off within {}s",
                     self.arch.name,
-                    SETTINGS_TIMEOUT.as_secs()
+                    self.timeout.as_secs()
                 )));
             }
             std::thread::sleep(Duration::from_millis(20));

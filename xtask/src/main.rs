@@ -16,6 +16,7 @@ mod macos;
 mod qemu;
 mod qmp;
 mod release;
+mod rustc_version;
 mod sha256;
 mod windows;
 mod work_disk;
@@ -94,6 +95,11 @@ commands:
                          this Linux host's cross compilers' packages, musl downloaded from
                          Alpine into target/dynamic-linking) to the release image, boot it
                          and check both run (<arch> may be `all`)
+  rustc-version --arch <arch>
+                         download the official Rust toolchain's rustc (test data, into
+                         target/rustc-version, checked against its pinned SHA-256), hand
+                         it to EggOS on a work disk with the C libraries it needs from this
+                         Linux host and check `rustc --version` runs (x86_64 and aarch64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -484,6 +490,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("dynamic-linking") => {
             for arch in arch()? {
                 dynamic_linking::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("rustc-version") => {
+            for arch in arch()? {
+                rustc_version::check(arch)?;
             }
             Ok(())
         }

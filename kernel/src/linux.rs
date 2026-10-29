@@ -40,7 +40,11 @@
 //! powered off, halted or reset with `reboot` ([`reboot`], D106), and changes put on the
 //! disk with `sync`, `syncfs`, `fsync` and `fdatasync` ([`file_changes`], D131), and `AF_UNIX`
 //! stream sockets with `SCM_RIGHTS` ([`socket`], [`unix_socket`], D138), and memory files
-//! with `memfd_create`, `fallocate` and their shared mappings ([`memfd`], D139). Every
+//! with `memfd_create`, `fallocate` and their shared mappings ([`memfd`], D139), and, for
+//! real programs, `/proc/<pid>` and `/proc/self` ([`proc`]), the memory devices `/dev/null`,
+//! `/dev/zero`, `/dev/full`, `/dev/random` and `/dev/urandom` ([`memory_devices`]),
+//! `readlink` and `readlinkat` ([`files`]), `access`, `faccessat` and `faccessat2`
+//! ([`stat`]), and `sethostname` and `setdomainname` ([`identity`]) (D168). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -59,6 +63,7 @@ pub mod job_control;
 pub mod limits;
 pub mod memfd;
 pub mod memory;
+pub mod memory_devices;
 pub mod pipe;
 pub mod poll;
 pub mod proc;
@@ -234,8 +239,15 @@ pub mod number {
         pub const ACCEPT4: u64 = 288;
         pub const FALLOCATE: u64 = 285;
         pub const MEMFD_CREATE: u64 = 319;
+        pub const ACCESS: u64 = 21;
+        pub const READLINK: u64 = 89;
+        pub const SETHOSTNAME: u64 = 170;
+        pub const SETDOMAINNAME: u64 = 171;
+        pub const READLINKAT: u64 = 267;
+        pub const FACCESSAT: u64 = 269;
+        pub const FACCESSAT2: u64 = 439;
         /// The highest number above.
-        pub const LAST: u64 = CLOSE_RANGE;
+        pub const LAST: u64 = FACCESSAT2;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
@@ -363,8 +375,13 @@ pub mod number {
         pub const ACCEPT4: u64 = 242;
         pub const FALLOCATE: u64 = 47;
         pub const MEMFD_CREATE: u64 = 279;
+        pub const FACCESSAT: u64 = 48;
+        pub const READLINKAT: u64 = 78;
+        pub const SETHOSTNAME: u64 = 161;
+        pub const SETDOMAINNAME: u64 = 162;
+        pub const FACCESSAT2: u64 = 439;
         /// The highest number above.
-        pub const LAST: u64 = CLOSE_RANGE;
+        pub const LAST: u64 = FACCESSAT2;
     }
     pub use table::*;
 
@@ -514,6 +531,15 @@ pub mod number {
             GETSOCKOPT,
             FALLOCATE,
             MEMFD_CREATE,
+            #[cfg(target_arch = "x86_64")]
+            ACCESS,
+            #[cfg(target_arch = "x86_64")]
+            READLINK,
+            READLINKAT,
+            FACCESSAT,
+            FACCESSAT2,
+            SETHOSTNAME,
+            SETDOMAINNAME,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -623,6 +649,8 @@ impl Errno {
     pub const ENOTEMPTY: Self = Self(39);
     /// A path longer than `PATH_MAX`, or a component longer than `NAME_MAX`.
     pub const ENAMETOOLONG: Self = Self(36);
+    /// A walk met too many symbolic links, or `O_NOFOLLOW` met one at the end (D168).
+    pub const ELOOP: Self = Self(40);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
     /// Timed out: a wait's deadline came first (`futex`).
@@ -1188,6 +1216,15 @@ fn out_of_line_result<P: Platform>(
             files::getdents64(process, &*thread.files().file(first)?, second, third)
         }
         number::GETCWD => files::getcwd(process, thread, first, second),
+        number::READLINKAT => files::readlinkat(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::READLINK => files::readlinkat(process, thread, CWD, first, second, third),
+        number::FACCESSAT => stat::faccessat2(process, thread, first, second, third, 0),
+        number::FACCESSAT2 => stat::faccessat2(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::ACCESS => stat::faccessat2(process, thread, CWD, first, second, 0),
+        number::SETHOSTNAME => identity::sethostname(process, first, second),
+        number::SETDOMAINNAME => identity::setdomainname(process, first, second),
         number::CHDIR => files::chdir(process, thread, first),
         number::FCHDIR => files::fchdir(thread, first),
         number::GETUID => Ok(credentials::get_real(process, User)),
@@ -1346,7 +1383,8 @@ fn write<P: Platform>(
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)
-        | FileKind::MemoryFile(_) => {
+        | FileKind::MemoryFile(_)
+        | FileKind::MemoryDevice(..) => {
             return Err(NOT_THE_CONSOLE);
         }
         FileKind::Window(_) => return Err(Errno::EINVAL),
@@ -1419,6 +1457,12 @@ fn write_out_of_line<P: Platform>(
             }
             FileKind::MemoryFile(memory) => {
                 let result = memfd::write(process, &file, memory, &iovecs, None);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+            FileKind::MemoryDevice(device, _) => {
+                let buffers = iovecs.entries().iter().map(iovec);
+                let result = memory_devices::write(process, *device, buffers);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
@@ -1498,6 +1542,13 @@ fn read<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
+            FileKind::MemoryDevice(device, _) => {
+                let nonblocking = file.status_flags() & descriptors::open_flag::NONBLOCK != 0;
+                let buffers = iovecs.entries().iter().map(iovec);
+                let result = memory_devices::read(process, *device, nonblocking, buffers);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
             kind => {
                 let result = match files::Contents::of(kind) {
                     Some(contents) => {
@@ -1564,6 +1615,7 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_) => terminal::lseek(whence),
+        FileKind::MemoryDevice(..) => Ok(0),
         _ => files::lseek_node(&file, offset, whence),
     }
 }
@@ -7695,5 +7747,198 @@ mod tests {
         );
         assert_eq!(first.signal_state().pending, 1 << (sigusr1 - 1));
         assert_eq!(process.signals().lock().left_for(0), 0);
+    }
+    #[test]
+    fn readlink_reads_only_links() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let readlink = |path: &[u8], size| {
+            let path = at_path(&process, path);
+            call(
+                &process,
+                number::READLINKAT,
+                [FDCWD, path, READ_BUFFER, size, 0, 0],
+            )
+        };
+        assert_eq!(readlink(b"/etc/hostname", 100), Errno::EINVAL.result());
+        assert_eq!(readlink(b"/etc", 100), Errno::EINVAL.result());
+        assert_eq!(readlink(b"/nowhere", 100), Errno::ENOENT.result());
+        assert_eq!(readlink(b"", 100), Errno::ENOENT.result());
+        assert_eq!(readlink(b"/etc/hostname", 0), Errno::EINVAL.result());
+        assert_eq!(readlink(b"/etc/hostname", u64::MAX), Errno::EINVAL.result());
+        let path = at_path(&process, b"/etc/hostname/x");
+        assert_eq!(
+            call(
+                &process,
+                number::READLINKAT,
+                [FDCWD, path, READ_BUFFER, 100, 0, 0]
+            ),
+            Errno::ENOTDIR.result()
+        );
+    }
+
+    #[test]
+    fn access_checks_that_a_file_is_there_and_may_be_used() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let access = |path: &[u8], mode, flags| {
+            let path = at_path(&process, path);
+            call(
+                &process,
+                number::FACCESSAT2,
+                [FDCWD, path, mode, flags, 0, 0],
+            )
+        };
+        use stat::access_mode::{EXECUTE, READ, WRITE};
+        let (read, write, execute) = (u64::from(READ), u64::from(WRITE), u64::from(EXECUTE));
+        assert_eq!(access(b"/etc/hostname", 0, 0), 0);
+        assert_eq!(access(b"/etc/hostname", read, 0), 0);
+        assert_eq!(access(b"/etc", read | execute, 0), 0);
+        assert_eq!(access(b"/etc/hostname", write, 0), Errno::EROFS.result());
+        assert_eq!(access(b"/nowhere", 0, 0), Errno::ENOENT.result());
+        assert_eq!(access(b"/etc/hostname", 8, 0), Errno::EINVAL.result());
+        assert_eq!(access(b"/etc/hostname", read, 1), Errno::EINVAL.result());
+        assert_eq!(access(b"", 0, 0), Errno::ENOENT.result());
+        assert_eq!(access(b"", 0, stat::at::EMPTY_PATH), 0);
+        assert_eq!(
+            access(
+                b"/etc/hostname",
+                read,
+                stat::AT_EACCESS | stat::at::SYMLINK_NOFOLLOW
+            ),
+            0
+        );
+        let path = at_path(&process, b"/etc/hostname");
+        assert_eq!(
+            call(&process, number::FACCESSAT, [FDCWD, path, read, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::FACCESSAT2,
+                [1, EMPTY, execute, stat::at::EMPTY_PATH, 0, 0]
+            ),
+            Errno::EACCES.result()
+        );
+    }
+
+    #[test]
+    fn a_privileged_caller_renames_the_machine_for_uname() {
+        let _frames = frames_for_test();
+        let _names = identity::tests::NAMES_TEST.lock().unwrap();
+        identity::forget_changed_names();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let name = at_path(&process, b"eggbox");
+        assert_eq!(
+            call(&process, number::SETHOSTNAME, [name, 6, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::UNAME, [READ_BUFFER, 0, 0, 0, 0, 0]),
+            0
+        );
+        let field = identity::utsname::FIELD as u64;
+        assert_eq!(read_bytes(&process, READ_BUFFER + field, 7), b"eggbox\0");
+        assert_eq!(
+            call(&process, number::SETDOMAINNAME, [name, 3, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::UNAME, [READ_BUFFER, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(read_bytes(&process, READ_BUFFER + 5 * field, 4), b"egg\0");
+        for length in [65, u64::MAX] {
+            assert_eq!(
+                call(&process, number::SETHOSTNAME, [name, length, 0, 0, 0, 0]),
+                Errno::EINVAL.result()
+            );
+        }
+        assert_eq!(
+            call(&process, number::SETHOSTNAME, [UNMAPPED, 4, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(call(&process, number::SETUID, [1000, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            call(&process, number::SETHOSTNAME, [name, 6, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        identity::forget_changed_names();
+    }
+
+    #[test]
+    fn proc_describes_a_running_program_and_self_names_its_directory() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let id = process.id().get();
+        let mut thread = take_first_thread(&process);
+        wait::record_running(&process, &thread, |_, _| {});
+        let path = at_path(&process, b"/usr/libexec/program");
+        let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        let proc: &'static proc::Proc<P> = Box::leak(Box::new(proc::Proc::new()));
+        let root = crate::vfs::Node::root_of(proc);
+        let walk = |path: &[u8], follow| crate::vfs::resolve_as(root, root, path, id, follow);
+        let text = |path: &[u8]| {
+            let bytes = walk(path, true).unwrap().generate().unwrap().unwrap();
+            alloc::string::String::from_utf8(bytes).unwrap()
+        };
+        let status = text(b"self/status");
+        assert!(status.starts_with("Name:\tprogram\n"), "{status}");
+        assert!(
+            status.contains(&alloc::format!("\nPid:\t{id}\n")),
+            "{status}"
+        );
+        assert!(status.contains("\nUid:\t0\t0\t0\t0\n"), "{status}");
+        assert!(status.contains("\nThreads:\t1\n"), "{status}");
+        assert_eq!(text(b"self/cmdline"), "\0");
+        let exe = walk(b"self/exe", false).unwrap();
+        assert_eq!(exe.kind(), crate::vfs::NodeKind::SymbolicLink);
+        assert_eq!(
+            exe.link_target(id).as_deref(),
+            Some(&b"/usr/libexec/program"[..])
+        );
+        let maps = text(b"self/maps");
+        assert!(
+            maps.lines()
+                .any(|line| line.ends_with(" /usr/libexec/program")),
+            "{maps}"
+        );
+        assert!(
+            maps.lines().any(|line| line.ends_with(" [stack]")),
+            "{maps}"
+        );
+        let stat = text(alloc::format!("{id}/stat").as_bytes());
+        assert!(
+            stat.starts_with(&alloc::format!("{id} (program) R ")),
+            "{stat}"
+        );
+        assert_eq!(stat.trim_end().split(' ').count(), 52, "{stat}");
+        let descriptors = walk(b"self/fd", true).unwrap();
+        let names: alloc::vec::Vec<alloc::vec::Vec<u8>> = (0..)
+            .map_while(|position| descriptors.entry(position))
+            .map(|(name, _, _)| name.as_bytes().to_vec())
+            .collect();
+        assert_eq!(names, [&b"0"[..], b"1", b"2"]);
+        let standard_output = walk(b"self/fd/1", false).unwrap();
+        assert_eq!(
+            standard_output.link_target(id).as_deref(),
+            Some(&b"/dev/console"[..])
+        );
+        assert_eq!(walk(b"self/fd/3", false), Err(crate::vfs::Error::NotFound));
+        assert_eq!(
+            crate::vfs::resolve(root, root, b"self/status"),
+            Err(crate::vfs::Error::NotFound),
+            "the kernel has no directory of its own"
+        );
+        let listed = (0..)
+            .map_while(|position| root.entry(position))
+            .any(|(name, _, _)| name.as_bytes() == alloc::format!("{id}").as_bytes());
+        assert!(listed);
+        drop(current);
     }
 }

@@ -176,6 +176,49 @@ impl CredentialsAndLimits {
     }
 }
 
+/// Where `execve` laid out a program (D168): what `/proc/<pid>` reads of it. Empty for a
+/// process whose program the kernel built otherwise.
+#[derive(Clone, Default)]
+pub struct ImageLayout {
+    /// The file the program was read from (`/proc/<pid>/exe`), if it was one.
+    pub executable: Option<Arc<dyn FilePages>>,
+    /// The argument strings on the stack, `start..end`, each with its NUL
+    /// (`/proc/<pid>/cmdline`).
+    pub arguments: (u64, u64),
+    /// The environment strings on the stack, `start..end`.
+    pub environment: (u64, u64),
+    /// The stack's reserve, `start..end` (`[stack]` in `/proc/<pid>/maps`).
+    pub stack: (u64, u64),
+    /// Where the stack pointer started, at `argc` (`startstack` in `/proc/<pid>/stat`).
+    pub stack_pointer: u64,
+}
+
+/// What a [`Mapping`] is, besides its file: `/proc/<pid>/maps`' label for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingLabel {
+    /// Anything else.
+    Plain,
+    /// The heap `brk` grows (`[heap]`).
+    Heap,
+    /// The main thread's stack (`[stack]`).
+    Stack,
+}
+
+/// A part of a process's user space with one access, one backing and one label: a line of
+/// `/proc/<pid>/maps` (D168, [`Process::mappings`]).
+#[derive(Clone)]
+pub struct Mapping {
+    pub start: u64,
+    pub end: u64,
+    /// The access, `None` for `PROT_NONE`.
+    pub attributes: Option<Attributes>,
+    /// Whether its pages are shared with the file or another mapping (`MAP_SHARED`).
+    pub shared: bool,
+    /// The file its pages hold and the offset of `start` in it.
+    pub file: Option<(Arc<dyn FilePages>, u64)>,
+    pub label: MappingLabel,
+}
+
 /// A user address space, the frames its pages map and its regions. See the module
 /// documentation.
 pub struct Process<P: Platform> {
@@ -216,6 +259,44 @@ struct Memory<P: Platform> {
     has_lent: AtomicBool,
     files: LeafSpinLock<FileRanges>,
     has_files: AtomicBool,
+    image: ImageLayout,
+}
+
+/// Where the mapping that starts at `at` in a region ending at `end` ends: at the next bound
+/// of a file range, a lent range, the heap or the stack, or the region's end.
+fn mapping_end(
+    at: u64,
+    end: u64,
+    files: &[FileRange],
+    lent: &[(u64, u64)],
+    heap: Option<(u64, u64)>,
+    stack: (u64, u64),
+) -> u64 {
+    let bounds = files
+        .iter()
+        .flat_map(|range| [range.start, range.end])
+        .chain(lent.iter().flat_map(|&(start, end)| [start, end]))
+        .chain(heap.into_iter().flat_map(|(start, end)| [start, end]))
+        .chain([stack.0, stack.1]);
+    bounds
+        .filter(|&bound| bound > at && bound < end)
+        .fold(end, u64::min)
+}
+
+/// Whether `next` goes on where `last` stops, as one mapping.
+fn continues(last: &Mapping, next: &Mapping) -> bool {
+    let same_file = match (&last.file, &next.file) {
+        (None, None) => true,
+        (Some((last_file, offset)), Some((next_file, next_offset))) => {
+            Arc::ptr_eq(last_file, next_file) && offset + (last.end - last.start) == *next_offset
+        }
+        _ => false,
+    };
+    last.end == next.start
+        && last.attributes == next.attributes
+        && last.shared == next.shared
+        && last.label == next.label
+        && same_file
 }
 
 /// Frames a device or a memory file lends to user space ([`Process::map_lent_frames`]): owned
@@ -257,6 +338,7 @@ impl<P: Platform> Memory<P> {
             has_lent: AtomicBool::new(false),
             files: LeafSpinLock::new_leaf(FileRanges::new()),
             has_files: AtomicBool::new(false),
+            image: ImageLayout::default(),
         }
     }
 
@@ -302,6 +384,7 @@ impl<P: Platform> Memory<P> {
             has_lent: AtomicBool::new(false),
             has_files: AtomicBool::new(!copied_files.is_empty()),
             files: LeafSpinLock::new_leaf(copied_files),
+            image: self.image.clone(),
         })
     }
 
@@ -1575,6 +1658,80 @@ impl<P: Platform> Process<P> {
     pub fn region(&self, address: u64) -> Option<Region> {
         let memory = &*self.memory;
         memory.regions.lock().find(address).copied()
+    }
+
+    /// Records where `execve` laid out its program (D168). While the process is built.
+    pub fn set_image_layout(&mut self, layout: ImageLayout) {
+        self.memory_mut().image = layout;
+    }
+
+    /// Where `execve` laid out its program ([`ImageLayout`]).
+    pub fn image_layout(&self) -> &ImageLayout {
+        &self.memory.image
+    }
+
+    /// The program break's start and end (`brk`), if it has one.
+    pub fn program_break_range(&self) -> Option<(u64, u64)> {
+        let program_break = *self.memory.program_break.lock();
+        program_break.map(|ProgramBreak { start, end }| (start.get(), end))
+    }
+
+    /// Its user space as `/proc/<pid>/maps` lists it (D168): each region cut where its backing
+    /// or label changes (a file's range, frames lent to it, the heap, the stack), lowest
+    /// first, neighbours with the same access, backing and label joined; `None` without
+    /// memory for the list.
+    pub fn mappings(&self) -> Option<Vec<Mapping>> {
+        let memory = &*self.memory;
+        let heap = self
+            .program_break_range()
+            .filter(|&(start, end)| end > start)
+            .map(|(start, end)| (start, end.next_multiple_of(FRAME_SIZE)));
+        let stack = memory.image.stack;
+        let regions = memory.regions.lock();
+        let lent: Vec<(u64, u64)> = {
+            let lent = memory.lent.lock();
+            let mut copied = Vec::new();
+            copied.try_reserve_exact(lent.len()).ok()?;
+            copied.extend(lent.iter().map(|range| (range.start, range.end)));
+            copied
+        };
+        let count = memory.files.lock().iter().count();
+        let mut files: Vec<FileRange> = Vec::new();
+        files.try_reserve_exact(count).ok()?;
+        files.extend(memory.files.lock().iter().take(count).cloned());
+        let mut mappings: Vec<Mapping> = Vec::new();
+        for region in regions.iter() {
+            let mut at = region.start;
+            while at < region.end {
+                let next = mapping_end(at, region.end, &files, &lent, heap, stack);
+                let file = files
+                    .iter()
+                    .find(|range| range.start <= at && at < range.end);
+                let lent_here = lent.iter().any(|&(start, end)| start <= at && at < end);
+                let label = match heap {
+                    Some((start, end)) if start <= at && at < end => MappingLabel::Heap,
+                    _ if stack.0 <= at && at < stack.1 => MappingLabel::Stack,
+                    _ => MappingLabel::Plain,
+                };
+                let mapping = Mapping {
+                    start: at,
+                    end: next,
+                    attributes: region.attributes,
+                    shared: lent_here || file.is_some_and(|range| !range.writable),
+                    file: file.map(|range| (Arc::clone(&range.file), range.offset_of(at))),
+                    label,
+                };
+                match mappings.last_mut() {
+                    Some(last) if continues(last, &mapping) => last.end = next,
+                    _ => {
+                        mappings.try_reserve(1).ok()?;
+                        mappings.push(mapping);
+                    }
+                }
+                at = next;
+            }
+        }
+        Some(mappings)
     }
 
     /// The process's address space.

@@ -28,18 +28,18 @@ const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.24/main";
 
 /// What the glibc build needs on the host for one architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Glibc {
+pub(crate) struct Glibc {
     /// Rust's target.
-    target: &'static str,
+    pub(crate) target: &'static str,
     /// Cargo's variable that names the target's linker, and the linker.
     linker: (&'static str, &'static str),
     /// The folder of the host that holds the dynamic loader and `libc.so.6`.
-    libraries: &'static str,
+    pub(crate) libraries: &'static str,
     /// The loader's file name there.
-    loader: &'static str,
+    pub(crate) loader: &'static str,
 }
 
-fn glibc(arch: &str) -> Option<Glibc> {
+pub(crate) fn glibc(arch: &str) -> Option<Glibc> {
     Some(match arch {
         "x86_64" => Glibc {
             target: "x86_64-unknown-linux-gnu",
@@ -241,7 +241,7 @@ fn fetch_musl(arch: &str) -> Result<PathBuf, String> {
     Ok(sysroot)
 }
 
-fn download(url: &str, to: &Path) -> Result<(), String> {
+pub(crate) fn download(url: &str, to: &Path) -> Result<(), String> {
     eprintln!("xtask: downloading {url}");
     let status = Command::new("curl")
         .args([
@@ -292,7 +292,7 @@ fn package_version(index: &str, package: &str) -> Option<String> {
     })
 }
 
-fn interpreter_of_file(program: &Path) -> Result<String, String> {
+pub(crate) fn interpreter_of_file(program: &Path) -> Result<String, String> {
     let image = std::fs::read(program).map_err(|e| format!("{}: {e}", program.display()))?;
     interpreter_of(&image).map_err(|error| format!("{}: {error}", program.display()))
 }
@@ -329,7 +329,7 @@ fn interpreter_of(image: &[u8]) -> Result<String, String> {
 }
 
 /// An absolute path in the image as an initramfs member's name.
-fn image_path(path: &str) -> Result<String, String> {
+pub(crate) fn image_path(path: &str) -> Result<String, String> {
     path.strip_prefix('/')
         .filter(|rest| !rest.is_empty())
         .map(str::to_owned)

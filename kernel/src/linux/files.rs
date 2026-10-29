@@ -1,6 +1,7 @@
 //! Files (D102): the calls that open, read, seek and list the file system's nodes (`openat`,
 //! `open` on x86_64, `read`, `readv` and `pread64` on regular files, `lseek`, `getdents64`),
-//! and the working directory (`getcwd`, `chdir`, `fchdir`).
+//! read a symbolic link (`readlinkat`, `readlink` on x86_64, D168), and the working directory
+//! (`getcwd`, `chdir`, `fchdir`).
 //!
 //! Paths are copied from the program first, as Linux copies one before it looks anything up:
 //! `EFAULT` if a byte up to the terminating NUL is not the program's memory, `ENAMETOOLONG`
@@ -18,6 +19,7 @@
 //! the file's bytes straight from the archive in the kernel image to the program's buffer.
 
 use super::descriptors::{Descriptors, FileKind, OpenFile, Snapshot, open_file_limit, open_flag};
+use super::memory_devices::MemoryDevice;
 use super::stat::at;
 use super::thread::LinuxThread;
 use super::{Errno, MAX_RW_COUNT};
@@ -67,6 +69,7 @@ pub fn walk_error(error: vfs::Error) -> Errno {
         vfs::Error::NotFound => Errno::ENOENT,
         vfs::Error::NotDirectory => Errno::ENOTDIR,
         vfs::Error::NameTooLong => Errno::ENAMETOOLONG,
+        vfs::Error::TooManyLinks => Errno::ELOOP,
     }
 }
 
@@ -151,7 +154,7 @@ pub fn lookup<P: Platform>(
         return Err(Errno::ENOENT);
     }
     let (root, start) = starting_points(thread, dirfd, path)?;
-    vfs::resolve(root, start, path).map_err(walk_error)
+    vfs::resolve_as(root, start, path, process.id().get(), true).map_err(walk_error)
 }
 
 /// `openat(dirfd, path, flags, mode)`: opens what `dirfd` and `path` name and returns the
@@ -164,9 +167,11 @@ pub fn lookup<P: Platform>(
 /// else with `O_DIRECTORY`; `EROFS` for a regular file opened for writing or with `O_TRUNC`;
 /// `EMFILE` when every descriptor below the open-file limit is taken. `O_PATH` opens a
 /// location only, ignoring the other flags but `O_CLOEXEC`, `O_DIRECTORY` and `O_NOFOLLOW`.
-/// A character device (`/dev`, D127) opens its device, `ENXIO` when no driver serves it. A
+/// A character device (`/dev`, D127) opens its device, `ENXIO` when no driver serves it
+/// (`/dev/tty` without a controlling terminal, D168). A
 /// socket file (D138) is `ENXIO`, as on Linux: `connect` reaches its socket.
-/// With no symbolic links yet, `O_NOFOLLOW` changes nothing; `O_NONBLOCK` and `O_APPEND` are
+/// A symbolic link is followed (D168), unless `O_NOFOLLOW` asks not to for the last component:
+/// then it is `ELOOP`, or the link itself with `O_PATH`; `O_NONBLOCK` and `O_APPEND` are
 /// kept as status flags, and the other flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are
 /// ignored. `mode` matters only to a file created, which none is.
 pub fn openat<P: Platform>(
@@ -197,8 +202,10 @@ pub fn openat<P: Platform>(
         return Err(Errno::ENOENT);
     }
     let (root, start) = starting_points(thread, dirfd, path)?;
+    let caller = process.id().get();
+    let follow_last = flags & open_flag::NOFOLLOW == 0;
     let mut created = false;
-    let node = match vfs::resolve(root, start, path) {
+    let node = match vfs::resolve_as(root, start, path, caller, follow_last) {
         Ok(node) => node,
         Err(vfs::Error::NotFound) if !only_path && flags & open_flag::CREAT != 0 => {
             match super::file_changes::create_file::<P>(root, start, path, mode) {
@@ -206,7 +213,7 @@ pub fn openat<P: Platform>(
                     created = true;
                     node
                 }
-                Err(Errno::EROFS) => return Err(creation_error(root, start, path)),
+                Err(Errno::EROFS) => return Err(creation_error(caller, root, start, path)),
                 Err(error) => return Err(error),
             }
         }
@@ -235,8 +242,11 @@ pub fn openat<P: Platform>(
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
+        if node.kind() == NodeKind::SymbolicLink {
+            return Err(Errno::ELOOP);
+        }
         if let Some(device) = node.character_device() {
-            open_device(process, device)?
+            open_device(process, node, device)?
         } else if node.kind() == NodeKind::Socket {
             return Err(Errno::ENXIO);
         } else {
@@ -265,16 +275,35 @@ pub fn openat<P: Platform>(
     Ok(u64::from(opened?))
 }
 
-fn open_device<P: Platform>(process: &Process<P>, device: (u32, u32)) -> Result<FileKind, Errno> {
+fn open_device<P: Platform>(
+    process: &Process<P>,
+    node: Node,
+    device: (u32, u32),
+) -> Result<FileKind, Errno> {
+    use crate::vfs::devfs;
     match device {
-        crate::vfs::devfs::WINDOW_DEVICE => super::window::open::<P>(),
-        crate::vfs::devfs::AGENT_DEVICE => super::agent_channel::open(process),
-        _ => Err(Errno::ENXIO),
+        devfs::WINDOW_DEVICE => super::window::open::<P>(),
+        devfs::AGENT_DEVICE => super::agent_channel::open(process),
+        devfs::CONSOLE_DEVICE => Ok(FileKind::Console),
+        devfs::TTY_DEVICE => {
+            let caller = process.id().get();
+            match super::process_table::TABLE
+                .lock()
+                .controlling_terminal(caller)
+            {
+                Ok(_) => Ok(FileKind::Console),
+                Err(_) => Err(Errno::ENXIO),
+            }
+        }
+        device => match MemoryDevice::of(device) {
+            Some(memory_device) => Ok(FileKind::MemoryDevice(memory_device, node)),
+            None => Err(Errno::ENXIO),
+        },
     }
 }
 
 #[cold]
-fn creation_error(root: Node, start: Node, path: &[u8]) -> Errno {
+fn creation_error(caller: u32, root: Node, start: Node, path: &[u8]) -> Errno {
     let end = path
         .iter()
         .rposition(|&byte| byte != b'/')
@@ -282,13 +311,55 @@ fn creation_error(root: Node, start: Node, path: &[u8]) -> Errno {
     let Some((directory, name)) = vfs::split_last(&path[..end]) else {
         return Errno::ENOENT;
     };
-    match vfs::resolve(root, start, directory) {
+    match vfs::resolve_as(root, start, directory, caller, true) {
         Ok(_) if name.len() > NAME_MAX => Errno::ENAMETOOLONG,
         Ok(directory) if directory.is_directory() && end < path.len() => Errno::EISDIR,
         Ok(directory) if directory.is_directory() => Errno::EROFS,
         Ok(_) => Errno::ENOTDIR,
         Err(error) => walk_error(error),
     }
+}
+
+/// `readlinkat(dirfd, path, buffer, size)`: copies the target of the symbolic link `dirfd` and
+/// `path` name, the last component not followed, to `buffer`, at most `size` bytes and no NUL,
+/// and returns how many (D168; `readlink` on x86_64 from the working directory). As Linux, in
+/// this order: `EINVAL` for a `size` (an `int`) that is not positive; the path's errors (module
+/// documentation), an empty one naming `dirfd`'s own file (`ENOENT` for `AT_FDCWD`); `EINVAL`
+/// for anything but a symbolic link; `ENOENT` for a link that names nothing now (`/proc/<pid>/exe`
+/// of a program the kernel built); `EFAULT` if `buffer` is not the program's writable memory.
+pub fn readlinkat<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    buffer: u64,
+    size: u64,
+) -> Result<u64, Errno> {
+    if size as i32 <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    let caller = process.id().get();
+    let mut path_buffer = PathBuffer::uninit();
+    let path = read_path(process, path, &mut path_buffer)?;
+    let node = if path.is_empty() {
+        if dirfd as u32 as i32 == at::FDCWD {
+            return Err(Errno::ENOENT);
+        }
+        let file = thread.files().file(dirfd)?;
+        file.kind().node().ok_or(Errno::EINVAL)?
+    } else {
+        let (root, start) = starting_points(thread, dirfd, path)?;
+        vfs::resolve_as(root, start, path, caller, false).map_err(walk_error)?
+    };
+    if node.kind() != NodeKind::SymbolicLink {
+        return Err(Errno::EINVAL);
+    }
+    let target = node.link_target(caller).ok_or(Errno::ENOENT)?;
+    let length = target.len().min(size as u32 as usize);
+    process
+        .write_user_memory(buffer, &target[..length])
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(length as u64)
 }
 
 /// What a regular file's reads take: a node's contents, or those made when it was opened.
@@ -465,6 +536,11 @@ pub fn pread64<P: Platform>(
     if let FileKind::MemoryFile(memory) = file.kind() {
         return super::memfd::pread(process, memory, buffer, count.min(MAX_RW_COUNT), offset);
     }
+    if let FileKind::MemoryDevice(device, _) = file.kind() {
+        let nonblocking = file.status_flags() & open_flag::NONBLOCK != 0;
+        let buffers = core::iter::once((buffer, count));
+        return super::memory_devices::read(process, *device, nonblocking, buffers);
+    }
     match Contents::of(file.kind()) {
         Some(contents) => copy_out(process, contents, offset, buffer, count),
         None => Err(Errno::EISDIR),
@@ -534,6 +610,8 @@ pub const DT_CHR: u8 = 2;
 pub const DT_DIR: u8 = 4;
 /// A directory entry's type (`d_type`): a regular file.
 pub const DT_REG: u8 = 8;
+/// A directory entry's type (`d_type`): a symbolic link.
+pub const DT_LNK: u8 = 10;
 /// A directory entry's type (`d_type`): a socket.
 pub const DT_SOCK: u8 = 12;
 
@@ -579,6 +657,7 @@ fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, vfs::Name
                 NodeKind::Regular => DT_REG,
                 NodeKind::CharacterDevice => DT_CHR,
                 NodeKind::Socket => DT_SOCK,
+                NodeKind::SymbolicLink => DT_LNK,
             };
             Some((node.attributes().file_id, kind, name))
         }

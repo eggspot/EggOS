@@ -38,7 +38,7 @@ use super::stat::at;
 use super::thread::LinuxThread;
 use super::{Errno, futex, process_table, signals};
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
-use crate::process::Process;
+use crate::process::{ImageLayout, Process};
 use crate::regions::{FilePages, FileRange};
 use crate::vfs::{self, Node, NodeKind};
 use crate::{random, thread};
@@ -290,6 +290,13 @@ pub fn load_program<P: Platform>(
     process
         .write_user_memory(stack.start, &stack.bytes)
         .map_err(|_| ExecError::OutOfMemory("no frame for the stack"))?;
+    process.set_image_layout(ImageLayout {
+        executable: program.file.clone(),
+        arguments: stack.arguments,
+        environment: stack.environment,
+        stack: (user_end - STACK_RESERVE, user_end),
+        stack_pointer: stack.start,
+    });
     let start = loader.as_ref().map_or(entry, |loader| loader.entry);
     Ok(UserContext::new(start, stack.start))
 }
@@ -658,6 +665,10 @@ struct InitialStack {
     start: u64,
     /// Everything from `start` up to the top of the stack.
     bytes: Vec<u8>,
+    /// Where the argument strings are, `start..end`.
+    arguments: (u64, u64),
+    /// Where the environment strings are, `start..end`.
+    environment: (u64, u64),
 }
 
 impl InitialStack {
@@ -742,7 +753,12 @@ impl InitialStack {
                 _ => value,
             });
         }
-        Ok(Self { start, bytes })
+        Ok(Self {
+            start,
+            bytes,
+            arguments: (arguments_at, environment_at),
+            environment: (environment_at, path_at),
+        })
     }
 }
 
@@ -850,7 +866,7 @@ fn prepare<P: Platform>(
     if request.flags & !EXECVEAT_FLAGS != 0 {
         return Err(Errno::EINVAL);
     }
-    let node = find(thread, request.dirfd, path)?;
+    let node = find(process.id().get(), thread, request.dirfd, path)?;
     let process_name = process_table::name_of(node.file_system().name(node.id()).as_bytes());
     let attributes = node.attributes();
     let may_execute = {
@@ -1015,7 +1031,13 @@ fn read_interpreter<P: Platform>(
         return Err(Errno::ENOEXEC);
     }
     let not_installed = |_| Errno::ENOEXEC;
-    let node = find(thread, at::FDCWD as u64, interpreter.path).map_err(not_installed)?;
+    let node = find(
+        process.id().get(),
+        thread,
+        at::FDCWD as u64,
+        interpreter.path,
+    )
+    .map_err(not_installed)?;
     let attributes = node.attributes();
     let may_execute = {
         let credentials = process.credentials_and_limits().lock();
@@ -1049,7 +1071,7 @@ fn read_dynamic_loader<P: Platform>(
         Ok(None) => return Ok(None),
         Err(_) => return Err(Errno::ENOEXEC),
     };
-    let node = find(thread, at::FDCWD as u64, path)?;
+    let node = find(process.id().get(), thread, at::FDCWD as u64, path)?;
     let attributes = node.attributes();
     let may_execute = {
         let credentials = process.credentials_and_limits().lock();
@@ -1104,13 +1126,13 @@ impl ProgramBytes {
     }
 }
 
-fn find(thread: &LinuxThread, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
+fn find(caller: u32, thread: &LinuxThread, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
     if path.is_empty() {
         let file = thread.files().file(dirfd)?;
         return file.kind().node().ok_or(Errno::EACCES);
     }
     let (root, start) = files::starting_points(thread, dirfd, path)?;
-    vfs::resolve(root, start, path).map_err(files::walk_error)
+    vfs::resolve_as(root, start, path, caller, true).map_err(files::walk_error)
 }
 
 fn may_execute(attributes: &vfs::Attributes, credentials: &Credentials) -> bool {
