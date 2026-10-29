@@ -969,8 +969,13 @@ mod tests {
         }
         let modes = shell.find("case \"$arch:$mode\" in").unwrap();
         assert!(modes < shell.find("command_line=''").unwrap());
-        assert!(shell.find("set -- \"$@\" \"-append\"").unwrap() < shell.find("exec \"$qemu\"").unwrap());
-        assert!(shell.contains("  mcp-headless) say \"run-eggos.sh: booting EggOS $version ($arch) with no screen"));
+        assert!(
+            shell.find("set -- \"$@\" \"-append\"").unwrap()
+                < shell.find("exec \"$qemu\"").unwrap()
+        );
+        assert!(shell.contains(
+            "  mcp-headless) say \"run-eggos.sh: booting EggOS $version ($arch) with no screen"
+        ));
         let built = [
             "$CommandLineWords = @()\n",
             "if ($Mcp -and $NoWindow) {\n    $CommandLineWords += 'eggos.display=offscreen'\n}\n",
@@ -978,9 +983,13 @@ mod tests {
             "if ($CommandLineWords.Count -gt 0) {\n    $CommandLine = $CommandLineWords -join ' '\n    $QemuArgs += @(\"-append\", \"$CommandLine\")\n}\n",
             "& $Qemu @QemuArgs -kernel $Image\n",
         ];
-        let mut from = powershell.find("$McpAllowList = $GrantNames -join ','").unwrap();
+        let mut from = powershell
+            .find("$McpAllowList = $GrantNames -join ','")
+            .unwrap();
         for part in built {
-            let at = powershell[from..].find(part).unwrap_or_else(|| panic!("{part}"));
+            let at = powershell[from..]
+                .find(part)
+                .unwrap_or_else(|| panic!("{part}"));
             from += at + part.len();
         }
     }

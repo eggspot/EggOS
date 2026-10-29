@@ -3089,11 +3089,20 @@ mod tests {
         for arch in crate::ARCHES {
             let args = mcp_args(arch, false, "/tmp/serial.log");
             let joined = args.join(" ");
-            for device in ["virtio-gpu", "virtio-keyboard", "virtio-tablet", "virtio-mouse"] {
+            for device in [
+                "virtio-gpu",
+                "virtio-keyboard",
+                "virtio-tablet",
+                "virtio-mouse",
+            ] {
                 assert!(!joined.contains(device), "{}: {joined}", arch.name);
             }
             assert!(joined.contains("-display none"), "{joined}");
-            assert_eq!(joined.contains("-vga none"), arch.name == "x86_64", "{joined}");
+            assert_eq!(
+                joined.contains("-vga none"),
+                arch.name == "x86_64",
+                "{joined}"
+            );
             assert!(joined.contains("-chardev file,id=console,path=/tmp/serial.log"));
             assert!(joined.contains("-serial chardev:console"));
             assert!(joined.contains("-chardev stdio,id=mcp,signal=off"));
@@ -3110,7 +3119,10 @@ mod tests {
     fn the_command_line_is_one_append_with_the_words_as_given() {
         assert_eq!(
             command_line_args("eggos.display=offscreen eggos.mcp_allow=write,run"),
-            ["-append", "eggos.display=offscreen eggos.mcp_allow=write,run"]
+            [
+                "-append",
+                "eggos.display=offscreen eggos.mcp_allow=write,run"
+            ]
         );
         assert_eq!(OFFSCREEN_WORD, "eggos.display=offscreen");
         assert_eq!(grant_word("view,run"), "eggos.mcp_allow=view,run");

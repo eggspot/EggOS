@@ -701,7 +701,9 @@ pub fn start_clock<P: Platform>() -> Result<bool, SpawnError> {
 /// `frequency` ticks a second.
 pub fn next_second(now: u64, frequency: u64) -> u64 {
     let frequency = frequency.max(1);
-    (now / frequency).saturating_add(1).saturating_mul(frequency)
+    (now / frequency)
+        .saturating_add(1)
+        .saturating_mul(frequency)
 }
 
 /// What the terminal self-test writes: a prompt line and lines in SGR colours, with box

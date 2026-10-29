@@ -404,8 +404,13 @@ fn prepare(
     Ok((script, apps, disk))
 }
 
-/// Checks that the boot the script just ran had no screen (D144): its console, in the file
-/// next to the script, shows the offscreen display at the default mode and no input device.
+fn both(session: Result<(), String>, console: Result<(), String>) -> Result<(), String> {
+    match (session, console) {
+        (Err(session), Err(console)) => Err(format!("{session}; and {console}")),
+        (session, console) => session.and(console),
+    }
+}
+
 fn shown_offscreen(arch: &Arch, script: &Path) -> Result<(), String> {
     let log = script.with_file_name(format!("eggos-{}-serial.log", arch.name));
     let console = std::fs::read(&log).map_err(|e| format!("{}: {e}", log.display()))?;
@@ -1251,9 +1256,7 @@ pub fn check(
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);
     client.stop();
-    let shown = shown_offscreen(arch, &script);
-    outcome?;
-    shown?;
+    both(outcome, shown_offscreen(arch, &script))?;
     eprintln!(
         "xtask: {}: running {} --mcp --mcp-allow {GRANTS}",
         arch.name,
@@ -1265,9 +1268,7 @@ pub fn check(
         .and_then(|()| client.receive(FIRST_ANSWER_TIMEOUT));
     let outcome = probe.and_then(|_| granted_session(&mut client));
     client.stop();
-    let shown = shown_offscreen(arch, &script);
-    outcome?;
-    shown?;
+    both(outcome, shown_offscreen(arch, &script))?;
     let mut volume = image_volume(&disk)?;
     let log = contents(&mut volume, "/var/log/agent-audit.log")?
         .ok_or_else(|| format!("{}: MCP check: the disk holds no audit log", arch.name))?;
@@ -1300,6 +1301,15 @@ pub fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_session_keeps_what_the_console_showed() {
+        let failed = || Err::<(), String>("x".into());
+        assert_eq!(both(Ok(()), Ok(())), Ok(()));
+        assert_eq!(both(failed(), Ok(())), failed());
+        assert_eq!(both(Ok(()), failed()), failed());
+        assert_eq!(both(failed(), Err("y".into())), Err("x; and y".into()));
+    }
 
     #[test]
     fn every_tool_is_called_by_the_check() {

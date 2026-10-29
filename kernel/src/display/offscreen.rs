@@ -182,7 +182,10 @@ pub fn install_requested<P: Platform>() -> Option<Result<Mode, Refusal>> {
 
 /// Writes what [`install_requested`] came to on `console`: the display's mode, or why it was
 /// not made; nothing for `None`.
-pub fn report<W: Write>(console: &mut W, outcome: Option<Result<Mode, Refusal>>) -> core::fmt::Result {
+pub fn report<W: Write>(
+    console: &mut W,
+    outcome: Option<Result<Mode, Refusal>>,
+) -> core::fmt::Result {
     match outcome {
         None => Ok(()),
         Some(Ok(mode)) => writeln!(console, "{LINE_PREFIX}{}x{}", mode.width, mode.height),

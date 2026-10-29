@@ -79,7 +79,9 @@ fn the_window_starts_centred_in_the_work_area_as_the_design_places_it() {
 #[test]
 fn a_screen_fits_exactly_when_the_desktop_can_be_made_on_it() {
     let narrowest = (1..=1280).find(|&width| Desktop::fits(width, 800)).unwrap();
-    let lowest = (1..=800).find(|&height| Desktop::fits(1280, height)).unwrap();
+    let lowest = (1..=800)
+        .find(|&height| Desktop::fits(1280, height))
+        .unwrap();
     for (width, height) in [
         (1280, 800),
         (1024, 768),
