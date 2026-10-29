@@ -165,7 +165,10 @@ pub fn app_name() -> &'static [u8] {
 }
 
 fn info_dictionary_of_plist() -> Id {
-    let dictionary = send(class_pointer(&NSMUTABLEDICTIONARY), sel!("dictionary"));
+    let dictionary = send(
+        class_pointer(&NSMUTABLEDICTIONARY).cast(),
+        sel!("dictionary"),
+    );
     if dictionary.is_null() {
         return dictionary;
     }

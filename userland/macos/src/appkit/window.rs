@@ -333,11 +333,13 @@ fn key_down(window: Id, event: Id) {
     }
     let responder = fields(window).first_responder;
     let typing = !responder.is_null() && view::is_editable_field(responder);
-    if code == key::ENTER && plain && !typing {
-        if let Some(button) = default_button(window) {
-            control::perform_click(button);
-            return;
-        }
+    if code == key::ENTER
+        && plain
+        && !typing
+        && let Some(button) = default_button(window)
+    {
+        control::perform_click(button);
+        return;
     }
     if !responder.is_null() {
         send1(responder, sel!("keyDown:"), event as usize);

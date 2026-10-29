@@ -10,7 +10,7 @@ use super::{
 };
 use crate::foundation::permanent;
 use crate::objc::abi::{Id, Sel};
-use crate::objc::{Runtime, methods, sel};
+use crate::objc::{Runtime, methods};
 use eggos_macos_gui::geometry::{Frame, Point};
 use eggos_macos_gui::keys::modifier;
 use eggos_macos_gui::paint;

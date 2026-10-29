@@ -301,10 +301,8 @@ pub fn read_records(handle: &mut dyn FnMut(&[u8; RECORD_SIZE])) {
             crate::libsystem::exit(NO_WINDOW_SERVER)
         }
     };
-    for chunk in records[..read - read % RECORD_SIZE].chunks_exact(RECORD_SIZE) {
-        let mut record = [0u8; RECORD_SIZE];
-        record.copy_from_slice(chunk);
-        handle(&record);
+    for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
+        handle(record);
     }
 }
 
