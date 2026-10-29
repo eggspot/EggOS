@@ -21,9 +21,10 @@ Must-have, in order:
 5. **done** — `execve` and `execveat` from a file: a new process with the caller's id, handlers
    reset, close-on-exec descriptors closed, other threads ended (D103).
 6. **done** — process creation: `clone` without `CLONE_THREAD`, `fork` and `vfork`, the
-   memory copied at once or shared with `CLONE_VM`, the parent sleeping until a `vfork` child
-   execs or ends, children's exit records kept for `wait4` (D104). Follow-up: copy-on-write,
-   and with it shared anonymous memory across `fork` (refused with `ENOSYS` until then).
+   memory copied (copy on write since D169) or shared with `CLONE_VM`, the parent sleeping until a `vfork` child
+   execs or ends, children's exit records kept for `wait4` (D104). (Copy on write, shared
+   anonymous memory across `fork`, `MADV_DONTFORK` and `MADV_WIPEONFORK`: written, unchecked,
+   D169.)
 7. **done** — `wait4` and `waitid`, zombies kept in a process table until reaped, orphans
    reparented (nearest subreaper, then init, then the kernel), `SIGCHLD`, `setpgid`,
    `getpgid`, `setsid`, `getsid`, `TIOCSCTTY`/`TIOCGPGRP`/`TIOCSPGRP`/`TIOCGSID`, `^C` to the
@@ -320,17 +321,19 @@ D16):
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals
     and `MAP_SHARED` of memfds (38b). The item's "`MAP_SHARED` of files" is narrowed to
-    memfds, which is what Wayland's shared buffers use; tmpfs and EggFS files come later. Next:
-    the Wayland server (item 39, done), then `epoll`, `eventfd`, `timerfd` and `signalfd`.
+    memfds, which is what Wayland's shared buffers use (writable `MAP_SHARED` of tmpfs and
+    EggFS files, `shm_open` on `/dev/shm`: written, unchecked, D169). Next: the Wayland server
+    (item 39, done), then (`epoll`, `eventfd`, `timerfd` and `signalfd`: written, unchecked,
+    D169).
 39. **done** — users can now run Linux programs that open their windows through Wayland
     (D140, docs/linux-programs.md): `eggway`, our own Wayland server from the public protocol
     specifications, started by init when a display exists, on `/run/user/0/wayland-0`;
     `wl_compositor`, `wl_shm`, `wl_surface`, `wl_seat` with a US keymap, `wl_output`,
     `xdg_wm_base`, `xdg_surface` and `xdg_toplevel`; each toplevel a desktop window with
     EggOS's chrome, its input as Wayland events, frame callbacks at 60 Hz; `xdg_toplevel.move`
-    and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: `epoll`,
-    `eventfd`, `timerfd` and `signalfd`, dynamic linking, then the toolkits' protocols
-    (subcompositor, decorations, popups, the clipboard).
+    and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: (`epoll`,
+    `eventfd`, `timerfd` and `signalfd`: written, unchecked, D169; dynamic linking: done,
+    D167), then the toolkits' protocols (subcompositor, decorations, popups, the clipboard).
 40. **done** — users can now run macOS Objective-C console programs from `eggsh` on aarch64
     and x86_64 (D142, docs/macos-programs.md): our own Objective-C runtime in the macOS layer
     (`objc_msgSend` and `objc_msgSendSuper2` in arm64 and x86_64 assembly with lock-free method
@@ -549,6 +552,16 @@ The release path (the release-path review's issues #141-#145, after the items ab
   transparent huge page settings, and fall back); no `/proc/sys/vm/overcommit_memory`; no
   vDSO; `clone3` and `rseq` are `ENOSYS` (glibc falls back).
   Next: milestone 2, a hello-world crate builds and runs (part 19).
+- After v0.3.0, the Real apps track (alternating with the CI track): real Linux, Windows and
+  macOS apps install and run, each to be listed in a new docs/compatibility.md. Its first step,
+  event loops, copy-on-write `fork` and POSIX shared memory, **written, unchecked** (D169): `epoll`,
+  `eventfd`, `timerfd`, `signalfd`, `select` and `pselect6`, with wake lists per file for
+  pipes, local sockets and the event files; `fork` copy on write with shared memory kept
+  shared, `MADV_DONTFORK` and `MADV_WIPEONFORK`; `MAP_SHARED` anonymous memory as lent
+  frames; writable `MAP_SHARED` of tmpfs, EggFS and FAT files through shared pages written
+  back by `msync`, `fsync`, `sync` and the last unmap; `/dev/shm` for `shm_open`; the
+  `linux-events` QEMU check and the `linux_fork_touch` and `linux_epoll_wake` benchmarks.
+  Next: a real SDL app installs and runs (part 20).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
@@ -738,8 +751,8 @@ follow-ups (D101): `F_SETFL`'s `O_ASYNC`, `O_DIRECT` and `O_NOATIME`, record loc
 flow control, output flags that the UART driver obeys, tab erase from the column the output
 left (output column tracking), virtio-console input (M8); `SIGWINCH` on
 `TIOCSWINSZ`; sessions
-and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); `select`,
-`pselect6` and `epoll` (M7); `poll` arrays copied in pieces with preemption points
+and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); (`select`,
+`pselect6` and `epoll`: written, unchecked, D169); `poll` arrays copied in pieces with preemption points
 between them, once programs poll many thousands of descriptors; checked by observation on a
 real Linux: the order of `ppoll`'s checks, whether `sigsetsize` is checked with no mask,
 `CLOCAL` on a serial console, whether current glibc reads settings with `TCGETS2`, and whether `poll`

@@ -129,9 +129,9 @@ it unlocks them:
 | Need | Who needs it |
 |------|--------------|
 | The toolkits' libraries in the image (`libwayland-client.so`, `libxkbcommon.so`) beside glibc or musl; dynamic linking itself works (D167) | every distribution's binaries |
-| `epoll`, `eventfd`, `timerfd`, `signalfd` | GLib and GTK, Qt, SDL3, winit/calloop, Chromium and Electron, EFL |
-| `fork` of a process with shared memory | foot, weston-terminal |
-| writable `MAP_SHARED` of tmpfs files, `shm_open` and `/dev/shm` | older clients |
+| (`epoll`, `eventfd`, `timerfd`, `signalfd`: written, D169) | GLib and GTK, Qt, SDL3, winit/calloop, Chromium and Electron, EFL |
+| (`fork` of a process with shared memory: written, D169) | foot, weston-terminal |
+| (writable `MAP_SHARED` of tmpfs files, `shm_open` and `/dev/shm`: written, D169) | older clients |
 | `wl_subcompositor` | GTK, Qt, libdecor (SDL) |
 | `xdg-decoration` (server-side decorations) | apps that would draw their own title bars |
 | `xdg_popup` placement | menus and tooltips |
@@ -151,9 +151,10 @@ it unlocks them:
 - **Libraries for dynamically linked programs** come only with the program: EggOS ships no
   C library, so add the loader and the libraries a program needs to the image at the paths
   the loader looks in (D167).
-- **`fork` after `MAP_SHARED`.** Rust's `std::process::Command`, `posix_spawn`, `fork`,
-  `vfork`, `execve` and `wait4` work (the sockets boot test starts its client with `Command`),
-  but a process with shared memory cannot `fork` (D104).
+- **`fork` with odd shared memory.** Rust's `std::process::Command`, `posix_spawn`, `fork`
+  (copy on write, D169), `vfork`, `execve` and `wait4` work, and shared memory stays shared
+  across `fork`; only a process that mapped `MAP_SHARED` anonymous memory with no access or
+  executable cannot `fork` (`ENOSYS`, D104).
 - **Parts of `/proc` and `/dev`.** `/proc/self` and `/proc/<pid>` have `cmdline`, `exe`,
   `fd`, `maps`, `stat` and `status`, so `std::env::current_exe`, glibc's `$ORIGIN` and
   `pthread_getattr_np` work, and `/dev` has `null`, `zero`, `full`, `random`, `urandom`, `tty`,
@@ -162,14 +163,18 @@ it unlocks them:
   disks come with EggFS version 2). Files can be written in `/tmp`, `/run`, `/home` and `/var`
   (D125, D131).
 - **The wall clock** is UTC, read from the real-time clock at boot; there are no time zones (D150).
-- **Writable shared file mappings.** `MAP_SHARED` of a regular file is read-only and does not
-  see later writes to the file (D167). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
-  with `SCM_RIGHTS` (D138), and so does memory shared between programs with `memfd_create`
-  and `mmap(MAP_SHARED)` (D139). The network works (D157, D158,
+- **Shared file mappings.** A writable `MAP_SHARED` of a file shares the file's pages with
+  every other such mapping and with `read` and `write` (D169), but its pages are all read when
+  it is made and read as zeros past the file's end instead of raising `SIGBUS`; a read-only
+  one of a file nobody maps writable does not see later writes (D167). Event loops work:
+  `epoll`, `eventfd`, `timerfd`, `signalfd`, `select` and `pselect6` (D169). Local sockets
+  work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed with `SCM_RIGHTS`
+  (D138), and so does memory shared between programs with `memfd_create`, `shm_open` on
+  `/dev/shm` and `mmap(MAP_SHARED)` (D139, D169). The network works (D157, D158,
   [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`), ping sockets and
   TCP (`std::net::TcpStream` and `TcpListener`: `connect`, `listen`, `accept`, `poll`,
-  `shutdown`, timeouts), and names through musl's resolver; IPv6, `AF_UNIX` datagrams and
-  `epoll` do not yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
+  `shutdown`, timeouts), and names through musl's resolver; IPv6 and `AF_UNIX` datagrams do
+  not yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

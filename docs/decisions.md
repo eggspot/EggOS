@@ -11285,3 +11285,149 @@ the license, by an explicit instruction recorded here.
   disks and `symlink`, `lstat` of disks' links (part 18); a vDSO; `rustc` on riscv64; the
   measured gaps of `rustc --version` against Linux once the job has run (recorded in the
   roadmap as the job reports them).
+
+## D169 Event loops, copy-on-write `fork` and POSIX shared memory: `epoll`, `eventfd`, `timerfd`, `signalfd`, `select` and `pselect6` with wake lists per file; `fork` copy on write with shared memory kept shared and `MADV_DONTFORK`/`MADV_WIPEONFORK`; writable `MAP_SHARED` of files written back; `/dev/shm` (the Real apps track's first step; extends D61, D71, D100, D104, D125, D127, D138, D139, D155, D167, D168) — Decided by the build loop
+- **Why.** Every graphical toolkit and most Linux servers sleep in an event loop: GLib and GTK,
+  Qt, SDL3, winit and calloop, Chromium and Electron wait in `epoll` on `eventfd`s, `timerfd`s
+  and `signalfd`s; shells and older programs use `select`. Terminals and build tools `fork`
+  processes that share memory with their parent, and Wayland clients share buffers through
+  `shm_open` on `/dev/shm` and `MAP_SHARED` files. Until now none of those calls existed,
+  `fork` copied every page at once (D104) and was `ENOSYS` once a process had shared memory,
+  and a writable `MAP_SHARED` of a file was `ENODEV` (D167).
+- **Event files** (`linux::{epoll, eventfd, timerfd, signalfd}`, `FileKind::Event(EventFile)`,
+  all reached through one out-of-line arm, `poll::call`, so the inlined system-call path is
+  unchanged). `eventfd`/`eventfd2`: `EFD_SEMAPHORE`, `EFD_NONBLOCK`, `EFD_CLOEXEC`, 8-byte
+  reads and writes, `EINVAL` for a short buffer or `u64::MAX`, `EAGAIN`, the counter at most
+  `0xffff_ffff_ffff_fffe`. `timerfd_create`/`settime`/`gettime`: `CLOCK_MONOTONIC`,
+  `CLOCK_BOOTTIME`, `CLOCK_REALTIME` (the alarm clocks `EPERM` unless privileged, then their
+  plain clocks), `TFD_TIMER_ABSTIME` and intervals, `old_value`; expirations are counted from
+  the clock whenever the timer is looked at, and a wait ends at the next expiry, so no timer
+  callback runs. `signalfd`/`signalfd4`: a mask without `SIGKILL` and `SIGSTOP`, a new file
+  or an existing one's mask changed, 128-byte `signalfd_siginfo` records taken from the
+  thread's and the process's pending signals. `epoll_create`/`epoll_create1`, `epoll_ctl`
+  (`ADD`, `MOD`, `DEL`; `EPOLLET`, `EPOLLONESHOT`, `EPOLLEXCLUSIVE` accepted, `EPOLLWAKEUP`
+  dropped; interest keyed by open file description and descriptor, gone when the description
+  closes; `EPERM` for regular files, directories, memfds and `/dev/null`, `zero` and `full`,
+  `ELOOP` for loops or chains deeper than 5), `epoll_wait`, `epoll_pwait` and `epoll_pwait2`
+  (`struct epoll_event` 12 bytes on x86_64, 16 elsewhere). Event files `fstat` as Linux's
+  anonymous inodes, `lseek` and `pread`/`pwrite` are `ESPIPE`, `mmap` is `ENODEV`, and
+  `/proc/<pid>/fd` names them `anon_inode:[eventfd]` and so on. `select` (x86_64) and
+  `pselect6` are built on `poll`'s machinery, write the remaining time back and take
+  `pselect6`'s mask as `ppoll`'s.
+- **Wake lists per file** (`poll::WakeList`). Each pipe end, `AF_UNIX` socket and event file
+  owns a list of who waits for it; `wake` is one relaxed load when nobody watches, so the pipe
+  and socket paths pay nothing more. A waiter registers before it looks at the file under the
+  file's own lock, and a waker reads the flag after changing the state under that lock, so no
+  wake-up is lost; a waiting thread's entry wakes a futex key of its own in its process's
+  space, so a process's end still wakes it. An `epoll` item sits on its file's list and queues
+  itself on its instance's ready list, so `epoll_wait` looks only at what became ready (plus
+  timers, signalfds, nested instances and console-woken files) instead of every file it
+  watches. The console, windows, network sockets and `/dev/agent` still wake through the
+  console's input key.
+- **Copy-on-write `fork`** (`crate::shared_frames`, `AddressSpace::share_pages_into`,
+  `PageTables::fork_user_pages`, `address_space::ForkPage`). A child's address space maps the
+  parent's frames read-only and the parent's writable pages become read-only too, in one walk
+  of the parent's tables, whose old translations are then dropped on every CPU. A count per
+  frame of the address spaces that map it beyond the first lives in a radix tree indexed by
+  frame number, made when a frame is first shared and never freed (2048 two-byte counts per
+  leaf, so at most 1/2048 of the memory forks ever shared; frames above 2 TiB, a full count or
+  no memory for a node fall back to a copy at `fork`). Every path that frees a user frame
+  (`munmap`, `MADV_DONTNEED`, an address space's end) asks `shared_frames::release`, which is
+  one relaxed load while no frame is shared at the moment; the last address space to release a
+  frame frees it. A write fault, or a kernel copy into user memory, on a read-only page whose
+  region allows writing takes the frame in place if no other address space maps it any more,
+  else copies it into a frame of its own (`Process::copy_on_write`, cold and out of line);
+  `mprotect` to writable keeps shared frames read-only. Frames a device, a memory file or a
+  shared file lends are mapped in the child as they are and stay shared, so `fork` works with
+  shared memory; `MAP_SHARED` anonymous memory is now a memory file of its own lent to the
+  program (so it keeps working across `fork`); only such memory with no access or executable is
+  still a plain region that makes `fork` `ENOSYS`.
+- **Fork marks** (`regions::{ForkMarks, ForkMark, fork_mark}`, `Process::mark_for_fork`):
+  `MADV_DONTFORK` and `MADV_DOFORK`, `MADV_WIPEONFORK` and `MADV_KEEPONFORK` mark the parts of
+  the range that regions hold (`ENOMEM` for the rest); the child of a `fork` lacks
+  `DONTFORK` ranges entirely (regions, file ranges, lent ranges and pages) and gets
+  `WIPEONFORK` ranges with no pages, zero when touched, keeping the mark; `WIPEONFORK` of a
+  range that maps a file or lent frames is `EINVAL`, as Linux's private-anonymous rule; marks
+  go with `munmap` and move with `mremap`.
+- **Writable `MAP_SHARED` of files** (`vfs::shared_pages`). A writable shared mapping of a
+  file on a writable file system (tmpfs, `/dev/shm`, EggFS, FAT), or any readable shared
+  mapping of a file that already has one, gets the file's `SharedFile`: a frame per page any
+  of its mappings reaches, read from the file when the mapping is made (zeros past its end) and
+  lent to every process that maps it, which see each other's writes at once and keep them
+  across `fork`. While it exists, `read`, `pread` and the fault path's file reads take its
+  pages' bytes (`read_over`), and `write`, `pwrite`, `ftruncate` and `O_TRUNC` change them too
+  (`wrote`, `truncated`), so a file reads the same through a mapping and a descriptor. Its
+  pages are written back to the file where they differ from it (compared a chunk at a time, so
+  an unchanged page costs no disk write), never past the file's end, by `msync` with `MS_SYNC`
+  or `MS_ASYNC` (`EIO` if the file could not be written), `fsync`, `sync` and the last mapping's
+  end; then its frames are freed. A writable shared mapping of a file on a file system that
+  cannot be changed is `EACCES`, as is one of a file not open for writing.
+- **`/dev/shm`** (`devfs` directory `shm`, a tmpfs mounted on it at boot, mode 1777, device
+  0:34, drawing on the memory file systems' budget): glibc's and musl's `shm_open` and
+  `shm_unlink` are `open` and `unlink` there, and a mapping keeps its pages after the name is
+  removed.
+- **Allocations programs drive** follow D155: the share-count nodes, the shared files and
+  their frames, the fork marks, and the event files' interest and ready entries take memory
+  through `heap::may_grow_for_user`, `allocate_for_user` and fallible reservations, failing with
+  `ENOMEM`.
+- **Front-ends.** ABI only: no GUI, CLI or MCP capability changes; programs a user runs from
+  the terminal, the CLI or MCP's `run` get the new calls.
+- **Checks.** Host tests: the share counts (shared, released by the last, out of reach, full);
+  `fork` sharing the parent's frames read-only, the child's write copying one page and the
+  parent's taking its frame back in place, the frames all freed; a `fork` without frames for
+  its tables leaving the parent as it was; lent frames mapped in the child; fork marks (split,
+  join, clear, move; a `DONTFORK` range missing in the child, a `WIPEONFORK` range read as
+  zeros and the mark kept by the grandchild); shared anonymous memory shared with a forked child
+  while private memory is copied, and `WIPEONFORK` on it `EINVAL`; a writable shared file
+  mapping seen by another mapping, by `read` through the file system, written back by `msync`;
+  the shared pages' coherence with writes and truncation and the last unmap's write-back; the
+  event files, `epoll` (arguments, level and edge triggering, timeouts, nesting and `ELOOP`,
+  `ppoll` on an `epoll` file), `timerfd`, `signalfd` through `epoll`, `pselect6` and `select` on
+  a pipe, all through the system-call layer. QEMU, every architecture: the Linux programs boot
+  runs the new static `tests/linux-events` (`LINUX-EVENTS` lines: an `epoll` loop with a
+  `timerfd`, an `eventfd` in both modes and a `signalfd`, a pipe woken by a thread; `select` and
+  `pselect6`; copy on write after `fork`; `MAP_SHARED` anonymous memory across `fork`;
+  `shm_open`'s path in `/dev/shm` shared with a child; a writable `MAP_SHARED` of a `/tmp` file
+  seen by `pread` after `msync` and seeing a `write`; `MADV_DONTFORK`'s `SIGSEGV` and
+  `MADV_WIPEONFORK`'s zeros).
+- **Decided without research.** Shared file pages read in full when a mapping is made rather
+  than when touched, and past the end read as zeros rather than `SIGBUS`, to reuse the lent
+  frames that memory files already use (their limits come with them: no `mremap`,
+  `MADV_DONTNEED`, `PROT_NONE` or executable); a read-only shared mapping of a file nobody maps
+  writable kept as D167's snapshot read when touched (rustc's metadata mappings stay lazy);
+  write-back comparing with the file instead of tracking dirty pages (no dirty bits are read);
+  the time written back being the mapping's or the last `msync`'s; `MAP_SHARED` anonymous memory
+  taking its frames when mapped; the share counts in a lock-free radix tree from the kernel heap
+  rather than a table per frame at boot (nothing costs memory before the first `fork`); the
+  parent's writable pages made read-only during the walk that shares them, so a write another
+  of its threads makes during `fork` may reach the child; `fork-touch-loop` adding to a word the
+  parent wrote first, so the child's write is a copy; and, for the event files (their
+  implementer's choices): the anonymous inodes' `fstat` values (device 0:15, inode 1, mode
+  0600), alarm clocks for privileged callers, `epoll_ctl`'s check order (the event, then the
+  descriptors, then `EPERM`, then `EINVAL`), `pselect6`'s (the argument pack, the timeout, the
+  mask), `select`'s `nfds` capped at the open-file limit, `/dev/random` and `/dev/urandom`
+  watchable by `epoll` while `/dev/null`, `zero` and `full` are `EPERM`, and a blocking wait
+  that waits once and looks again. The owner can overrule any of these.
+- **Performance and size (D24).** New benchmarks: `linux_fork_touch` (the runtime's self-test
+  program's `fork-touch-loop`: each child writes one word of the parent's data, a copy-on-write
+  fault, before it ends) and `linux_epoll_wake` (an `eventfd` add that readies a
+  level-triggered `epoll` item, an `epoll_wait` that finds it and the take, without the trap);
+  their baseline lines come with the build phase. `linux_fork` should drop sharply (no page is
+  copied; the parent takes its stack page back with one fault); every path that frees user
+  frames gains one relaxed load (`linux_mmap_munmap`, `linux_page_fault`), and a lookup of
+  three levels while frames are shared; `mprotect` to writable gains the same load; the read and
+  write paths of regular files gain one relaxed load each for the shared pages; pipes and
+  sockets allocate a wake list each; report-only CI shows any move (D122). `Process` is
+  unchanged; `Memory` grows by a lock, a `Vec` and a flag for the fork marks. The kernel grows
+  by the new calls; the release image does not change but for `/dev/shm`'s mount, which costs
+  nothing until written.
+- **Not yet.** Shared file pages read when touched and `SIGBUS` past the end for shared
+  mappings; `mremap`, `MADV_DONTNEED`, `PROT_NONE` and executable shared mappings (lent frames'
+  limits); `MAP_SHARED` anonymous memory taking frames when touched, and with no access or
+  executable surviving `fork`; dirty tracking for write-back and a periodic write-back;
+  `MADV_DONTFORK`'s mark on the part an in-place `mremap` grows by; wake lists for the
+  console, windows, network sockets and `/dev/agent`; `TFD_TIMER_CANCEL_ON_SET` and a
+  `CLOCK_REALTIME` timer noticing `clock_settime` while a waiter sleeps; `EPOLLEXCLUSIVE`
+  waking one waiter; more than 64 events per `epoll_wait`; signalfd readiness per file rather
+  than per looking thread; a wait whose bookkeeping finds no memory looking again every 10 ms
+  instead of sleeping until woken; `/dev/shm` budgeted apart from `/tmp`.

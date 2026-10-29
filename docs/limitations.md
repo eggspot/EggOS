@@ -127,29 +127,37 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `/proc/thread-self`; `stat`'s times and fault counts are 0, `status` has no signal or memory
   lines but `VmSize`, links in `fd` to pipes and sockets cannot be opened, and every file is
   root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
-  standard streams' links, `window` and `agent`, but no `/dev/shm`, `/dev/pts` or block devices;
-  the only symbolic links are those in `/proc` and `/dev` (D168); `mmap` of files is private, or shared and read-only
-  (a shared mapping does not see later writes to the file, and a writable one is `ENODEV`,
-  D167), and a file page is read under the process's memory lock, so its other threads wait
-  for a disk read; no copy-on-write `fork`
-  (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
-  with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
+  standard streams' links, `window`, `agent` and `shm` (a memory file system for `shm_open`,
+  D169), but no `/dev/pts` or block devices;
+  the only symbolic links are those in `/proc` and `/dev` (D168); `mmap` of files is private
+  or shared (D167, D169): a writable shared mapping, or any shared mapping of a file another
+  one maps so, shares the file's pages, which are all read when it is made and written back
+  where they changed by `msync`, `fsync`, `sync` and the last unmap; past the file's end they
+  read as zeros instead of raising `SIGBUS`, and such a mapping cannot be moved (`mremap`),
+  discarded, or made inaccessible or executable; a read-only shared mapping of a file nobody
+  maps writable does not see later writes; a file page is read under the process's memory
+  lock, so its other threads wait for a disk read. `fork` is copy on write (D169);
+  `MAP_SHARED` anonymous memory takes all its frames when it is mapped, and one with no access
+  or executable still makes `fork` fail with `ENOSYS`. Pipes work (D125); `epoll`, `eventfd`,
+  `timerfd`, `signalfd`, `select` and `pselect6` work (D169), with pipes, local sockets and
+  the event files waking only who waits for them, but the console, windows, network sockets
+  and `/dev/agent` still wake every waiter when they change; `TFD_TIMER_CANCEL_ON_SET` is
+  refused, `EPOLLEXCLUSIVE` wakes every waiter, and one `epoll_wait` returns at most 64
+  events. Local sockets work (D138): `AF_UNIX` stream
   sockets only (no datagrams or sequenced packets); `AF_INET` datagram sockets work for UDP
   and ping (D157), stream sockets for TCP (D158); socket files only in the
   memory file systems (`/tmp`, `/run`, `/var` and `/home` without a disk; `bind` on the disk
   is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
-  itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or
-  `signalfd` yet, which most graphical Linux toolkits need. Shared memory works through
-  `memfd_create` (D139): `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; no
-  writable `MAP_SHARED` of other files (`ENODEV`), no `shm_open` or `/dev/shm`, no writable private mapping of a memfd, no
+  itself, and at most 4096 descriptors in flight in all. Shared memory works through
+  `memfd_create` (D139), `shm_open` on `/dev/shm` and `MAP_SHARED` anonymous memory (D169):
+  `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; no writable private mapping of a memfd, no
   executable or `PROT_NONE` mapping of one (`EPERM`), no `F_SEAL_WRITE` or
   `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
-  with mode 0 only, a write, `fallocate` or mapping at a gigabyte-scale offset fails
-  (`ENOSPC`, `ENOMEM`), and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
-  work).
+  with mode 0 only, and a write, `fallocate` or mapping at a gigabyte-scale offset fails
+  (`ENOSPC`, `ENOMEM`).
 - **Linux GUI programs: static Wayland clients only.** `eggway` (D140) shows a static program's
-  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need their libraries, `epoll`,
-  `eventfd` and `timerfd` and protocols eggway does not serve yet ([Linux
+  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need their libraries and
+  protocols eggway does not serve yet ([Linux
   programs](linux-programs.md) lists them). It serves one seat and one output (whose mode is the
   work area's size, at scale 1), shows surfaces opaque and ignores buffer scale and transform,
   window geometry and the window menu request; popups close at once, and there is no clipboard,

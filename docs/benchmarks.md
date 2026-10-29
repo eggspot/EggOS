@@ -66,17 +66,26 @@ exactly by default (what `cargo xtask ci` and the weekly performance pass run), 
   program's start-up up to its next `execve` (relocation, `PT_GNU_RELRO`). The first process's
   load and its exit are spread over the iterations. Only test kernels hold the program; the
   benchmark measures nothing elsewhere.
-- `linux_fork`: a process creation with an eager copy and the child's end, per call (D104):
+- `linux_fork`: a process creation copy on write and the child's end, per call (D104, D169):
   the runtime's self-test program, started with `fork-loop <n>`, calls
-  `clone(CLONE_VFORK | SIGCHLD)` `n` times; each child (a copy of every page the program has
-  mapped, its regions, descriptors, credentials and signal actions, and a thread) calls
-  `exit_group` at once, and the parent goes on when it has ended. The children's exit records
-  stay with the parent until it ends (no `wait4` yet). Only test kernels hold the program.
+  `clone(CLONE_VFORK | SIGCHLD)` `n` times; each child (every page the program has mapped
+  shared read-only with it, its regions, descriptors, credentials and signal actions, and a
+  thread) calls `exit_group` at once, and the parent goes on when it has ended, taking back
+  the pages it then writes (its stack) with one fault each. The children's exit records stay
+  with the parent until it ends (no `wait4` yet). Only test kernels hold the program.
+- `linux_fork_touch`: `linux_fork` with one write in each child (D169): started with
+  `fork-touch-loop <n>`, each child adds one to a word of the program's data before it ends,
+  so a page the parent maps is copied on write; the difference from `linux_fork` is the price
+  of one copy-on-write fault.
 - `linux_vfork_exec`: `posix_spawn`'s path, per call (D104): the same program, started with
   `spawn-loop <n>`, calls `clone(CLONE_VM | CLONE_VFORK | SIGCHLD)` `n` times; each child,
   on the parent's memory, `execve`s the program with `exec-loop 0`, which runs its start-up
   and exits, and the parent goes on at the child's point of no return. Includes the children's
   start-ups and exits, the last ones waited for after the parent ends.
+- `linux_epoll_wake`: an event loop's wake-up, per call (D169): one `eventfd` add that makes a
+  level-triggered `epoll` item ready (its wake list queues it on the instance's ready list), one
+  `epoll_wait` that finds it without sleeping, and the read that takes the count, through the
+  Linux layer's functions on a test program's descriptors, without the trap.
 
 ## Drivers
 
