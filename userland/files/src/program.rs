@@ -236,8 +236,8 @@ impl View for Program {
         true
     }
 
-    fn act(&mut self, element: u32, action: Action, _text: &str, _time_ms: u32) -> Outcome {
-        let outcome = self.window.act(&mut self.files, element, action);
+    fn act(&mut self, element: u32, action: Action, text: &str, _time_ms: u32) -> Outcome {
+        let outcome = self.window.act(&mut self.files, element, action, text);
         self.serve();
         outcome
     }

@@ -23,7 +23,8 @@
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
 //!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
-//!    Editor window that `wm_list` shows (D149), Files opened by name, a new folder found as a
+//!    Editor window that `wm_list` shows (D149), whose text field (D162) a `wm_drag` across its
+//!    first word and `wm_type` replace, Files opened by name, a new folder found as a
 //!    list item in its element tree and opened by `wm_click`'s double-click (D162); then
 //!    uninstalling the app; then, with a
 //!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
@@ -1415,9 +1416,95 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
         r#"{"path":"/media/host/readme.txt"}"#,
         "Opened /media/host/readme.txt in Text Editor.",
     )?;
-    window_titled(client, "readme.txt - Text Editor")?;
+    let editor = window_titled(client, "readme.txt - Text Editor")?;
+    editor_session(client, editor)?;
     files_session(client)?;
     Ok(())
+}
+
+fn editor_session(client: &mut Client, editor: u32) -> Result<(), String> {
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    let (x, y, _, _) = loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{editor}}}"#),
+            " text-field ",
+        )?;
+        let all = tree.all();
+        if all.contains("= \"EGGOS-MCP hello from the host")
+            && let Some(bounds) = element_bounds(&all, "text-field")
+        {
+            break bounds;
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!("the Text Editor's wm_show has no text field with the file: {all}"),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    };
+    let row = y + EDITOR_FIRST_ROW_CENTRE;
+    let column = |columns: u32| x + columns * eggos_editor::editor_window::CELL_WIDTH as u32;
+    succeeds(
+        client,
+        "wm_drag",
+        &format!(
+            r#"{{"window":{editor},"x":{},"y":{row},"to_x":{},"to_y":{row}}}"#,
+            column(0) + 1,
+            column(5) + 1
+        ),
+        "dragged left",
+    )?;
+    succeeds(
+        client,
+        "wm_type",
+        &format!(r#"{{"window":{editor},"text":"Z"}}"#),
+        "typed 1 of 1",
+    )?;
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{editor}}}"#),
+            " text-field ",
+        )?;
+        if tree.all().contains("= \"Z-MCP hello from the host") {
+            return Ok(());
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!(
+                "dragging across EGGOS and typing Z did not replace it: {}",
+                tree.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    }
+}
+
+/// From the text field's top to the middle of the Text Editor's first row: its 4-pixel top
+/// margin and half a row.
+const EDITOR_FIRST_ROW_CENTRE: u32 = 4 + eggos_editor::editor_window::ROW_HEIGHT as u32 / 2;
+
+fn element_bounds(tree: &str, role: &str) -> Option<(u32, u32, u32, u32)> {
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        words.next()?.parse::<u32>().ok()?;
+        if words.next() != Some(role) {
+            return None;
+        }
+        let (x, y) = words.next()?.split_once(',')?;
+        let (width, height) = words.next()?.split_once('x')?;
+        Some((
+            x.parse().ok()?,
+            y.parse().ok()?,
+            width.parse().ok()?,
+            height.parse().ok()?,
+        ))
+    })
 }
 
 /// The folder the Files step makes in the home folder and opens with a double-click (D162).
@@ -1592,6 +1679,11 @@ mod tests {
             Some((450, 76))
         );
         assert_eq!(super::list_item_centre(tree, "notes.txt", "folder"), None);
+        assert_eq!(
+            super::element_bounds(tree, "text-field"),
+            Some((180, 8, 520, 24))
+        );
+        assert_eq!(super::element_bounds(tree, "button"), None);
     }
 
     #[test]

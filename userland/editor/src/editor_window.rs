@@ -4,9 +4,12 @@
 //! [`Editor`] and [`Files`], so host tests and the QEMU test's expected frames run the same
 //! code the program shows.
 
+mod elements;
 mod paint;
 #[cfg(test)]
 mod tests;
+
+pub use elements::TEXT_ELEMENT;
 
 use crate::columns::{byte_nearest, byte_under, view_width};
 use crate::document::{Full, TEXT_CAPACITY};

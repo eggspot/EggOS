@@ -9,6 +9,7 @@ use eggos_app::files::Files;
 use eggos_toolkit::elements::{Action, Bounds, Element, Outcome, Role, TreeWriter, flags};
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::tree::ROOT_ELEMENT;
+use eggos_toolkit::widget;
 
 /// The sidebar's list of places.
 pub const PLACES_ELEMENT: u32 = 10;
@@ -107,8 +108,15 @@ impl FilesWindow {
         }
     }
 
-    /// Does `action` to `element` for an agent, as a person's clicks and keys would.
-    pub fn act(&mut self, files: &mut impl Files, element: u32, action: Action) -> Outcome {
+    /// Does `action` to `element` for an agent, as a person's clicks and keys would, with `text` for
+    /// [`Action::SetText`] (the path field takes it as typed; Enter goes there).
+    pub fn act(
+        &mut self,
+        files: &mut impl Files,
+        element: u32,
+        action: Action,
+        text: &str,
+    ) -> Outcome {
         let place = element
             .checked_sub(FIRST_PLACE_ELEMENT)
             .map(|index| index as usize)
@@ -143,6 +151,15 @@ impl FilesWindow {
             }
             (Action::Focus, _, _, PATH_ELEMENT) => {
                 self.focus_path();
+                self.damage_all();
+                Outcome::Done
+            }
+            (Action::SetText, _, _, PATH_ELEMENT) => {
+                self.focus_path();
+                self.path_field.text.set(text);
+                self.path_field.caret = self.path_field.text.len();
+                let rect = self.path_field_rect();
+                widget::keep_caret_visible(&mut self.path_field, rect);
                 self.damage_all();
                 Outcome::Done
             }

@@ -739,7 +739,7 @@ fn an_agent_reads_the_entries_as_list_items_and_opens_one_by_its_element() {
             .any(|element| element.parent == PLACES_ELEMENT && element.name == b"Home")
     );
     assert_eq!(
-        window.act(&mut files, documents.0, Action::Invoke),
+        window.act(&mut files, documents.0, Action::Invoke, ""),
         Outcome::Done
     );
     match window.location() {
@@ -747,15 +747,35 @@ fn an_agent_reads_the_entries_as_list_items_and_opens_one_by_its_element() {
         Location::Trash => panic!("not opened"),
     }
     assert_eq!(
-        window.act(&mut files, FIRST_ENTRY_ELEMENT + 400, Action::Invoke),
+        window.act(&mut files, FIRST_ENTRY_ELEMENT + 400, Action::Invoke, ""),
         Outcome::NoSuchElement
     );
     assert_eq!(
-        window.act(&mut files, PATH_ELEMENT, Action::SetText),
-        Outcome::NotSupported
-    );
-    assert_eq!(
-        window.act(&mut files, FIRST_PLACE_ELEMENT, Action::Invoke),
+        window.act(&mut files, FIRST_PLACE_ELEMENT, Action::Invoke, ""),
         Outcome::Done
     );
+    assert_eq!(
+        window.act(
+            &mut files,
+            PATH_ELEMENT,
+            Action::SetText,
+            "/home/root/Documents"
+        ),
+        Outcome::Done
+    );
+    assert_eq!(
+        window.act(&mut files, PATH_ELEMENT, Action::Select, ""),
+        Outcome::NotSupported
+    );
+    let enter = Input::Key {
+        code: key::ENTER,
+        pressed: true,
+        modifiers: Modifiers(0),
+        character: 13,
+    };
+    assert!(window.handle(&mut files, enter, 10, CLOCK));
+    match window.location() {
+        Location::Folder(path) => assert_eq!(path.as_bytes(), b"/home/root/Documents"),
+        Location::Trash => panic!("the path field's text was not opened"),
+    }
 }

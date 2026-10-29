@@ -14,6 +14,7 @@ use eggos_runtime::syscall::{self, number};
 use eggos_toolkit::application::{self, View};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::damage::Damage;
+use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::tree::PointerShape;
 use eggos_toolkit::window::{Window, now_ms};
@@ -123,6 +124,15 @@ impl View for Program<'_> {
 
     fn take_title(&mut self) -> Option<&str> {
         self.window.take_title()
+    }
+
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.window.describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, text: &str, _time_ms: u32) -> Outcome {
+        self.window.act(element, action, text)
     }
 }
 

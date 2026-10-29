@@ -312,6 +312,12 @@ impl<'a> Editor<'a> {
         Ok(())
     }
 
+    /// Replaces the whole document with `text`, one step to undo, the caret after it (an
+    /// agent's `set-text`, D162).
+    pub fn replace_all(&mut self, text: &[u8]) -> Result<(), Full> {
+        self.edit((0, self.document.len()), text, Kind::Other)
+    }
+
     /// Types `character` in place of the selection.
     pub fn type_character(&mut self, character: char) -> Result<(), Full> {
         let mut bytes = [0u8; 4];
