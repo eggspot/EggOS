@@ -256,8 +256,6 @@ pub fn get_robust_list<P: Platform>(
 /// The longest machine or domain name (`__NEW_UTS_LEN`): a field without its zero.
 pub const MAX_NAME: usize = utsname::FIELD - 1;
 
-/// A name `sethostname` or `setdomainname` gave, if one did (all zero until then, so the
-/// static that holds them stays in `.bss`).
 #[derive(Debug, Clone, Copy)]
 struct ChangedName {
     set: bool,
@@ -271,7 +269,6 @@ const UNCHANGED: ChangedName = ChangedName {
     bytes: [0; MAX_NAME],
 };
 
-/// Which name, an index into [`CHANGED_NAMES`] and the field of `struct utsname` it replaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Which {
     Host,
@@ -296,7 +293,6 @@ impl Which {
 
 static CHANGED_NAMES: LeafSpinLock<[ChangedName; 2]> = LeafSpinLock::new_leaf([UNCHANGED; 2]);
 
-/// `struct utsname` as `uname` copies it out now: [`UTSNAME`] with the names changed so far.
 fn current_utsname() -> [u8; 6 * utsname::FIELD] {
     let mut image = UTSNAME;
     let changed = *CHANGED_NAMES.lock();

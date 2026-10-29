@@ -5,10 +5,11 @@
 //! delete removes a folder's entries one at a time from the first, so a file system whose
 //! listing moves under removals still loses every entry. Cancelling keeps what is done and
 //! removes the file half-written. Paths are normalized first, so a target written with `.`,
-//! `..` or `//` cannot hide inside its own source.
+//! `..` or `//` cannot hide inside its own source. A symbolic link is copied, moved and deleted
+//! as a link, with the same target text, and never descended into (D170).
 
 use crate::names::{is_inside, normalized};
-use eggos_app::files::{Files, Handle, Kind, Path, Status};
+use eggos_app::files::{Files, Handle, Kind, PATH_CAPACITY, Path, Status};
 use eggos_runtime::errno::Errno;
 
 /// How deep folders may nest under what is copied or deleted.
@@ -111,6 +112,17 @@ impl Walk {
             return Ok(Some((relative, status)));
         }
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn copy_link(files: &mut impl Files, from: &Path, to: &Path) -> Result<(), (Errno, Path)> {
+    let mut target = [0u8; PATH_CAPACITY];
+    let length = files
+        .read_link(from.as_bytes(), &mut target)
+        .map_err(|error| (error, *from))?;
+    files
+        .make_link(&target[..length], to.as_bytes())
+        .map_err(|error| (error, *to))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -385,6 +397,12 @@ impl Job {
                     self.single = true;
                     self.begin_file(files, &from, &to, status.permissions)
                 }
+                Kind::Link => {
+                    copy_link(files, &from, &to)?;
+                    self.done = self.done.saturating_add(status.size);
+                    self.after_copy();
+                    Ok(())
+                }
                 Kind::Other => Err((Errno::EINVAL, from)),
             };
         }
@@ -404,6 +422,11 @@ impl Job {
                 .make_directory(target.as_bytes())
                 .map_err(|error| (error, target)),
             Kind::File => self.begin_file(files, &source, &target, status.permissions),
+            Kind::Link => {
+                copy_link(files, &source, &target)?;
+                self.done = self.done.saturating_add(status.size);
+                Ok(())
+            }
             Kind::Other => Err((Errno::EINVAL, source)),
         }
     }
@@ -611,6 +634,37 @@ mod tests {
         assert_eq!(files.node("/tmp/Work"), Some(&Node::Folder));
         assert_eq!(files.open_count(), 0);
         assert_eq!(job.step(&mut files, &mut buffer), Step::Done);
+    }
+
+    #[test]
+    fn links_are_copied_moved_and_deleted_as_links_and_never_descended_into() {
+        let mut files = tree();
+        files
+            .file("/home/root/Keep/k.txt", b"k", 1)
+            .link("/home/root/Work/out", "/home/root/Keep", 1)
+            .link("/home/root/Work/near", "a.txt", 1);
+        let job = Job::copy(&path("/home/root/Work"), &path("/tmp/Work"));
+        assert_eq!(run(&mut files, job), Step::Done);
+        assert_eq!(
+            files.node("/tmp/Work/out"),
+            Some(&Node::Link(b"/home/root/Keep".to_vec()))
+        );
+        assert_eq!(
+            files.node("/tmp/Work/near"),
+            Some(&Node::Link(b"a.txt".to_vec()))
+        );
+        assert_eq!(files.node("/tmp/Work/out/k.txt"), None);
+        let job = Job::moving(&path("/home/root/Work/near"), &path("/tmp/near"));
+        assert_eq!(run(&mut files, job), Step::Done);
+        assert_eq!(
+            files.node("/tmp/near"),
+            Some(&Node::Link(b"a.txt".to_vec()))
+        );
+        assert_eq!(files.node("/home/root/Work/near"), None);
+        let job = Job::delete(&path("/home/root/Work"));
+        assert_eq!(run(&mut files, job), Step::Done);
+        assert_eq!(files.node("/home/root/Work"), None);
+        assert_eq!(files.contents("/home/root/Keep/k.txt"), Some(&b"k"[..]));
     }
 
     #[test]

@@ -17,7 +17,8 @@ fn machine() -> Fake {
             b"MemTotal: 131072 kB\nMemFree: 100000 kB\nMemAvailable: 100000 kB\n",
             0,
         )
-        .with_file("/proc/uptime", 0o444, b"3725.42 0.00\n", 0);
+        .with_file("/proc/uptime", 0o444, b"3725.42 0.00\n", 0)
+        .with_link("/proc/self", "7");
     fake.now = 1_793_282_709;
     fake.windows = vec![FakeWindow {
         id: 129,
@@ -85,4 +86,12 @@ fn the_examples_that_change_files_change_them() {
     assert_eq!(run(&mut fake, &[c"mkdir", c"/home/root/plans"]), 0);
     assert_eq!(run(&mut fake, &[c"ls", c"/home/root"]), 0);
     assert_eq!(fake.output(), "copy.txt\nnotes.txt\nplans\n");
+    let link = [c"ln", c"-s", c"notes.txt", c"/home/root/latest"];
+    assert_eq!(run(&mut fake, &link), 0);
+    assert_eq!(run(&mut fake, &[c"cat", c"/home/root/latest"]), 0);
+    assert!(fake.output().ends_with("plans\neggs\nmilk\nbread\n"));
+    assert_eq!(
+        fake.link_target("/home/root/latest"),
+        Some(b"notes.txt".to_vec())
+    );
 }

@@ -67,6 +67,8 @@ pub const MAX_SETTING_KEY_BYTES: usize = 64;
 pub const MAX_SETTING_VALUE_BYTES: usize = 64;
 /// The longest `after` a list tool takes: a cursor (D164).
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
+/// The longest `target` `ln` takes (D170).
+pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_BYTES as usize;
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
@@ -150,6 +152,9 @@ pub enum ArgumentProblem {
     BadLimit,
     /// `after` is not a cursor a page ended with (D164).
     BadCursor,
+    /// `ln`'s `target` is empty, longer than [`MAX_LINK_TARGET_BYTES`], holds a NUL or starts
+    /// with `-` (D170).
+    BadLinkTarget,
 }
 
 impl ArgumentProblem {
@@ -179,12 +184,15 @@ impl ArgumentProblem {
                 "element and action are required: an id wm_show shows and what to do"
             }
             ArgumentProblem::Missing("key") => "key is required: a key settings_list shows",
+            ArgumentProblem::Missing("link") => "link is required: the path of the link to make",
+            ArgumentProblem::Missing("target") => "target is required: what the link points to",
             ArgumentProblem::Missing("value") => "value is required: the new value",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
             ArgumentProblem::WrongType("append" | "confirm") => "append and confirm are booleans",
             ArgumentProblem::WrongType("dry_run") => "dry_run is a boolean",
+            ArgumentProblem::WrongType("symbolic") => "symbolic is a boolean",
             ArgumentProblem::WrongType(_) => "an argument has the wrong type",
             ArgumentProblem::BadPath => "the path is longer than 4095 bytes",
             ArgumentProblem::BothContents => "give content or content_base64, not both",
@@ -269,6 +277,9 @@ impl ArgumentProblem {
             ArgumentProblem::BadCursor => {
                 "after must be the next_cursor a page ended with, as it was given: leave it out \
                  to start again"
+            }
+            ArgumentProblem::BadLinkTarget => {
+                "target must be 1 to 4095 bytes without NUL, not starting with - (write ./-name)"
             }
         }
     }
@@ -472,6 +483,10 @@ pub struct Checked {
     pub after: Option<usize>,
     /// `dry_run` (D164).
     pub dry_run: bool,
+    /// `ln`'s target's length, in the content buffer (D170).
+    pub link_target: Option<usize>,
+    /// `ln`'s `symbolic`, true unless the agent says false (D170).
+    pub symbolic: bool,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -659,6 +674,24 @@ pub fn check(
             |byte| !byte.is_ascii_control(),
             ArgumentProblem::BadSettingValue,
         )?);
+    }
+    if tool.kind == Kind::Ln {
+        checked.symbolic = match get("symbolic") {
+            None => true,
+            given => flag(given, "symbolic")?,
+        };
+        let length = short_text(
+            get("target"),
+            "target",
+            decoded.content,
+            MAX_LINK_TARGET_BYTES,
+            |byte| byte != 0,
+            ArgumentProblem::BadLinkTarget,
+        )?;
+        if decoded.content.first() == Some(&b'-') {
+            return Err(ArgumentProblem::BadLinkTarget);
+        }
+        checked.link_target = Some(length);
     }
     if tool.kind == Kind::Fetch {
         let length = short_text(
@@ -1126,6 +1159,12 @@ pub fn archive_entry_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b
 /// A list tool's `after` in `buffer`, the words buffer, that [`Checked::after`] measures (D164).
 pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.after?)?).ok()
+}
+
+/// `ln`'s target in `buffer`, the content buffer, that [`Checked::link_target`] measures
+/// (D170).
+pub fn link_target_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.link_target?)?).ok()
 }
 
 /// The path or program in `buffer` that [`Checked::path`] measures.
@@ -1666,6 +1705,58 @@ mod tests {
                 Err(ArgumentProblem::Unknown),
                 "{tool}"
             );
+        }
+    }
+
+    #[test]
+    fn ln_takes_a_link_path_a_target_text_and_symbolic_true_by_default() {
+        let (result, buffers) = checked("ln", r#"{"target":"notes.txt","link":"/home/root/l"}"#);
+        let result = result.unwrap();
+        assert_eq!(path_text(&result, &buffers.path), Some("/home/root/l"));
+        assert_eq!(
+            link_target_text(&result, &buffers.content),
+            Some("notes.txt")
+        );
+        assert!(result.symbolic);
+        let arguments = r#"{"target":"/home/root/a","link":"/home/root/b","symbolic":false}"#;
+        assert!(!checked("ln", arguments).0.unwrap().symbolic);
+        let long = format!(
+            r#"{{"target":"{}","link":"/home/root/l"}}"#,
+            "a".repeat(MAX_LINK_TARGET_BYTES + 1)
+        );
+        assert_eq!(checked("ln", &long).0, Err(ArgumentProblem::BadLinkTarget));
+        for (arguments, problem) in [
+            (r#"{"target":"a"}"#, ArgumentProblem::Missing("link")),
+            (
+                r#"{"link":"/home/root/l"}"#,
+                ArgumentProblem::Missing("target"),
+            ),
+            (
+                r#"{"target":"","link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":"-rf","link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":"a\u0000b","link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":7,"link":"/home/root/l"}"#,
+                ArgumentProblem::BadLinkTarget,
+            ),
+            (
+                r#"{"target":"a","link":"/home/root/l","symbolic":"no"}"#,
+                ArgumentProblem::WrongType("symbolic"),
+            ),
+            (
+                r#"{"target":"a","link":"/home/root/l","force":true}"#,
+                ArgumentProblem::Unknown,
+            ),
+        ] {
+            assert_eq!(checked("ln", arguments).0, Err(problem), "{arguments}");
         }
     }
 }

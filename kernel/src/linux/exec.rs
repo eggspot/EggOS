@@ -301,11 +301,8 @@ pub fn load_program<P: Platform>(
     Ok(UserContext::new(start, stack.start))
 }
 
-/// `AT_CLKTCK`: the unit of `times(2)`, as on Linux.
 const CLOCK_TICKS_PER_SECOND: u64 = 100;
 
-/// Where an image's `LOAD` segments lie before any bias: the lowest address, the end of the
-/// highest, and the largest alignment asked for (a page at least).
 struct Span {
     lowest: u64,
     highest: u64,
@@ -313,8 +310,6 @@ struct Span {
 }
 
 impl Span {
-    /// The span of `elf`'s `LOAD` segments with memory; an alignment that is not a power of two
-    /// up to 1 GiB is refused (0 and 1 ask for none).
     fn of(elf: &Elf<'_>) -> Result<Self, ExecError> {
         let mut span = Self {
             lowest: u64::MAX,
@@ -345,7 +340,6 @@ impl Span {
         self.lowest == u64::MAX
     }
 
-    /// The lowest address, rounded down to the alignment.
     fn floor(&self) -> u64 {
         self.lowest & !(self.align - 1)
     }
@@ -361,10 +355,6 @@ fn load_bias(elf: &Elf<'_>, span: &Span, user_end: u64) -> u64 {
     pie_base(user_end, span.align).wrapping_sub(span.floor())
 }
 
-/// What is added to every address in an interpreter's headers: 0 for an executable; for a
-/// position-independent one (every `ld.so`), what moves it as high as it fits below the
-/// stack's guard gap, aligned, where Linux places it (as `mmap` places a mapping it may put
-/// anywhere), or below `program` if the program is there.
 fn interpreter_bias(
     elf: &Elf<'_>,
     span: &Span,
@@ -396,23 +386,14 @@ fn interpreter_bias(
     Ok(base.wrapping_sub(span.floor()))
 }
 
-/// What [`check_image`] found: where the segments go, after the bias.
 struct Layout {
-    /// The page-aligned start of the lowest segment.
     lowest: u64,
-    /// The page-aligned end of the highest.
     end: u64,
-    /// Where the `LOAD` segment that holds the program header table maps it (before the bias).
     program_headers: Option<u64>,
-    /// Where `PT_PHDR` says the table is (before the bias).
     named_program_headers: Option<u64>,
-    /// Whether the image names an interpreter (`PT_INTERP`).
     names_interpreter: bool,
 }
 
-/// Checks `elf`'s program headers, moved by `bias`: every `LOAD` segment ([`check_segment`]),
-/// in ascending order without two on one page, an executable stack refused; and finds where
-/// the program header table is mapped.
 fn check_image(elf: &Elf<'_>, bias: u64, user_end: u64) -> Result<Layout, ExecError> {
     let image = elf.image();
     let table_offset = elf.program_header_offset();
@@ -459,19 +440,13 @@ fn check_image(elf: &Elf<'_>, bias: u64, user_end: u64) -> Result<Layout, ExecEr
     Ok(layout)
 }
 
-/// A checked interpreter ([`check_loader`]).
 struct Loader<'a> {
     elf: Elf<'a>,
     file: Option<Arc<dyn FilePages>>,
     bias: u64,
-    /// Its entry point, moved: where the program starts.
     entry: u64,
 }
 
-/// Checks `interpreter` as [`check_image`] checks a program, placed by [`interpreter_bias`]
-/// beside `program`: an image that is not an ELF program for this machine, or is not a
-/// program the kernel can run, or names an interpreter, or overlaps the program, is
-/// [`ExecError::BadInterpreter`].
 fn check_loader<'a>(
     interpreter: Program<'a>,
     program: &Layout,
@@ -510,9 +485,6 @@ fn check_loader<'a>(
     })
 }
 
-/// Maps every `LOAD` segment of `elf`, checked, moved by `bias` ([`map_segment`]), and with
-/// `file`, records each segment with file bytes as a file range (D167): bytes past its file
-/// bytes read as zero, so a page `MADV_DONTNEED` discards comes back as `execve` mapped it.
 fn map_segments<P: Platform>(
     process: &mut Process<P>,
     elf: &Elf<'_>,
@@ -665,9 +637,7 @@ struct InitialStack {
     start: u64,
     /// Everything from `start` up to the top of the stack.
     bytes: Vec<u8>,
-    /// Where the argument strings are, `start..end`.
     arguments: (u64, u64),
-    /// Where the environment strings are, `start..end`.
     environment: (u64, u64),
 }
 
@@ -789,7 +759,12 @@ pub fn execve<P: Platform>(
 /// `ENOTDIR`, `EBADF`); `EACCES` for anything but a regular file and for a file without the
 /// execute permission the caller's file system ids need (root needs one execute bit);
 /// `EFAULT` and `E2BIG` for the arguments and environment; `ENOEXEC` for a file that is not
-/// an ELF program for this machine, a `#!` script among them until scripts are supported;
+/// an ELF program for this machine. A file that starts with `#!` is a script (D170): its line
+/// ([`script_line`]) names an interpreter, found as `open` finds it, which runs instead with
+/// the arguments: the interpreter's path, the line's argument if it has one, the script's path
+/// as `execve` was given it, then the script's own arguments after the first; an interpreter
+/// may be a script itself, [`MAX_SCRIPT_DEPTH`] deep (`ELOOP` past it); a line without an
+/// interpreter is `ENOEXEC`, and the interpreter's walk errors and `EACCES` are the call's;
 /// for a dynamically linked program, its interpreter's walk errors (`ENOENT` for one that is not
 /// there), `EACCES` for one the caller may not execute and `ELIBBAD` for one the kernel cannot
 /// run (D167); `ENOMEM`. On success it does not return: the
@@ -866,17 +841,11 @@ fn prepare<P: Platform>(
     if request.flags & !EXECVEAT_FLAGS != 0 {
         return Err(Errno::EINVAL);
     }
-    let node = find(process.id().get(), thread, request.dirfd, path)?;
+    let caller = process.id().get();
+    let mut node = find(caller, thread, request.dirfd, path)?;
     let process_name = process_table::name_of(node.file_system().name(node.id()).as_bytes());
-    let attributes = node.attributes();
-    let may_execute = {
-        let credentials = process.credentials_and_limits().lock();
-        may_execute(&attributes, &credentials.credentials)
-    };
-    if attributes.kind != NodeKind::Regular || !may_execute {
-        return Err(Errno::EACCES);
-    }
-    let head = ProgramBytes::read(node, attributes.size, SIGNATURE_BYTES)?;
+    let mut attributes = executable_attributes(process, node)?;
+    let mut head = ProgramBytes::read(node, attributes.size, SIGNATURE_BYTES)?;
     let mut strings = Strings::new();
     let argument_count = strings.read_list(process, request.arguments)?;
     if argument_count == 0 {
@@ -884,13 +853,46 @@ fn prepare<P: Platform>(
     }
     let argument_count = argument_count.max(1);
     strings.read_list(process, request.environment)?;
-    if head.bytes().starts_with(b"#!") {
-        return Err(Errno::ENOEXEC);
-    }
     let mut name = ExecName::new();
     let name = name.of(request.dirfd, path)?;
     let list = strings.list()?;
     let (arguments, environment) = list.split_at(argument_count);
+    let mut lead: Vec<Vec<u8>> = Vec::new();
+    let mut scripts = 0;
+    while head.bytes().starts_with(b"#!") {
+        scripts += 1;
+        if scripts > MAX_SCRIPT_DEPTH {
+            return Err(Errno::ELOOP);
+        }
+        let line = ProgramBytes::read(node, attributes.size, SCRIPT_LINE_BYTES as u64)?;
+        let script = script_line(line.bytes()).ok_or(Errno::ENOEXEC)?;
+        let current = owned(lead.first().map_or(name, Vec::as_slice))?;
+        let mut next = Vec::new();
+        next.try_reserve_exact(lead.len() + 3)
+            .map_err(|_| Errno::ENOMEM)?;
+        next.push(owned(script.interpreter)?);
+        if let Some(argument) = script.argument {
+            next.push(owned(argument)?);
+        }
+        next.push(current);
+        next.extend(lead.drain(..).skip(1));
+        lead = next;
+        node = find(caller, thread, at::FDCWD as u64, script.interpreter)?;
+        attributes = executable_attributes(process, node)?;
+        head = ProgramBytes::read(node, attributes.size, SIGNATURE_BYTES)?;
+    }
+    let mut scripted: Vec<&[u8]> = Vec::new();
+    let arguments = match lead.is_empty() {
+        true => arguments,
+        false => {
+            scripted
+                .try_reserve_exact(lead.len() + arguments.len())
+                .map_err(|_| Errno::ENOMEM)?;
+            scripted.extend(lead.iter().map(Vec::as_slice));
+            scripted.extend_from_slice(arguments.get(1..).unwrap_or(&[]));
+            &scripted[..]
+        }
+    };
     let (image, image_node, interpreter) = match interpreter_for(head.bytes()) {
         Some(interpreter) => {
             let (interpreter, layer, image) = read_interpreter(process, thread, interpreter)?;
@@ -917,11 +919,11 @@ fn prepare<P: Platform>(
     };
     let program = Program {
         image: image.bytes(),
-        file: Some(Arc::new(image_node)),
+        file: Some(Arc::new(vfs::HeldNode::new(image_node))),
     };
     let dynamic_loader = dynamic_loader.as_ref().map(|(loader, bytes)| Program {
         image: bytes.bytes(),
-        file: Some(Arc::new(*loader) as Arc<dyn FilePages>),
+        file: Some(Arc::new(vfs::HeldNode::new(*loader)) as Arc<dyn FilePages>),
     });
     let files = match thread.files().is_shared() {
         true => Some(thread.files().copy()?),
@@ -1053,11 +1055,6 @@ fn read_interpreter<P: Platform>(
     ))
 }
 
-/// The dynamic loader `image` names (`PT_INTERP`, D167), read whole, with its node: `None` for
-/// a program that names none, or an image [`load_program`] refuses anyway. As Linux, the path
-/// is found as `open` finds it from the working directory; the walk's errors (`ENOENT` for a
-/// loader that is not there), `EACCES` for one that is not a regular file the caller may
-/// execute, and `ENOEXEC` for a path that is not a NUL-terminated string in the image.
 fn read_dynamic_loader<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -1087,6 +1084,79 @@ fn read_dynamic_loader<P: Platform>(
 }
 
 const SIGNATURE_BYTES: u64 = 64;
+
+/// How many bytes of a script its `#!` line is read from (Linux's `BINPRM_BUF_SIZE`).
+pub const SCRIPT_LINE_BYTES: usize = 256;
+
+/// How many scripts deep `#!` lines may lead before the program (Linux's
+/// `BINPRM_MAX_RECURSION`); one more is `ELOOP`.
+pub const MAX_SCRIPT_DEPTH: u32 = 4;
+
+/// A script's `#!` line: the interpreter's path and its one optional argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptLine<'a> {
+    /// The interpreter's path, found as `open` finds it.
+    pub interpreter: &'a [u8],
+    /// The rest of the line, blanks around it trimmed, if any is left.
+    pub argument: Option<&'a [u8]>,
+}
+
+/// The `#!` line `head`, a script's first [`SCRIPT_LINE_BYTES`] bytes (or all of a shorter
+/// file), starts with, as Linux reads it (D170): after `#!` and any spaces and tabs, the
+/// interpreter runs to the next space, tab, newline or NUL; the rest of the line, spaces and
+/// tabs trimmed at both ends, is one argument. `None` for no `#!`, no interpreter, or a line
+/// whose interpreter runs past the bytes read.
+pub fn script_line(head: &[u8]) -> Option<ScriptLine<'_>> {
+    let rest = head.strip_prefix(b"#!")?;
+    let end = rest.iter().position(|&byte| byte == b'\n' || byte == 0);
+    let line = &rest[..end.unwrap_or(rest.len())];
+    let blank = |byte: &u8| *byte == b' ' || *byte == b'\t';
+    let line = &line[line
+        .iter()
+        .position(|byte| !blank(byte))
+        .unwrap_or(line.len())..];
+    let interpreter_end = line.iter().position(blank).unwrap_or(line.len());
+    let cut = end.is_none() && head.len() >= SCRIPT_LINE_BYTES;
+    if interpreter_end == 0 || (cut && interpreter_end == line.len()) {
+        return None;
+    }
+    let (interpreter, rest) = line.split_at(interpreter_end);
+    let start = rest
+        .iter()
+        .position(|byte| !blank(byte))
+        .unwrap_or(rest.len());
+    let stop = rest
+        .iter()
+        .rposition(|byte| !blank(byte))
+        .map_or(0, |at| at + 1);
+    Some(ScriptLine {
+        interpreter,
+        argument: (start < stop).then(|| &rest[start..stop]),
+    })
+}
+
+fn owned(bytes: &[u8]) -> Result<Vec<u8>, Errno> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len())
+        .map_err(|_| Errno::ENOMEM)?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
+}
+
+fn executable_attributes<P: Platform>(
+    process: &Process<P>,
+    node: Node,
+) -> Result<vfs::Attributes, Errno> {
+    let attributes = node.attributes();
+    let may_execute = {
+        let credentials = process.credentials_and_limits().lock();
+        may_execute(&attributes, &credentials.credentials)
+    };
+    if attributes.kind != NodeKind::Regular || !may_execute {
+        return Err(Errno::EACCES);
+    }
+    Ok(attributes)
+}
 
 /// A program's bytes: lent by a file system that holds them in memory, else copied.
 pub(crate) enum ProgramBytes {
@@ -1677,8 +1747,6 @@ mod tests {
         assert_eq!(free(), before);
     }
 
-    /// The self-test's image linked at 0 instead, every address moved down: a
-    /// position-independent program, and its entry point.
     fn position_independent() -> (Vec<u8>, u64) {
         let mut image = linux_start_image::<P>();
         let text = TEST_PROGRAM_ADDRESS - FRAME_SIZE;
@@ -1736,7 +1804,6 @@ mod tests {
         assert!(data.iter().all(|&byte| byte == 0));
     }
 
-    /// Loads `program` with `interpreter` into a new process, as `load_image` loads an image.
     fn load_dynamic(
         kernel: &PageTables<<P as Platform>::PageTableFormat>,
         program: Program<'_>,
@@ -2056,5 +2123,29 @@ mod tests {
     #[test]
     fn programs_do_not_get_the_same_random_bytes() {
         assert_ne!(random_bytes::<P>(), random_bytes::<P>());
+    }
+
+    #[test]
+    fn a_script_line_names_its_interpreter_and_one_argument_as_linux_reads_it() {
+        let line = |head: &[u8]| script_line(head).map(|line| (line.interpreter, line.argument));
+        assert_eq!(
+            line(b"#!/bin/eggsh\necho"),
+            Some((&b"/bin/eggsh"[..], None))
+        );
+        assert_eq!(
+            line(b"#! \t/usr/bin/env  python3 -u \t\nrest"),
+            Some((&b"/usr/bin/env"[..], Some(&b"python3 -u"[..])))
+        );
+        assert_eq!(line(b"#!/bin/sh"), Some((&b"/bin/sh"[..], None)));
+        assert_eq!(line(b"#!/bin/sh\r\n"), Some((&b"/bin/sh\r"[..], None)));
+        assert_eq!(line(b"#!\n/bin/sh"), None);
+        assert_eq!(line(b"#!   \n"), None);
+        assert_eq!(line(b"\x7fELF"), None);
+        let mut long = b"#!/bin/sh ".to_vec();
+        long.resize(SCRIPT_LINE_BYTES, b'a');
+        assert_eq!(line(&long).map(|(path, _)| path), Some(&b"/bin/sh"[..]));
+        let mut cut = b"#!/".to_vec();
+        cut.resize(SCRIPT_LINE_BYTES, b'a');
+        assert_eq!(line(&cut), None);
     }
 }

@@ -26,7 +26,7 @@ pub const MAX_UNKNOWN_BYTES: usize = 128;
 pub enum Grant {
     /// See window contents and menus (`wm_capture`, `wm_menu_list`).
     View,
-    /// Write and delete files below `/home/root` (`tee`, `trash`).
+    /// Write and delete files below `/home/root` (`tee`, `trash`, `fetch`, `ln`).
     Write,
     /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), and open
     /// a text file in the Text Editor (`edit_open`).

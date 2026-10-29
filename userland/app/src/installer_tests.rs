@@ -1,7 +1,7 @@
 use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
-use crate::archive::samples::{deflate_fixed_literals, deflated, stored, zip};
+use crate::archive::samples::{Member, deflate_fixed_literals, deflated, stored, zip};
 use crate::fake::{FakeFiles, Node, Operation};
-use crate::files::Path;
+use crate::files::{Files, Kind, Path};
 use crate::installer::*;
 use crate::program::NotRunnable;
 use crate::program::samples::{linux_program, mach_o, windows_program};
@@ -357,8 +357,123 @@ fn uninstall_removes_the_manifest_first_then_everything_else() {
     assert_eq!(uninstall(&mut files, b"Stray"), Err(Problem::NotInstalled));
 }
 
+fn framework_bundle() -> FakeFiles {
+    let mut files = FakeFiles::new();
+    let framework = "/media/host/Tool.app/Contents/Frameworks/Kit.framework";
+    let versions = format!("{framework}/Versions");
+    let version = format!("{framework}/Versions/A");
+    for folder in [
+        "/media/host/Tool.app",
+        "/media/host/Tool.app/Contents",
+        "/media/host/Tool.app/Contents/MacOS",
+        "/media/host/Tool.app/Contents/Frameworks",
+        framework,
+        versions.as_str(),
+        version.as_str(),
+    ] {
+        files.directory(folder);
+    }
+    files.file(
+        "/media/host/Tool.app/Contents/MacOS/Tool",
+        &mach_o(0x0100_0007, 2),
+    );
+    files.file(&format!("{framework}/Versions/A/Kit"), &[9; 40]);
+    files.link(&format!("{framework}/Versions/Current"), "A");
+    files.link(&format!("{framework}/Kit"), "Versions/Current/Kit");
+    files.link(
+        "/media/host/Tool.app/Contents/MacOS/Kit",
+        "../Frameworks/Kit.framework/Kit",
+    );
+    files
+}
+
 #[test]
-fn a_bundle_with_a_link_or_too_deep_is_refused() {
+fn a_bundle_s_symbolic_links_are_made_again_as_links() {
+    let mut files = framework_bundle();
+    let plan = planned(&mut files, "/media/host/Tool.app", X86_64);
+    assert_eq!(plan.total_bytes(), 64 + 40);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let framework = "/Applications/Tool/Tool.app/Contents/Frameworks/Kit.framework";
+    assert_eq!(
+        files.find(&format!("{framework}/Versions/Current")),
+        Some(&Node::Link(b"A".to_vec()))
+    );
+    assert_eq!(
+        files.find(&format!("{framework}/Kit")),
+        Some(&Node::Link(b"Versions/Current/Kit".to_vec()))
+    );
+    assert_eq!(
+        files.find("/Applications/Tool/Tool.app/Contents/MacOS/Kit"),
+        Some(&Node::Link(b"../Frameworks/Kit.framework/Kit".to_vec()))
+    );
+    assert!(files.log.contains(&Operation::MakeLink(
+        "A".into(),
+        format!("{framework}/Versions/Current")
+    )));
+    let mut target = [0u8; 64];
+    let through = files
+        .status_following(format!("{framework}/Kit").as_bytes())
+        .unwrap();
+    assert_eq!((through.kind, through.size), (Kind::File, 40));
+    assert_eq!(
+        files.read_link(format!("{framework}/Kit").as_bytes(), &mut target),
+        Ok(20)
+    );
+    assert!(manifest_of(&files, "Tool").contains("run=Tool.app/Contents/MacOS/Tool\n"));
+    uninstall(&mut files, b"Tool").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+}
+
+#[test]
+fn a_bundle_s_link_that_could_lead_outside_it_is_refused() {
+    for target in [
+        "/etc/passwd",
+        "../../../../../etc",
+        "../../../..",
+        "Versions/../../..",
+        "A/../A",
+        "",
+    ] {
+        let mut files = framework_bundle();
+        files.link(
+            "/media/host/Tool.app/Contents/Frameworks/Kit.framework/Escape",
+            target,
+        );
+        assert_eq!(
+            refused(&mut files, "/media/host/Tool.app", X86_64),
+            Problem::UnsafeLink,
+            "{target}"
+        );
+        assert!(files.paths_under("/Applications/").is_empty());
+    }
+}
+
+#[test]
+fn a_link_stays_inside_when_its_climbs_come_first_and_stop_at_its_folder() {
+    for (link, target, inside) in [
+        ("Current", "A", true),
+        ("Kit.framework/Kit", "Versions/Current/Kit", true),
+        ("Contents/MacOS/Kit", "../Frameworks/Kit", true),
+        ("Contents/MacOS/Kit", "../../Contents", true),
+        ("Contents/MacOS/Kit", "../../..", false),
+        ("Kit", "..", false),
+        ("Kit", ".", true),
+        ("Kit", "./A//B/", true),
+        ("a/b/c", "../../x/../y", false),
+        ("a/b", "/a", false),
+        ("a/b", "", false),
+        ("a/b", "x\0y", false),
+    ] {
+        assert_eq!(
+            link_stays_inside(link.as_bytes(), target.as_bytes()),
+            inside,
+            "{link} -> {target}"
+        );
+    }
+}
+
+#[test]
+fn a_bundle_with_a_device_or_too_deep_is_refused() {
     let mut files = FakeFiles::new();
     files.directory("/media/host/Link.app");
     files.directory("/media/host/Link.app/Contents");
@@ -481,6 +596,78 @@ fn a_zip_s_one_program_installs_with_everything_beside_it_and_no_mac_metadata() 
     );
     assert!(manifest_of(&files, "win-paint").contains("run=bin/win-paint.exe\n"));
     assert_eq!(files.open_count(), 0);
+}
+
+fn link_member(name: &str, target: &str) -> Member<'static> {
+    Member {
+        mode: Some(0o120_777),
+        ..stored(name, target.as_bytes())
+    }
+}
+
+#[test]
+fn a_zip_s_symbolic_links_are_made_as_links_when_they_stay_inside() {
+    let zip = zip(&[
+        stored(
+            "mac-tool.app/Contents/MacOS/mac-tool",
+            &mach_o(0x0100_000c, 2),
+        ),
+        stored(
+            "mac-tool.app/Contents/Frameworks/Kit.framework/Versions/A/Kit",
+            b"kit",
+        ),
+        link_member(
+            "mac-tool.app/Contents/Frameworks/Kit.framework/Versions/Current",
+            "A",
+        ),
+        link_member(
+            "mac-tool.app/Contents/Frameworks/Kit.framework/Kit",
+            "Versions/Current/Kit",
+        ),
+    ]);
+    let mut files = host_with("/media/host/mac-tool.zip", &zip);
+    let plan = planned(&mut files, "/media/host/mac-tool.zip", Aarch64);
+    assert_eq!(plan.run(), b"mac-tool.app/Contents/MacOS/mac-tool");
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let framework = "/Applications/mac-tool/mac-tool.app/Contents/Frameworks/Kit.framework";
+    assert_eq!(
+        files.find(&format!("{framework}/Versions/Current")),
+        Some(&Node::Link(b"A".to_vec()))
+    );
+    assert_eq!(
+        files.find(&format!("{framework}/Kit")),
+        Some(&Node::Link(b"Versions/Current/Kit".to_vec()))
+    );
+    uninstall(&mut files, b"mac-tool").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+}
+
+#[test]
+fn a_zip_s_link_that_leads_out_or_that_an_entry_goes_through_is_refused() {
+    let program = windows_program(0x8664);
+    for (members, problem) in [
+        (
+            vec![stored("tool.exe", &program), link_member("up", "..")],
+            Problem::UnsafeLink,
+        ),
+        (
+            vec![stored("tool.exe", &program), link_member("etc", "/etc")],
+            Problem::UnsafeLink,
+        ),
+        (
+            vec![
+                stored("tool.exe", &program),
+                link_member("here", "."),
+                stored("here/inner/x", b"x"),
+            ],
+            Problem::Archive(crate::archive::ArchiveError::UnsafeName),
+        ),
+    ] {
+        let mut files = host_with("/media/host/tool.zip", &zip(&members));
+        let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+        assert_eq!(install(&mut files, plan, &mut [0u8; 64]), Err(problem));
+        assert!(files.paths_under("/Applications/").is_empty());
+    }
 }
 
 #[test]

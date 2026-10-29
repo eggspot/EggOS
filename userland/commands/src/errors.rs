@@ -328,6 +328,13 @@ pub const REQUEST_ID_TOO_LONG: ErrorDefinition = error(
     "Use a shorter request id.",
     None,
 );
+/// `readlink`: the path is not a symbolic link (D170).
+pub const NOT_A_LINK: ErrorDefinition = error(
+    "not_a_link",
+    Category::Usage,
+    "Name a symbolic link; readlink -f resolves any path.",
+    None,
+);
 /// MCP: `wm_capture`'s image could not be made, read or returned.
 pub const CAPTURE_FAILED: ErrorDefinition = error(
     "capture_failed",
@@ -337,7 +344,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 45] = [
+pub const ALL: [&ErrorDefinition; 46] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -366,6 +373,7 @@ pub const ALL: [&ErrorDefinition; 45] = [
     &APP_EXISTS,
     &NOT_AN_APP,
     &NOT_IN_TRASH,
+    &NOT_A_LINK,
     &NO_SUCH_COMMAND,
     &NO_SUCH_SETTING,
     &SETTING_READ_ONLY,

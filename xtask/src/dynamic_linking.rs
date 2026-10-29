@@ -17,13 +17,11 @@ use crate::{Arch, build_executable, build_release_kernel, initramfs, release_ini
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The test program's package.
 const PACKAGE: &str = "eggos-linux-dynamic";
 
 /// Where the glibc build finds `libc.so.6` in the image: its run path (`DT_RUNPATH`).
 pub const GLIBC_LIBRARY_FOLDER: &str = "/usr/lib/eggos-tests/glibc";
 
-/// Alpine's mirror and the branch whose musl the check uses, pinned so runs are reproducible.
 const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.24/main";
 
 /// What the glibc build needs on the host for one architecture.
@@ -69,7 +67,6 @@ pub(crate) fn glibc(arch: &str) -> Option<Glibc> {
     })
 }
 
-/// musl's dynamic loader's name for `arch`, which is also its C library.
 fn musl_loader(arch: &str) -> String {
     format!("ld-musl-{arch}.so.1")
 }
@@ -194,10 +191,6 @@ fn build_musl(arch: &Arch, sysroot: &Path) -> Result<PathBuf, String> {
     )
 }
 
-/// Downloads and unpacks Alpine's `musl` and `musl-dev` for `arch` into
-/// `target/dynamic-linking/musl-<arch>`, unless an earlier run did, and returns that folder.
-/// Its `usr/lib/libc.so`, a link to `/lib/...` in the package, becomes a copy of the loader, so
-/// the linker finds the C library there.
 fn fetch_musl(arch: &str) -> Result<PathBuf, String> {
     let root = crate::target_directory().join("dynamic-linking");
     let sysroot = root.join(format!("musl-{arch}"));
@@ -261,9 +254,6 @@ pub(crate) fn download(url: &str, to: &Path) -> Result<(), String> {
     }
 }
 
-/// Unpacks `archive`, a gzip'd tar stream (an Alpine package is several), into `into`. `tar`
-/// warns about the packages' own header records; what matters is the files it writes, which
-/// the caller checks.
 fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
     Command::new("tar")
         .arg("-xzf")
@@ -275,8 +265,6 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
         .map_err(|e| format!("could not run tar: {e}"))
 }
 
-/// The version of `package` in an Alpine index (`APKINDEX`): blocks of `key:value` lines,
-/// a blank line between them, `P:` the name and `V:` the version.
 fn package_version(index: &str, package: &str) -> Option<String> {
     index.split("\n\n").find_map(|block| {
         let mut name = None;
@@ -297,7 +285,6 @@ pub(crate) fn interpreter_of_file(program: &Path) -> Result<String, String> {
     interpreter_of(&image).map_err(|error| format!("{}: {error}", program.display()))
 }
 
-/// The path a little-endian ELF-64 program names as its interpreter (`PT_INTERP`).
 fn interpreter_of(image: &[u8]) -> Result<String, String> {
     const PT_INTERP: u32 = 3;
     let field = |at: usize, size: usize| -> Result<u64, String> {

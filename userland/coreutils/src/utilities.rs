@@ -1,5 +1,6 @@
 use crate::agentlog::agentlog;
 use crate::cat::cat;
+use crate::chmod::chmod;
 use crate::date::date;
 use crate::echo::echo;
 use crate::fetch::fetch;
@@ -9,6 +10,7 @@ use crate::head::{head, tail};
 use crate::help::help;
 use crate::hwclock::hwclock;
 use crate::ip::ip;
+use crate::links::{ln, readlink};
 use crate::ls::{Listing, ls};
 use crate::nslookup::nslookup;
 use crate::output::{FAILURE, Output};
@@ -34,6 +36,7 @@ const UTILITY_NOT_FOUND: i32 = 127;
 pub enum Utility {
     Agentlog,
     Cat,
+    Chmod,
     Cp,
     Date,
     Echo,
@@ -46,6 +49,7 @@ pub enum Utility {
     Help,
     Hwclock,
     Ip,
+    Ln,
     Ls,
     Mkdir,
     Mv,
@@ -53,6 +57,7 @@ pub enum Utility {
     Ping,
     Poweroff,
     Ps,
+    Readlink,
     Reboot,
     Rm,
     Sleep,
@@ -69,9 +74,10 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 37] = [
         Self::Agentlog,
         Self::Cat,
+        Self::Chmod,
         Self::Cp,
         Self::Date,
         Self::Echo,
@@ -84,6 +90,7 @@ impl Utility {
         Self::Help,
         Self::Hwclock,
         Self::Ip,
+        Self::Ln,
         Self::Ls,
         Self::Mkdir,
         Self::Mv,
@@ -91,6 +98,7 @@ impl Utility {
         Self::Ping,
         Self::Poweroff,
         Self::Ps,
+        Self::Readlink,
         Self::Reboot,
         Self::Rm,
         Self::Sleep,
@@ -110,6 +118,7 @@ impl Utility {
         match self {
             Self::Agentlog => b"agentlog",
             Self::Cat => b"cat",
+            Self::Chmod => b"chmod",
             Self::Cp => b"cp",
             Self::Date => b"date",
             Self::Echo => b"echo",
@@ -122,6 +131,7 @@ impl Utility {
             Self::Help => b"help",
             Self::Hwclock => b"hwclock",
             Self::Ip => b"ip",
+            Self::Ln => b"ln",
             Self::Ls => b"ls",
             Self::Mkdir => b"mkdir",
             Self::Mv => b"mv",
@@ -129,6 +139,7 @@ impl Utility {
             Self::Ping => b"ping",
             Self::Poweroff => b"poweroff",
             Self::Ps => b"ps",
+            Self::Readlink => b"readlink",
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
             Self::Sleep => b"sleep",
@@ -153,6 +164,7 @@ impl Utility {
         match self {
             Self::Agentlog => agentlog(output, arguments),
             Self::Cat => cat(output, arguments),
+            Self::Chmod => chmod(output, arguments),
             Self::Cp => cp(output, arguments),
             Self::Date => date(output, arguments),
             Self::Echo => echo(output, arguments),
@@ -165,6 +177,7 @@ impl Utility {
             Self::Help => help(output, arguments),
             Self::Hwclock => hwclock(output, arguments),
             Self::Ip => ip(output, arguments),
+            Self::Ln => ln(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
             Self::Mkdir => mkdir(output, arguments),
             Self::Mv => mv(output, arguments),
@@ -172,6 +185,7 @@ impl Utility {
             Self::Ping => ping(output, arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
             Self::Ps => ps(output, arguments),
+            Self::Readlink => readlink(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
             Self::Sleep => sleep(output, arguments),

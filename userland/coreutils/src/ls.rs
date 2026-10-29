@@ -557,7 +557,7 @@ fn write_record<S: System>(
     true
 }
 
-fn mode_string(mode: u32) -> [u8; 10] {
+pub fn mode_string(mode: u32) -> [u8; 10] {
     let kind = match mode & FILE_TYPE {
         DIRECTORY => b'd',
         0o100_000 => b'-',

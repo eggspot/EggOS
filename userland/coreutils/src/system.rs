@@ -1,4 +1,5 @@
 use core::ffi::CStr;
+use eggos_commands::tools::NO_SYMLINKS_ENVIRONMENT;
 use eggos_net::Ipv4Address;
 use eggos_runtime::errno::Errno;
 
@@ -12,6 +13,9 @@ pub const UTSNAME_SIZE: usize = 6 * UTSNAME_FIELD;
 
 pub const FILE_TYPE: u32 = 0o170_000;
 pub const DIRECTORY: u32 = 0o040_000;
+pub const SYMBOLIC_LINK: u32 = 0o120_000;
+
+pub const MAX_LINK_HOPS: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Status {
@@ -22,6 +26,8 @@ pub struct Status {
     pub size: u64,
     pub blocks: u64,
     pub modified: i64,
+    pub inode: u64,
+    pub device: u64,
 }
 
 impl Status {
@@ -45,12 +51,45 @@ impl Status {
             size: u64_at(40),
             blocks: u64_at(48),
             modified: u64_at(112) as i64,
+            inode: u64_at(32),
+            device: u64::from(u32_at(136)) << 32 | u64::from(u32_at(140)),
         }
     }
 
     pub fn is_directory(&self) -> bool {
         self.mode & FILE_TYPE == DIRECTORY
     }
+
+    pub fn is_link(&self) -> bool {
+        self.mode & FILE_TYPE == SYMBOLIC_LINK
+    }
+
+    pub fn is_same_file(&self, other: &Status) -> bool {
+        self.inode == other.inode && self.device == other.device
+    }
+}
+
+pub fn folder_and_leaf(path: &[u8]) -> (&[u8], usize) {
+    let Some(last) = path.iter().rposition(|&byte| byte != b'/') else {
+        let folder: &[u8] = if path.is_empty() { b"." } else { b"/" };
+        return (folder, path.len());
+    };
+    let start = path[..last]
+        .iter()
+        .rposition(|&byte| byte == b'/')
+        .map_or(0, |slash| slash + 1);
+    let folder: &[u8] = match path[..start].iter().rposition(|&byte| byte != b'/') {
+        Some(end) => &path[..=end],
+        None if start > 0 => b"/",
+        None => b".",
+    };
+    (folder, start)
+}
+
+pub fn refuses_symbolic_links<'a>(environment: impl IntoIterator<Item = &'a CStr>) -> bool {
+    environment
+        .into_iter()
+        .any(|variable| variable == NO_SYMLINKS_ENVIRONMENT)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +165,10 @@ pub trait System {
     fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno>;
     fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno>;
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno>;
+    fn read_link(&mut self, path: &CStr, target: &mut [u8]) -> Result<usize, Errno>;
+    fn make_link(&mut self, target: &CStr, path: &CStr) -> Result<(), Errno>;
+    fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno>;
+    fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
     fn now(&mut self) -> u64;
     fn now_with_nanoseconds(&mut self) -> Duration;
     fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno>;
@@ -253,6 +296,22 @@ impl<T: System + ?Sized> System for &mut T {
         (**self).set_modified_now(path)
     }
 
+    fn read_link(&mut self, path: &CStr, target: &mut [u8]) -> Result<usize, Errno> {
+        (**self).read_link(path, target)
+    }
+
+    fn make_link(&mut self, target: &CStr, path: &CStr) -> Result<(), Errno> {
+        (**self).make_link(target, path)
+    }
+
+    fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno> {
+        (**self).make_hard_link(existing, path)
+    }
+
+    fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        (**self).set_mode(path, mode)
+    }
+
     fn now(&mut self) -> u64 {
         (**self).now()
     }
@@ -368,9 +427,12 @@ mod tests {
         bytes[20..24].copy_from_slice(&1000u32.to_ne_bytes());
         bytes[24..28].copy_from_slice(&100u32.to_ne_bytes());
         bytes[28..30].copy_from_slice(&0o040_755u16.to_ne_bytes());
+        bytes[32..40].copy_from_slice(&77u64.to_ne_bytes());
         bytes[40..48].copy_from_slice(&4096u64.to_ne_bytes());
         bytes[48..56].copy_from_slice(&8u64.to_ne_bytes());
         bytes[112..120].copy_from_slice(&1_700_000_000i64.to_ne_bytes());
+        bytes[136..140].copy_from_slice(&254u32.to_ne_bytes());
+        bytes[140..144].copy_from_slice(&1u32.to_ne_bytes());
         let status = Status::from_statx(&bytes);
         assert_eq!(
             status,
@@ -382,9 +444,48 @@ mod tests {
                 size: 4096,
                 blocks: 8,
                 modified: 1_700_000_000,
+                inode: 77,
+                device: 254 << 32 | 1,
             }
         );
-        assert!(status.is_directory());
+        assert!(status.is_directory() && !status.is_link());
+        let link = Status {
+            mode: SYMBOLIC_LINK | 0o777,
+            ..status
+        };
+        assert!(link.is_link() && !link.is_directory());
+        assert!(link.is_same_file(&status));
+        assert!(!link.is_same_file(&Status {
+            inode: 78,
+            ..status
+        }));
+    }
+
+    #[test]
+    fn a_path_splits_into_its_folder_and_its_last_component() {
+        let split = |path: &'static [u8]| {
+            let (folder, start) = folder_and_leaf(path);
+            (folder, &path[start..])
+        };
+        assert_eq!(split(b"/home/root/a"), (&b"/home/root"[..], &b"a"[..]));
+        assert_eq!(split(b"/a"), (&b"/"[..], &b"a"[..]));
+        assert_eq!(split(b"//a"), (&b"/"[..], &b"a"[..]));
+        assert_eq!(split(b"a"), (&b"."[..], &b"a"[..]));
+        assert_eq!(split(b"a/b/"), (&b"a"[..], &b"b/"[..]));
+        assert_eq!(split(b"a//b"), (&b"a"[..], &b"b"[..]));
+        assert_eq!(split(b"/"), (&b"/"[..], &b""[..]));
+        assert_eq!(split(b""), (&b"."[..], &b""[..]));
+    }
+
+    #[test]
+    fn links_are_refused_only_when_the_environment_says_exactly_so() {
+        assert!(refuses_symbolic_links([
+            c"PATH=/bin",
+            c"EGGOS_NO_SYMLINKS=1"
+        ]));
+        assert!(!refuses_symbolic_links([c"PATH=/bin"]));
+        assert!(!refuses_symbolic_links([c"EGGOS_NO_SYMLINKS=0"]));
+        assert!(!refuses_symbolic_links([c"EGGOS_NO_SYMLINKS=1x"]));
     }
 
     #[test]

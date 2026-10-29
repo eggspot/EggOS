@@ -25,6 +25,9 @@ pub struct Invocation<'a> {
     pub discard_output: bool,
     /// How long it may run, in milliseconds.
     pub time_limit_ms: u64,
+    /// Whether it runs with `EGGOS_NO_SYMLINKS=1`, so it refuses a symbolic link on any path it
+    /// opens (D170): the twins whose operand is a checked path.
+    pub no_symlinks: bool,
 }
 
 /// How a command ended.

@@ -1,5 +1,5 @@
 use crate::ls::record_names;
-use crate::system::{DIRECTORY, FILE_TYPE, SymbolicLinks, System};
+use crate::system::{DIRECTORY, FILE_TYPE, SYMBOLIC_LINK, SymbolicLinks, System};
 use core::ffi::CStr;
 use eggos_app::files::{Files, Handle, Kind, PATH_CAPACITY, Status};
 use eggos_runtime::errno::Errno;
@@ -56,26 +56,51 @@ impl<'a, S: System> SystemFiles<'a, S> {
     pub fn new(system: &'a mut S) -> Self {
         Self { system }
     }
+
+    fn status_with(&mut self, path: &[u8], links: SymbolicLinks) -> Result<Status, Errno> {
+        let path = CPath::new(path)?;
+        let status = self.system.status(None, path.as_c_str(), links)?;
+        Ok(files_status(&status))
+    }
+}
+
+fn files_status(status: &crate::system::Status) -> Status {
+    let kind = match status.mode & FILE_TYPE {
+        DIRECTORY => Kind::Directory,
+        REGULAR => Kind::File,
+        SYMBOLIC_LINK => Kind::Link,
+        _ => Kind::Other,
+    };
+    Status {
+        kind,
+        size: status.size,
+        permissions: status.mode & 0o7777,
+        modified: status.modified.max(0) as u64,
+        device: 0,
+    }
 }
 
 impl<S: System> Files for SystemFiles<'_, S> {
     fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        self.status_with(path, SymbolicLinks::DoNotFollow)
+    }
+
+    fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        self.status_with(path, SymbolicLinks::Follow)
+    }
+
+    fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {
         let path = CPath::new(path)?;
-        let status = self
-            .system
-            .status(None, path.as_c_str(), SymbolicLinks::DoNotFollow)?;
-        let kind = match status.mode & FILE_TYPE {
-            DIRECTORY => Kind::Directory,
-            REGULAR => Kind::File,
-            _ => Kind::Other,
-        };
-        Ok(Status {
-            kind,
-            size: status.size,
-            permissions: status.mode & 0o7777,
-            modified: status.modified.max(0) as u64,
-            device: 0,
-        })
+        let length = self.system.read_link(path.as_c_str(), target)?;
+        match length < target.len() {
+            true => Ok(length),
+            false => Err(Errno::ENAMETOOLONG),
+        }
+    }
+
+    fn make_link(&mut self, target: &[u8], path: &[u8]) -> Result<(), Errno> {
+        let (target, path) = (CPath::new(target)?, CPath::new(path)?);
+        self.system.make_link(target.as_c_str(), path.as_c_str())
     }
 
     fn entry(
@@ -209,5 +234,29 @@ mod tests {
         files.remove_file(b"/home/d/b").unwrap();
         files.remove_directory(b"/home/d").unwrap();
         assert_eq!(files.status(b"/home/d"), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn links_are_seen_as_links_and_followed_only_when_asked() {
+        let mut fake = Fake::default()
+            .with_directory("/home", 0)
+            .with_file("/home/a", 0o640, b"abc", 7)
+            .with_link("/home/to-a", "a");
+        let mut files = SystemFiles::new(&mut fake);
+        let link = files.status(b"/home/to-a").unwrap();
+        assert_eq!((link.kind, link.size), (Kind::Link, 1));
+        let through = files.status_following(b"/home/to-a").unwrap();
+        assert_eq!((through.kind, through.size), (Kind::File, 3));
+        let mut target = [0u8; 8];
+        assert_eq!(files.read_link(b"/home/to-a", &mut target), Ok(1));
+        assert_eq!(&target[..1], b"a");
+        assert_eq!(files.read_link(b"/home/a", &mut target), Err(Errno::EINVAL));
+        assert_eq!(
+            files.read_link(b"/home/to-a", &mut [0u8; 1]),
+            Err(Errno::ENAMETOOLONG)
+        );
+        files.make_link(b"../home/a", b"/home/up").unwrap();
+        assert_eq!(files.make_link(b"x", b"/home/up"), Err(Errno::EEXIST));
+        assert_eq!(fake.link_target("/home/up"), Some(b"../home/a".to_vec()));
     }
 }

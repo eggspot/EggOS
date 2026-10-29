@@ -15,12 +15,13 @@ use crate::server::{
 use crate::system::{CaptureFile, Ended, FileState, Invocation, RunOutcome, System};
 use eggos_runtime::errno::Errno;
 
-const CORPUS: [&str; 30] = [
+const CORPUS: [&str; 31] = [
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tee","arguments":{"path":"/home/root/a","content":"x\u0000y","append":true}}}"#,
     r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"tee","arguments":{"path":"/home/root/file","content_base64":"AP/+","confirm":true}}}"#,
     r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"trash","arguments":{"path":"/home/root/file"}}}"#,
+    r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"ln","arguments":{"target":"../../etc","link":"/home/root/up","symbolic":false}}}"#,
     r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"run","arguments":{"program":"/bin/uname","arguments":["-a","\u202e"],"timeout_seconds":60}}}"#,
     r#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"app_uninstall","arguments":{"name":"app"}}}"#,
     r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"app_open","arguments":{"name":"../x"}}}"#,

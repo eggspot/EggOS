@@ -1,16 +1,20 @@
 //! File names as Files and the `trash` command make them (docs/ux/desktop-v0.3-gui.md section
-//! 8.1 item 8): a name that never overwrites (`notes copy.txt`, `notes copy 2.txt`, `New folder
-//! 2`), what a name may hold, and the text Files shows for a name that is not UTF-8.
+//! 8.1 item 8, docs/ux/files-links-v0.3.md): a name that never overwrites (`notes copy.txt`,
+//! `notes copy 2.txt`, `New folder 2`, `notes link.txt`), what a name may hold, the text Files
+//! shows for a name that is not UTF-8, and where a symbolic link leads.
 
 use core::fmt::Write;
-use eggos_app::files::{Files, Path};
+use eggos_app::files::{self, Files, PATH_CAPACITY, Path};
 use eggos_runtime::errno::Errno;
 
 /// The longest file name, in bytes.
 pub const NAME_CAPACITY: usize = 255;
 /// The name Files gives a new folder.
 pub const NEW_FOLDER: &[u8] = b"New folder";
+/// The most symbolic links one path is followed through, as Linux allows.
+pub const MOST_LINKS: usize = 40;
 const COPY: &[u8] = b" copy";
+const LINK: &[u8] = b" link";
 const MOST_TRIES: usize = 10_000;
 
 /// A file name of at most [`NAME_CAPACITY`] bytes.
@@ -119,6 +123,69 @@ pub fn copy_name(name: &[u8], folder: bool, number: usize) -> Option<Name> {
     made.push(extension).then_some(made)
 }
 
+/// The `number`th name a link to `name` tries: `<stem> link<.ext>` first, then `<stem> link
+/// 2<.ext>` and so on (a folder's whole name is its stem).
+pub fn link_name(name: &[u8], folder: bool, number: usize) -> Option<Name> {
+    let (stem, extension) = name.split_at(extension_start(name, folder));
+    let mut made = Name::from(stem)?;
+    if !made.push(LINK) {
+        return None;
+    }
+    if number > 0 {
+        write!(made, " {}", number + 1).ok()?;
+    }
+    made.push(extension).then_some(made)
+}
+
+/// Where the target text `target` of a link in `folder` leads, one level and [`normalized`]:
+/// relative text from `folder`, absolute text as it is. `None` when it does not fit.
+pub fn link_target_path(folder: &[u8], target: &[u8]) -> Option<Path> {
+    if target.first() == Some(&b'/') {
+        return normalized(target);
+    }
+    let mut path = Path::from(folder)?;
+    if path.as_bytes() != b"/" && !path.append(b"/") {
+        return None;
+    }
+    if !path.append(target) {
+        return None;
+    }
+    normalized(path.as_bytes())
+}
+
+/// Where the absolute `path` really is: every symbolic link in it replaced by where it leads,
+/// [`normalized`]. `ENOENT` when part of it is missing, `ELOOP` past [`MOST_LINKS`] links.
+pub fn resolved(files: &mut impl Files, path: &[u8]) -> Result<Path, Errno> {
+    let mut path = normalized(path).ok_or(Errno::ENAMETOOLONG)?;
+    let mut target = [0u8; PATH_CAPACITY];
+    let mut links = 0;
+    let mut end = 0;
+    while end < path.as_bytes().len() {
+        let bytes = path.as_bytes();
+        end = bytes[end + 1..]
+            .iter()
+            .position(|&byte| byte == b'/')
+            .map_or(bytes.len(), |slash| end + 1 + slash);
+        let prefix = &bytes[..end];
+        if files.status(prefix)?.kind != files::Kind::Link {
+            continue;
+        }
+        links += 1;
+        if links > MOST_LINKS {
+            return Err(Errno::ELOOP);
+        }
+        let length = files.read_link(prefix, &mut target)?;
+        let mut next =
+            link_target_path(parent(prefix), &target[..length]).ok_or(Errno::ENAMETOOLONG)?;
+        if !next.append(&bytes[end..]) {
+            return Err(Errno::ENAMETOOLONG);
+        }
+        path = normalized(next.as_bytes()).ok_or(Errno::ENAMETOOLONG)?;
+        end = 0;
+    }
+    Ok(path)
+}
+
 /// The `number`th name a new folder tries: `New folder`, then `New folder 2` and so on.
 pub fn new_folder_name(number: usize) -> Name {
     let mut made = Name::from(NEW_FOLDER).unwrap_or_default();
@@ -167,8 +234,9 @@ pub fn parent(path: &[u8]) -> &[u8] {
 }
 
 /// `path` with `//` collapsed, `.` dropped, `..` taking the component before it away and no
-/// `/` at its end: exact for EggOS, which has no symbolic links. A relative path stays
-/// relative (a `..` it cannot resolve is kept); `None` when it does not fit.
+/// `/` at its end, by its text alone as `cd` keeps `$PWD` ([`resolved`] says where it really
+/// is). A relative path stays relative (a `..` it cannot resolve is kept); `None` when it does
+/// not fit.
 pub fn normalized(path: &[u8]) -> Option<Path> {
     let absolute = path.first() == Some(&b'/');
     let mut out = Path::new();
@@ -260,6 +328,59 @@ mod tests {
             "archive.tar copy 3.gz"
         );
         assert!(copy_name(&[b'x'; NAME_CAPACITY], false, 1).is_none());
+    }
+
+    #[test]
+    fn links_are_named_before_the_extension_and_counted_from_two() {
+        assert_eq!(text(link_name(b"report.txt", false, 0)), "report link.txt");
+        assert_eq!(
+            text(link_name(b"report.txt", false, 1)),
+            "report link 2.txt"
+        );
+        assert_eq!(text(link_name(b"Projects", true, 0)), "Projects link");
+        assert_eq!(text(link_name(b"Paint.app", true, 2)), "Paint.app link 3");
+        assert!(link_name(&[b'x'; NAME_CAPACITY], false, 0).is_none());
+    }
+
+    #[test]
+    fn a_link_target_leads_from_the_links_folder_or_from_the_root() {
+        let path = |folder: &[u8], target: &[u8]| {
+            String::from_utf8(
+                link_target_path(folder, target)
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+        assert_eq!(path(b"/home/root", b"../notes.txt"), "/home/notes.txt");
+        assert_eq!(path(b"/home/root", b"Projects/"), "/home/root/Projects");
+        assert_eq!(path(b"/", b"tmp"), "/tmp");
+        assert_eq!(path(b"/home/root", b"/etc/hostname"), "/etc/hostname");
+    }
+
+    #[test]
+    fn a_path_is_resolved_through_every_link_in_it() {
+        let mut files = crate::memory::MemoryFiles::new();
+        files
+            .file("/home/root/Projects/plan.txt", b"plan", 1)
+            .link("/home/root/Desktop/work", "../Projects", 1)
+            .link("/home/root/again", "Desktop/work/plan.txt", 1)
+            .link("/home/root/loop", "loop", 1);
+        let real = |files: &mut crate::memory::MemoryFiles, path: &[u8]| {
+            resolved(files, path).map(|path| String::from_utf8(path.as_bytes().to_vec()).unwrap())
+        };
+        assert_eq!(
+            real(&mut files, b"/home/root/again").unwrap(),
+            "/home/root/Projects/plan.txt"
+        );
+        assert_eq!(
+            real(&mut files, b"/home/root/Desktop/work/").unwrap(),
+            "/home/root/Projects"
+        );
+        assert_eq!(real(&mut files, b"/").unwrap(), "/");
+        assert_eq!(real(&mut files, b"/home/root/loop"), Err(Errno::ELOOP));
+        assert_eq!(real(&mut files, b"/home/root/none/x"), Err(Errno::ENOENT));
     }
 
     #[test]

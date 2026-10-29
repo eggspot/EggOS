@@ -953,7 +953,6 @@ mod tests {
         }
     }
 
-    /// File ranges as (start page, end page, file offset in pages).
     fn files(ranges: &FileRanges) -> Vec<(u64, u64, u64)> {
         ranges
             .iter()

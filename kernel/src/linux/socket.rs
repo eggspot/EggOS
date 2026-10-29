@@ -442,7 +442,7 @@ pub fn bind<P: Platform>(
             (Address::Abstract(name), key)
         }
         Address::Path(path) => {
-            let node = make_socket_file::<P>(thread, &path)?;
+            let node = make_socket_file::<P>(process.id().get(), thread, &path)?;
             let key = BindingKey::Node(node);
             unix_socket::register(key.clone(), &socket)?;
             (Address::Path(path), key)
@@ -455,10 +455,14 @@ pub fn bind<P: Platform>(
     Ok(0)
 }
 
-fn make_socket_file<P: Platform>(thread: &LinuxThread, path: &[u8]) -> Result<Node, Errno> {
+fn make_socket_file<P: Platform>(
+    caller: u32,
+    thread: &LinuxThread,
+    path: &[u8],
+) -> Result<Node, Errno> {
     let (root, start) = starting_points(thread, super::stat::at::FDCWD as u64, path)?;
     let (directory, name) =
-        parent_and_name(root, start, path, false).map_err(|error| match error {
+        parent_and_name(root, start, path, false, caller).map_err(|error| match error {
             Errno::EBUSY => Errno::EADDRINUSE,
             error => error,
         })?;
@@ -482,7 +486,7 @@ fn make_socket_file<P: Platform>(thread: &LinuxThread, path: &[u8]) -> Result<No
             Refused::InvalidArgument => Errno::EPERM,
             error => refused(error),
         })?;
-    vfs::resolve(root, directory, name)
+    vfs::resolve_as(root, directory, name, caller, false)
         .map_err(walk_error)
         .and_then(|node| match node.id() == id {
             true => Ok(node),
@@ -827,13 +831,17 @@ fn install_accepted<P: Platform>(
     Ok(u64::from(fd))
 }
 
-fn find_target(thread: &LinuxThread, address: &Address) -> Result<Arc<UnixSocket>, Errno> {
+fn find_target(
+    caller: u32,
+    thread: &LinuxThread,
+    address: &Address,
+) -> Result<Arc<UnixSocket>, Errno> {
     let key = match address {
         Address::Unnamed => return Err(Errno::EINVAL),
         Address::Abstract(name) => BindingKey::Abstract(Arc::clone(name)),
         Address::Path(path) => {
             let (root, start) = starting_points(thread, super::stat::at::FDCWD as u64, path)?;
-            let node = vfs::resolve(root, start, path).map_err(walk_error)?;
+            let node = vfs::resolve_as(root, start, path, caller, true).map_err(walk_error)?;
             if node.kind() != NodeKind::Socket {
                 return Err(Errno::ECONNREFUSED);
             }
@@ -853,7 +861,7 @@ fn connect<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let target = read_address(process, address, length)?;
-        let target = find_target(thread, &target)?;
+        let target = find_target(process.id().get(), thread, &target)?;
         let own = socket.begin_connect()?;
         Ok((file, socket, own, target))
     });

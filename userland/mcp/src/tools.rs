@@ -123,6 +123,8 @@ pub enum Kind {
     SettingsGet,
     /// `settings_set`: sets a setting (D163).
     SettingsSet,
+    /// `ln`: makes a symbolic or hard link (D170).
+    Ln,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -266,6 +268,20 @@ const WRITE_PATH: PathArgument = PathArgument {
     outside: "Refused: the path is outside /home/root, the folder this tool may change.",
 };
 
+const LINK_PATH: PathArgument = PathArgument {
+    name: "link",
+    ..WRITE_PATH
+};
+
+/// `ln`'s `target` for a hard link: a file the write tools reach, so a file elsewhere is never
+/// given a second name an agent could write through (D170).
+pub const HARD_LINK_TARGET: PathArgument = PathArgument {
+    name: "target",
+    outside: "Refused: a hard link's target must be below /home/root, the folder this tool may \
+              change.",
+    ..WRITE_PATH
+};
+
 const INSTALL_PATH: PathArgument = PathArgument {
     name: "path",
     default: None,
@@ -300,7 +316,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 39] = [
+pub const TOOLS: [Tool; 40] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -470,6 +486,11 @@ pub const TOOLS: [Tool; 39] = [
         &registry::SETTINGS_SET,
         Kind::SettingsSet,
         twin("/bin/settings", &["set"], Operand::None),
+    ),
+    tool(
+        &registry::LN,
+        Kind::Ln,
+        twin("/bin/ln", &["-T"], Operand::Path(LINK_PATH)),
     ),
 ];
 

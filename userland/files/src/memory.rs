@@ -1,7 +1,9 @@
 //! A file system in memory behind [`Files`], for the host tests and for the QEMU test's
-//! expected frames: folders, files with their times, several devices (a rename between two is
-//! `EXDEV`), read-only places (`EROFS`) and a size limit (`ENOSPC`).
+//! expected frames: folders, files with their times, symbolic links (D170) followed through
+//! paths as the kernel follows them, several devices (a rename between two is `EXDEV`),
+//! read-only places (`EROFS`) and a size limit (`ENOSPC`).
 
+use crate::names::{MOST_LINKS, normalized};
 use eggos_app::files::{Files, Handle, Kind, Status};
 use eggos_runtime::errno::Errno;
 use std::collections::BTreeMap;
@@ -12,6 +14,8 @@ use std::vec::Vec;
 pub enum Node {
     Folder,
     File(Vec<u8>),
+    /// A symbolic link holding its target's text.
+    Link(Vec<u8>),
     Other,
 }
 
@@ -119,7 +123,22 @@ impl MemoryFiles {
         self
     }
 
-    /// Adds `path` as a device or a link: neither a file nor a folder.
+    /// Adds `path` as a symbolic link to `target`, made at `modified` (and the folders above it).
+    pub fn link(&mut self, path: &str, target: &str, modified: u64) -> &mut Self {
+        let folder = String::from_utf8_lossy(parent(path.as_bytes())).into_owned();
+        self.folder(&folder);
+        self.nodes.insert(
+            path.as_bytes().to_vec(),
+            Held {
+                node: Node::Link(target.as_bytes().to_vec()),
+                permissions: 0o777,
+                modified,
+            },
+        );
+        self
+    }
+
+    /// Adds `path` as a device: neither a file, a folder nor a link.
     pub fn other(&mut self, path: &str) -> &mut Self {
         self.nodes.insert(
             path.as_bytes().to_vec(),
@@ -231,14 +250,48 @@ impl MemoryFiles {
             _ => Err(Errno(9)),
         }
     }
-}
 
-impl Files for MemoryFiles {
-    fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
+    fn resolve(&self, path: &[u8], follow_last: bool) -> Result<Vec<u8>, Errno> {
+        let mut path = path.to_vec();
+        let mut links = 0;
+        let mut at = 0;
+        while at < path.len() {
+            let end = path[at + 1..]
+                .iter()
+                .position(|&byte| byte == b'/')
+                .map_or(path.len(), |slash| at + 1 + slash);
+            let followed = end < path.len() || follow_last;
+            let target = match self.nodes.get(&path[..end]).map(|held| &held.node) {
+                Some(Node::Link(target)) if followed => target,
+                _ => {
+                    at = end;
+                    continue;
+                }
+            };
+            links += 1;
+            if links > MOST_LINKS {
+                return Err(Errno::ELOOP);
+            }
+            let mut rewritten = match target.first() == Some(&b'/') {
+                true => target.clone(),
+                false => [parent(&path[..end]), &b"/"[..], target.as_slice()].concat(),
+            };
+            rewritten.extend_from_slice(&path[end..]);
+            path = normalized(&rewritten)
+                .ok_or(Errno::ENAMETOOLONG)?
+                .as_bytes()
+                .to_vec();
+            at = 0;
+        }
+        Ok(path)
+    }
+
+    fn status_at(&self, path: &[u8]) -> Result<Status, Errno> {
         let held = self.nodes.get(path).ok_or(Errno::ENOENT)?;
         let (kind, size) = match &held.node {
             Node::Folder => (Kind::Directory, 0),
             Node::File(bytes) => (Kind::File, bytes.len() as u64),
+            Node::Link(target) => (Kind::Link, target.len() as u64),
             Node::Other => (Kind::Other, 0),
         };
         Ok(Status {
@@ -249,6 +302,36 @@ impl Files for MemoryFiles {
             device: self.device_of(path),
         })
     }
+}
+
+impl Files for MemoryFiles {
+    fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        let path = self.resolve(path, false)?;
+        self.status_at(&path)
+    }
+
+    fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        let path = self.resolve(path, true)?;
+        self.status_at(&path)
+    }
+
+    fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {
+        let path = self.resolve(path, false)?;
+        match self.nodes.get(&path).map(|held| &held.node) {
+            Some(Node::Link(stored)) if stored.len() > target.len() => Err(Errno::ENAMETOOLONG),
+            Some(Node::Link(stored)) => {
+                target[..stored.len()].copy_from_slice(stored);
+                Ok(stored.len())
+            }
+            Some(_) => Err(Errno::EINVAL),
+            None => Err(Errno::ENOENT),
+        }
+    }
+
+    fn make_link(&mut self, target: &[u8], path: &[u8]) -> Result<(), Errno> {
+        let path = self.resolve(path, false)?;
+        self.add(&path, Node::Link(target.to_vec()), 0o777)
+    }
 
     fn entry(
         &mut self,
@@ -256,12 +339,13 @@ impl Files for MemoryFiles {
         index: usize,
         name: &mut [u8; 256],
     ) -> Result<Option<usize>, Errno> {
-        match self.nodes.get(directory).map(|held| &held.node) {
+        let directory = self.resolve(directory, true)?;
+        match self.nodes.get(&directory).map(|held| &held.node) {
             Some(Node::Folder) => {}
             Some(_) => return Err(Errno::ENOTDIR),
             None => return Err(Errno::ENOENT),
         }
-        Ok(self.children(directory).get(index).map(|path| {
+        Ok(self.children(&directory).get(index).map(|path| {
             let file = &path[parent(path).len() + usize::from(parent(path) != b"/")..];
             name[..file.len()].copy_from_slice(file);
             file.len()
@@ -269,13 +353,14 @@ impl Files for MemoryFiles {
     }
 
     fn open(&mut self, path: &[u8]) -> Result<Handle, Errno> {
-        match self.nodes.get(path).map(|held| &held.node) {
+        let path = self.resolve(path, true)?;
+        match self.nodes.get(&path).map(|held| &held.node) {
             Some(Node::File(_)) => {}
             Some(_) => return Err(Errno::EISDIR),
             None => return Err(Errno::ENOENT),
         }
         self.open.push(Some(Open {
-            path: path.to_vec(),
+            path,
             offset: 0,
             writing: false,
         }));
@@ -283,9 +368,10 @@ impl Files for MemoryFiles {
     }
 
     fn create(&mut self, path: &[u8], permissions: u32) -> Result<Handle, Errno> {
-        self.add(path, Node::File(Vec::new()), permissions)?;
+        let path = self.resolve(path, false)?;
+        self.add(&path, Node::File(Vec::new()), permissions)?;
         self.open.push(Some(Open {
-            path: path.to_vec(),
+            path,
             offset: 0,
             writing: true,
         }));
@@ -339,10 +425,13 @@ impl Files for MemoryFiles {
     }
 
     fn make_directory(&mut self, path: &[u8]) -> Result<(), Errno> {
-        self.add(path, Node::Folder, 0o755)
+        let path = self.resolve(path, false)?;
+        self.add(&path, Node::Folder, 0o755)
     }
 
     fn remove_file(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let path = self.resolve(path, false)?;
+        let path = path.as_slice();
         self.writable(path)?;
         match self.nodes.get(path).map(|held| &held.node) {
             None => Err(Errno::ENOENT),
@@ -355,6 +444,8 @@ impl Files for MemoryFiles {
     }
 
     fn remove_directory(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let path = self.resolve(path, false)?;
+        let path = path.as_slice();
         self.writable(path)?;
         match self.nodes.get(path).map(|held| &held.node) {
             None => Err(Errno::ENOENT),
@@ -369,6 +460,9 @@ impl Files for MemoryFiles {
     }
 
     fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), Errno> {
+        let from = self.resolve(from, false)?;
+        let to = self.resolve(to, false)?;
+        let (from, to) = (from.as_slice(), to.as_slice());
         self.writable(from)?;
         self.writable(to)?;
         let moved = self.nodes.get(from).cloned().ok_or(Errno::ENOENT)?;
@@ -390,8 +484,12 @@ impl Files for MemoryFiles {
             (Some(Node::Folder), Node::Folder) if !self.children(to).is_empty() => {
                 return Err(Errno::ENOTEMPTY);
             }
-            (Some(Node::Folder), Node::File(_) | Node::Other) => return Err(Errno::EISDIR),
-            (Some(Node::File(_) | Node::Other), Node::Folder) => return Err(Errno::ENOTDIR),
+            (Some(Node::Folder), Node::File(_) | Node::Link(_) | Node::Other) => {
+                return Err(Errno::EISDIR);
+            }
+            (Some(Node::File(_) | Node::Link(_) | Node::Other), Node::Folder) => {
+                return Err(Errno::ENOTDIR);
+            }
             _ => {}
         }
         let inside: Vec<Vec<u8>> = self
@@ -436,5 +534,83 @@ mod tests {
         assert_eq!(files.entry(b"/", 0, &mut name), Ok(Some(4)));
         assert_eq!(&name[..4], b"home");
         assert_eq!(files.status(b"/tmp").unwrap().device, 2);
+    }
+
+    #[test]
+    fn links_are_followed_through_paths_and_at_the_end_only_when_asked() {
+        let mut files = MemoryFiles::new();
+        files
+            .file("/home/root/Projects/plan.txt", b"plan", 3)
+            .link("/home/root/Projects link", "/home/root/Projects", 7)
+            .link("/home/root/Desktop/plan", "../Projects/plan.txt", 8);
+        let link = files.status(b"/home/root/Projects link").unwrap();
+        assert_eq!((link.kind, link.size, link.modified), (Kind::Link, 19, 7));
+        let target = files.status_following(b"/home/root/Projects link").unwrap();
+        assert_eq!(target.kind, Kind::Directory);
+        assert_eq!(
+            files
+                .status(b"/home/root/Projects link/plan.txt")
+                .unwrap()
+                .size,
+            4
+        );
+        let followed = files.status_following(b"/home/root/Desktop/plan").unwrap();
+        assert_eq!((followed.kind, followed.size), (Kind::File, 4));
+        let mut name = [0u8; 256];
+        assert_eq!(
+            files.entry(b"/home/root/Projects link", 0, &mut name),
+            Ok(Some(8))
+        );
+        let file = files.open(b"/home/root/Desktop/plan").unwrap();
+        let mut bytes = [0u8; 8];
+        assert_eq!(files.read(file, &mut bytes), Ok(4));
+        files.close(file);
+        let mut target = [0u8; 64];
+        let length = files
+            .read_link(b"/home/root/Desktop/plan", &mut target)
+            .unwrap();
+        assert_eq!(&target[..length], b"../Projects/plan.txt");
+        assert_eq!(
+            files.read_link(b"/home/root/Desktop/plan", &mut [0u8; 4]),
+            Err(Errno::ENAMETOOLONG)
+        );
+        assert_eq!(
+            files.read_link(b"/home/root/Projects", &mut target),
+            Err(Errno::EINVAL)
+        );
+        files.remove_file(b"/home/root/Projects link").unwrap();
+        assert!(files.contents("/home/root/Projects/plan.txt").is_some());
+    }
+
+    #[test]
+    fn a_link_to_nothing_is_there_but_names_nothing_and_a_loop_ends() {
+        let mut files = MemoryFiles::new();
+        files
+            .link("/home/root/gone", "nothing", 1)
+            .link("/home/root/loop", "loop", 1)
+            .folder("/tmp");
+        assert_eq!(files.status(b"/home/root/gone").unwrap().kind, Kind::Link);
+        assert_eq!(
+            files.status_following(b"/home/root/gone"),
+            Err(Errno::ENOENT)
+        );
+        assert_eq!(
+            files.status_following(b"/home/root/loop"),
+            Err(Errno::ELOOP)
+        );
+        assert_eq!(files.open(b"/home/root/loop"), Err(Errno::ELOOP));
+        assert_eq!(
+            files.make_link(b"/tmp", b"/home/root/gone"),
+            Err(Errno::EEXIST)
+        );
+        files.make_link(b"/tmp", b"/home/root/scratch").unwrap();
+        assert_eq!(
+            files.node("/home/root/scratch"),
+            Some(&Node::Link(b"/tmp".to_vec()))
+        );
+        files
+            .rename(b"/home/root/scratch", b"/home/root/s")
+            .unwrap();
+        assert_eq!(files.status(b"/home/root/s").unwrap().device, 0);
     }
 }

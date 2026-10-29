@@ -4,7 +4,7 @@ use super::{
     UP_BUTTON, WORK, text_of,
 };
 use crate::clock::list_time;
-use crate::kind::Kind;
+use crate::kind::Link;
 use crate::listing::{items_text, size_text};
 use crate::names;
 use eggos_app_manifest::Source;
@@ -28,6 +28,10 @@ const NOTICE_LEAST_WIDTH: i32 = 160;
 const NOTICE_ABOVE_STATUS: i32 = 16;
 const NOTICE_TEXT_TOP: i32 = 12;
 const EDGE: i32 = 2;
+/// The plate the link badge is drawn on, from the row's top-left corner (D170).
+pub(crate) const LINK_PLATE: Rect = Rect::new(7, 12, 6, 6);
+const LINK_ARROW_INSET: i32 = 1;
+const LINK_ARROW: [&[u8; 4]; 4] = [b".###", b"..##", b".#.#", b"#..."];
 
 fn badge_colour(source: Source) -> u32 {
     match source {
@@ -49,6 +53,29 @@ fn page_mark(canvas: &mut Canvas<'_>, x: i32, y: i32) {
     canvas.fill(Rect::new(x, y, 8, 1), ink);
     canvas.pixel(x + 8, y + 1, ink);
     canvas.fill(Rect::new(x + 9, y + 2, 1, 10), ink);
+}
+
+/// Draws the link badge over the bottom-left corner of the type mark of the row at (`x`, `y`):
+/// an arrow pointing up and right on a plate of the list's colour.
+pub(crate) fn link_badge(canvas: &mut Canvas<'_>, x: i32, y: i32) {
+    let plate = Rect::new(
+        x + LINK_PLATE.x,
+        y + LINK_PLATE.y,
+        LINK_PLATE.width,
+        LINK_PLATE.height,
+    );
+    canvas.fill(plate, colour::MENU);
+    for (row, cells) in LINK_ARROW.iter().enumerate() {
+        for (column, &cell) in cells.iter().enumerate() {
+            if cell == b'#' {
+                canvas.pixel(
+                    plate.x + LINK_ARROW_INSET + column as i32,
+                    plate.y + LINK_ARROW_INSET + row as i32,
+                    colour::TEXT,
+                );
+            }
+        }
+    }
 }
 
 fn right_aligned(canvas: &mut Canvas<'_>, right: i32, y: i32, words: &str, ink: u32) {
@@ -297,12 +324,17 @@ impl FilesWindow {
         if chosen {
             canvas.fill(row, colour::SELECTION);
             canvas.text(row.x + MARK_X, row.y + TEXT_TOP, ">", colour::ACCENT, 1);
-        } else if entry.kind.is_folder() {
-            folder_mark(canvas, row.x + MARK_X, row.y + 7);
         } else {
-            page_mark(canvas, row.x + MARK_X + 1, row.y + 6);
+            match entry.kind.is_folder() {
+                true => folder_mark(canvas, row.x + MARK_X, row.y + 7),
+                false => page_mark(canvas, row.x + MARK_X + 1, row.y + 6),
+            }
+            if entry.link != Link::None {
+                link_badge(canvas, row.x, row.y);
+            }
         }
-        let ink = match self.is_cut(index) && !chosen {
+        let dimmed = self.is_cut(index) || entry.link == Link::Broken;
+        let ink = match dimmed && !chosen {
             true => colour::TEXT_DIM,
             false => colour::TEXT,
         };
@@ -339,13 +371,13 @@ impl FilesWindow {
                     badge_colour(source),
                 );
             }
-            let size = match entry.kind {
-                Kind::Folder | Kind::App(_) | Kind::Bundle => {
+            let size = match entry.kind.is_folder() || entry.link == Link::Broken {
+                true => {
                     let mut dash = crate::clock::Stamp::new();
                     let _ = core::fmt::Write::write_str(&mut dash, "-");
                     dash
                 }
-                _ => size_text(entry.size),
+                false => size_text(entry.size),
             };
             right_aligned(
                 canvas,

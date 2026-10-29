@@ -196,9 +196,9 @@ definition (D163), and each example runs as a test against the fakes of the prog
 it (the core utilities' fake system with a home folder holding `notes.txt`; Settings' example
 facts).
 
-**Kept names:** `agentlog`, `app`, `cat`, `cp`, `date`, `echo`, `edit`, `false`, `fetch`,
-`free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ls`, `mkdir`, `mv`, `nslookup`,
-`ping`, `poweroff`, `ps`, `reboot`, `rm`, `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
+**Kept names:** `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `echo`, `edit`, `false`, `fetch`,
+`free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `ls`, `mkdir`, `mv`, `nslookup`,
+`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `cd`,
 `echo`, `exit`, `export`, `false`, `help`, `pwd`, `set`, `true`, `type`, `unset` (CLI only;
 defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the tests, D165).
@@ -207,9 +207,9 @@ defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the tests, D
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
 item 48; `show` is a core verb), `drag` (D162).
 
-**Commands in the registry** (59, D163: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `cp`, `date`, `echo`, `edit`, `false`,
-`fetch`, `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ls`, `mkdir`, `mv`,
-`nslookup`, `ping`, `poweroff`, `ps`, `reboot`, `rm`, `settings` (the window), `settings
+**Commands in the registry** (62, D163, D170: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `echo`, `edit`, `false`,
+`fetch`, `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `ls`, `mkdir`, `mv`,
+`nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `settings` (the window), `settings
 get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
 `wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type`.
 `echo`, `true` and `false` take any words and declare no usage error.
@@ -226,6 +226,7 @@ get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`
 | `agentlog --json` | `called_at`, `call`, `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log |
 | `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
 | `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
+| `readlink --json` | `path`, `target`, one per link (D170) |
 | `free --json` | one object: `total_bytes`, `used_bytes`, `free_bytes`, `available_bytes`, `reserve_bytes` (or `null`) (D163) |
 | `uptime --json` | one object: `uptime_ms` (D163) |
 | `uname --json` | one object: `kernel_name`, `node_name`, `kernel_release`, `kernel_version`, `machine`, `operating_system` (D163) |
@@ -266,6 +267,7 @@ own order within a page. `trash`, `app uninstall` and `settings set` take `--dry
 | `dialog_open` | busy | `wm click`, `wm drag`, `wm scroll`: the window has a dialog open, which the message names (D162) | `wm capture` |
 | `no_such_app`, `app_exists`, `not_an_app` | not_found, exists, usage | `app` | `app list` for the first |
 | `not_in_trash` | not_found | `trash -r` | `trash -l` |
+| `not_a_link` | usage | `readlink`: the path is not a symbolic link (D170) | |
 | `no_such_command` | not_found | `help` | `help` |
 | `no_such_setting` | not_found | `settings get`, `settings set` (exit 1; D163) | `settings list` |
 | `setting_read_only` | read_only | `settings set`: the key reports a fact (exit 1) | `settings list` |
@@ -281,7 +283,9 @@ adds `settings_list` and `settings_get` (`key`; effect `read`, no grant) and `se
 (`key`, `value`; effect `change`, grant `run`, idempotent, no confirmation: decided by
 research). D161
 adds `wm_show` (effect `read`, grant `view`) and `wm_act` (`element`, `action`, `text`;
-effect `control`, grant `run`). D162 adds `wm_drag` (`x`, `y`, `to_x`, `to_y`, `button`;
+effect `control`, grant `run`). D170 adds `ln` (`target`, `link`, `symbolic`, `true` by
+default; effect `change`, grant `write`, not idempotent, no confirmation: it runs `ln -T` without
+`-f`, so it never replaces anything; its command `ln` is `destroy` because of `-f`). D162 adds `wm_drag` (`x`, `y`, `to_x`, `to_y`, `button`;
 effect `control`, grant `run`) and two optional arguments to shipped tools, `wm_click`'s
 `double` and `wm_scroll`'s `dx`, so their schemas grew by those (old calls are unchanged). Their
 effects: `read` for the reading tools, `wm_capture` and `wm_menu_list`; `change` for

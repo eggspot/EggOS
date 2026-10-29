@@ -1,10 +1,10 @@
 # The EggOS core utilities
 
 `userland/coreutils` (D108) is one program, `/bin/coreutils`, with the utilities as hard links
-to it in `/bin`: `agentlog`, `cat`, `cp`, `date`, `echo`, `false`, `fetch`, `free`, `grep`, `halt`,
-`head`, `hwclock`, `ip`, `ls`, `mkdir`, `mv`, `nslookup`, `ping`, `poweroff`, `ps`, `reboot`, `rm`,
-`sleep`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm` (D108, D125,
-D128, D135, D136, D137, D150, D157, D158). It runs the utility named by the last component of the name
+to it in `/bin`: `agentlog`, `cat`, `chmod`, `cp`, `date`, `echo`, `false`, `fetch`, `free`, `grep`, `halt`,
+`head`, `hwclock`, `ip`, `ln`, `ls`, `mkdir`, `mv`, `nslookup`, `ping`, `poweroff`, `ps`, `readlink`,
+`reboot`, `rm`, `sleep`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`
+(D108, D125, D128, D135, D136, D137, D150, D157, D158, D170). It runs the utility named by the last component of the name
 it was started by, so `ls`, `/bin/ls` and a link called `ls` anywhere are all `ls`. Started as `coreutils`, it runs
 the utility its first argument names (`coreutils ls /`); `coreutils --list` lists them. It is
 our own Rust program on our own runtime, like the shell: no C library, no allocator, about
@@ -27,7 +27,7 @@ lists them, `help <words>` shows one's usage, options, error codes, examples and
 utilities' fake system, so they are what the commands print. Every utility reads its options
 from its definition except `date`, `hwclock`, `ip`, `nslookup`, `fetch`, `echo`, `trash`,
 `agentlog` and `wm`'s verbs other than `list`, whose own parsers take the same options (D165). `ls`, `ps`, `wm list`, `wm show`, `app list`, `agentlog`,
-`help`, `wc`, `free`, `uptime`, `uname` and `settings list|get` take `--json` (`ip` its `-j`): one JSON record per line on standard output, and each error as one line
+`help`, `wc`, `free`, `uptime`, `uname`, `readlink` and `settings list|get` take `--json` (`ip` its `-j`): one JSON record per line on standard output, and each error as one line
 `{"error":{"code":"...","category":"...","message":"...","fix":"...","fix_command":"..."}}` on
 standard error, with the same exit status as in text. In `eggsh`, `help` alone describes the
 shell; with words it runs `/bin/help`.
@@ -56,6 +56,9 @@ change nothing.
 | `cp [-rR] file target`, `cp [-rR] file... directory` | Copies each file to `target`, or into `directory` under its own name, with the source's permissions; an existing target file is overwritten. With `-r` (or `-R`) a directory is copied whole, within and across file systems (out of the read-only host share too), into a target that must not exist yet (`cannot copy 'x': File exists`; no merging into an existing directory). Without `-r` directories are refused (`-r not specified; omitting directory`). | 0, or 1 if any copy failed |
 | `mv file target`, `mv file... directory` | Renames each file or directory to `target` or into `directory`; across file systems (`/tmp` to `/home`) a file or a whole directory is copied, then removed (D135). `-f` is accepted. | 0, or 1 if any move failed |
 | `trash [-f] [--dry-run] [--] path...`, `trash -l`, `trash -r name...`, `trash -e` | The Trash's command line, the same capability as Files' (D135): moves each path to the Trash (`-f` ignores missing ones); `-l` (`--list`) writes one line per trashed item, `name`, a tab, when it was trashed (`YYYY-MM-DDThh:mm:ss`, `-` when unknown), a tab and where it was; `-r` (`--restore`) moves each named item back to its folder, under a free name (`notes copy.txt`) when its own is taken; `-e` (`--empty`) deletes everything in the Trash for good, without asking (typing the command is the confirmation, as `rm`). The Trash is `/home/root/.local/share/Trash` in the freedesktop.org layout (`files/<name>` and `info/<name>.trashinfo`), so only what is on the home folder's file system can be trashed: elsewhere `trash` says `it is not on the home folder's file system; use rm`. Options, not words, choose the action, so a file named `list` is never mistaken for one. `--dry-run` says which paths it would move, after checking each is there, and moves nothing (D164). | 0; 1 if anything failed (a restore whose folder is gone says so); 2 for a bad usage |
+| `chmod [-Rv] mode file...` | Sets each file's permission bits (D170), as GNU's: `mode` is octal (`755`, `4755`) or symbolic, comma-separated clauses `[ugoa]*[+-=][rwxXst]*` (`u+x`, `go-w`, `a=rX`, `g=u` copying the owner's bits), `X` meaning execute only for a directory or a file someone may already execute, `s` and `t` the set-id and sticky bits. Without `u`, `g`, `o` or `a`, the bits of the umask (EggOS's fixed `022`) are left alone, so `chmod +x f` gives `755` on a `644` file and `chmod -w f` leaves the group's and others' write bits. A mode starting with `-` (`chmod -w f`) is taken as the mode, not an option. A symbolic link named is followed (its target changes); `-R` (`--recursive`) changes a directory and everything in it, leaving the symbolic links met inside alone (never followed, never changed), and does not walk into a link named. `-v` (`--verbose`) says `mode of 'f' changed from 0644 (rw-r--r--) to 0755 (rwxr-xr-x)` or `retained as`. It is how a `#!` script made in EggOS becomes runnable. | 0, or 1 if any file could not be changed or for a bad usage or mode (`invalid mode: 'u+q'`) |
+| `ln [-sfnTv] target link`, `ln [-sfnv] target... directory`, `ln [-sfnv] target` | Makes links (D170), as GNU's: a hard link by default, another name for the same file (`linkat` without following a link `target` is: the link itself gets the new name), on the same file system (`Invalid cross-device link` otherwise) and never for a directory (`hard link not allowed for directory`); with `-s` (`--symbolic`) a symbolic link holding `target`'s text as given, resolved from the link's folder when relative, whether or not it names anything yet. With a directory last, each target is linked into it under its own last component; with one operand, into the working directory. A name already at the link is `failed to create symbolic link 'x': File exists` unless `-f` (`--force`) removes it first (never a directory: `cannot overwrite directory`; never the target itself: `'a' and 'b' are the same file`). `-n` (`--no-dereference`) treats a symbolic link to a directory given last as a plain name (with `-f`, it is replaced); `-T` (`--no-target-directory`) always takes the last operand as the link's own name; `-v` (`--verbose`) prints `'link' -> 'target'` (`=>` for a hard link). It is the MCP tool `ln`'s twin, run with `-T` and without `-f` (docs/mcp.md). | 0, or 1 if any link failed or for a bad usage |
+| `readlink [-fnv] [--json] path...` | Writes each symbolic link's target as stored (D170). With `-f` (`--canonicalize`), each path made absolute with every link on it followed (at most 40) and every `.` and `..` resolved after them, as the kernel walks it; every part but the last must exist, so `readlink -f` names where a file would be made. `-n` (`--no-newline`) leaves out the newline after a single path (with several it says `ignoring --no-newline with multiple arguments`). A path that is no link, or that cannot be read, only sets the exit status, as GNU's, unless `-v` (`--verbose`) or `--json`, which report it (`not_a_link`, or the file's error). `--json` writes a record per path, `path` and `target`. | 0, or 1 if any path failed or for a bad usage |
 | `rm [-rRf] path...` | Removes each file; with `-r` (or `-R`) directories and everything in them; `-f` ignores missing files and no operands. `.` and `..` are refused. | 0, or 1 if anything could not be removed |
 | `mkdir [-p] directory...` | Makes each directory; `-p` makes its missing parents too and accepts existing directories. | 0, or 1 if any failed |
 | `touch [-c] file...` | Sets each file's modification time to now, creating an empty file for a missing one unless `-c`. | 0, or 1 if any failed |
@@ -87,6 +90,17 @@ change nothing.
 - `cp` has no `-p`, `-i` or `-n`, and `cp -r` does not merge into an existing directory;
   `rm` asks nothing (no `-i`); `grep` has no `-E`, `-r`, `-o`, `-l` or back-references; `touch` sets only the
   modification time (no access time is kept, no `-d` or `-r`).
+- Started with `EGGOS_NO_SYMLINKS=1` in its environment, which the MCP server gives the twins of
+  its path tools (D170, docs/mcp.md), every utility refuses a symbolic link anywhere on a path it
+  opens or changes (`Too many levels of symbolic links`): files are opened with `openat2`'s
+  `RESOLVE_NO_SYMLINKS` and `RESOLVE_NO_MAGICLINKS`, and a path is made, removed, renamed, linked,
+  read as a link, touched, given a mode (`fchmodat2` with `AT_SYMLINK_NOFOLLOW`) or examined through its folder opened that way and the `*at` call on
+  its last part (which is never followed: `ls -l` shows a link as a link). Walks such as `rm -r`
+  and `trash` of a folder go through the same calls. Without the variable, links are followed as
+  everywhere else.
+- `chmod` has no `-c`, `-f`, `--reference`, `-H` or `-L`, and an octal mode clears the set-id bits of a
+  directory as it does a file's; `ln` has no `-i`, `-b`, `-L`, `-P`, `-r` or `-t`; hard links never follow a symbolic link given as
+  the target (GNU's `-P`).
 - `cp`, `mv`, `mkdir`, `rm` and `trash` are the command line of what Files does with a
   window (D135); `trash` is also the MCP tool `trash` (D137), while `cp`, `mv`, `mkdir` and
   `rm` have no MCP tools yet (an agent with the `run` grant runs them, docs/mcp.md); the other

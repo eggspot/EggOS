@@ -571,6 +571,7 @@ fn the_context_menus_follow_what_is_under_the_pointer() {
             ("Install...", true),
             ("Cut", false),
             ("Copy", true),
+            ("Make Link", false),
             ("Rename", false),
             ("Move to Trash", false),
             ("Properties", true)
@@ -830,4 +831,404 @@ fn an_agent_reads_the_entries_as_list_items_and_opens_one_by_its_element() {
         Location::Folder(path) => assert_eq!(path.as_bytes(), b"/home/root/Documents"),
         Location::Trash => panic!("the path field's text was not opened"),
     }
+}
+
+fn linked_files() -> MemoryFiles {
+    let mut files = disk();
+    files
+        .file("/home/root/Projects/plan.txt", b"plan", 5)
+        .file("/home/root/notes.txt", b"twelve bytes", 5)
+        .file("/home/root/report.txt", b"report", 5)
+        .link("/home/root/Projects link", "/home/root/Projects", 6)
+        .link("/home/root/notes link.txt", "/home/root/notes.txt", 7)
+        .link("/home/root/gone", "/home/root/nothing", 8)
+        .link("/home/root/loop", "loop", 8);
+    files
+}
+
+fn linked() -> Driver {
+    Driver::on(linked_files())
+}
+
+fn row_menu(driver: &mut Driver, name: &str) -> Vec<(&'static str, bool)> {
+    let rect = driver.window.row_rect(driver.row(name));
+    driver.click_at(rect.x + 40, rect.y + 10, MouseButton::Right);
+    driver
+        .window
+        .menu
+        .as_ref()
+        .expect("a menu is open")
+        .0
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Item { label, enabled, .. } => Some((*label, *enabled)),
+            Entry::Separator => None,
+        })
+        .collect()
+}
+
+fn choose_on_row(driver: &mut Driver, name: &str, label: &str) {
+    row_menu(driver, name);
+    let index = driver
+        .window
+        .menu
+        .as_ref()
+        .unwrap()
+        .0
+        .entries()
+        .iter()
+        .position(|entry| matches!(entry, Entry::Item { label: shown, .. } if *shown == label))
+        .unwrap_or_else(|| panic!("no {label} in the menu"));
+    let rect = driver.window.menu_entry_rect(index).unwrap();
+    driver.click(rect);
+}
+
+fn inks(pixels: &[u32], area: Rect) -> (usize, usize) {
+    let width = DEFAULT_SIZE.0 as i32;
+    let mut counts = (0, 0);
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            match pixels[(y * width + x) as usize] {
+                colour_of::TEXT => counts.0 += 1,
+                colour_of::TEXT_DIM => counts.1 += 1,
+                _ => {}
+            }
+        }
+    }
+    counts
+}
+
+#[test]
+fn links_sort_by_their_targets_and_show_the_targets_size() {
+    let driver = linked();
+    assert_eq!(
+        driver.names(),
+        [
+            "Projects",
+            "Projects link",
+            "gone",
+            "loop",
+            "notes link.txt",
+            "notes.txt",
+            "report.txt"
+        ]
+    );
+    let entry = |name: &str| *driver.window.listing().get(driver.row(name)).unwrap();
+    assert_eq!(
+        (entry("Projects link").kind, entry("Projects link").link),
+        (Kind::Folder, Link::Sound)
+    );
+    let file = entry("notes link.txt");
+    assert_eq!((file.kind, file.size, file.time), (Kind::Text, 12, 7));
+    assert_eq!(
+        (entry("gone").kind, entry("loop").link),
+        (Kind::Other, Link::Broken)
+    );
+}
+
+#[test]
+fn link_rows_wear_the_badge_over_their_targets_mark_and_a_broken_one_is_dim() {
+    let driver = linked();
+    let (width, height) = DEFAULT_SIZE;
+    let mut pixels = vec![0u32; (width * height) as usize];
+    driver.window.render(&mut pixels, width, height, 1);
+    let at = |x: i32, y: i32| pixels[y as usize * width as usize + x as usize];
+    let arrow = [
+        (1, 0),
+        (2, 0),
+        (3, 0),
+        (2, 1),
+        (3, 1),
+        (1, 2),
+        (3, 2),
+        (0, 3),
+    ];
+    for name in ["Projects link", "notes link.txt", "gone"] {
+        let row = driver.window.row_rect(driver.row(name));
+        let plate = Rect::new(
+            row.x + super::paint::LINK_PLATE.x,
+            row.y + super::paint::LINK_PLATE.y,
+            super::paint::LINK_PLATE.width,
+            super::paint::LINK_PLATE.height,
+        );
+        assert_eq!((plate.x, plate.y), (row.x + 7, row.y + 12));
+        for y in plate.y..plate.bottom() {
+            for x in plate.x..plate.right() {
+                let inked = arrow.contains(&(x - row.x - 8, y - row.y - 13));
+                let expected = match inked {
+                    true => colour_of::TEXT,
+                    false => colour_of::MENU,
+                };
+                assert_eq!(
+                    at(x, y),
+                    expected,
+                    "{name} at ({}, {})",
+                    x - row.x,
+                    y - row.y
+                );
+            }
+        }
+    }
+    let folder = driver.window.row_rect(driver.row("Projects"));
+    assert_eq!(at(folder.x + 12, folder.y + 14), colour_of::ICON_FOLDER);
+    let page = driver.window.row_rect(driver.row("notes.txt"));
+    assert_eq!(at(page.x + 9, page.y + 12), colour_of::TEXT_DIM);
+    let folder_link = driver.window.row_rect(driver.row("Projects link"));
+    assert_eq!(
+        at(folder_link.x + 19, folder_link.y + 14),
+        colour_of::ICON_FOLDER
+    );
+    let size_x = driver.window.columns_right() - SIZE_END_FROM_RIGHT - SIZE_WIDTH;
+    let name_area = |row: Rect| Rect::new(row.x + NAME_X, row.y, 60, ROW_HEIGHT);
+    let size_area = |row: Rect| Rect::new(size_x, row.y, SIZE_WIDTH, ROW_HEIGHT);
+    let sound = driver.window.row_rect(driver.row("notes link.txt"));
+    assert!(inks(&pixels, name_area(sound)).0 > 0);
+    let broken = driver.window.row_rect(driver.row("gone"));
+    let (text, dim) = inks(&pixels, name_area(broken));
+    assert_eq!(text, 0);
+    assert!(dim > 0);
+    let (text, dim) = inks(&pixels, size_area(broken));
+    assert_eq!(text, 0);
+    assert!(dim > 0);
+}
+
+#[test]
+fn make_link_names_the_link_after_its_row_and_renames_it_in_place() {
+    let mut driver = linked();
+    choose_on_row(&mut driver, "report.txt", "Make Link");
+    assert_eq!(
+        driver.files.node("/home/root/report link.txt"),
+        Some(&Node::Link(b"/home/root/report.txt".to_vec()))
+    );
+    let rename = driver.window.rename.expect("the new link is being renamed");
+    assert_eq!(rename.index, driver.row("report link.txt"));
+    assert_eq!(rename.field.caret, "report link".len());
+    assert_eq!(
+        driver.window.selected(),
+        Some(driver.row("report link.txt"))
+    );
+    driver.press(key::ESC, 0, '\u{1b}');
+    choose_on_row(&mut driver, "report.txt", "Make Link");
+    assert_eq!(
+        driver.files.node("/home/root/report link 2.txt"),
+        Some(&Node::Link(b"/home/root/report.txt".to_vec()))
+    );
+    driver.press(key::ESC, 0, '\u{1b}');
+    choose_on_row(&mut driver, "Projects link", "Make Link");
+    assert_eq!(
+        driver.files.node("/home/root/Projects link link"),
+        Some(&Node::Link(b"/home/root/Projects link".to_vec()))
+    );
+}
+
+#[test]
+fn a_link_rows_menu_shows_the_original_and_makes_links_in_each_profiles_words() {
+    let mut driver = linked();
+    assert_eq!(
+        row_menu(&mut driver, "Projects link"),
+        [
+            ("Open", true),
+            ("Show Original", true),
+            ("Cut", true),
+            ("Copy", true),
+            ("Paste", false),
+            ("Make Link", true),
+            ("Rename", true),
+            ("Move to Trash", true),
+            ("Properties", true)
+        ]
+    );
+    driver.press(key::ESC, 0, '\u{1b}');
+    assert_eq!(
+        row_menu(&mut driver, "gone"),
+        [
+            ("Open", true),
+            ("Show Original", false),
+            ("Cut", true),
+            ("Copy", true),
+            ("Make Link", true),
+            ("Rename", true),
+            ("Move to Trash", true),
+            ("Properties", true)
+        ]
+    );
+    driver.press(key::ESC, 0, '\u{1b}');
+    let mut files = linked_files();
+    let window = FilesWindow::new(&mut files, None, Architecture::X86_64, true, CLOCK);
+    let mut windows = Driver {
+        files,
+        window,
+        now: 10_000,
+    };
+    assert_eq!(
+        row_menu(&mut windows, "notes link.txt"),
+        [
+            ("Open", true),
+            ("Open file location", true),
+            ("Cut", true),
+            ("Copy", true),
+            ("Create shortcut", true),
+            ("Rename", true),
+            ("Delete", true),
+            ("Properties", true)
+        ]
+    );
+}
+
+#[test]
+fn show_original_goes_to_the_targets_folder_with_it_selected() {
+    let mut files = linked_files();
+    files.link("/home/root/Desktop/plan", "../Projects/plan.txt", 9);
+    let mut driver = Driver::on(files);
+    driver.place(Place::Desktop);
+    choose_on_row(&mut driver, "plan", "Show Original");
+    assert_eq!(driver.folder(), "/home/root/Projects");
+    assert_eq!(driver.window.selected(), Some(driver.row("plan.txt")));
+    driver.click(BACK_BUTTON);
+    assert_eq!(driver.folder(), "/home/root/Desktop");
+}
+
+#[test]
+fn a_folder_link_opens_through_the_link_and_up_returns_to_the_link() {
+    let mut driver = linked();
+    let rect = driver.window.row_rect(driver.row("Projects link"));
+    driver.double_click(rect);
+    assert_eq!(driver.folder(), "/home/root/Projects link");
+    assert_eq!(
+        driver.window.path_field.text.as_str(),
+        "/home/root/Projects link"
+    );
+    assert_eq!(driver.names(), ["plan.txt"]);
+    driver.click(UP_BUTTON);
+    assert_eq!(driver.folder(), "/home/root");
+    assert_eq!(driver.window.selected(), Some(driver.row("Projects link")));
+}
+
+#[test]
+fn a_pasted_link_keeps_its_target_text_and_a_folder_never_lands_inside_itself() {
+    let mut driver = linked();
+    let target = Some(Node::Link(b"/home/root/Projects".to_vec()));
+    driver.select("Projects link");
+    driver.press(code::C, Modifiers::CTRL, 'c');
+    driver.place(Place::Tmp);
+    driver.press(code::V, Modifiers::CTRL, 'v');
+    assert_eq!(driver.files.node("/tmp/Projects link").cloned(), target);
+    assert_eq!(driver.names(), ["Projects link"]);
+    driver.place(Place::Home);
+    driver.press(code::V, Modifiers::CTRL, 'v');
+    assert_eq!(
+        driver.files.node("/home/root/Projects link copy").cloned(),
+        target
+    );
+    driver.select("Projects");
+    driver.press(code::C, Modifiers::CTRL, 'c');
+    let rect = driver.window.row_rect(driver.row("Projects link"));
+    driver.double_click(rect);
+    driver.press(code::V, Modifiers::CTRL, 'v');
+    assert_eq!(
+        driver.window.notice(),
+        Some("Cannot paste a folder into itself.")
+    );
+    assert_eq!(
+        driver.files.paths_under("/home/root/Projects"),
+        ["/home/root/Projects/plan.txt"]
+    );
+}
+
+#[test]
+fn move_to_trash_moves_the_link_and_leaves_its_target() {
+    let mut driver = linked();
+    driver.select("notes link.txt");
+    driver.press(key::DELETE, 0, '\0');
+    assert_eq!(
+        driver
+            .files
+            .node("/home/root/.local/share/Trash/files/notes link.txt"),
+        Some(&Node::Link(b"/home/root/notes.txt".to_vec()))
+    );
+    assert_eq!(
+        driver.files.contents("/home/root/notes.txt"),
+        Some(&b"twelve bytes"[..])
+    );
+    driver.place(Place::Trash);
+    let entry = *driver
+        .window
+        .listing()
+        .get(driver.row("notes link.txt"))
+        .unwrap();
+    assert_eq!((entry.kind, entry.link), (Kind::Text, Link::Sound));
+}
+
+#[test]
+fn opening_a_broken_link_says_where_it_points() {
+    let mut driver = linked();
+    driver.select("gone");
+    driver.press(key::ENTER, 0, '\r');
+    assert_eq!(
+        driver.window.notice(),
+        Some("gone points to /home/root/nothing, which does not exist.")
+    );
+    driver.select("loop");
+    driver.press(key::ENTER, 0, '\r');
+    assert_eq!(driver.window.notice(), Some("loop points back to itself."));
+    assert_eq!(driver.request(), None);
+}
+
+#[test]
+fn properties_of_a_link_say_what_it_points_to() {
+    let mut driver = linked();
+    driver.select("Projects link");
+    driver.press(code::I, Modifiers::SUPER, 'i');
+    assert_eq!(driver.window.dialog_line(0), Some("Projects link"));
+    assert_eq!(
+        driver.window.dialog_line(1),
+        Some("Kind: Link to Directory")
+    );
+    assert_eq!(
+        driver.window.dialog_line(2),
+        Some("Target: /home/root/Projects")
+    );
+    assert_eq!(
+        driver.window.dialog_line(3),
+        Some("Modified: 1970-01-01 00:00")
+    );
+    assert_eq!(driver.window.dialog_line(4), Some("Where: /home/root"));
+    driver.press(key::ENTER, 0, '\r');
+    driver.select("gone");
+    driver.press(code::I, Modifiers::SUPER, 'i');
+    assert_eq!(driver.window.dialog_line(1), Some("Kind: Broken link"));
+    assert_eq!(
+        driver.window.dialog_line(2),
+        Some("Target: /home/root/nothing")
+    );
+}
+
+#[test]
+fn a_link_to_an_installed_app_opens_it_and_is_trashed_not_uninstalled() {
+    let mut files = disk();
+    files.link("/home/root/Hello link", "/Applications/Hello", 5);
+    let mut driver = Driver::on(files);
+    assert_eq!(driver.names(), ["Hello link"]);
+    let rect = driver.window.row_rect(0);
+    driver.double_click(rect);
+    assert_eq!(
+        driver.request(),
+        Some(Request::OpenApp(Name::from(b"Hello").unwrap()))
+    );
+    assert!(
+        !row_menu(&mut driver, "Hello link")
+            .iter()
+            .any(|(label, _)| *label == "Uninstall...")
+    );
+    driver.press(key::ESC, 0, '\u{1b}');
+    driver.press(key::DELETE, 0, '\0');
+    assert_eq!(driver.request(), None);
+    assert_eq!(
+        driver
+            .files
+            .node("/home/root/.local/share/Trash/files/Hello link"),
+        Some(&Node::Link(b"/Applications/Hello".to_vec()))
+    );
+    assert!(driver.files.node("/Applications/Hello").is_some());
 }

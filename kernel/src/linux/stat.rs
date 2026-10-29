@@ -551,7 +551,6 @@ pub fn faccessat2<P: Platform>(
     Ok(0)
 }
 
-/// The node `faccessat2` checks: `None` for a descriptor that names none.
 fn access_target<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,

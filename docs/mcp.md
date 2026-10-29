@@ -108,6 +108,7 @@ run-eggos.sh` the script's own path works too.
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`, `dry_run`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`, `dry_run`); you can restore it | `trash -- <path>` | `write` |
 | `fetch` | Downloads an `http://` or `https://` URL (`url`, at most 2048 bytes; `https://` over TLS 1.3 with the server's certificate checked against the roots in `/etc/ssl/roots.pem`, D159) into a file below `/home/root` (`path`, `confirm`): up to 5 redirects, an error for a 4xx or 5xx status, 60 seconds at most; replacing a file asks the user first (D158) | `fetch <url> -- <path>` | `write` |
+| `ln` | Makes a link at `link`, an absolute path below `/home/root` outside its Trash where nothing is yet (D170): a symbolic link (`symbolic`, `true` by default) holding `target`'s text as given (1 to 4095 bytes, no NUL, not starting with `-`: write `./-name`), or a hard link (`symbolic: false`) to the file `target`, an absolute path below `/home/root` too, resolved and checked like `link`; never replaces anything (no `confirm`); answers `Made the symbolic link <link> to <target>.` | `ln -T [-s] <target> -- <link>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
 | `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `clock_sync` | Sets the machine's clock and its hardware clock from a time server (SNTP, `pool.ntp.org`) and says how far it moved; 15 seconds at most (D159) | `date -u --sync` | `run` |
@@ -141,7 +142,12 @@ for the shipped tools. The reading tools, `wm_capture`, `wm_menu_list` and `wm_s
 `wm_type`, `wm_press`, `wm_scroll`, `wm_drag`), `wm_menu_choose` and `wm_act` are `destructiveHint`, so clients ask their user before them; the seven window
 tools of D160 change windows but are neither. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
-component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. A refusal is
+component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. The twins of
+the tools that take a path (`ls`, `cat`, `tee`, `trash`, `fetch`, `ln`, `app_install`, `edit_open`)
+also run with `EGGOS_NO_SYMLINKS=1`, and the core utilities among them then open every path with
+`openat2`'s `RESOLVE_NO_SYMLINKS` (D170, docs/coreutils.md): a link made between the check and the
+command, or met inside a folder `trash` or `ls` walks, is refused too, not followed. `run` and the
+tools without a path keep the plain environment. A refusal is
 a tool result with `isError: true` that says why, and since D160 its `structuredContent` is
 the command model's error, `{"error":{"code","category","message","fix","fix_command"}}`:
 `path_not_allowed` (refused), `needs_grant`, `needs_confirmation`, `declined_by_user`
@@ -326,6 +332,11 @@ clock at boot (D150). The log in Settings comes after the release.
   (`cargo xtask fuzz mcp`).
 - **One call at a time.** The server does not read the channel while a command runs (up to 60 s
   for `run`), so pings and cancellations sent meanwhile wait until it ends.
+- **Host tests** (`userland/mcp`, against a fake machine) cover, for D170: `ln`'s arguments,
+  its symbolic and hard links, a link path or a hard link's target that goes through a symbolic
+  link, leaves `/home/root` or reaches the Trash refused before anything runs, and the path
+  tools' twins getting `EGGOS_NO_SYMLINKS=1` while `run`, `ps` and `app_open` do not; the core
+  utilities' tests cover the variable's parsing and the path splitting their `*at` calls use.
 - **Tested** by `cargo xtask qemu` on all three architectures: the release `run-eggos.sh --mcp`
   runs as a child twice on one disk, without grants and with `--mcp-allow
   view,write,run,install`, and a scripted client drives every tool, answers questions and runs
@@ -342,8 +353,14 @@ clock at boot (D150). The log in Settings comes after the release.
   `tee` does, and says `N of M bytes written; the file may be cut`.
 - Commands run as root: EggOS does not enforce file permissions yet, so a separate user would
   protect nothing.
-- Paths are checked after resolution; once EggOS has symbolic links, the commands will open
-  them with `O_NOFOLLOW` or stay beneath their root as well.
+- Paths are checked after resolution, and the path tools' twins open them with `openat2`'s
+  `RESOLVE_NO_SYMLINKS` (D170), so no symbolic link leads a tool out of its folders. What is
+  left: a hard link inside a root to a file elsewhere (made by a program or a person, never by
+  the `ln` tool, which hard-links only files below `/home/root`) is another name for that file
+  and is followed like any file; a mount point inside a root is crossed (`RESOLVE_NO_XDEV` is not
+  used); `app_install` and `edit_open` take the variable but their programs (`app`, `edit`) do not
+  read it, so they rely on the server's check of the path; `run` is unconfined by design; and
+  every command runs as root.
 - Elicitation's URL mode is not used; a client that only offers it gets the `confirm` rule.
 - `fetch` writes the file as the body arrives: a download that fails half-way leaves the part
   that came, and says why it stopped.

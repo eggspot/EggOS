@@ -12,8 +12,13 @@
 //! changed: never while a program's memory is copied, so reads and writes go through the
 //! caller's buffer. A node's number holds its slot, its kind and the slot's generation, which
 //! changes when the slot's node is removed: a number kept from before (a working directory, an
-//! open file) then names nothing. A file removed while open is gone at once: reads find its
-//! end and writes fail, where Linux keeps it until its last close.
+//! open file) then names nothing.
+//!
+//! Names live in their directories, so a file or a symbolic link may have several (D170): its
+//! inode counts them and records one directory holding one of them as its parent. A symbolic
+//! link keeps its target. A file whose last name goes while it is held ([`FileSystem::hold`]:
+//! open, mapped, running) keeps its contents, readable and writable through its number, until
+//! its last hold is released, as on Linux.
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, Refused, StorageError,
@@ -105,14 +110,22 @@ impl Budget {
 
 #[derive(Debug)]
 enum Contents {
-    Directory(Vec<u32>),
+    Directory(Vec<Child>),
     File { pages: Vec<Option<Page>>, size: u64 },
+    Link(Box<[u8]>),
+}
+
+#[derive(Debug)]
+struct Child {
+    slot: u32,
+    name: Vec<u8>,
 }
 
 #[derive(Debug)]
 struct Inode {
     parent: u32,
-    name: Vec<u8>,
+    links: u32,
+    holds: u32,
     permissions: u32,
     modified: u64,
     socket: bool,
@@ -135,15 +148,24 @@ const DIRECTORY_BIT: u64 = 1 << 32;
 
 const SOCKET_BIT: u64 = 1 << 33;
 
-const GENERATION_SHIFT: u32 = 34;
+const LINK_BIT: u64 = 1 << 34;
+
+const GENERATION_SHIFT: u32 = 35;
 
 const GENERATION_MASK: u32 = (1 << (64 - GENERATION_SHIFT)) - 1;
+
+/// The most names a file or link has (`EMLINK` past it), as EggFS allows.
+pub const MAX_LINKS: u32 = 65_000;
+
+/// The longest symbolic link target kept, in bytes (`PATH_MAX` without its NUL).
+pub const MAX_LINK_TARGET: usize = super::PATH_MAX - 1;
 
 fn number(slot: u32, generation: u32, kind: NodeKind) -> u64 {
     let kind = match kind {
         NodeKind::Directory => DIRECTORY_BIT,
         NodeKind::Socket => SOCKET_BIT,
-        NodeKind::Regular | NodeKind::CharacterDevice | NodeKind::SymbolicLink => 0,
+        NodeKind::SymbolicLink => LINK_BIT,
+        NodeKind::Regular | NodeKind::CharacterDevice => 0,
     };
     u64::from(generation & GENERATION_MASK) << GENERATION_SHIFT | kind | u64::from(slot)
 }
@@ -171,7 +193,8 @@ impl Tmpfs {
             generation: 0,
             inode: Some(Inode {
                 parent: 0,
-                name: Vec::new(),
+                links: 1,
+                holds: 0,
                 permissions,
                 modified: 0,
                 socket: false,
@@ -212,26 +235,53 @@ impl State {
                 contents: Contents::Directory(_),
                 ..
             }) => NodeKind::Directory,
+            Some(Inode {
+                contents: Contents::Link(_),
+                ..
+            }) => NodeKind::SymbolicLink,
             Some(Inode { socket: true, .. }) => NodeKind::Socket,
             _ => NodeKind::Regular,
         };
         number(slot, entry.generation, kind)
     }
 
-    fn children(&self, directory: u64) -> Result<&[u32], Refused> {
+    fn children(&self, directory: u64) -> Result<&[Child], Refused> {
         match &self.inode(directory).ok_or(Refused::NotFound)?.contents {
             Contents::Directory(children) => Ok(children),
-            Contents::File { .. } => Err(Refused::NotDirectory),
+            Contents::File { .. } | Contents::Link(_) => Err(Refused::NotDirectory),
+        }
+    }
+
+    fn children_of_slot(&self, slot: u32) -> &[Child] {
+        match self.slots[slot as usize].inode.as_ref() {
+            Some(Inode {
+                contents: Contents::Directory(children),
+                ..
+            }) => children,
+            _ => &[],
         }
     }
 
     fn child(&self, directory: u64, name: &[u8]) -> Result<Option<u32>, Refused> {
-        Ok(self.children(directory)?.iter().copied().find(|&slot| {
-            self.slots[slot as usize]
-                .inode
-                .as_ref()
-                .is_some_and(|inode| inode.name == name)
-        }))
+        Ok(self
+            .children(directory)?
+            .iter()
+            .find(|child| child.name == name)
+            .map(|child| child.slot))
+    }
+
+    fn name_of(&self, slot: u32) -> &[u8] {
+        let Some(inode) = self.slots[slot as usize].inode.as_ref() else {
+            return &[];
+        };
+        self.children_of_slot(inode.parent)
+            .iter()
+            .find(|child| child.slot == slot)
+            .map_or(&[][..], |child| &child.name)
+    }
+
+    fn is_directory_slot(&self, slot: u32) -> bool {
+        self.number_of(slot) & DIRECTORY_BIT != 0
     }
 
     fn is_ancestor(&self, ancestor: u32, mut slot: u32) -> bool {
@@ -249,30 +299,106 @@ impl State {
         }
     }
 
-    fn detach(&mut self, parent: u32, slot: u32) {
-        if let Some(Inode {
+    fn detach(&mut self, parent: u32, name: &[u8]) -> Option<Child> {
+        let Some(Inode {
             contents: Contents::Directory(children),
             ..
         }) = self.slots[parent as usize].inode.as_mut()
+        else {
+            return None;
+        };
+        let at = children.iter().position(|child| child.name == name)?;
+        Some(children.remove(at))
+    }
+
+    fn holder_of(&self, slot: u32) -> Option<u32> {
+        (0..self.slots.len() as u32).find(|&directory| {
+            self.children_of_slot(directory)
+                .iter()
+                .any(|child| child.slot == slot)
+        })
+    }
+
+    fn forget_name(&mut self, slot: u32, directory: u32, budget: &Budget) {
+        if self.is_directory_slot(slot) {
+            self.free_slot(slot, budget);
+            return;
+        }
+        let Some(inode) = self.slots[slot as usize].inode.as_mut() else {
+            return;
+        };
+        inode.links = inode.links.saturating_sub(1);
+        let (links, holds, parent) = (inode.links, inode.holds, inode.parent);
+        if links == 0 {
+            if holds == 0 {
+                self.free_slot(slot, budget);
+            }
+            return;
+        }
+        let still_named_there = self
+            .children_of_slot(directory)
+            .iter()
+            .any(|child| child.slot == slot);
+        if parent == directory
+            && !still_named_there
+            && let Some(holder) = self.holder_of(slot)
+            && let Some(inode) = self.slots[slot as usize].inode.as_mut()
         {
-            children.retain(|&child| child != slot);
+            inode.parent = holder;
         }
     }
 
     fn free_slot(&mut self, slot: u32, budget: &Budget) {
         let entry = &mut self.slots[slot as usize];
         if let Some(inode) = entry.inode.take() {
-            let pages = match &inode.contents {
+            let contents = match &inode.contents {
                 Contents::File { pages, .. } => {
                     pages.iter().flatten().count() * PAGE_SIZE + index_cost(pages)
                 }
+                Contents::Link(target) => target.len(),
                 Contents::Directory(_) => 0,
             };
-            budget.give_back(pages + NODE_COST + inode.name.len());
+            budget.give_back(contents + NODE_COST);
         }
         entry.generation = entry.generation.wrapping_add(1) & GENERATION_MASK;
         if self.free.try_reserve(1).is_ok() {
             self.free.push(slot);
+        }
+    }
+
+    fn add_inode(&mut self, inode: Inode) -> u32 {
+        match self.free.pop() {
+            Some(slot) => {
+                self.slots[slot as usize].inode = Some(inode);
+                slot
+            }
+            None => {
+                self.slots.push(Slot {
+                    generation: 0,
+                    inode: Some(inode),
+                });
+                (self.slots.len() - 1) as u32
+            }
+        }
+    }
+
+    fn reserve_entry(&mut self, directory: u64) -> bool {
+        self.slots.try_reserve(1).is_ok()
+            && match self.inode_mut(directory) {
+                Some(Inode {
+                    contents: Contents::Directory(children),
+                    ..
+                }) => children.try_reserve(1).is_ok(),
+                _ => false,
+            }
+    }
+
+    fn add_child(&mut self, directory: u64, child: Child, now: u64) {
+        if let Some(parent) = self.inode_mut(directory) {
+            if let Contents::Directory(children) = &mut parent.contents {
+                children.push(child);
+            }
+            parent.modified = now;
         }
     }
 }
@@ -292,6 +418,47 @@ fn page_range(offset: u64, length: usize) -> (usize, usize, usize) {
     (page, within, length.min(PAGE_SIZE - within))
 }
 
+impl Tmpfs {
+    fn make(
+        &self,
+        directory: u64,
+        name: &[u8],
+        contents: Contents,
+        permissions: u32,
+        socket: bool,
+        now: u64,
+    ) -> Result<u64, Refused> {
+        let extra_cost = match &contents {
+            Contents::Link(target) => target.len(),
+            Contents::Directory(_) | Contents::File { .. } => 0,
+        };
+        let mut state = self.state.lock();
+        if state.child(directory, name)?.is_some() {
+            return Err(Refused::Exists);
+        }
+        let parent = slot_of(directory).0 as u32;
+        let cost = NODE_COST + name.len() + extra_cost;
+        self.budget.take(cost)?;
+        let mut stored = Vec::new();
+        if stored.try_reserve_exact(name.len()).is_err() || !state.reserve_entry(directory) {
+            self.budget.give_back(cost);
+            return Err(Refused::NoSpace);
+        }
+        stored.extend_from_slice(name);
+        let slot = state.add_inode(Inode {
+            parent,
+            links: 1,
+            holds: 0,
+            permissions: permissions & 0o7777,
+            modified: now,
+            socket,
+            contents,
+        });
+        state.add_child(directory, Child { slot, name: stored }, now);
+        Ok(state.number_of(slot))
+    }
+}
+
 impl FileSystem for Tmpfs {
     fn root(&self) -> u64 {
         DIRECTORY_BIT
@@ -306,6 +473,8 @@ impl FileSystem for Tmpfs {
             NodeKind::Directory
         } else if node & SOCKET_BIT != 0 {
             NodeKind::Socket
+        } else if node & LINK_BIT != 0 {
+            NodeKind::SymbolicLink
         } else {
             NodeKind::Regular
         }
@@ -330,11 +499,12 @@ impl FileSystem for Tmpfs {
             Contents::Directory(children) => {
                 let subdirectories = children
                     .iter()
-                    .filter(|&&child| state.number_of(child) & DIRECTORY_BIT != 0)
+                    .filter(|child| state.is_directory_slot(child.slot))
                     .count();
                 (2 + subdirectories as u32, 0)
             }
-            Contents::File { size, .. } => (1, *size),
+            Contents::File { size, .. } => (inode.links, *size),
+            Contents::Link(target) => (inode.links, target.len() as u64),
         };
         Attributes {
             kind,
@@ -362,7 +532,10 @@ impl FileSystem for Tmpfs {
 
     fn name(&self, node: u64) -> Name {
         let state = self.state.lock();
-        Name::new(state.inode(node).map_or(&[][..], |inode| &inode.name))
+        match state.inode(node) {
+            Some(_) => Name::new(state.name_of(slot_of(node).0 as u32)),
+            None => Name::new(b""),
+        }
     }
 
     fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
@@ -396,15 +569,30 @@ impl FileSystem for Tmpfs {
         Ok(length)
     }
 
+    fn link_target(&self, node: u64, _caller: u32) -> Option<Vec<u8>> {
+        let state = self.state.lock();
+        let Some(Inode {
+            contents: Contents::Link(target),
+            ..
+        }) = state.inode(node)
+        else {
+            return None;
+        };
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(target.len()).ok()?;
+        copy.extend_from_slice(target);
+        Some(copy)
+    }
+
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         let state = self.state.lock();
-        let slot = *state
+        let child = state
             .children(directory)
             .ok()?
             .get(usize::try_from(position).ok()?)?;
-        let node = state.number_of(slot);
+        let node = state.number_of(child.slot);
         Some(DirectoryEntry {
-            name: Name::new(&state.slots[slot as usize].inode.as_ref()?.name),
+            name: Name::new(&child.name),
             node,
             kind: self.kind(node),
         })
@@ -423,8 +611,10 @@ impl FileSystem for Tmpfs {
     ) -> Result<(usize, u64), Refused> {
         let mut state = self.state.lock();
         let inode = state.inode_mut(node).ok_or(Refused::NotFound)?;
-        let Contents::File { pages, size } = &mut inode.contents else {
-            return Err(Refused::IsDirectory);
+        let (pages, size) = match &mut inode.contents {
+            Contents::File { pages, size } => (pages, size),
+            Contents::Directory(_) => return Err(Refused::IsDirectory),
+            Contents::Link(_) => return Err(Refused::InvalidArgument),
         };
         let offset = match at {
             WriteAt::Offset(offset) => offset,
@@ -483,8 +673,10 @@ impl FileSystem for Tmpfs {
         }
         let mut state = self.state.lock();
         let inode = state.inode_mut(node).ok_or(Refused::NotFound)?;
-        let Contents::File { pages, size } = &mut inode.contents else {
-            return Err(Refused::IsDirectory);
+        let (pages, size) = match &mut inode.contents {
+            Contents::File { pages, size } => (pages, size),
+            Contents::Directory(_) => return Err(Refused::IsDirectory),
+            Contents::Link(_) => return Err(Refused::InvalidArgument),
         };
         let kept = (length as usize).div_ceil(PAGE_SIZE);
         if kept < pages.len() {
@@ -516,70 +708,69 @@ impl FileSystem for Tmpfs {
         now: u64,
     ) -> Result<u64, Refused> {
         check_name(name)?;
-        if matches!(kind, NodeKind::CharacterDevice | NodeKind::SymbolicLink) {
+        let contents = match kind {
+            NodeKind::CharacterDevice | NodeKind::SymbolicLink => {
+                return Err(Refused::InvalidArgument);
+            }
+            NodeKind::Directory => Contents::Directory(Vec::new()),
+            NodeKind::Regular | NodeKind::Socket => Contents::File {
+                pages: Vec::new(),
+                size: 0,
+            },
+        };
+        let socket = kind == NodeKind::Socket;
+        self.make(directory, name, contents, permissions, socket, now)
+    }
+
+    fn symlink(
+        &self,
+        directory: u64,
+        name: &[u8],
+        target: &[u8],
+        now: u64,
+    ) -> Result<u64, Refused> {
+        check_name(name)?;
+        if target.is_empty() || target.len() > MAX_LINK_TARGET || target.contains(&0) {
             return Err(Refused::InvalidArgument);
         }
+        let mut stored = Vec::new();
+        stored
+            .try_reserve_exact(target.len())
+            .map_err(|_| Refused::NoSpace)?;
+        stored.extend_from_slice(target);
+        let contents = Contents::Link(stored.into_boxed_slice());
+        self.make(directory, name, contents, 0o777, false, now)
+    }
+
+    fn link(&self, node: u64, directory: u64, name: &[u8], now: u64) -> Result<(), Refused> {
+        check_name(name)?;
         let mut state = self.state.lock();
+        let inode = state.inode(node).ok_or(Refused::NotFound)?;
+        if matches!(inode.contents, Contents::Directory(_)) {
+            return Err(Refused::NotPermitted);
+        }
+        if inode.links == 0 {
+            return Err(Refused::NotFound);
+        }
+        if inode.links >= MAX_LINKS {
+            return Err(Refused::TooManyLinks);
+        }
         if state.child(directory, name)?.is_some() {
             return Err(Refused::Exists);
         }
-        let parent = slot_of(directory).0 as u32;
-        let cost = NODE_COST + name.len();
-        self.budget.take(cost)?;
+        self.budget.take(name.len())?;
         let mut stored = Vec::new();
-        let made = stored
-            .try_reserve_exact(name.len())
-            .ok()
-            .and_then(|()| state.slots.try_reserve(1).ok())
-            .and_then(|()| match state.inode_mut(directory) {
-                Some(Inode {
-                    contents: Contents::Directory(children),
-                    ..
-                }) => children.try_reserve(1).ok(),
-                _ => None,
-            });
-        if made.is_none() {
-            self.budget.give_back(cost);
+        if stored.try_reserve_exact(name.len()).is_err() || !state.reserve_entry(directory) {
+            self.budget.give_back(name.len());
             return Err(Refused::NoSpace);
         }
         stored.extend_from_slice(name);
-        let inode = Inode {
-            parent,
-            name: stored,
-            permissions: permissions & 0o7777,
-            modified: now,
-            socket: kind == NodeKind::Socket,
-            contents: match kind {
-                NodeKind::Directory => Contents::Directory(Vec::new()),
-                NodeKind::Regular
-                | NodeKind::CharacterDevice
-                | NodeKind::Socket
-                | NodeKind::SymbolicLink => Contents::File {
-                    pages: Vec::new(),
-                    size: 0,
-                },
-            },
-        };
-        let slot = match state.free.pop() {
-            Some(slot) => {
-                state.slots[slot as usize].inode = Some(inode);
-                slot
-            }
-            None => {
-                state.slots.push(Slot {
-                    generation: 0,
-                    inode: Some(inode),
-                });
-                (state.slots.len() - 1) as u32
-            }
-        };
-        if let Some(parent) = state.inode_mut(directory) {
-            if let Contents::Directory(children) = &mut parent.contents {
-                children.push(slot);
-            }
-            parent.modified = now;
+        let slot = slot_of(node).0 as u32;
+        if let Some(inode) = state.inode_mut(node) {
+            inode.links += 1;
         }
-        Ok(state.number_of(slot))
+        state.add_child(directory, Child { slot, name: stored }, now);
+        Ok(())
     }
 
     fn remove(
@@ -603,12 +794,16 @@ impl FileSystem for Tmpfs {
                 return Err(Refused::NotEmpty);
             }
             (Contents::Directory(_), false) => return Err(Refused::IsDirectory),
-            (Contents::File { .. }, true) => return Err(Refused::NotDirectory),
+            (Contents::File { .. } | Contents::Link(_), true) => {
+                return Err(Refused::NotDirectory);
+            }
             _ => {}
         }
         let parent = slot_of(directory).0 as u32;
-        state.detach(parent, slot);
-        state.free_slot(slot, self.budget);
+        if let Some(child) = state.detach(parent, name) {
+            self.budget.give_back(child.name.len());
+        }
+        state.forget_name(slot, parent, self.budget);
         if let Some(parent) = state.inode_mut(directory) {
             parent.modified = now;
         }
@@ -631,7 +826,7 @@ impl FileSystem for Tmpfs {
         let mut state = self.state.lock();
         let moved = state.child(from, from_name)?.ok_or(Refused::NotFound)?;
         state.children(to)?;
-        let moved_is_directory = state.number_of(moved) & DIRECTORY_BIT != 0;
+        let moved_is_directory = state.is_directory_slot(moved);
         let to_slot = slot_of(to).0 as u32;
         if moved_is_directory && state.is_ancestor(moved, to_slot) {
             return Err(Refused::InvalidArgument);
@@ -644,7 +839,7 @@ impl FileSystem for Tmpfs {
             if no_replace {
                 return Err(Refused::Exists);
             }
-            let replaced_is_directory = state.number_of(replaced) & DIRECTORY_BIT != 0;
+            let replaced_is_directory = state.is_directory_slot(replaced);
             match (moved_is_directory, replaced_is_directory) {
                 (true, false) => return Err(Refused::NotDirectory),
                 (false, true) => return Err(Refused::IsDirectory),
@@ -654,10 +849,7 @@ impl FileSystem for Tmpfs {
                 _ => {}
             }
         }
-        let old_length = state.slots[moved as usize]
-            .inode
-            .as_ref()
-            .map_or(0, |inode| inode.name.len());
+        let old_length = from_name.len();
         let grown = to_name.len().saturating_sub(old_length);
         self.budget.take(grown)?;
         let mut name = Vec::new();
@@ -674,24 +866,25 @@ impl FileSystem for Tmpfs {
             return Err(Refused::NoSpace);
         }
         if let Some(replaced) = replaced {
-            state.detach(to_slot, replaced);
-            state.free_slot(replaced, self.budget);
+            if let Some(child) = state.detach(to_slot, to_name) {
+                self.budget.give_back(child.name.len());
+            }
+            state.forget_name(replaced, to_slot, self.budget);
         }
         name.extend_from_slice(to_name);
         let from_slot = slot_of(from).0 as u32;
-        state.detach(from_slot, moved);
+        state.detach(from_slot, from_name);
         if let Some(Inode {
             contents: Contents::Directory(children),
             modified,
             ..
         }) = state.inode_mut(to)
         {
-            children.push(moved);
+            children.push(Child { slot: moved, name });
             *modified = now;
         }
         if let Some(inode) = state.slots[moved as usize].inode.as_mut() {
             inode.parent = to_slot;
-            inode.name = name;
         }
         self.budget
             .give_back(old_length.saturating_sub(to_name.len()));
@@ -705,6 +898,39 @@ impl FileSystem for Tmpfs {
         let mut state = self.state.lock();
         state.inode_mut(node).ok_or(Refused::NotFound)?.modified = time;
         Ok(())
+    }
+
+    fn set_permissions(&self, node: u64, permissions: u32) -> Result<(), Refused> {
+        let mut state = self.state.lock();
+        let inode = state.inode_mut(node).ok_or(Refused::NotFound)?;
+        if matches!(inode.contents, Contents::Link(_)) {
+            return Err(Refused::InvalidArgument);
+        }
+        inode.permissions = permissions & 0o7777;
+        Ok(())
+    }
+
+    fn hold(&self, node: u64) {
+        let mut state = self.state.lock();
+        if let Some(inode) = state.inode_mut(node)
+            && !matches!(inode.contents, Contents::Directory(_))
+        {
+            inode.holds = inode.holds.saturating_add(1);
+        }
+    }
+
+    fn release(&self, node: u64) {
+        let mut state = self.state.lock();
+        let Some(inode) = state.inode_mut(node) else {
+            return;
+        };
+        if matches!(inode.contents, Contents::Directory(_)) {
+            return;
+        }
+        inode.holds = inode.holds.saturating_sub(1);
+        if inode.holds == 0 && inode.links == 0 {
+            state.free_slot(slot_of(node).0 as u32, self.budget);
+        }
     }
 }
 
@@ -720,7 +946,7 @@ mod tests {
     fn index_charged(fs: &Tmpfs, node: u64) -> usize {
         match &fs.state.lock().inode(node).unwrap().contents {
             Contents::File { pages, .. } => index_cost(pages),
-            Contents::Directory(_) => 0,
+            Contents::Directory(_) | Contents::Link(_) => 0,
         }
     }
 
@@ -1003,5 +1229,131 @@ mod tests {
         assert_eq!(fs.attributes(wrapped).links, 1);
         assert_eq!(fs.attributes(last).links, 0);
         assert_ne!(wrapped, first);
+    }
+
+    #[test]
+    fn symbolic_links_keep_their_target_and_go_like_files() {
+        let fs = tmpfs(1 << 20);
+        let root = fs.root();
+        let link = fs.symlink(root, b"l", b"../x/y", 4).unwrap();
+        assert_eq!(fs.kind(link), NodeKind::SymbolicLink);
+        assert_eq!(fs.lookup(root, b"l"), Some(link));
+        assert_eq!(fs.link_target(link, 0), Some(b"../x/y".to_vec()));
+        let attributes = fs.attributes(link);
+        assert_eq!(
+            (attributes.size, attributes.permissions, attributes.links),
+            (6, 0o777, 1)
+        );
+        assert_eq!(fs.entry(root, 0).unwrap().kind, NodeKind::SymbolicLink);
+        assert_eq!(fs.budget.used(), NODE_COST + 1 + 6);
+        assert_eq!(fs.symlink(root, b"l", b"z", 4), Err(Refused::Exists));
+        for bad in [&b""[..], b"a\0b"] {
+            assert_eq!(
+                fs.symlink(root, b"m", bad, 4),
+                Err(Refused::InvalidArgument)
+            );
+        }
+        let long = vec![b'a'; MAX_LINK_TARGET + 1];
+        assert_eq!(
+            fs.symlink(root, b"m", &long, 4),
+            Err(Refused::InvalidArgument)
+        );
+        assert_eq!(
+            fs.write(link, WriteAt::End, b"x", 5),
+            Err(Refused::InvalidArgument)
+        );
+        assert_eq!(
+            fs.set_permissions(link, 0o600),
+            Err(Refused::InvalidArgument)
+        );
+        assert_eq!(fs.remove(root, b"l", true, 5), Err(Refused::NotDirectory));
+        fs.remove(root, b"l", false, 5).unwrap();
+        assert_eq!(fs.link_target(link, 0), None);
+        assert_eq!(fs.budget.used(), 0);
+    }
+
+    #[test]
+    fn hard_links_count_names_and_the_file_goes_with_its_last_name() {
+        let fs = tmpfs(1 << 20);
+        let root = fs.root();
+        let dir = fs
+            .create(root, b"d", NodeKind::Directory, 0o755, 0)
+            .unwrap();
+        let file = fs.create(root, b"a", NodeKind::Regular, 0o644, 0).unwrap();
+        fs.write(file, WriteAt::End, b"data", 1).unwrap();
+        fs.link(file, dir, b"b", 2).unwrap();
+        fs.link(file, root, b"c", 2).unwrap();
+        assert_eq!(fs.lookup(dir, b"b"), Some(file));
+        assert_eq!(fs.attributes(file).links, 3);
+        assert_eq!(fs.link(file, dir, b"b", 2), Err(Refused::Exists));
+        assert_eq!(fs.link(dir, root, b"e", 2), Err(Refused::NotPermitted));
+        assert_eq!(fs.entry(dir, 0).unwrap().name.as_bytes(), b"b");
+        fs.remove(root, b"a", false, 3).unwrap();
+        assert_eq!(fs.attributes(file).links, 2);
+        assert_eq!(read_all(fs, file), b"data");
+        assert_eq!(fs.name(file).as_bytes(), b"c");
+        fs.rename(root, b"c", dir, b"b", false, 4).unwrap();
+        assert_eq!(fs.lookup(root, b"c"), Some(file), "both names are one file");
+        fs.remove(root, b"c", false, 5).unwrap();
+        assert_eq!(fs.parent(file), dir);
+        assert_eq!(fs.name(file).as_bytes(), b"b");
+        fs.remove(dir, b"b", false, 6).unwrap();
+        assert_eq!(fs.attributes(file).links, 0);
+        fs.remove(root, b"d", true, 7).unwrap();
+        assert_eq!(fs.budget.used(), 0);
+        let other = fs.create(root, b"o", NodeKind::Regular, 0o644, 0).unwrap();
+        fs.state.lock().inode_mut(other).unwrap().links = MAX_LINKS;
+        assert_eq!(fs.link(other, root, b"p", 0), Err(Refused::TooManyLinks));
+    }
+
+    #[test]
+    fn a_file_removed_while_held_stays_until_its_last_release() {
+        let fs = tmpfs(1 << 20);
+        let root = fs.root();
+        let file = fs.create(root, b"f", NodeKind::Regular, 0o644, 0).unwrap();
+        fs.write(file, WriteAt::End, b"kept", 1).unwrap();
+        fs.hold(file);
+        fs.hold(file);
+        fs.remove(root, b"f", false, 2).unwrap();
+        assert_eq!(fs.lookup(root, b"f"), None);
+        assert_eq!(fs.attributes(file).links, 0);
+        assert_eq!(read_all(fs, file), b"kept");
+        assert_eq!(fs.write(file, WriteAt::End, b"!", 3), Ok((1, 5)));
+        assert_eq!(fs.link(file, root, b"back", 3), Err(Refused::NotFound));
+        fs.release(file);
+        assert_eq!(read_all(fs, file), b"kept!");
+        fs.release(file);
+        assert_eq!(read_all(fs, file), b"");
+        assert_eq!(fs.budget.used(), 0);
+        let replaced = fs.create(root, b"r", NodeKind::Regular, 0o644, 0).unwrap();
+        fs.write(replaced, WriteAt::End, b"old", 4).unwrap();
+        fs.hold(replaced);
+        let new = fs.create(root, b"n", NodeKind::Regular, 0o644, 0).unwrap();
+        fs.rename(root, b"n", root, b"r", false, 5).unwrap();
+        assert_eq!(fs.lookup(root, b"r"), Some(new));
+        assert_eq!(read_all(fs, replaced), b"old");
+        fs.release(replaced);
+        assert_eq!(fs.attributes(replaced).links, 0);
+        let directory = fs
+            .create(root, b"d", NodeKind::Directory, 0o755, 0)
+            .unwrap();
+        fs.hold(directory);
+        fs.remove(root, b"d", true, 6).unwrap();
+        fs.release(directory);
+        assert_eq!(fs.lookup(root, b"d"), None);
+    }
+
+    #[test]
+    fn permissions_change_on_files_and_directories() {
+        let fs = tmpfs(1 << 20);
+        let root = fs.root();
+        let file = fs.create(root, b"f", NodeKind::Regular, 0o644, 9).unwrap();
+        fs.set_permissions(file, 0o10_4755).unwrap();
+        let attributes = fs.attributes(file);
+        assert_eq!((attributes.permissions, attributes.modified), (0o4755, 9));
+        fs.set_permissions(root, 0o700).unwrap();
+        assert_eq!(fs.attributes(root).permissions, 0o700);
+        fs.remove(root, b"f", false, 0).unwrap();
+        assert_eq!(fs.set_permissions(file, 0o600), Err(Refused::NotFound));
     }
 }

@@ -11,6 +11,12 @@
 //!   Nothing runs while nothing changes.
 //! - **Errors.** A disk failure or an inconsistency reads as `EIO`; a volume whose commit
 //!   failed refuses every change after it.
+//! - **Links** (D170): symbolic links and hard links are the volume's own (EggFS version 2);
+//!   an open file is held on the volume, so a file whose last name goes while open stays
+//!   until its last close. A release may come under a spin lock (a mapping's last reference),
+//!   so it never takes the volume's lock: it is queued in [`RELEASE_SLOTS`] lock-free slots,
+//!   which the next commit applies (a release that finds them full leaves the file until the
+//!   next mount, which frees it).
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, WriteAt,
@@ -20,7 +26,7 @@ use crate::devices::Deadline;
 use crate::sync::{SleepLock, Sleeping};
 use crate::thread::WaitQueue;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use eggos_eggfs::{BLOCK_SIZE, Disk, DiskError, Error, Kind, MAX_NAME, Volume};
 
 /// How long one disk request may take before it fails.
@@ -29,6 +35,9 @@ pub const REQUEST_TIMEOUT_MS: u64 = 2000;
 /// How long the committer waits after a change before it commits, so the changes of a burst
 /// of work share one transaction.
 pub const COMMIT_DELAY: core::time::Duration = core::time::Duration::from_secs(5);
+
+/// How many releases of held files wait for the next commit at most.
+pub const RELEASE_SLOTS: usize = 64;
 
 const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
 
@@ -117,6 +126,7 @@ pub struct EggFs<D: Disk + Send> {
     sleeping: Sleeping,
     changed: AtomicBool,
     committer: WaitQueue,
+    releases: [AtomicU64; RELEASE_SLOTS],
 }
 
 impl<D: Disk + Send> core::fmt::Debug for EggFs<D> {
@@ -140,6 +150,7 @@ fn refused(error: Error) -> Refused {
         Error::InvalidArgument => Refused::InvalidArgument,
         Error::TooBig => Refused::TooBig,
         Error::Busy => Refused::Busy,
+        Error::TooManyLinks => Refused::TooManyLinks,
         Error::Corrupt | Error::Io => Refused::Storage,
     }
 }
@@ -148,6 +159,7 @@ fn node_kind(node: u64) -> NodeKind {
     match eggos_eggfs::kind_of(node) {
         Kind::Directory => NodeKind::Directory,
         Kind::Regular => NodeKind::Regular,
+        Kind::SymbolicLink => NodeKind::SymbolicLink,
     }
 }
 
@@ -161,6 +173,7 @@ impl<D: Disk + Send> EggFs<D> {
             sleeping,
             changed: AtomicBool::new(false),
             committer: WaitQueue::new(),
+            releases: [const { AtomicU64::new(0) }; RELEASE_SLOTS],
         }
     }
 
@@ -189,9 +202,26 @@ impl<D: Disk + Send> EggFs<D> {
         })
     }
 
-    /// Commits every change made so far.
+    /// Commits every change made so far, the queued releases first.
     pub fn commit(&self) -> Result<(), StorageError> {
-        self.volume.lock().commit().map_err(|_| StorageError)
+        let mut volume = self.volume.lock();
+        for slot in &self.releases {
+            let node = slot.swap(0, Ordering::AcqRel);
+            if node != 0 {
+                let _ = volume.release(node);
+            }
+        }
+        volume.commit().map_err(|_| StorageError)
+    }
+
+    fn release_later(&self, node: u64) {
+        let queued = self.releases.iter().any(|slot| {
+            slot.compare_exchange(0, node, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        });
+        if queued && !self.changed.swap(true, Ordering::AcqRel) {
+            self.sleeping.wake(&self.committer);
+        }
     }
 
     fn changed(&self) {
@@ -373,6 +403,46 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         self.changing(|volume| volume.create(directory, name, kind, permissions, now))
     }
 
+    fn symlink(
+        &self,
+        directory: u64,
+        name: &[u8],
+        target: &[u8],
+        now: u64,
+    ) -> Result<u64, Refused> {
+        self.changing(|volume| volume.symlink(directory, name, target, now))
+    }
+
+    fn link(&self, node: u64, directory: u64, name: &[u8], now: u64) -> Result<(), Refused> {
+        if node_kind(node) == NodeKind::Directory {
+            return Err(Refused::NotPermitted);
+        }
+        self.changing(|volume| volume.link(node, directory, name, now))
+    }
+
+    fn link_target(&self, node: u64, _caller: u32) -> Option<alloc::vec::Vec<u8>> {
+        if node_kind(node) != NodeKind::SymbolicLink {
+            return None;
+        }
+        self.volume().link_target(node).ok()
+    }
+
+    fn set_permissions(&self, node: u64, permissions: u32) -> Result<(), Refused> {
+        self.changing(|volume| volume.set_permissions(node, permissions))
+    }
+
+    fn hold(&self, node: u64) {
+        if node_kind(node) != NodeKind::Directory {
+            let _ = self.volume().hold(node);
+        }
+    }
+
+    fn release(&self, node: u64) {
+        if node_kind(node) != NodeKind::Directory {
+            self.eggfs.release_later(node);
+        }
+    }
+
     fn remove(
         &self,
         directory: u64,
@@ -488,6 +558,41 @@ mod tests {
             fs.remove(home.id(), b"missing", false, 9),
             Err(Refused::NotFound)
         );
+        eggfs.with_volume(|volume| volume.check().unwrap());
+    }
+
+    #[test]
+    fn links_and_a_file_removed_while_held_go_through_the_volume() {
+        let (eggfs, home, _) = mounted();
+        let fs = home.file_system();
+        let file = fs
+            .create(home.id(), b"a", NodeKind::Regular, 0o644, 1)
+            .unwrap();
+        fs.write(file, WriteAt::End, b"text", 2).unwrap();
+        let link = fs.symlink(home.id(), b"l", b"a", 3).unwrap();
+        assert_eq!(fs.kind(link), NodeKind::SymbolicLink);
+        assert_eq!(fs.link_target(link, 0), Some(b"a".to_vec()));
+        assert_eq!(read_all(resolve(home, home, b"l").unwrap()), b"text");
+        fs.link(file, home.id(), b"b", 4).unwrap();
+        assert_eq!(fs.attributes(file).links, 2);
+        assert_eq!(
+            fs.link(home.id(), home.id(), b"c", 4),
+            Err(Refused::NotPermitted)
+        );
+        fs.set_permissions(file, 0o755).unwrap();
+        assert_eq!(fs.attributes(file).permissions, 0o755);
+        fs.hold(file);
+        fs.remove(home.id(), b"a", false, 5).unwrap();
+        fs.remove(home.id(), b"b", false, 5).unwrap();
+        assert_eq!(read_all(home.with_id(file)), b"text");
+        fs.release(file);
+        assert_eq!(
+            read_all(home.with_id(file)),
+            b"text",
+            "released at the next commit"
+        );
+        fs.sync().unwrap();
+        assert_eq!(read_all(home.with_id(file)), b"");
         eggfs.with_volume(|volume| volume.check().unwrap());
     }
 }

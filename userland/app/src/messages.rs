@@ -162,8 +162,12 @@ pub fn reason(problem: Problem) -> Line {
         Problem::DiskFull => line.write_str("not enough space on the disk (ENOSPC)"),
         Problem::TooDeep => line.write_str("its folders nest more than 16 deep"),
         Problem::UnsupportedEntry => {
-            line.write_str("it holds a symbolic link or a device, which an app cannot")
+            line.write_str("it holds a device or a socket, which an app cannot")
         }
+        Problem::UnsafeLink => line.write_str(
+            "it holds a symbolic link that could lead outside the app (an absolute target, or \
+             .. that climbs out of it or comes after a name)",
+        ),
         Problem::Archive(error) => line.write_str(archive_reason(error)),
         Problem::NoProgramInArchive => line.write_str("it holds no program EggOS can run"),
         Problem::SeveralPrograms(listing) => write!(

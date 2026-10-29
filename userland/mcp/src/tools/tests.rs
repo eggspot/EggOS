@@ -325,7 +325,7 @@ fn the_shipped_tools_keep_their_annotations() {
 
 #[test]
 fn the_list_is_valid_json_with_annotations() {
-    let mut buffer = vec![0u8; 64 * 1024];
+    let mut buffer = vec![0u8; 128 * 1024];
     let mut out = JsonWriter::new(&mut buffer);
     write_list(&mut out);
     assert!(!out.overflowed());
@@ -347,4 +347,42 @@ fn the_list_is_valid_json_with_annotations() {
         assert_eq!(annotations.get("openWorldHint"), Some(Value::Bool(false)));
         assert!(listed.get("inputSchema").unwrap().as_object().is_some());
     }
+}
+
+#[test]
+fn ln_makes_links_below_the_home_folder_with_its_twin_never_replacing() {
+    let tool = find("ln").unwrap();
+    assert_eq!(tool.kind, Kind::Ln);
+    assert_eq!(tool.twin.program, Program::Fixed("/bin/ln"));
+    assert_eq!(tool.twin.words, ["-T"]);
+    let Operand::Path(link) = tool.twin.operand else {
+        panic!("ln's operand is the link's path");
+    };
+    assert_eq!(
+        (link.name, link.roots, link.strictly, link.excluded),
+        (
+            "link",
+            &crate::paths::WRITE_ROOTS[..],
+            true,
+            &[crate::paths::TRASH][..]
+        )
+    );
+    assert_eq!(tool.grant, Some(Grant::Write));
+    assert_eq!(tool.confirmation, Confirmation::Never);
+    assert_eq!(
+        tool.hints,
+        Hints {
+            read_only: false,
+            destructive: false,
+            idempotent: false,
+            open_world: false,
+        }
+    );
+    assert_eq!(
+        schema_of(tool),
+        r#"{"type":"object","properties":{"target":{"type":"string","minLength":1,"maxLength":4095,"description":"What the link points to: for a symbolic link any path text (relative to the link's folder, not starting with -), for a hard link an absolute path of a file below /home/root."},"link":{"type":"string","description":"The link to make: an absolute path below /home/root, outside its Trash, where nothing is yet."},"symbolic":{"type":"boolean","description":"true for a symbolic link, false for a hard link.","default":true}},"required":["target","link"],"additionalProperties":false}"#
+    );
+    let hard = crate::tools::HARD_LINK_TARGET;
+    assert_eq!((hard.name, hard.roots), ("target", link.roots));
+    assert!(!tool.takes("confirm") && !tool.takes("dry_run"));
 }

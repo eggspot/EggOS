@@ -451,7 +451,7 @@ fn plist_file_name<'n>(
 
 fn is_file(files: &mut impl Files, path: &Path) -> bool {
     files
-        .status(path.as_bytes())
+        .status_following(path.as_bytes())
         .is_ok_and(|status| status.kind == Kind::File)
 }
 

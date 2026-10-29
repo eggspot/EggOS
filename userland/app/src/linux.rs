@@ -30,6 +30,7 @@ const STATX_DEVICE_MINOR: usize = 140;
 const FILE_TYPE: u32 = 0o170_000;
 const REGULAR: u32 = 0o100_000;
 const DIRECTORY: u32 = 0o040_000;
+const SYMBOLIC_LINK: u32 = 0o120_000;
 const UTSNAME_FIELD: usize = 65;
 const UTSNAME_MACHINE: usize = 4;
 const DIRENT_LENGTH: usize = 16;
@@ -297,41 +298,79 @@ impl Drop for LinuxFiles {
     }
 }
 
+fn status_with(path: &[u8], flags: usize) -> Result<Status, Errno> {
+    let path = CPath::new(path)?;
+    let mut record = [0u8; STATX_SIZE];
+    call(
+        number::STATX,
+        [
+            AT_FDCWD,
+            path.pointer(),
+            flags,
+            STATX_BASIC_STATS,
+            record.as_mut_ptr() as usize,
+            0,
+        ],
+    )?;
+    let mode = u32::from(u16::from_ne_bytes([
+        record[STATX_MODE],
+        record[STATX_MODE + 1],
+    ]));
+    let double_word =
+        |at: usize| u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]));
+    let word = |at: usize| u32::from_ne_bytes(record[at..at + 4].try_into().unwrap_or([0; 4]));
+    let size = double_word(STATX_FILE_SIZE);
+    let kind = match mode & FILE_TYPE {
+        REGULAR => Kind::File,
+        DIRECTORY => Kind::Directory,
+        SYMBOLIC_LINK => Kind::Link,
+        _ => Kind::Other,
+    };
+    Ok(Status {
+        kind,
+        size,
+        permissions: mode & 0o7777,
+        modified: double_word(STATX_MODIFIED).min(i64::MAX as u64),
+        device: u64::from(word(STATX_DEVICE_MAJOR)) << 32 | u64::from(word(STATX_DEVICE_MINOR)),
+    })
+}
+
 impl Files for LinuxFiles {
     fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        status_with(path, AT_SYMLINK_NOFOLLOW)
+    }
+
+    fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {
+        status_with(path, 0)
+    }
+
+    fn read_link(&mut self, path: &[u8], target: &mut [u8]) -> Result<usize, Errno> {
         let path = CPath::new(path)?;
-        let mut record = [0u8; STATX_SIZE];
-        call(
-            number::STATX,
+        let length = call(
+            number::READLINKAT,
             [
                 AT_FDCWD,
                 path.pointer(),
-                AT_SYMLINK_NOFOLLOW,
-                STATX_BASIC_STATS,
-                record.as_mut_ptr() as usize,
+                target.as_mut_ptr() as usize,
+                target.len(),
+                0,
                 0,
             ],
         )?;
-        let mode = u32::from(u16::from_ne_bytes([
-            record[STATX_MODE],
-            record[STATX_MODE + 1],
-        ]));
-        let double_word =
-            |at: usize| u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]));
-        let word = |at: usize| u32::from_ne_bytes(record[at..at + 4].try_into().unwrap_or([0; 4]));
-        let size = double_word(STATX_FILE_SIZE);
-        let kind = match mode & FILE_TYPE {
-            REGULAR => Kind::File,
-            DIRECTORY => Kind::Directory,
-            _ => Kind::Other,
-        };
-        Ok(Status {
-            kind,
-            size,
-            permissions: mode & 0o7777,
-            modified: double_word(STATX_MODIFIED).min(i64::MAX as u64),
-            device: u64::from(word(STATX_DEVICE_MAJOR)) << 32 | u64::from(word(STATX_DEVICE_MINOR)),
-        })
+        match length < target.len() {
+            true => Ok(length),
+            false => Err(Errno::ENAMETOOLONG),
+        }
+    }
+
+    fn make_link(&mut self, target: &[u8], path: &[u8]) -> Result<(), Errno> {
+        self.forget_cursor_under(path);
+        let (target, path) = (CPath::new(target)?, CPath::new(path)?);
+        call(
+            number::SYMLINKAT,
+            [target.pointer(), AT_FDCWD, path.pointer(), 0, 0, 0],
+        )
+        .map(|_| ())
     }
 
     fn entry(

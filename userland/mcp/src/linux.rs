@@ -15,6 +15,7 @@ use crate::system::{
     CaptureFile, Ended, FileState, Invocation, MAX_COMMAND_WORDS, RunOutcome, System,
 };
 use core::ffi::CStr;
+use eggos_commands::tools::NO_SYMLINKS_ENVIRONMENT;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::process::{ChildStack, Spawn, spawn};
 use eggos_runtime::startup::Startup;
@@ -563,9 +564,12 @@ impl Linux {
             return Err(Errno::E2BIG);
         }
         pointers[count] = core::ptr::null();
-        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 2];
         for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
             *slot = variable.as_ptr().cast();
+        }
+        if invocation.no_symlinks {
+            environment[ENVIRONMENT.len()] = NO_SYMLINKS_ENVIRONMENT.as_ptr().cast();
         }
         let input = pipe()?;
         let output = pipe().inspect_err(|_| {

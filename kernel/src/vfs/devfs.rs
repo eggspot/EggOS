@@ -91,7 +91,6 @@ const FILES: [(&[u8], u64); 14] = [
     (b"zero", ZERO),
 ];
 
-/// Each link and its target.
 const LINKS: [(u64, &[u8]); 4] = [
     (FD, b"/proc/self/fd"),
     (STDIN, b"/proc/self/fd/0"),

@@ -229,7 +229,9 @@ impl FileKind {
 }
 
 /// An open file description: what was opened, how, and where reads and writes go next.
-/// Shared by every descriptor duplicated from the one that opened it.
+/// Shared by every descriptor duplicated from the one that opened it. The node it names is
+/// held while it is open ([`Node::hold`]), so a file removed while open stays until its last
+/// close (D170).
 #[derive(Debug)]
 pub struct OpenFile {
     kind: FileKind,
@@ -241,6 +243,9 @@ impl OpenFile {
     /// A description of `kind` opened with `flags`, of which it keeps the access mode and the
     /// status flags ([`open_flag::STATUS`]), at offset 0.
     pub fn new(kind: FileKind, flags: u32) -> Self {
+        if let Some(node) = kind.node() {
+            node.hold();
+        }
         Self {
             kind,
             status: AtomicU32::new(
@@ -321,6 +326,14 @@ impl OpenFile {
         self.offset
             .compare_exchange(from, to, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
+    }
+}
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        if let Some(node) = self.kind.node() {
+            node.release();
+        }
     }
 }
 

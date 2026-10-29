@@ -5,7 +5,8 @@
 //! Mounting reads the archive once and builds an index of its directories and regular files,
 //! sorted by parent directory and name, so a directory's entries are contiguous and a lookup
 //! is a binary search among them. File contents are never copied: a read returns a slice of
-//! the archive. Members of other types (symbolic links, devices) are skipped for now.
+//! the archive. A symbolic link's member holds its target as its data (D170); members of other
+//! types (devices, sockets) are skipped.
 //!
 //! Regular files that share an inode number and say they have more than one link are hard
 //! links to one file (D108), as `cpio` and Linux's `gen_init_cpio` write them: the data is in
@@ -46,6 +47,7 @@ pub const DEVICE: (u32, u32) = (0, 1);
 const FILE_TYPE: u32 = 0o170000;
 const DIRECTORY: u32 = 0o040000;
 const REGULAR: u32 = 0o100000;
+const SYMBOLIC_LINK: u32 = 0o120000;
 
 #[derive(Debug, Clone, Copy)]
 struct Entry {
@@ -127,7 +129,7 @@ impl Initramfs {
                 entries[0].modified = member.modified;
                 continue;
             }
-            if kind != DIRECTORY && kind != REGULAR {
+            if !matches!(kind, DIRECTORY | REGULAR | SYMBOLIC_LINK) {
                 continue;
             }
             if path.len() >= PATH_MAX
@@ -148,7 +150,7 @@ impl Initramfs {
                 name_offset: name_offset as u16,
                 data_start: member.data_offset as u32,
                 size: match kind {
-                    REGULAR => member.data.len() as u32,
+                    REGULAR | SYMBOLIC_LINK => member.data.len() as u32,
                     _ => 0,
                 },
                 parent: ROOT,
@@ -338,6 +340,7 @@ impl FileSystem for Initramfs {
     fn kind(&self, node: u64) -> NodeKind {
         match self.entry_at(node).mode & FILE_TYPE {
             DIRECTORY => NodeKind::Directory,
+            SYMBOLIC_LINK => NodeKind::SymbolicLink,
             _ => NodeKind::Regular,
         }
     }
@@ -378,6 +381,18 @@ impl FileSystem for Initramfs {
         let start = entry.data_start as usize + offset as usize;
         let length = (size - offset).min(length as u64) as usize;
         &self.archive[start..start + length]
+    }
+
+    fn link_target(&self, node: u64, _caller: u32) -> Option<Vec<u8>> {
+        if self.kind(node) != NodeKind::SymbolicLink {
+            return None;
+        }
+        let entry = self.entry_at(node);
+        let target = &self.archive[entry.data_start as usize..][..entry.size as usize];
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(target.len()).ok()?;
+        copy.extend_from_slice(target);
+        Some(copy)
     }
 
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
@@ -435,6 +450,25 @@ pub mod tests {
                 ("usr/libexec", 0o040755, 1_000, b""),
                 ("usr/libexec/program", 0o100755, 1_000, &program),
                 ("usr/libexec/script", 0o100755, 1_000, b"#!/bin/sh\n"),
+                (
+                    "usr/libexec/runs",
+                    0o100755,
+                    1_000,
+                    b"#!/usr/libexec/program  -x \n",
+                ),
+                (
+                    "usr/libexec/loop",
+                    0o100755,
+                    1_000,
+                    b"#!/usr/libexec/loop\n",
+                ),
+                ("usr/libexec/bare", 0o100755, 1_000, b"#!\n"),
+                (
+                    "usr/libexec/to-text",
+                    0o100755,
+                    1_000,
+                    b"#! /etc/hostname\n",
+                ),
                 ("usr/libexec/text", 0o100755, 1_000, b"not a program\n"),
                 ("usr/share", 0o040755, 1_000, b""),
                 ("usr/share/eggos", 0o040755, 1_000, b""),
@@ -469,7 +503,7 @@ pub mod tests {
         ])
         .unwrap();
         let root = file_system.root();
-        assert_eq!(names(&file_system, root), [&b"etc"[..], b"zz"]);
+        assert_eq!(names(&file_system, root), [&b"etc"[..], b"link", b"zz"]);
         let etc = file_system.lookup(root, b"etc").unwrap();
         assert_eq!(names(&file_system, etc), [&b"a"[..], b"b", b"sub"]);
         let b = file_system.lookup(etc, b"b").unwrap();
@@ -486,7 +520,14 @@ pub mod tests {
         assert_eq!((attributes.links, attributes.modified), (1, 5));
         assert_eq!(file_system.attributes(etc).links, 3);
         assert_eq!(file_system.attributes(root).links, 3);
-        assert_eq!(file_system.lookup(root, b"link"), None);
+        let link = file_system.lookup(root, b"link").unwrap();
+        assert_eq!(file_system.kind(link), NodeKind::SymbolicLink);
+        assert_eq!(file_system.attributes(link).size, 3);
+        assert_eq!(
+            file_system.link_target(link, crate::vfs::KERNEL_CALLER),
+            Some(b"etc".to_vec())
+        );
+        assert_eq!(file_system.link_target(b, crate::vfs::KERNEL_CALLER), None);
         assert_eq!(file_system.lookup(etc, b"zz"), None);
         let sub = file_system.lookup(etc, b"sub").unwrap();
         assert_eq!(file_system.name(sub).as_bytes(), b"sub");
@@ -579,6 +620,6 @@ pub mod tests {
     #[test]
     fn the_host_archive_mounts() {
         let file_system = Initramfs::parse(host_archive()).unwrap();
-        assert_eq!(file_system.node_count(), 12);
+        assert_eq!(file_system.node_count(), 16);
     }
 }

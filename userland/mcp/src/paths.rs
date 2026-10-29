@@ -1,8 +1,8 @@
 //! Paths an agent names, resolved before they are checked: absolute only, no NUL, `.`, `..`
-//! and repeated slashes folded, every component refused if it is a symbolic link (none exist
-//! yet, but one must never lead out), and the result inside one of the allowed roots, compared
-//! component by component (so `/homework` is not in `/home`). The resolved path is what the
-//! command gets and what the audit log shows.
+//! and repeated slashes folded, every component refused if it is a symbolic link (one must
+//! never lead out; the twins refuse links too, D170), and the result inside one of the allowed
+//! roots, compared component by component (so `/homework` is not in `/home`). The resolved
+//! path is what the command gets and what the audit log shows.
 
 #![deny(
     clippy::indexing_slicing,

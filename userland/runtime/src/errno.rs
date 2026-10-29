@@ -69,6 +69,10 @@ impl Errno {
     pub const EHOSTUNREACH: Self = Self(113);
     /// `EINPROGRESS`.
     pub const EINPROGRESS: Self = Self(115);
+    /// `EMLINK`.
+    pub const EMLINK: Self = Self(31);
+    /// `ELOOP`.
+    pub const ELOOP: Self = Self(40);
 
     /// A system call's result: the non-negative value it returned, or the error of a negative
     /// one.
@@ -109,6 +113,7 @@ impl Errno {
             28 => b"No space left on device",
             29 => b"Illegal seek",
             30 => b"Read-only file system",
+            31 => b"Too many links",
             32 => b"Broken pipe",
             34 => b"Numerical result out of range",
             36 => b"File name too long",

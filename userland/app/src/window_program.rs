@@ -93,7 +93,10 @@ fn programs_in(
         let Some(path) = folder.join(entry) else {
             continue;
         };
-        let wanted = match files.status(path.as_bytes()).map(|status| status.kind) {
+        let wanted = match files
+            .status_following(path.as_bytes())
+            .map(|status| status.kind)
+        {
             Ok(Kind::Directory) => installer::is_bundle_name(entry),
             Ok(Kind::File) => is_program_file(files, path.as_bytes()),
             _ => false,
@@ -302,7 +305,7 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
             let is_plain_folder = !installer::is_bundle_name(files::file_name(path))
                 && installer
                     .files
-                    .status(path)
+                    .status_following(path)
                     .is_ok_and(|status| status.kind == Kind::Directory);
             if !is_plain_folder {
                 installer.prompt_for(path);

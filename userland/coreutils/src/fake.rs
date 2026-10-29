@@ -1,7 +1,7 @@
 use crate::system::{
-    CapturedRows, DIRECTORY, DatagramKind, Duration, STANDARD_ERROR, STANDARD_INPUT,
-    STANDARD_OUTPUT, Sender, Status, SymbolicLinks, System, SystemName, UTSNAME_FIELD,
-    UTSNAME_SIZE, WindowTree,
+    CapturedRows, DIRECTORY, DatagramKind, Duration, FILE_TYPE, MAX_LINK_HOPS, STANDARD_ERROR,
+    STANDARD_INPUT, STANDARD_OUTPUT, SYMBOLIC_LINK, Sender, Status, SymbolicLinks, System,
+    SystemName, UTSNAME_FIELD, UTSNAME_SIZE, WindowTree,
 };
 use core::ffi::CStr;
 use eggos_net::{Ipv4Address, dns, icmp, sntp};
@@ -143,6 +143,7 @@ const FIRST_FILE_DESCRIPTOR: usize = 3;
 pub enum Node {
     Directory,
     File(Vec<u8>),
+    Link(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +199,7 @@ pub struct Fake {
     pub working_directory: String,
     pub network: FakeNetwork,
     open: Vec<Option<OpenFile>>,
+    next_inode: u64,
 }
 
 impl Default for Fake {
@@ -253,11 +255,17 @@ impl Default for Fake {
             working_directory: "/".to_owned(),
             network: FakeNetwork::default(),
             open: Vec::new(),
+            next_inode: 1,
         }
     }
 }
 
 impl Fake {
+    fn inode(&mut self) -> u64 {
+        self.next_inode += 1;
+        self.next_inode
+    }
+
     pub fn with_directory(mut self, path: &str, modified: i64) -> Self {
         let status = Status {
             mode: DIRECTORY | 0o755,
@@ -265,6 +273,7 @@ impl Fake {
             size: 0,
             blocks: 0,
             modified,
+            inode: self.inode(),
             ..Status::default()
         };
         self.nodes
@@ -279,6 +288,7 @@ impl Fake {
             size: content.len() as u64,
             blocks: (content.len() as u64).div_ceil(512),
             modified,
+            inode: self.inode(),
             ..Status::default()
         };
         self.nodes.insert(
@@ -286,6 +296,86 @@ impl Fake {
             (Node::File(content.to_vec()), status),
         );
         self
+    }
+
+    pub fn with_link(mut self, path: &str, target: &str) -> Self {
+        let status = self.link_status(target.as_bytes());
+        self.nodes.insert(
+            path.as_bytes().to_vec(),
+            (Node::Link(target.as_bytes().to_vec()), status),
+        );
+        self
+    }
+
+    fn link_status(&mut self, target: &[u8]) -> Status {
+        Status {
+            mode: SYMBOLIC_LINK | 0o777,
+            links: 1,
+            size: target.len() as u64,
+            modified: self.now,
+            inode: self.inode(),
+            ..Status::default()
+        }
+    }
+
+    pub fn link_target(&self, path: &str) -> Option<Vec<u8>> {
+        match self.nodes.get(path.as_bytes()) {
+            Some((Node::Link(target), _)) => Some(target.clone()),
+            _ => None,
+        }
+    }
+
+    fn through_links(&self, path: &[u8], follow_last: bool) -> Result<Vec<u8>, Errno> {
+        if path.first() != Some(&b'/') {
+            return Ok(path.to_vec());
+        }
+        let mut done: Vec<u8> = Vec::new();
+        let mut rest: Vec<Vec<u8>> = path
+            .split(|&byte| byte == b'/')
+            .filter(|part| !part.is_empty())
+            .rev()
+            .map(<[u8]>::to_vec)
+            .collect();
+        let mut hops = 0;
+        while let Some(part) = rest.pop() {
+            match part.as_slice() {
+                b"." => continue,
+                b".." => {
+                    let cut = done.iter().rposition(|&byte| byte == b'/').unwrap_or(0);
+                    done.truncate(cut);
+                    continue;
+                }
+                _ => {}
+            }
+            let next = [done.as_slice(), b"/", part.as_slice()].concat();
+            let last = rest.is_empty();
+            match self.nodes.get(&next) {
+                Some((Node::Link(target), _)) if follow_last || !last => {
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS {
+                        return Err(Errno::ELOOP);
+                    }
+                    if target.first() == Some(&b'/') {
+                        done.clear();
+                    }
+                    rest.extend(
+                        target
+                            .split(|&byte| byte == b'/')
+                            .filter(|piece| !piece.is_empty())
+                            .rev()
+                            .map(<[u8]>::to_vec),
+                    );
+                }
+                Some((Node::File(_), _)) if !last && hops > 0 => return Err(Errno::ENOTDIR),
+                None if !last && hops > 0 => return Err(Errno::ENOENT),
+                _ => done = next,
+            }
+        }
+        match (hops, done.is_empty()) {
+            (0, _) => Ok(path.to_vec()),
+            (_, true) => Ok(b"/".to_vec()),
+            (_, false) => Ok(done),
+        }
     }
 
     pub fn contents(&self, path: &str) -> Vec<u8> {
@@ -400,9 +490,12 @@ impl System for Fake {
         if window_device && !self.window_server {
             return Err(Errno::ENXIO);
         }
-        let path = self.resolve(path.to_bytes());
-        if !window_device && !self.nodes.contains_key(&path) {
-            return Err(Errno::ENOENT);
+        let mut path = self.resolve(path.to_bytes());
+        if !window_device {
+            path = self.through_links(&path, true)?;
+            if !self.nodes.contains_key(&path) {
+                return Err(Errno::ENOENT);
+            }
         }
         self.open.push(Some(OpenFile { path, position: 0 }));
         Ok(self.open.len() - 1 + FIRST_FILE_DESCRIPTOR)
@@ -455,7 +548,7 @@ impl System for Fake {
         &mut self,
         directory: Option<usize>,
         path: &CStr,
-        _: SymbolicLinks,
+        links: SymbolicLinks,
     ) -> Result<Status, Errno> {
         let path = match directory {
             Some(descriptor) => {
@@ -477,6 +570,7 @@ impl System for Fake {
         {
             return Err(*errno);
         }
+        let path = self.through_links(&path, links == SymbolicLinks::Follow)?;
         self.nodes
             .get(&path)
             .map(|(_, status)| *status)
@@ -508,9 +602,9 @@ impl System for Fake {
     }
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
-        let bytes = self.resolve(path.to_bytes());
+        let bytes = self.through_links(&self.resolve(path.to_bytes()), true)?;
         match self.nodes.get_mut(&bytes) {
-            Some((Node::Directory, _)) => return Err(Errno::EISDIR),
+            Some((Node::Directory | Node::Link(_), _)) => return Err(Errno::EISDIR),
             Some((Node::File(content), status)) => {
                 if truncate {
                     content.clear();
@@ -532,7 +626,8 @@ impl System for Fake {
 
     fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
         let descriptor = self.create(path, mode, false)?;
-        let end = match self.nodes.get(&self.resolve(path.to_bytes())) {
+        let opened = self.file(descriptor)?.path.clone();
+        let end = match self.nodes.get(&opened) {
             Some((Node::File(content), _)) => content.len(),
             _ => 0,
         };
@@ -556,7 +651,7 @@ impl System for Fake {
         match (self.nodes.get(&bytes), directory) {
             (None, _) => Err(Errno::ENOENT),
             (Some((Node::Directory, _)), false) => Err(Errno::EISDIR),
-            (Some((Node::File(_), _)), true) => Err(Errno::ENOTDIR),
+            (Some((Node::File(_) | Node::Link(_), _)), true) => Err(Errno::ENOTDIR),
             (Some((Node::Directory, _)), true) if self.children(&bytes).len() > 2 => {
                 Err(Errno::ENOTEMPTY)
             }
@@ -595,6 +690,68 @@ impl System for Fake {
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
         let (_, status) = self.nodes.get_mut(path.to_bytes()).ok_or(Errno::ENOENT)?;
         status.modified = self.now;
+        Ok(())
+    }
+
+    fn read_link(&mut self, path: &CStr, target: &mut [u8]) -> Result<usize, Errno> {
+        let path = self.through_links(&self.resolve(path.to_bytes()), false)?;
+        match self.nodes.get(&path) {
+            Some((Node::Link(text), _)) => {
+                let length = text.len().min(target.len());
+                target[..length].copy_from_slice(&text[..length]);
+                Ok(length)
+            }
+            Some(_) => Err(Errno::EINVAL),
+            None => Err(Errno::ENOENT),
+        }
+    }
+
+    fn make_link(&mut self, target: &CStr, path: &CStr) -> Result<(), Errno> {
+        let path = self.through_links(&self.resolve(path.to_bytes()), false)?;
+        if target.is_empty() {
+            return Err(Errno::ENOENT);
+        }
+        if self.nodes.contains_key(&path) {
+            return Err(Errno::EEXIST);
+        }
+        self.parent_directory(&path)?;
+        let status = self.link_status(target.to_bytes());
+        let link = Node::Link(target.to_bytes().to_vec());
+        self.nodes.insert(path, (link, status));
+        Ok(())
+    }
+
+    fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        let path = self.through_links(&self.resolve(path.to_bytes()), true)?;
+        let (_, status) = self.nodes.get_mut(&path).ok_or(Errno::ENOENT)?;
+        status.mode = (status.mode & FILE_TYPE) | (mode & 0o7777);
+        Ok(())
+    }
+
+    fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno> {
+        let existing = self.through_links(&self.resolve(existing.to_bytes()), false)?;
+        let path = self.through_links(&self.resolve(path.to_bytes()), false)?;
+        let (node, status) = self.nodes.get(&existing).cloned().ok_or(Errno::ENOENT)?;
+        if matches!(node, Node::Directory) {
+            return Err(Errno::EPERM);
+        }
+        if self.nodes.contains_key(&path) {
+            return Err(Errno::EEXIST);
+        }
+        self.parent_directory(&path)?;
+        if self
+            .cross_device
+            .iter()
+            .any(|device| path.starts_with(device) != existing.starts_with(device))
+        {
+            return Err(Errno::EXDEV);
+        }
+        let linked = Status {
+            links: status.links + 1,
+            ..status
+        };
+        self.nodes.insert(existing, (node.clone(), linked));
+        self.nodes.insert(path, (node, linked));
         Ok(())
     }
 

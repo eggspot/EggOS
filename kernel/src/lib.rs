@@ -300,6 +300,13 @@ fn mount_eggfs<P: Platform, W: Write>(
             mounted.recovered_blocks
         )?;
     }
+    if mounted.freed_orphans > 0 {
+        writeln!(
+            console,
+            "vfs: EggFS freed {} files removed while open before the last power-off",
+            mounted.freed_orphans
+        )?;
+    }
     Ok(Ok(volume))
 }
 

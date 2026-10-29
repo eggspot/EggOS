@@ -7,11 +7,8 @@ use super::settings::Boot;
 use super::*;
 use crate::rustc_version::{LIBRARY_FOLDER, RUSTC_PATH, VERSION_LINE_PREFIX};
 
-/// The guest memory: the toolchain's libraries are mapped from the work disk and each page
-/// `rustc` touches takes a frame of its own (D167).
 const MEMORY: &str = "2G";
 
-/// Loading LLVM and the compiler's libraries page by page from the work disk, without KVM.
 const TIMEOUT: Duration = Duration::from_secs(900);
 
 const STATUS_PREFIX: &str = "RUSTC-VERSION status ";

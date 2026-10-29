@@ -67,20 +67,14 @@ pub enum Delivery<'a> {
     Udp(Datagram<'a>),
     /// An answer to a ping: the whole ICMP message, as a ping socket reads it.
     EchoReply {
-        /// Who answered.
         source: Ipv4Address,
-        /// The identifier of the conversation (the ping socket's).
         identifier: u16,
-        /// The ICMP message, header and data.
         message: &'a [u8],
     },
     /// A TCP segment to this interface's address, its checksum checked.
     Tcp {
-        /// The sender's address.
         source: Ipv4Address,
-        /// The interface's address.
         destination: Ipv4Address,
-        /// The segment.
         segment: Segment<'a>,
     },
 }
@@ -261,7 +255,8 @@ impl Interface {
             match ours {
                 true => self.arp.update(packet.sender_ip, packet.sender_mac, now_ms),
                 false => {
-                    self.arp.refresh(packet.sender_ip, packet.sender_mac, now_ms);
+                    self.arp
+                        .refresh(packet.sender_ip, packet.sender_mac, now_ms);
                 }
             }
         }
@@ -514,7 +509,8 @@ impl Interface {
 
     /// The largest TCP segment size the link carries: its MTU less the IPv4 and TCP headers.
     pub fn tcp_mss(&self) -> u16 {
-        self.mtu.saturating_sub(ipv4::HEADER_BYTES + tcp::HEADER_BYTES) as u16
+        self.mtu
+            .saturating_sub(ipv4::HEADER_BYTES + tcp::HEADER_BYTES) as u16
     }
 
     fn route(&self, destination: Ipv4Address, payload_bytes: usize) -> Result<NextHop, SendError> {
@@ -549,9 +545,12 @@ impl Interface {
         transmit: &mut dyn FnMut(&[u8]),
     ) {
         self.identification = self.identification.wrapping_add(1);
-        let Some(header_bytes) =
-            ipv4::write_header(&mut self.frame[IP_AT..], ip, self.identification, payload_bytes)
-        else {
+        let Some(header_bytes) = ipv4::write_header(
+            &mut self.frame[IP_AT..],
+            ip,
+            self.identification,
+            payload_bytes,
+        ) else {
             return;
         };
         let length = IP_AT + header_bytes + payload_bytes;

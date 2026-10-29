@@ -1534,10 +1534,6 @@ fn linux_memfd_map_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
-/// A private `mmap` of 16 pages of a file (the runtime's self-test program in the initramfs),
-/// each page then read once, as a kernel copy reads it, so each is a file page's fault without
-/// the trap (a frame taken, filled from the file, zeroed past its bytes and mapped), and the
-/// `munmap` that frees them (D167): what a dynamic loader does for a library's pages.
 fn linux_file_map_read_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::descriptors::{Descriptors, FileKind, OpenFile, open_flag};
     use linux::memory::{MappedFile, map, prot};

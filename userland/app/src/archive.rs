@@ -29,6 +29,7 @@ const UNIX: u8 = 3;
 const FILE_TYPE: u32 = 0o170_000;
 const DIRECTORY_TYPE: u32 = 0o040_000;
 const REGULAR_TYPE: u32 = 0o100_000;
+const LINK_TYPE: u32 = 0o120_000;
 const ZIP64_COUNT: u16 = 0xffff;
 const ZIP64_SIZE: u32 = 0xffff_ffff;
 const MAC_METADATA: &[u8] = b"__MACOSX";
@@ -40,7 +41,7 @@ pub enum ArchiveError {
     /// No end of central directory record: not a `.zip`.
     NotArchive,
     /// ZIP64, encryption, several disks, a compression method other than stored and deflate,
-    /// or an entry that is a symbolic link or a device.
+    /// or an entry that is a device or a socket.
     Unsupported,
     /// An entry's name could write outside the folder it is extracted into, or is too long.
     UnsafeName,
@@ -99,6 +100,7 @@ pub struct Entry {
     name: [u8; NAME_CAPACITY],
     name_length: usize,
     directory: bool,
+    link: bool,
     method: u16,
     crc: u32,
     compressed: u64,
@@ -113,6 +115,7 @@ impl core::fmt::Debug for Entry {
             .debug_struct("Entry")
             .field("name", &self.name().escape_ascii())
             .field("directory", &self.directory)
+            .field("link", &self.link)
             .field("size", &self.size)
             .finish_non_exhaustive()
     }
@@ -127,6 +130,11 @@ impl Entry {
     /// Whether it is a folder.
     pub fn is_directory(&self) -> bool {
         self.directory
+    }
+
+    /// Whether it is a symbolic link (Unix's mode says so): its data is the link's target.
+    pub fn is_link(&self) -> bool {
+        self.link
     }
 
     /// Its size once extracted.
@@ -281,15 +289,18 @@ impl Archive {
         let mode = (host == UNIX)
             .then_some(external >> 16)
             .filter(|&mode| mode != 0);
+        let mut link = false;
         match mode.map(|mode| mode & FILE_TYPE) {
             None | Some(0) | Some(REGULAR_TYPE) => {}
             Some(DIRECTORY_TYPE) => directory = true,
+            Some(LINK_TYPE) if !directory => link = true,
             Some(_) => return Err(ArchiveError::Unsupported),
         }
         Ok(Some(Entry {
             name,
             name_length: length,
             directory,
+            link,
             method,
             crc,
             compressed: u64::from(compressed),
@@ -648,14 +659,29 @@ mod tests {
         }
         assert!(is_safe_name(b"a/b.c/d"));
         assert!(is_safe_name(b"..x"));
-        let link = Member {
-            mode: Some(0o120_777),
-            ..stored("link", b"target")
+        let device = Member {
+            mode: Some(0o020_666),
+            ..stored("device", b"")
         };
         assert_eq!(
-            entries(&zip(&[link])).err(),
+            entries(&zip(&[device])).err(),
             Some(ArchiveError::Unsupported)
         );
+    }
+
+    #[test]
+    fn a_symbolic_link_entry_is_read_with_its_target_as_its_data() {
+        let zip = zip(&[
+            Member {
+                mode: Some(0o120_777),
+                ..stored("Versions/Current", b"A")
+            },
+            stored("Versions/A/Tool", b"tool"),
+        ]);
+        let found = entries(&zip).unwrap();
+        assert!(found[0].is_link() && !found[0].is_directory());
+        assert!(!found[1].is_link());
+        assert_eq!(extracted(&zip, &found[0]).unwrap(), b"A");
     }
 
     #[test]

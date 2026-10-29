@@ -500,8 +500,6 @@ fn query(window: u32, kind: u32) -> QueryRequest {
     }
 }
 
-/// Hands `request` to the app of the window it names and waits up to [`QUERY_ANSWER_MS`] for
-/// its answer (D161): `None` when none came in time, as from an app that answers no queries.
 fn ask<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,

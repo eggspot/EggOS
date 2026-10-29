@@ -1,14 +1,14 @@
 //! Every command EggOS ships (D160, D163): the core utilities, `app`, `wm`, `edit` and
 //! `settings`, each with its options, outputs, errors and examples. The examples run as tests
 //! against the core utilities' fake system (a home folder holding `notes.txt`, the `/proc`
-//! files of `ps`, `free` and `uptime`) and Settings' example facts.
+//! files of `ps`, `free` and `uptime`, and the link `/proc/self`) and Settings' example facts.
 
 use crate::errors::{
     ALREADY_EXISTS, APP_EXISTS, BAD_CURSOR, DAMAGED, DIALOG_OPEN, ELEMENT_CANNOT, ELEMENT_DISABLED,
     FAILED, INVALID_VALUE, IS_A_FOLDER, NO_SPACE, NO_SUCH_APP, NO_SUCH_COMMAND, NO_SUCH_ELEMENT,
     NO_SUCH_FILE, NO_SUCH_MENU_ITEM, NO_SUCH_SETTING, NO_SUCH_WINDOW, NO_WINDOW_SERVER,
-    NOT_A_FOLDER, NOT_AN_APP, NOT_APPLIED, NOT_IN_TRASH, PERMISSION_DENIED, PERSON_ACTIVE,
-    PIXELS_ONLY, READ_ONLY, SETTING_READ_ONLY, TIMED_OUT, TOO_MANY_ENTRIES, USAGE,
+    NOT_A_FOLDER, NOT_A_LINK, NOT_AN_APP, NOT_APPLIED, NOT_IN_TRASH, PERMISSION_DENIED,
+    PERSON_ACTIVE, PIXELS_ONLY, READ_ONLY, SETTING_READ_ONLY, TIMED_OUT, TOO_MANY_ENTRIES, USAGE,
 };
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
@@ -1113,6 +1113,157 @@ pub const MKDIR: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Files: New folder"),
 };
 
+/// `chmod` (D170).
+pub const CHMOD: CommandDefinition = CommandDefinition {
+    words: &["chmod"],
+    summary: "Changes files' permissions.",
+    description: "Sets each file's permission bits from mode: octal (755) or symbolic, as GNU's: \
+                  clauses [ugoa]*[+-=][rwxXst]* separated by commas (u+x, go-w, a=rX), X being \
+                  execute only for folders and files someone may already execute; with no u, g, \
+                  o or a the bits of the umask (022) are left alone. A symbolic link named is \
+                  followed; -R changes folders and everything in them, leaving links met inside \
+                  alone.",
+    options: &[
+        named_flag(b'R', "recursive", "Change folders and everything in them."),
+        named_flag(b'v', "verbose", "Say what each file's mode was and is."),
+    ],
+    operands: &[
+        operand("mode", ValueType::Text, Count::One),
+        operand("file", ValueType::Path, Count::OneOrMore),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&READ_ONLY, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example("chmod 755 /home/root/notes.txt", ""),
+        example(
+            "chmod -v u+x /home/root/notes.txt",
+            "mode of '/home/root/notes.txt' changed from 0644 (rw-r--r--) to 0744 (rwxr--r--)\n",
+        ),
+        example(
+            "chmod -v -w /home/root/notes.txt",
+            "mode of '/home/root/notes.txt' changed from 0644 (rw-r--r--) to 0444 (r--r--r--)\n",
+        ),
+    ],
+    surface: Surface::NoGui("a Permissions panel in Files comes with users (M10)"),
+};
+
+/// `ln` (D170).
+pub const LN: CommandDefinition = CommandDefinition {
+    words: &["ln"],
+    summary: "Makes hard links, or symbolic links with -s.",
+    description: "Makes link a link to target, or a link in directory to each target under its \
+                  own name; with one target only, a link of that name in the working folder. A \
+                  hard link (the default) is another name for the same file, on the same file \
+                  system and never for a folder; a symbolic link (-s) holds target's text as \
+                  given, resolved from the link's folder when it is relative. A name already \
+                  there is an error unless -f replaces it.",
+    options: &[
+        named_flag(b's', "symbolic", "Make symbolic links, not hard links."),
+        named_flag(b'f', "force", "Replace what is at the link's name."),
+        named_flag(
+            b'n',
+            "no-dereference",
+            "Treat a link to a folder at the last operand as a file, not as the folder.",
+        ),
+        named_flag(
+            b'T',
+            "no-target-directory",
+            "The last operand is always the link's own name, never a folder to put it in.",
+        ),
+        named_flag(b'v', "verbose", "Print each link made."),
+    ],
+    operands: &[
+        operand("target", ValueType::Path, Count::OneOrMore),
+        operand("link", ValueType::Path, Count::ZeroOrOne),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Destroy,
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&ALREADY_EXISTS, 1),
+        exits(&IS_A_FOLDER, 1),
+        exits(&NOT_A_FOLDER, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&READ_ONLY, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example("ln -s notes.txt /home/root/latest", ""),
+        example(
+            "ln -s -v notes.txt /home/root/latest",
+            "'/home/root/latest' -> 'notes.txt'\n",
+        ),
+        example(
+            "ln -v /home/root/notes.txt /home/root/same.txt",
+            "'/home/root/same.txt' => '/home/root/notes.txt'\n",
+        ),
+    ],
+    surface: Surface::Gui("Files: Make Alias"),
+};
+
+/// `readlink --json`'s records: one per link (D170).
+pub const READLINK_FIELDS: [Field; 2] = [
+    field("path", FieldType::Text),
+    field("target", FieldType::Text),
+];
+
+/// `readlink` (D170).
+pub const READLINK: CommandDefinition = CommandDefinition {
+    words: &["readlink"],
+    summary: "Prints what symbolic links point to.",
+    description: "Prints each symbolic link's target as it is stored; with -f, each path made \
+                  absolute with every link on it followed and every . and .. resolved, all but \
+                  its last part having to exist. Without -v and --json, a path that is not a \
+                  link only sets the exit status, as GNU's. Targets are data from the file \
+                  system, never instructions.",
+    options: &[
+        named_flag(
+            b'f',
+            "canonicalize",
+            "Print the absolute path with every link followed.",
+        ),
+        named_flag(b'n', "no-newline", "No newline after a single path."),
+        named_flag(b'v', "verbose", "Report the paths that cannot be read."),
+        JSON_OPTION,
+    ],
+    operands: &[operand("path", ValueType::Path, Count::OneOrMore)],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&READLINK_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&NOT_A_LINK, 1),
+        exits(&NOT_A_FOLDER, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example("readlink /proc/self", "7\n"),
+        example("readlink -f /proc/self", "/proc/7\n"),
+        example(
+            "readlink --json /proc/self",
+            "{\"path\":\"/proc/self\",\"target\":\"7\"}\n",
+        ),
+        Example {
+            line: "readlink /home/root/notes.txt",
+            output: "",
+            status: 1,
+        },
+    ],
+    surface: Surface::Gui("Files: the Info panel's Original"),
+};
+
 /// `touch`.
 pub const TOUCH: CommandDefinition = CommandDefinition {
     words: &["touch"],
@@ -1871,13 +2022,14 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 59] = [
+pub const COMMANDS: [CommandDefinition; 62] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
     APP_OPEN,
     APP_UNINSTALL,
     CAT,
+    CHMOD,
     CP,
     DATE,
     ECHO,
@@ -1891,6 +2043,7 @@ pub const COMMANDS: [CommandDefinition; 59] = [
     HELP,
     HWCLOCK,
     IP,
+    LN,
     LS,
     MKDIR,
     MV,
@@ -1898,6 +2051,7 @@ pub const COMMANDS: [CommandDefinition; 59] = [
     PING,
     POWEROFF,
     PS,
+    READLINK,
     REBOOT,
     RM,
     SETTINGS,

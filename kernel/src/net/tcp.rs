@@ -40,8 +40,6 @@ pub const OUTBOX_SEGMENTS: usize = 1024;
 /// The room a segment takes while it is written.
 pub const SEGMENT_BYTES: usize = tcp::MAX_HEADER_BYTES + MSS as usize;
 
-/// A connection's bytes: those waiting to be sent or acknowledged, and those received and not
-/// yet read.
 #[derive(Debug, Default)]
 struct Queues {
     send: VecDeque<u8>,
@@ -245,8 +243,6 @@ impl Stream {
         state.queues.received.clear();
     }
 
-    /// The program let go of it: it closes, with a reset when received bytes were never read,
-    /// as Linux does.
     fn release(&self) {
         let mut state = self.state.lock();
         state.released = true;

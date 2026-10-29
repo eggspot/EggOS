@@ -267,8 +267,6 @@ struct Memory<P: Platform> {
     image: ImageLayout,
 }
 
-/// Where the mapping that starts at `at` in a region ending at `end` ends: at the next bound
-/// of a file range, a lent range, the heap or the stack, or the region's end.
 fn mapping_end(
     at: u64,
     end: u64,
@@ -288,7 +286,6 @@ fn mapping_end(
         .fold(end, u64::min)
 }
 
-/// Whether `next` goes on where `last` stops, as one mapping.
 fn continues(last: &Mapping, next: &Mapping) -> bool {
     let same_file = match (&last.file, &next.file) {
         (None, None) => true,
@@ -1812,12 +1809,6 @@ impl<P: Platform> Process<P> {
         }
     }
 
-    /// For [`Self::populate`], in a process with file ranges: if user page `page` is in one
-    /// and not mapped, maps it with `attributes` and a frame of its own holding the file's
-    /// bytes for it, zero after them (D167); `None` for a page in no file range, or one mapped
-    /// already, which the anonymous path handles. The regions' lock is held, so nothing maps or
-    /// unmaps the page meanwhile; the file is read under it (file systems read their storage
-    /// by polling, never by sleeping).
     #[cold]
     #[inline(never)]
     fn populate_from_file(
@@ -1847,10 +1838,6 @@ impl<P: Platform> Process<P> {
         ))
     }
 
-    /// Maps user page `page` with `attributes` and a new frame holding the first `readable`
-    /// bytes of `file` from `offset` and zero after them: [`UnresolvedFault::BusError`] if the
-    /// file has no byte at `offset` although `readable` is not 0 (the page is past its end), or
-    /// cannot be read.
     fn map_file_page(
         memory: &Memory<P>,
         page: u64,
@@ -3377,7 +3364,6 @@ mod tests {
         assert_eq!(free(), before, "every frame went back exactly once");
     }
 
-    /// A file of `pages` pages and `tail` bytes, each byte its offset's low byte plus 1.
     fn test_file(pages: u64, tail: u64) -> Arc<crate::regions::BytesFile> {
         let length = pages * FRAME_SIZE + tail;
         Arc::new(crate::regions::BytesFile(
@@ -3390,7 +3376,6 @@ mod tests {
         may_be_stale: false,
     };
 
-    /// The page at `virt` as a kernel copy reads it, which maps it first if it is not.
     fn read_page(process: &Process<P>, virt: u64) -> Vec<u8> {
         let mut bytes = alloc::vec![0; FRAME_SIZE as usize];
         process.read_user_memory(virt, &mut bytes).unwrap();

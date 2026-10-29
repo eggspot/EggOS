@@ -367,10 +367,11 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 34] = [
-    "agentlog", "cat", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt", "head",
-    "help", "hwclock", "ip", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "reboot",
-    "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
+const COREUTILS: [&str; 37] = [
+    "agentlog", "cat", "chmod", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt",
+    "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff",
+    "ps", "readlink", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true",
+    "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -610,8 +611,6 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// A folder `run --work` carries into EggOS: the image it is packed into and the new folder
-/// what EggOS wrote under `/work` is unpacked into after QEMU ends.
 #[derive(Debug)]
 struct WorkRun {
     folder: std::path::PathBuf,

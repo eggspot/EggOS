@@ -356,7 +356,6 @@ fn map_file<P: Platform>(
     }
 }
 
-/// What an `mmap` of a regular file asks for, its checked arguments.
 #[derive(Debug, Clone, Copy)]
 struct Wanted {
     address: u64,
@@ -366,13 +365,6 @@ struct Wanted {
     offset: u64,
 }
 
-/// `mmap` of `node`, a regular file open as `file`, as `wanted` says (D167, D169). As Linux:
-/// `EACCES` for a file not open for reading, or a shared writable mapping of a file not open
-/// for writing or on a file system that cannot be changed; then `EOVERFLOW` past the largest
-/// offset. A writable shared mapping, or a readable one of a file such a mapping holds, maps
-/// the file's shared pages ([`shared_pages`]); any other shared mapping is the file as it was
-/// read, never writable; a private one is the process's own pages read when first touched.
-/// Executable mappings are allowed: they are how a dynamic loader maps a library's code.
 fn map_regular<P: Platform>(
     process: &Process<P>,
     node: Node,
@@ -423,7 +415,7 @@ fn map_regular<P: Platform>(
             placement,
             wanted.length,
             wanted.attributes,
-            Arc::new(node),
+            Arc::new(crate::vfs::HeldNode::new(node)),
             wanted.offset,
             !shared,
         )
@@ -1622,8 +1614,6 @@ mod tests {
         assert_eq!(word(&process, target), Some(0));
     }
 
-    /// A tmpfs file of `contents`, open with `flags` as descriptor `fd` of the returned
-    /// table.
     fn open_file(contents: &[u8], flags: u32) -> (Descriptors, u64) {
         use crate::linux::descriptors::open_flag;
         use crate::vfs::tmpfs::{Budget, Tmpfs};

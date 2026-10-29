@@ -1,9 +1,10 @@
 //! The Files window as an element tree for an agent (D161, docs/windows.md "Element trees"):
 //! the sidebar's places, the path field and the folder's entries as list items, each with its
-//! name and whether it is a folder. Invoking an entry opens it as a double-click does, selecting
-//! it selects it, and invoking a place goes there.
+//! name and whether it is a folder, a file, a link to either or a broken link. Invoking an entry
+//! opens it as a double-click does, selecting it selects it, and invoking a place goes there.
 
 use super::{FilesWindow, Focus};
+use crate::kind::Link;
 use crate::names;
 use eggos_app::files::Files;
 use eggos_toolkit::elements::{Action, Bounds, Element, Outcome, Role, TreeWriter, flags};
@@ -89,9 +90,12 @@ impl FilesWindow {
                 break;
             };
             let name = names::display(self.listing.name(index), &mut shown);
-            let kind: &[u8] = match entry.kind.is_folder() {
-                true => b"folder",
-                false => b"file",
+            let kind: &[u8] = match (entry.link, entry.kind.is_folder()) {
+                (Link::None, true) => b"folder",
+                (Link::None, false) => b"file",
+                (Link::Sound, true) => b"link to folder",
+                (Link::Sound, false) => b"link to file",
+                (Link::Broken, _) => b"broken link",
             };
             let item = Element::new(
                 FIRST_ENTRY_ELEMENT + index as u32,

@@ -17,6 +17,7 @@ pub struct FakeSystem {
     pub links: Vec<String>,
     pub outputs: HashMap<String, (Vec<u8>, Vec<u8>, Ended)>,
     pub runs: Vec<Vec<String>>,
+    pub refusing_links: Vec<bool>,
     pub inputs: Vec<Vec<u8>>,
     pub time_limits: Vec<u64>,
     pub stdin_taken_at_most: Option<usize>,
@@ -48,6 +49,7 @@ impl System for FakeSystem {
             words.push(operand.into());
         }
         self.runs.push(words);
+        self.refusing_links.push(invocation.no_symlinks);
         self.time_limits.push(invocation.time_limit_ms);
         let input = invocation.stdin.unwrap_or_default();
         let taken = self

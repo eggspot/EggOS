@@ -121,7 +121,6 @@ const SYS_KERNEL_FILES: [(&[u8], u64); 3] = [
     (b"ostype", OSTYPE),
 ];
 
-/// What a node of a process's directory is: the low byte of its number.
 mod part {
     pub const DIRECTORY: u64 = 1;
     pub const CMDLINE: u64 = 2;
@@ -142,21 +141,16 @@ const PROCESS_FILES: [(&[u8], u64); 6] = [
     (b"status", part::STATUS),
 ];
 
-/// The bit of a process's nodes' numbers: the process's id is above [`PID_SHIFT`], a
-/// descriptor's number above [`FD_SHIFT`], the [`part`] in the low byte.
 const PROCESS_NODE: u64 = 1 << 62;
 
 const PID_SHIFT: u32 = 32;
 
-/// The largest process id a node can hold.
 const MAX_PID: u32 = (1 << 30) - 1;
 
 const FD_SHIFT: u32 = 8;
 
-/// The largest descriptor number a node can hold, above Linux's largest open-file limit.
 const MAX_FD: u32 = (1 << 24) - 1;
 
-/// A node of a process's directory, decoded from its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProcessNode {
     pid: u32,
@@ -255,7 +249,6 @@ impl Text {
     }
 }
 
-/// `value` in decimal, written into `buffer`.
 fn decimal(value: u64, buffer: &mut [u8; 20]) -> &[u8] {
     let mut start = buffer.len();
     let mut rest = value;
@@ -270,8 +263,6 @@ fn decimal(value: u64, buffer: &mut [u8; 20]) -> &[u8] {
     &buffer[start..]
 }
 
-/// The number `name` writes in decimal, as Linux reads a process's or descriptor's name: digits
-/// only, no leading zero, no larger than `largest`.
 fn parse_decimal(name: &[u8], largest: u32) -> Option<u32> {
     if name.is_empty() || name.len() > 10 || (name.len() > 1 && name[0] == b'0') {
         return None;
@@ -345,7 +336,6 @@ pub fn version_text() -> Option<Vec<u8>> {
     Some(text.0)
 }
 
-/// `bytes` and a newline, as `/proc/sys` writes a value.
 fn line(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut text = Text(Vec::new());
     text.bytes(bytes)?;
@@ -386,7 +376,6 @@ fn name_of(process: &Listed) -> &[u8] {
     &process.name[..length]
 }
 
-/// What the process table says of a process, and its program while it runs.
 struct Described<P: Platform> {
     listed: Listed,
     running: Option<Running>,
@@ -410,7 +399,6 @@ fn running_process<P: Platform>(pid: u32) -> Option<Arc<Process<P>>> {
     described::<P>(pid)?.process
 }
 
-/// The absolute path of `file`, if it has one.
 fn path_of(file: &dyn FilePages) -> Option<Vec<u8>> {
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(PATH_MAX).ok()?;
@@ -420,7 +408,6 @@ fn path_of(file: &dyn FilePages) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
-/// What `/proc/<pid>/fd/<fd>` names for an open file description of `kind`.
 fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
     let mut text = Text(Vec::new());
     match kind {
@@ -441,7 +428,6 @@ fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
-/// `/proc/<pid>/cmdline`: the argument strings on its stack, each with its NUL.
 fn process_cmdline<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     let process = running_process::<P>(pid)?;
     let (start, end) = process.image_layout().arguments;
@@ -453,12 +439,8 @@ fn process_cmdline<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Where the name of a `/proc/<pid>/maps` line starts: Linux pads the line to this column.
 const MAPS_NAME_COLUMN: usize = 73;
 
-/// One line of `/proc/<pid>/maps` for `mapping`, as Linux writes it: the range, the access
-/// and `s`hared or `p`rivate, the file's offset, device and inode (zeros without one), then,
-/// from [`MAPS_NAME_COLUMN`], the file's path or `[heap]` or `[stack]`.
 fn write_mapping(text: &mut Text, mapping: &Mapping) -> Option<()> {
     let line_start = text.0.len();
     let (read, write, execute) = match mapping.attributes {
@@ -496,7 +478,6 @@ fn write_mapping(text: &mut Text, mapping: &Mapping) -> Option<()> {
     text.bytes(b"\n")
 }
 
-/// `/proc/<pid>/maps`: see [`write_mapping`].
 fn process_maps<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     let process = running_process::<P>(pid)?;
     let mappings = process.mappings()?;
@@ -509,7 +490,6 @@ fn process_maps<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
-/// The bytes of user space `mappings` hold.
 fn mapped_bytes(mappings: &[Mapping]) -> u64 {
     mappings
         .iter()
@@ -517,11 +497,8 @@ fn mapped_bytes(mappings: &[Mapping]) -> u64 {
         .sum()
 }
 
-/// The console's device number as `stat` encodes a terminal's (`tty_nr`): major 5, minor 1.
 const CONSOLE_TTY_NUMBER: u32 = 5 << 8 | 1;
 
-/// `/proc/<pid>/stat`: Linux's 52 fields on one line, the ones EggOS does not count yet (page
-/// faults, CPU times, the start time, the resident pages, the code's bounds, signals) as 0.
 fn process_stat<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     let (listed, terminal) = {
         let table = TABLE.lock();
@@ -571,7 +548,6 @@ fn process_stat<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
-/// `/proc/<pid>/status`: the lines programs read most, in Linux's layout.
 fn process_status<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     let Described {
         listed,
@@ -634,7 +610,6 @@ fn process_status<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
-/// The number of a node of process `pid`'s directory named `name`, if it has one.
 fn process_lookup(directory: ProcessNode, name: &[u8]) -> Option<u64> {
     match directory.part {
         part::DIRECTORY => PROCESS_FILES
@@ -658,7 +633,6 @@ fn process_lookup(directory: ProcessNode, name: &[u8]) -> Option<u64> {
     }
 }
 
-/// Entry `position` of directory `directory` of a process.
 fn process_entry(directory: ProcessNode, position: usize) -> Option<DirectoryEntry> {
     match directory.part {
         part::DIRECTORY => {

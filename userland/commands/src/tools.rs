@@ -9,6 +9,15 @@ use crate::{Effect, Grant};
 /// Where `wm_capture`'s twin writes the PNG, outside every folder a tool reaches.
 pub const CAPTURE_PATH: &str = "/run/eggmcpd-capture.png";
 
+/// The environment variable the MCP server gives the twins whose operand is a path (D170): the
+/// core utilities then open every path refusing a symbolic link anywhere on it
+/// (`openat2`'s `RESOLVE_NO_SYMLINKS`), so a link inside a root never leads a tool outside it.
+pub const NO_SYMLINKS_ENVIRONMENT: &core::ffi::CStr = c"EGGOS_NO_SYMLINKS=1";
+
+/// The longest target a symbolic link `ln` makes may have, in bytes (Linux's `PATH_MAX` less
+/// its NUL).
+pub const MAX_LINK_TARGET_BYTES: u32 = 4095;
+
 /// An argument's JSON type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonType {
@@ -808,6 +817,49 @@ pub const TRASH: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+/// `ln` (D170).
+pub const LN: ToolDefinition = ToolDefinition {
+    name: "ln",
+    title: "Make a link",
+    description: "Makes a link at link, below /home/root, as `ln -T` does: a symbolic link \
+                  (symbolic: true, the default) holding target's text as given, or a hard link \
+                  (symbolic: false) to the file target, which must be below /home/root too. \
+                  Never replaces anything: a name already at link is an error. Needs the write \
+                  grant. The tools never follow symbolic links: a path through one is refused.",
+    command: &["ln"],
+    fixed: &["-T"],
+    arguments: &[
+        required(described(
+            lengths(
+                optional("target", JsonType::String, Mapping::Operand),
+                Some(1),
+                MAX_LINK_TARGET_BYTES,
+            ),
+            "What the link points to: for a symbolic link any path text (relative to the \
+             link's folder, not starting with -), for a hard link an absolute path of a file \
+             below /home/root.",
+        )),
+        required(described(
+            optional("link", JsonType::String, Mapping::Operand),
+            "The link to make: an absolute path below /home/root, outside its Trash, where \
+             nothing is yet.",
+        )),
+        defaulting(
+            described(
+                optional("symbolic", JsonType::Boolean, Mapping::Option("-s")),
+                "true for a symbolic link, false for a hard link.",
+            ),
+            DefaultValue::Boolean(true),
+        ),
+    ],
+    max_effect: Effect::Change,
+    grant: Some(Grant::Write),
+    idempotent: false,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
 /// `fetch`.
 pub const FETCH: ToolDefinition = ToolDefinition {
     name: "fetch",
@@ -1384,8 +1436,8 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
 };
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
-/// D162's and D163's.
-pub const TOOLS: [ToolDefinition; 39] = [
+/// D162's, D163's and D170's.
+pub const TOOLS: [ToolDefinition; 40] = [
     LS,
     CAT,
     PS,
@@ -1425,6 +1477,7 @@ pub const TOOLS: [ToolDefinition; 39] = [
     SETTINGS_LIST,
     SETTINGS_GET,
     SETTINGS_SET,
+    LN,
 ];
 
 impl ToolDefinition {

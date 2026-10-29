@@ -9,7 +9,9 @@
 //! app's folder, one entry a step. An archive holding a file the installer writes itself
 //! ([`RESERVED_NAMES`]) or more than [`MAX_EXTRACTED_BYTES`] once extracted is refused. After
 //! the copy the app's own icon (D148) is made from what was installed and written as
-//! `app.icon`, named by the manifest; an app without one installs all the same.
+//! `app.icon`, named by the manifest; an app without one installs all the same. Symbolic links
+//! in a bundle or a `.zip` (a macOS framework's `Versions/Current`) are made again as links
+//! with the same target, when [`link_stays_inside`] (D170).
 
 use crate::architecture::Architecture;
 use crate::archive::{self, Archive, ArchiveError, Cursor, Entry};
@@ -83,8 +85,10 @@ pub enum Problem {
     DiskFull,
     /// Folders nest deeper than [`MAX_DEPTH`].
     TooDeep,
-    /// A symbolic link, a device or anything else that is neither a file nor a folder.
+    /// A device, a socket or anything else that is neither a file, a folder nor a link.
     UnsupportedEntry,
+    /// A symbolic link whose target could lead outside the app ([`link_stays_inside`]).
+    UnsafeLink,
     /// A `.zip` that cannot be read or extracted.
     Archive(ArchiveError),
     /// A `.zip` holding no program this installer recognises.
@@ -340,8 +344,56 @@ pub fn read_manifest(
 
 fn is_file(files: &mut impl Files, path: &Path) -> bool {
     files
-        .status(path.as_bytes())
+        .status_following(path.as_bytes())
         .is_ok_and(|status| status.kind == Kind::File)
+}
+
+/// Whether symbolic link `link`, a path inside a folder (`Contents/Frameworks/Current`), with
+/// target `target` names something inside that folder however the links in it resolve: a
+/// relative target whose `..` parts all come first and climb no higher than the link's own
+/// folder. An absolute target, an empty one, or a `..` after a name is refused (a name before
+/// it may itself be a link that leads higher).
+pub fn link_stays_inside(link: &[u8], target: &[u8]) -> bool {
+    if target.is_empty() || target.first() == Some(&b'/') || target.contains(&0) {
+        return false;
+    }
+    let mut depth = link
+        .split(|&byte| byte == b'/')
+        .filter(|part| !part.is_empty())
+        .count()
+        .saturating_sub(1);
+    let mut named = false;
+    for part in target.split(|&byte| byte == b'/') {
+        match part {
+            b"" | b"." => {}
+            b".." if named => return false,
+            b".." => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            _ => named = true,
+        }
+    }
+    true
+}
+
+fn bundle_link(
+    files: &mut impl Files,
+    root: &Path,
+    relative: &Path,
+    target: &mut [u8; PATH_CAPACITY],
+) -> Result<usize, Problem> {
+    let path = Walk::under(root, relative)?;
+    let length = files
+        .read_link(path.as_bytes(), target)
+        .map_err(|error| match error {
+            Errno::ENAMETOOLONG => Problem::PathTooLong,
+            other => Problem::Unreadable(other),
+        })?;
+    match link_stays_inside(relative.as_bytes(), &target[..length]) {
+        true => Ok(length),
+        false => Err(Problem::UnsafeLink),
+    }
 }
 
 fn declared_program(files: &mut impl Files, bundle: &Path, programs: &Path) -> Option<Path> {
@@ -384,10 +436,14 @@ fn bundle_program(files: &mut impl Files, bundle: &Path, stem: &[u8]) -> Result<
 fn measure(files: &mut impl Files, root: &Path) -> Result<u64, Problem> {
     let mut walk = Walk::new();
     let mut total = 0u64;
-    while let Some((_, status)) = walk.next(files, root)? {
+    let mut target = [0u8; PATH_CAPACITY];
+    while let Some((relative, status)) = walk.next(files, root)? {
         match status.kind {
             Kind::File => total = total.saturating_add(status.size),
             Kind::Directory => {}
+            Kind::Link => {
+                bundle_link(files, root, &relative, &mut target)?;
+            }
             Kind::Other => return Err(Problem::UnsupportedEntry),
         }
     }
@@ -430,7 +486,7 @@ pub fn plan_entry(
     let refused = |problem| Refused { name, problem };
     let source = Path::from(source).ok_or(refused(Problem::PathTooLong))?;
     let status = files
-        .status(source.as_bytes())
+        .status_following(source.as_bytes())
         .map_err(|error| refused(Problem::Unreadable(error)))?;
     let (bundle, program_path) = match status.kind {
         Kind::Directory if is_bundle_name => {
@@ -439,7 +495,9 @@ pub fn plan_entry(
         }
         Kind::Directory => return Err(refused(Problem::FolderNotApp)),
         Kind::File => (false, source),
-        Kind::Other => return Err(refused(Problem::NotRunnable(NotRunnable::NotAProgram))),
+        Kind::Link | Kind::Other => {
+            return Err(refused(Problem::NotRunnable(NotRunnable::NotAProgram)));
+        }
     };
     let mut head = [0u8; program::HEAD_BYTES];
     let length = read_head(files, program_path.as_bytes(), &mut head)
@@ -659,7 +717,7 @@ fn zipped_bundles(
         let Some(end) = bundle_end(name) else {
             continue;
         };
-        if entry.is_metadata() || entry.is_directory() {
+        if entry.is_metadata() || entry.is_directory() || entry.is_link() {
             continue;
         }
         let (bundle, rest) = name.split_at(end);
@@ -689,7 +747,7 @@ fn zipped_bundles(
     if bundles.any_declared() {
         let mut cursor = archive.first();
         while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
-            if !entry.is_metadata() && !entry.is_directory() {
+            if !entry.is_metadata() && !entry.is_directory() && !entry.is_link() {
                 bundles.mark_declared_found(entry.name());
             }
         }
@@ -734,7 +792,7 @@ fn program_role(
     window: &mut Window,
     bundles: &ZippedBundles,
 ) -> Option<Role> {
-    if entry.is_metadata() || entry.is_directory() {
+    if entry.is_metadata() || entry.is_directory() || entry.is_link() {
         return None;
     }
     let role = role(entry.name(), bundles);
@@ -1103,8 +1161,58 @@ fn make_parents(files: &mut impl Files, folder: &Path, name: &[u8]) -> Result<()
     for (at, _) in name.iter().enumerate().filter(|&(_, &byte)| byte == b'/') {
         let parent = folder.join(&name[..at]).ok_or(Problem::PathTooLong)?;
         make_directory_once(files, parent.as_bytes())?;
+        let kind = files.status(parent.as_bytes()).map(|status| status.kind);
+        if kind != Ok(Kind::Directory) {
+            return Err(Problem::Archive(ArchiveError::UnsafeName));
+        }
     }
     Ok(())
+}
+
+struct LinkTarget {
+    bytes: [u8; PATH_CAPACITY],
+    length: usize,
+    overflowed: bool,
+}
+
+impl Sink for LinkTarget {
+    fn write(&mut self, bytes: &[u8]) -> bool {
+        let end = self.length + bytes.len();
+        match self.bytes.get_mut(self.length..end) {
+            Some(place) => {
+                place.copy_from_slice(bytes);
+                self.length = end;
+                true
+            }
+            None => {
+                self.overflowed = true;
+                false
+            }
+        }
+    }
+}
+
+fn extracted_link_target<F: Files>(
+    files: &mut F,
+    zip: Handle,
+    size: u64,
+    entry: &Entry,
+) -> Result<LinkTarget, Problem> {
+    if entry.size() >= PATH_CAPACITY as u64 {
+        return Err(Problem::PathTooLong);
+    }
+    let mut reader = FileReader::new(files, zip, size);
+    let mut target = LinkTarget {
+        bytes: [0; PATH_CAPACITY],
+        length: 0,
+        overflowed: false,
+    };
+    let mut window = Window::new();
+    match archive::extract(&mut reader, entry, &mut window, &mut target) {
+        Ok(()) => Ok(target),
+        Err(ArchiveError::Stopped) if target.overflowed => Err(Problem::PathTooLong),
+        Err(error) => Err(Problem::Archive(error)),
+    }
 }
 
 impl Installation {
@@ -1270,7 +1378,7 @@ impl Installation {
                 .join(self.plan.run.as_bytes())
                 .ok_or(Problem::PathTooLong)?;
             let permissions = files
-                .status(self.plan.source.as_bytes())
+                .status_following(self.plan.source.as_bytes())
                 .map_err(Problem::Unreadable)?
                 .permissions;
             let source = self.plan.source;
@@ -1295,6 +1403,13 @@ impl Installation {
                     .join(relative.as_bytes())
                     .ok_or(Problem::PathTooLong)?;
                 self.start_copy(files, from.as_bytes(), to.as_bytes(), status.permissions)?;
+            }
+            Kind::Link => {
+                let mut target = [0u8; PATH_CAPACITY];
+                let length = bundle_link(files, &source, &relative, &mut target)?;
+                files
+                    .make_link(&target[..length], to.as_bytes())
+                    .map_err(Problem::from_errno)?;
             }
             Kind::Other => return Err(Problem::UnsupportedEntry),
         }
@@ -1348,6 +1463,18 @@ impl Installation {
         let to = folder.join(entry.name()).ok_or(Problem::PathTooLong)?;
         if entry.is_directory() {
             make_directory_once(files, to.as_bytes())?;
+            return Ok(Progress::Copying(self.done_bytes));
+        }
+        if entry.is_link() {
+            let target = extracted_link_target(files, open.file, archive.size(), &entry)?;
+            let target = &target.bytes[..target.length];
+            if !link_stays_inside(entry.name(), target) {
+                return Err(Problem::UnsafeLink);
+            }
+            files
+                .make_link(target, to.as_bytes())
+                .map_err(Problem::from_errno)?;
+            self.done_bytes = self.done_bytes.saturating_add(entry.size());
             return Ok(Progress::Copying(self.done_bytes));
         }
         let permissions = match (

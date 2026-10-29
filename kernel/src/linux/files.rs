@@ -1,5 +1,6 @@
 //! Files (D102): the calls that open, read, seek and list the file system's nodes (`openat`,
-//! `open` on x86_64, `read`, `readv` and `pread64` on regular files, `lseek`, `getdents64`),
+//! `open` on x86_64, `openat2` (D170), `read`, `readv` and `pread64` on regular files, `lseek`,
+//! `getdents64`),
 //! read a symbolic link (`readlinkat`, `readlink` on x86_64, D168), and the working directory
 //! (`getcwd`, `chdir`, `fchdir`).
 //!
@@ -173,7 +174,7 @@ pub fn lookup<P: Platform>(
 /// A symbolic link is followed (D168), unless `O_NOFOLLOW` asks not to for the last component:
 /// then it is `ELOOP`, or the link itself with `O_PATH`; `O_NONBLOCK` and `O_APPEND` are
 /// kept as status flags, and the other flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are
-/// ignored. `mode` matters only to a file created, which none is.
+/// ignored. `mode` matters only to a file created.
 pub fn openat<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -181,6 +182,101 @@ pub fn openat<P: Platform>(
     path: u64,
     flags: u64,
     mode: u64,
+) -> Result<u64, Errno> {
+    open(process, thread, dirfd, path, flags, mode, true)
+}
+
+/// `openat2`'s `resolve` flags (`RESOLVE_*`).
+pub mod resolve {
+    /// Do not cross a mount point.
+    pub const NO_XDEV: u64 = 0x01;
+    /// Follow no "magic" link (`/proc`'s links to open files): EggOS's `/proc` links are
+    /// followed by their text as any link, so there are none to refuse.
+    pub const NO_MAGICLINKS: u64 = 0x02;
+    /// Follow no symbolic link anywhere in the path: `ELOOP`.
+    pub const NO_SYMLINKS: u64 = 0x04;
+    /// Stay beneath the starting directory.
+    pub const BENEATH: u64 = 0x08;
+    /// Walk as if the starting directory were the root.
+    pub const IN_ROOT: u64 = 0x10;
+    /// Only answer from what is cached, else `EAGAIN`.
+    pub const CACHED: u64 = 0x20;
+    /// Every flag Linux knows.
+    pub const ALL: u64 = NO_XDEV | NO_MAGICLINKS | NO_SYMLINKS | BENEATH | IN_ROOT | CACHED;
+}
+
+/// The size of `struct open_how` (`OPEN_HOW_SIZE_VER0`).
+pub const OPEN_HOW_SIZE: u64 = 24;
+
+/// `openat2(dirfd, path, how, size)`: [`openat`] with its flags, mode and `resolve` flags in
+/// the `struct open_how` at `how`, `size` bytes, extensible as Linux's (D170). As Linux:
+/// `EINVAL` for a `size` below 24, `E2BIG` for one above a page or with bytes past 24 that are
+/// not zero, `EFAULT`, `EINVAL` for flags above 32 bits, a mode without `O_CREAT` or
+/// `O_TMPFILE` or with bits above `07777`, or an unknown `resolve` flag. `RESOLVE_NO_SYMLINKS`
+/// refuses every symbolic link with `ELOOP` (a last one with `O_PATH | O_NOFOLLOW` is opened
+/// as a location), `RESOLVE_NO_MAGICLINKS` refuses nothing more (there are no magic links);
+/// `RESOLVE_CACHED` is `EAGAIN` (nothing is answered from a cache alone), and `RESOLVE_BENEATH`,
+/// `RESOLVE_IN_ROOT` and `RESOLVE_NO_XDEV` are `EINVAL` until they are walked.
+pub fn openat2<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    how: u64,
+    size: u64,
+) -> Result<u64, Errno> {
+    if size < OPEN_HOW_SIZE {
+        return Err(Errno::EINVAL);
+    }
+    if size > FRAME_SIZE {
+        return Err(Errno::E2BIG);
+    }
+    let mut bytes = [0u8; OPEN_HOW_SIZE as usize];
+    process
+        .read_user_memory(how, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    let mut rest = OPEN_HOW_SIZE;
+    let mut chunk = [0u8; 64];
+    while rest < size {
+        let length = (size - rest).min(chunk.len() as u64) as usize;
+        let at = how.checked_add(rest).ok_or(Errno::EFAULT)?;
+        process
+            .read_user_memory(at, &mut chunk[..length])
+            .map_err(|_| Errno::EFAULT)?;
+        if chunk[..length].iter().any(|&byte| byte != 0) {
+            return Err(Errno::E2BIG);
+        }
+        rest += length as u64;
+    }
+    let field = |at: usize| u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap());
+    let (flags, mode, walk) = (field(0), field(8), field(16));
+    let creates = flags as u32 & open_flag::CREAT != 0
+        || flags as u32 & open_flag::TMPFILE == open_flag::TMPFILE;
+    if flags >> 32 != 0 || mode & !0o7777 != 0 || (mode != 0 && !creates) {
+        return Err(Errno::EINVAL);
+    }
+    if walk & !resolve::ALL != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if walk & resolve::CACHED != 0 {
+        return Err(Errno::EAGAIN);
+    }
+    if walk & (resolve::BENEATH | resolve::IN_ROOT | resolve::NO_XDEV) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let links_allowed = walk & resolve::NO_SYMLINKS == 0;
+    open(process, thread, dirfd, path, flags, mode, links_allowed)
+}
+
+#[inline(always)]
+fn open<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    flags: u64,
+    mode: u64,
+    links_allowed: bool,
 ) -> Result<u64, Errno> {
     let flags = flags as u32;
     let only_path = flags & open_flag::PATH != 0;
@@ -205,10 +301,22 @@ pub fn openat<P: Platform>(
     let caller = process.id().get();
     let follow_last = flags & open_flag::NOFOLLOW == 0;
     let mut created = false;
-    let node = match vfs::resolve_as(root, start, path, caller, follow_last) {
+    let found = match links_allowed {
+        true => vfs::resolve_as(root, start, path, caller, follow_last),
+        false => vfs::resolve_without_links(root, start, path, caller, follow_last),
+    };
+    let node = match found {
         Ok(node) => node,
         Err(vfs::Error::NotFound) if !only_path && flags & open_flag::CREAT != 0 => {
-            match super::file_changes::create_file::<P>(root, start, path, mode) {
+            let created_file = super::file_changes::create_file::<P>(
+                root,
+                start,
+                path,
+                mode,
+                caller,
+                links_allowed,
+            );
+            match created_file {
                 Ok(node) => {
                     created = true;
                     node

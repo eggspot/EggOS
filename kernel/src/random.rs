@@ -127,7 +127,6 @@ fn add_input(tag: u8, bytes: &[u8], bits: u32) {
 /// The tag of the clock reads hashed in at each [`reseed`]: after every [`SeedSource`]'s.
 const CLOCK_TAG: u8 = 0x80;
 
-/// The tag of what programs write to `/dev/random` and `/dev/urandom` (D168).
 const USER_INPUT_TAG: u8 = 0x81;
 
 /// Hashes `bytes` a program wrote to `/dev/random` or `/dev/urandom` into the input without

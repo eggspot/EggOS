@@ -51,18 +51,11 @@ pub enum SignatureAlgorithm {
 pub enum PublicKey<'a> {
     /// RSA: the modulus and public exponent, big-endian.
     Rsa {
-        /// The modulus.
         modulus: &'a [u8],
-        /// The public exponent.
         exponent: &'a [u8],
     },
     /// ECDSA on a curve: an uncompressed point.
-    Ec {
-        /// The curve.
-        curve: Curve,
-        /// `04 || x || y`.
-        point: &'a [u8],
-    },
+    Ec { curve: Curve, point: &'a [u8] },
 }
 
 /// The fields of a certificate a TLS client uses.

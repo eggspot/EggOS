@@ -1,8 +1,9 @@
 //! What an entry is, as Files shows and opens it (docs/ux/desktop-v0.3-gui.md section 8.1
 //! items 4 and 11): read from a file's first bytes, never from its name (D134), and for a
-//! folder from where it is (an app's folder in `/Applications`) or its name (an `.app`).
+//! folder from where it is (an app's folder in `/Applications`) or its name (an `.app`). A
+//! symbolic link is what its target is where it really is (docs/ux/files-links-v0.3.md).
 
-use crate::names::{is_within, joined};
+use crate::names::{is_within, joined, parent, resolved};
 use eggos_app::architecture::Architecture;
 use eggos_app::archive;
 use eggos_app::files::{self, Files, Path};
@@ -36,8 +37,19 @@ pub enum Kind {
     Text,
     /// Any other file.
     File,
-    /// A device, a link or anything else.
+    /// A device, a broken link or anything else.
     Other,
+}
+
+/// Whether an entry is a symbolic link, and whether what it points to is there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    /// Not a link.
+    None,
+    /// A link to something that is there.
+    Sound,
+    /// A link to nothing, or one that loops back to itself.
+    Broken,
 }
 
 impl Kind {
@@ -142,20 +154,45 @@ pub fn of_entry(files: &mut impl Files, folder: &Path, name: &[u8], kind: files:
             let length = read_head(files, path.as_bytes(), &mut head);
             of_head(&head[..length])
         }
-        files::Kind::Other => Kind::Other,
+        files::Kind::Link | files::Kind::Other => Kind::Other,
     }
+}
+
+/// What the target of the symbolic link at `path` is, as if it were listed where it really
+/// is; [`Kind::Other`] when it cannot be found.
+pub fn of_target(files: &mut impl Files, path: &[u8]) -> Kind {
+    let Ok(real) = resolved(files, path) else {
+        return Kind::Other;
+    };
+    let Ok(status) = files.status(real.as_bytes()) else {
+        return Kind::Other;
+    };
+    let Some(folder) = Path::from(parent(real.as_bytes())) else {
+        return Kind::Other;
+    };
+    of_entry(files, &folder, real.file_name(), status.kind)
 }
 
 /// What Properties says an entry is: `Directory`, `Text`, `File`, `Windows program, x86_64`,
 /// `macOS program, arm64`, `Linux program` or `App, Windows`; a program this machine cannot
-/// run is named by its system alone.
+/// run is named by its system alone. A `link` says `Link to ` before what its target is, or
+/// `Broken link`.
 pub fn describe(
     files: &mut impl Files,
     path: &[u8],
     kind: Kind,
+    link: Link,
     machine: Architecture,
 ) -> messages::Line {
     let mut line = messages::Line::new();
+    match link {
+        Link::None => {}
+        Link::Sound => line.push_bytes(b"Link to "),
+        Link::Broken => {
+            line.push_bytes(b"Broken link");
+            return line;
+        }
+    }
     match kind {
         Kind::Folder | Kind::Bundle => line.push_bytes(b"Directory"),
         Kind::App(source) => {
@@ -176,7 +213,7 @@ pub fn describe(
                 Err(_) => 0,
             };
             match program::recognise(&head[..length], machine) {
-                Ok(recognised) => return messages::kind(recognised),
+                Ok(recognised) => line.push_bytes(messages::kind(recognised).as_str().as_bytes()),
                 Err(_) => {
                     line.push_bytes(source.label().as_bytes());
                     line.push_bytes(b" program");
@@ -226,5 +263,64 @@ mod tests {
         assert!(Kind::Archive.installs());
         assert_eq!(of_head(b"PK\x03\x04\x14\x00"), Kind::Archive);
         assert_eq!(of_head(b"PK\x05\x06\x00\x00"), Kind::Archive);
+    }
+
+    #[test]
+    fn a_link_is_what_its_target_is_where_it_really_is() {
+        let mut files = crate::memory::MemoryFiles::new();
+        files
+            .file(
+                "/Applications/Paint/app.manifest",
+                b"eggos-app 1\nname=Paint\nsource=windows\nrun=paint.exe\n",
+                1,
+            )
+            .file("/home/root/notes.txt", b"hi\n", 1)
+            .folder("/home/root/Old.app")
+            .link("/home/root/Paint link", "/Applications/Paint", 1)
+            .link("/home/root/Old link", "Old.app", 1)
+            .link("/home/root/notes link.txt", "notes.txt", 1)
+            .link("/home/root/gone", "nothing", 1);
+        let mut of = |path: &[u8]| of_target(&mut files, path);
+        assert_eq!(of(b"/home/root/Paint link"), Kind::App(Source::Windows));
+        assert_eq!(of(b"/home/root/Old link"), Kind::Bundle);
+        assert_eq!(of(b"/home/root/notes link.txt"), Kind::Text);
+        assert_eq!(of(b"/home/root/gone"), Kind::Other);
+    }
+
+    #[test]
+    fn properties_say_link_to_before_the_targets_kind() {
+        let mut files = crate::memory::MemoryFiles::new();
+        files.file("/home/root/notes.txt", b"hi\n", 1);
+        let machine = Architecture::X86_64;
+        let path = b"/home/root/notes.txt";
+        let said = |line: messages::Line| line.as_str().to_owned();
+        assert_eq!(
+            said(describe(&mut files, path, Kind::Text, Link::Sound, machine)),
+            "Link to Text"
+        );
+        assert_eq!(
+            said(describe(
+                &mut files,
+                path,
+                Kind::Folder,
+                Link::Sound,
+                machine
+            )),
+            "Link to Directory"
+        );
+        assert_eq!(
+            said(describe(
+                &mut files,
+                path,
+                Kind::Other,
+                Link::Broken,
+                machine
+            )),
+            "Broken link"
+        );
+        assert_eq!(
+            said(describe(&mut files, path, Kind::Text, Link::None, machine)),
+            "Text"
+        );
     }
 }

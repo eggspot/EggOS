@@ -39,7 +39,7 @@ kernel/src/heap.rs 29
 kernel/src/lib.rs 107
 kernel/src/linux.rs 94
 kernel/src/linux/credentials.rs 11
-kernel/src/linux/exec.rs 78
+kernel/src/linux/exec.rs 65
 kernel/src/linux/fault.rs 40
 kernel/src/linux/futex.rs 7
 kernel/src/linux/identity.rs 2

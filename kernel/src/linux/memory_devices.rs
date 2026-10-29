@@ -47,11 +47,8 @@ impl MemoryDevice {
     }
 }
 
-/// The bytes made and copied at a time.
 const CHUNK: usize = 256;
 
-/// Bytes between preemption points: a long read does not keep its CPU from the threads waiting
-/// for it.
 const PREEMPTION_INTERVAL: u64 = 64 * 1024;
 
 /// Reads `device` into the buffers `buffers` lists (base, length), `nonblocking` for a
@@ -78,7 +75,6 @@ pub fn read<P: Platform>(
     }
 }
 
-/// Copies what `make` puts in a chunk, zeros to start with, to the buffers: see [`read`].
 fn fill<P: Platform>(
     process: &Process<P>,
     buffers: impl Iterator<Item = (u64, u64)>,

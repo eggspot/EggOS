@@ -1691,9 +1691,6 @@ fn flush_motion(client: &mut ClientSlot, _shared: &mut Shared) {
     pointer_frame(client);
 }
 
-/// Answers the window server's query `record` (D161): a toplevel's tree is one element, the
-/// window, named by its title with its app id as the value; Wayland gives no controls, so
-/// every action is refused as not supported.
 fn answer_query<S: System>(
     client: &mut ClientSlot,
     system: &mut S,

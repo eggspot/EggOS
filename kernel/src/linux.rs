@@ -44,7 +44,10 @@
 //! real programs, `/proc/<pid>` and `/proc/self` ([`proc`]), the memory devices `/dev/null`,
 //! `/dev/zero`, `/dev/full`, `/dev/random` and `/dev/urandom` ([`memory_devices`]),
 //! `readlink` and `readlinkat` ([`files`]), `access`, `faccessat` and `faccessat2`
-//! ([`stat`]), and `sethostname` and `setdomainname` ([`identity`]) (D168). Every
+//! ([`stat`]), and `sethostname` and `setdomainname` ([`identity`]) (D168), and symbolic and
+//! hard links with `symlinkat`, `linkat` and `openat2`'s `RESOLVE_NO_SYMLINKS`, and
+//! permissions with `fchmodat`, `fchmodat2` and `fchmod` ([`file_changes`], [`files`], D170).
+//! Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -265,8 +268,17 @@ pub mod number {
         pub const TIMERFD_GETTIME: u64 = 287;
         pub const SIGNALFD4: u64 = 289;
         pub const EVENTFD2: u64 = 290;
+        pub const LINK: u64 = 86;
+        pub const SYMLINK: u64 = 88;
+        pub const CHMOD: u64 = 90;
+        pub const FCHMOD: u64 = 91;
+        pub const LINKAT: u64 = 265;
+        pub const SYMLINKAT: u64 = 266;
+        pub const FCHMODAT: u64 = 268;
+        pub const OPENAT2: u64 = 437;
+        pub const FCHMODAT2: u64 = 452;
         /// The highest number above.
-        pub const LAST: u64 = EPOLL_PWAIT2;
+        pub const LAST: u64 = FCHMODAT2;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
@@ -409,8 +421,14 @@ pub mod number {
         pub const TIMERFD_SETTIME: u64 = 86;
         pub const TIMERFD_GETTIME: u64 = 87;
         pub const EPOLL_PWAIT2: u64 = 441;
+        pub const SYMLINKAT: u64 = 36;
+        pub const LINKAT: u64 = 37;
+        pub const FCHMOD: u64 = 52;
+        pub const FCHMODAT: u64 = 53;
+        pub const OPENAT2: u64 = 437;
+        pub const FCHMODAT2: u64 = 452;
         /// The highest number above.
-        pub const LAST: u64 = EPOLL_PWAIT2;
+        pub const LAST: u64 = FCHMODAT2;
     }
     pub use table::*;
 
@@ -589,6 +607,18 @@ pub mod number {
             #[cfg(target_arch = "x86_64")]
             SIGNALFD,
             SIGNALFD4,
+            #[cfg(target_arch = "x86_64")]
+            LINK,
+            #[cfg(target_arch = "x86_64")]
+            SYMLINK,
+            #[cfg(target_arch = "x86_64")]
+            CHMOD,
+            FCHMOD,
+            LINKAT,
+            SYMLINKAT,
+            FCHMODAT,
+            OPENAT2,
+            FCHMODAT2,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -688,8 +718,10 @@ impl Errno {
     pub const EPIPE: Self = Self(32);
     /// Busy: here, a rename of `.` or `..`, or a mount point removed.
     pub const EBUSY: Self = Self(16);
-    /// A rename across file systems.
+    /// A rename or a hard link across file systems.
     pub const EXDEV: Self = Self(18);
+    /// Too many links: a file that has as many names as it may have (`linkat`, D170).
+    pub const EMLINK: Self = Self(31);
     /// A file larger than the largest offset.
     pub const EFBIG: Self = Self(27);
     /// A file system's memory is used up.
@@ -1288,6 +1320,20 @@ fn out_of_line_result<P: Platform>(
         number::FACCESSAT2 => stat::faccessat2(process, thread, first, second, third, fourth),
         #[cfg(target_arch = "x86_64")]
         number::ACCESS => stat::faccessat2(process, thread, CWD, first, second, 0),
+        number::SYMLINKAT => file_changes::symlinkat(process, thread, first, second, third),
+        #[cfg(target_arch = "x86_64")]
+        number::SYMLINK => file_changes::symlinkat(process, thread, first, CWD, second),
+        number::LINKAT => {
+            file_changes::linkat(process, thread, first, second, third, fourth, fifth)
+        }
+        #[cfg(target_arch = "x86_64")]
+        number::LINK => file_changes::linkat(process, thread, CWD, first, CWD, second, 0),
+        number::FCHMODAT => file_changes::fchmodat2(process, thread, first, second, third, 0),
+        number::FCHMODAT2 => file_changes::fchmodat2(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::CHMOD => file_changes::fchmodat2(process, thread, CWD, first, second, 0),
+        number::FCHMOD => file_changes::fchmod(process, thread, first, second),
+        number::OPENAT2 => files::openat2(process, thread, first, second, third, fourth),
         number::SETHOSTNAME => identity::sethostname(process, first, second),
         number::SETDOMAINNAME => identity::setdomainname(process, first, second),
         number::CHDIR => files::chdir(process, thread, first),
@@ -5832,7 +5878,10 @@ mod tests {
             (b"/etc", Errno::EACCES),
             (b"/etc/hostname", Errno::EACCES),
             (b"/etc/hostname/program", Errno::ENOTDIR),
-            (b"/usr/libexec/script", Errno::ENOEXEC),
+            (b"/usr/libexec/script", Errno::ENOENT),
+            (b"/usr/libexec/bare", Errno::ENOEXEC),
+            (b"/usr/libexec/loop", Errno::ELOOP),
+            (b"/usr/libexec/to-text", Errno::EACCES),
             (b"/usr/libexec/text", Errno::ENOEXEC),
         ] {
             assert_eq!(execve(path, 0), error.result(), "{path:?}");
@@ -5928,6 +5977,33 @@ mod tests {
         );
         let current = process.take_handed_over(&context).unwrap();
         (context, current)
+    }
+
+    #[test]
+    fn a_script_runs_its_interpreter_with_the_line_s_argument_and_its_own_path() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let path = at_path(&process, b"/usr/libexec/runs");
+        let arguments = argument_list(&process, &[b"runs", b"arg"]);
+        let mut thread = take_first_thread(&process);
+        let (_, current) = exec_in(
+            &process,
+            &mut thread,
+            number::EXECVE,
+            [path, arguments, 0, 0, 0, 0],
+        );
+        let (start, end) = current.image_layout().arguments;
+        let mut strings = alloc::vec![0u8; (end - start) as usize];
+        current.read_user_memory(start, &mut strings).unwrap();
+        assert_eq!(
+            strings,
+            b"/usr/libexec/program\0-x\0/usr/libexec/runs\0arg\0"
+        );
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), thread);
     }
 
     #[test]

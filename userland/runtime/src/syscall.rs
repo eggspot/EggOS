@@ -72,6 +72,12 @@ pub mod number {
     pub const MEMFD_CREATE: usize = 319;
     pub const FTRUNCATE: usize = 77;
     pub const PREAD64: usize = 17;
+    pub const READLINKAT: usize = 267;
+    pub const SYMLINKAT: usize = 266;
+    pub const LINKAT: usize = 265;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 268;
+    pub const FCHMODAT2: usize = 452;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -143,6 +149,12 @@ pub mod number {
     pub const MEMFD_CREATE: usize = 279;
     pub const FTRUNCATE: usize = 46;
     pub const PREAD64: usize = 67;
+    pub const READLINKAT: usize = 78;
+    pub const SYMLINKAT: usize = 36;
+    pub const LINKAT: usize = 37;
+    pub const OPENAT2: usize = 437;
+    pub const FCHMODAT: usize = 53;
+    pub const FCHMODAT2: usize = 452;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

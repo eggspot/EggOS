@@ -14,8 +14,9 @@
 //!    (`wm_capture` with `view`).
 //! 2. `--mcp-allow view,write,run,install`: `clock_set` refused without `confirm`, then a day
 //!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
-//!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
-//!    program stopped at its time limit), installing and opening an app; then the windows
+//!    refused paths (one through a symbolic link `ln -s` made out of the home, D170),
+//!    trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a program stopped
+//!    at its time limit), installing and opening an app; then the windows
 //!    (D143): Settings opened by name and captured at scale 1/2, its macOS card found in
 //!    `wm_show`'s element tree and invoked by its id with `wm_act` (D161), which
 //!    `settings_get` (D163) sees, after `settings_set` chose Windows' layout; on x86_64 and aarch64 `win-paint` captured,
@@ -59,6 +60,8 @@ const GRANTS: &str = "view,write,run,install";
 const CONTENT_MARKER: &str = "EGGOS-MCP-CONTENT-31f9";
 const NOTE: &str = "/home/root/note.txt";
 const ELICITED: &str = "/home/root/elicit.txt";
+const LINK_OUT_OF_HOME: &str = "/home/root/out";
+const LINK_REFUSAL: &str = "the path goes through a symbolic link";
 const TIME_LIMIT_ANSWER: Duration = Duration::from_secs(10);
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(20);
 const README: &str = "EGGOS-MCP hello from the host\n";
@@ -112,7 +115,12 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 28] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 29] = [
+    (
+        "ln",
+        r#"{"target":"x","link":"/home/root/x-link"}"#,
+        "write",
+    ),
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -890,6 +898,13 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
             wanted,
         )?;
     }
+    run_program(client, &["/bin/ln", "-s", "/etc", LINK_OUT_OF_HOME])?;
+    refused(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{LINK_OUT_OF_HOME}/hostname"}}"#),
+        LINK_REFUSAL,
+    )?;
     refused(
         client,
         "trash",
@@ -1573,8 +1588,6 @@ fn editor_session(client: &mut Client, editor: u32) -> Result<(), String> {
     }
 }
 
-/// From the text field's top to the middle of the Text Editor's first row: its 4-pixel top
-/// margin and half a row.
 const EDITOR_FIRST_ROW_CENTRE: u32 = 4 + eggos_editor::editor_window::ROW_HEIGHT as u32 / 2;
 
 fn element_bounds(tree: &str, role: &str) -> Option<(u32, u32, u32, u32)> {
@@ -1595,7 +1608,6 @@ fn element_bounds(tree: &str, role: &str) -> Option<(u32, u32, u32, u32)> {
     })
 }
 
-/// The folder the Files step makes in the home folder and opens with a double-click (D162).
 const DOUBLE_CLICKED_FOLDER: &str = "opened-by-double-click";
 
 fn files_session(client: &mut Client) -> Result<(), String> {

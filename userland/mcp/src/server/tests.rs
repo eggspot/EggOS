@@ -208,7 +208,8 @@ fn the_tools_are_listed_once_initialized() {
             "wm_drag",
             "settings_list",
             "settings_get",
-            "settings_set"
+            "settings_set",
+            "ln"
         ]
     );
 }
@@ -2797,5 +2798,115 @@ fn confirmation_texts_name_the_tool_whatever_it_is() {
     assert_eq!(
         text_prefix(&question, length),
         "An agent asks to run settings_set. Allow it? (EggOS, tool settings_set)"
+    );
+}
+
+#[test]
+fn ln_makes_a_symbolic_link_with_the_target_s_text_as_given() {
+    let mut harness = writer();
+    let answer = harness.call(1, "ln", r#"{"target":"notes.txt","link":"/home/root/./l"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Made the symbolic link /home/root/l to notes.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ln", "-T", "-s", "notes.txt", "--", "/home/root/l"]
+    );
+    assert_eq!(harness.system.refusing_links.last(), Some(&true));
+    let (tool, outcome, logged, _) = last_record(&harness);
+    assert_eq!((tool.as_str(), outcome.as_str()), ("ln", "ok"));
+    assert_eq!(
+        logged,
+        r#"{"link":"/home/root/./l","target":"notes.txt","symbolic":true}"#
+    );
+    let answer = harness.call(2, "ln", r#"{"target":"/etc/x","link":"/home/root/s"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ln", "-T", "-s", "/etc/x", "--", "/home/root/s"]
+    );
+}
+
+#[test]
+fn ln_makes_a_hard_link_only_to_a_file_the_write_tools_reach() {
+    let mut harness = writer();
+    harness.system.links.push("/home/root/linked".into());
+    let arguments =
+        r#"{"target":"/home/root/a/../notes.txt","link":"/home/root/h","symbolic":false}"#;
+    let answer = harness.call(1, "ln", arguments);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        texts(&answer)[1],
+        "Made the hard link /home/root/h to /home/root/notes.txt."
+    );
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/ln",
+            "-T",
+            "/home/root/notes.txt",
+            "--",
+            "/home/root/h"
+        ]
+    );
+    let runs = harness.system.runs.len();
+    for (id, target, words) in [
+        (
+            2,
+            "/etc/passwd",
+            "hard link's target must be below /home/root",
+        ),
+        (3, "/home/root/linked/x", "symbolic link"),
+        (4, "/home/root", "names /home/root itself"),
+        (5, "/home/root/.local/share/Trash/files/x", "in the Trash"),
+        (6, "notes.txt", "absolute"),
+    ] {
+        let arguments =
+            format!(r#"{{"target":"{target}","link":"/home/root/h{id}","symbolic":false}}"#);
+        let answer = harness.call(id, "ln", &arguments);
+        assert!(is_error(&answer), "{target}");
+        assert!(texts(&answer)[0].contains(words), "{target}: {answer}");
+        assert_eq!(last_record(&harness).1, "refused", "{target}");
+    }
+    for (id, link, words) in [
+        (7, "/etc/l", "outside /home/root"),
+        (8, "/home/root/linked/l", "symbolic link"),
+        (9, "/home/root/.local/share/Trash/l", "in the Trash"),
+    ] {
+        let arguments = format!(r#"{{"target":"x","link":"{link}"}}"#);
+        let answer = harness.call(id, "ln", &arguments);
+        assert!(is_error(&answer), "{link}");
+        assert!(texts(&answer)[0].contains(words), "{link}: {answer}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn only_the_twins_of_path_tools_refuse_symbolic_links() {
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a".into(), b"a".to_vec());
+    for (id, tool, arguments) in [
+        (1, "cat", r#"{"path":"/home/root/a"}"#),
+        (2, "ls", "{}"),
+        (3, "tee", r#"{"path":"/home/root/b","content":"x"}"#),
+        (
+            4,
+            "run",
+            r#"{"program":"/bin/cat","arguments":["/home/root/a"]}"#,
+        ),
+        (5, "ps", "{}"),
+        (6, "app_open", r#"{"name":"Files"}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(!is_error(&answer), "{tool}: {answer}");
+    }
+    assert_eq!(
+        harness.system.refusing_links,
+        [true, true, true, false, false, false]
     );
 }

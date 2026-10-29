@@ -6,7 +6,8 @@
 //! A tool call is checked in this order, each stop writing exactly one audit record (D137):
 //! the tool; the grant it needs; whether another call waits for the user's answer (then any
 //! call needing a grant is refused before its arguments are even decoded, so the waiting call's
-//! content stays as the user saw it); the arguments; the path, resolved; what is there; a dry
+//! content stays as the user saw it); the arguments; the path, resolved; what is there; a hard
+//! link's target, resolved and checked like a written path (`ln`, D170); a dry
 //! run of a tool that asks for confirmation, answered here from what was checked without asking
 //! the user or running the twin (D164); the user's yes for a destructive call, by the
 //! registry's one rule (`elicitation/create` when the client can ask, else `confirm: true`);
@@ -813,7 +814,7 @@ impl Server {
             content: scratch.content,
             words: scratch.words,
         };
-        let checked = match arguments::check(tool, arguments, nested_duplicate, &mut decoded) {
+        let mut checked = match arguments::check(tool, arguments, nested_duplicate, &mut decoded) {
             Ok(checked) => checked,
             Err(problem) => {
                 self.stop(
@@ -858,6 +859,21 @@ impl Server {
         };
         let target_length = target.length;
         let state = target.state;
+        if let Err(message) = hard_link_target(&mut checked, system, scratch.content) {
+            self.stop(
+                system,
+                scratch,
+                id,
+                number,
+                tool_name,
+                Outcome::Refused,
+                Logged::Shown(shown),
+                message.text,
+                Ending::Refused(message.error),
+                out,
+            );
+            return;
+        }
         if checked.dry_run && tool.definition.dry_run_by_server() {
             let target = target_text(tool, scratch.resolved, target_length);
             let mut would = [0u8; MAX_PATH_BYTES * 2 + 256];
@@ -1423,6 +1439,12 @@ impl Server {
         if tool.kind == Kind::Tee && prepared.checked.append {
             push_word(&mut words, &mut count, "-a");
         }
+        if tool.kind == Kind::Ln && prepared.checked.symbolic {
+            push_word(&mut words, &mut count, "-s");
+        }
+        if let Some(target) = arguments::link_target_text(&prepared.checked, buffers.content) {
+            push_word(&mut words, &mut count, target);
+        }
         if tool.kind == Kind::Run {
             for word in prepared.checked.words.each(buffers.words) {
                 push_word(&mut words, &mut count, word);
@@ -1491,6 +1513,7 @@ impl Server {
                 Kind::NetPing | Kind::NetLookup | Kind::ClockSync => NETWORK_TIME_LIMIT_MS,
                 _ => TWIN_TIME_LIMIT_MS,
             },
+            no_symlinks: matches!(tool.twin.operand, Operand::Path(_)),
         };
         if tool.kind == Kind::WmCapture {
             system.remove_capture(CAPTURE_PATH);
@@ -1554,6 +1577,8 @@ impl Server {
             setting: arguments::setting_key_text(&prepared.checked, buffers.words).zip(
                 arguments::setting_value_text(&prepared.checked, buffers.words),
             ),
+            link: arguments::link_target_text(&prepared.checked, buffers.content)
+                .map(|target| (target, prepared.checked.symbolic)),
         };
         answer_with_output(out, &answer);
     }
@@ -1667,6 +1692,7 @@ impl Server {
             paged: false,
             dry_run: false,
             setting: None,
+            link: None,
         };
         answer_with_output(out, &answer);
     }
@@ -2106,6 +2132,42 @@ impl Problem {
     }
 }
 
+fn hard_link_target(
+    checked: &mut Checked,
+    system: &mut impl System,
+    content: &mut [u8],
+) -> Result<(), Problem> {
+    let Some(length) = checked.link_target.filter(|_| !checked.symbolic) else {
+        return Ok(());
+    };
+    let argument = tools::HARD_LINK_TARGET;
+    let refused =
+        |refusal| Problem::refused(&errors::PATH_NOT_ALLOWED, path_refusal(&argument, refusal));
+    let (given, room) = content
+        .split_at_mut_checked(MAX_PATH_BYTES + 1)
+        .ok_or(refused(PathRefusal::TooLong))?;
+    let path = given
+        .get(..length)
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .unwrap_or("");
+    let mut is_link = |prefix: &str| system.is_link(prefix);
+    let resolved = paths::resolve(path, room, argument.roots, &mut is_link).map_err(refused)?;
+    paths::check_place(
+        resolved,
+        argument.roots,
+        argument.strictly,
+        argument.excluded,
+    )
+    .map_err(refused)?;
+    let resolved_length = resolved.len();
+    let place = given.get_mut(..resolved_length);
+    if let (Some(place), Some(source)) = (place, room.get(..resolved_length)) {
+        place.copy_from_slice(source);
+        checked.link_target = Some(resolved_length);
+    }
+    Ok(())
+}
+
 fn push_word<'w>(words: &mut [&'w str], count: &mut usize, word: &'w str) {
     if let Some(slot) = words.get_mut(*count) {
         *slot = word;
@@ -2331,12 +2393,18 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     let mut writer = JsonWriter::new(out);
     writer.begin_object();
     if let Some(path) = arguments::path_text(checked, scratch.decoded) {
-        writer.key(if tool.kind == Kind::Run {
-            "program"
-        } else {
-            "path"
+        writer.key(match (tool.kind, tool.twin.operand) {
+            (Kind::Run, _) => "program",
+            (_, Operand::Path(argument)) => argument.name,
+            _ => "path",
         });
         writer.string(path);
+    }
+    if let Some(target) = arguments::link_target_text(checked, scratch.content) {
+        writer.key("target");
+        writer.string(target);
+        writer.key("symbolic");
+        writer.bool(checked.symbolic);
     }
     if let Some(name) = checked.name {
         writer.key("name");
@@ -2609,8 +2677,6 @@ fn refused(out: &mut JsonWriter<'_>, id: &[u8], error: &ErrorDefinition, message
     });
 }
 
-/// Writes the session's `instructions`: the command model's conventions from the registry
-/// (D160) and this boot's grants.
 fn write_instructions(out: &mut JsonWriter<'_>, grants: &str) {
     out.begin_string();
     out.string_piece(INSTRUCTIONS);
@@ -2754,6 +2820,7 @@ struct Answered<'a> {
     paged: bool,
     dry_run: bool,
     setting: Option<(&'a str, &'a str)>,
+    link: Option<(&'a str, bool)>,
 }
 
 fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
@@ -2785,6 +2852,16 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece("Moved ");
             out.string_piece(target);
             out.string_piece(" to the Trash.");
+        }
+        Kind::Ln => {
+            out.string_piece(match answer.link {
+                Some((_, true)) => "Made the symbolic link ",
+                _ => "Made the hard link ",
+            });
+            out.string_piece(target);
+            out.string_piece(" to ");
+            out.string_piece(answer.link.map_or("", |(text, _)| text));
+            out.string_piece(".");
         }
         Kind::SettingsSet => {
             let (key, value) = answer.setting.unwrap_or(("", ""));
@@ -2826,6 +2903,7 @@ fn has_done_text(kind: Kind) -> bool {
         kind,
         Kind::Tee
             | Kind::Trash
+            | Kind::Ln
             | Kind::SettingsSet
             | Kind::WmFocus
             | Kind::WmMove

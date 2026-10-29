@@ -155,7 +155,7 @@ pub fn make_folders(files: &mut impl Files, path: &[u8]) -> Result<(), Errno> {
         match files.make_directory(prefix) {
             Ok(()) => {}
             Err(Errno::EEXIST) => {
-                if files.status(prefix)?.kind != Kind::Directory {
+                if files.status_following(prefix)?.kind != Kind::Directory {
                     return Err(Errno::ENOTDIR);
                 }
             }
@@ -360,7 +360,7 @@ impl Trash {
             .map_err(RestoreError::Failed)?;
         let folder = Path::from(parent(record.original.as_bytes()))
             .ok_or(RestoreError::Failed(Errno::ENAMETOOLONG))?;
-        match files.status(folder.as_bytes()) {
+        match files.status_following(folder.as_bytes()) {
             Ok(found) if found.kind == Kind::Directory => {}
             _ => return Err(RestoreError::FolderGone(folder)),
         }

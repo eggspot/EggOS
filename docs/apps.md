@@ -103,6 +103,16 @@ is built on a Mac (Apple's linker builds it).
   can open`, and an entry whose name would leave the folder (absolute, `..`, a backslash or a
   colon) as `it holds a file whose name points outside its folder`. Each entry's CRC-32 is
   checked; a damaged one fails the install and removes what was extracted.
+- **Symbolic links** (D170) in an `.app` folder or a `.zip` (a macOS framework's
+  `Versions/Current -> A` and `Foo -> Versions/Current/Foo`) are made again as links with the
+  same target, not followed. A link whose target is absolute, or whose `..` parts climb above
+  the link's own folder or come after a name (which could itself be a link leading higher), is
+  refused before anything is written (`it holds a symbolic link that could lead outside the
+  app`), and so is a `.zip` entry that would be written through a link the archive made
+  (`it holds a file whose name points outside its folder`), so an app never reaches outside its
+  folder through a link. The file, `.app` or `.zip` named to install may itself be a link: it
+  is followed. Uninstalling removes links like files; devices and sockets are refused
+  (`it holds a device or a socket, which an app cannot`).
 - **The app's own icon** (D148, `docs/ux/app-icons-v0.3.md`): after the copy, the installer
   looks for it in what it installed: a Windows program's first icon group (`RT_GROUP_ICON`
   and its `RT_ICON` images, PNG or bitmap with its mask), a bundle's `.icns`

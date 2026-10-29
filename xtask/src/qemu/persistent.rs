@@ -6,8 +6,11 @@
 //! 2. A blank disk is formatted with EggFS and mounted with the host folder attached; files and
 //!    directories are made, appended to, copied from the host folder (larger than the journal
 //!    and than the virtio bounce buffer), renamed and removed, synced, and the machine powered
-//!    off. The image must then hold exactly that tree.
-//! 3. The same disk boots again without formatting and reads everything back; then a loop
+//!    off. Before that, a symbolic link (`ln -s`) and a second name (`ln`) are given to a file
+//!    and a `#!` script in the host folder runs (D170). The image must then hold exactly that
+//!    tree, the link with its target text and the file with two links.
+//! 3. The same disk boots again without formatting and reads everything back, through the link
+//!    and the second name too (`readlink`, `cat`, `ls -l` counting 2 links); then a loop
 //!    replaces a large file through a temporary name and renames it over the old one, and QEMU
 //!    is killed in the middle. The image must check clean, the large file must be one of the
 //!    two versions whole, and the temporary file absent or a prefix of one.
@@ -46,10 +49,21 @@ const GARBAGE_SESSION: [&[u8]; 2] = [
     b"poweroff\r",
 ];
 
-const FIRST_SESSION: [&[u8]; 4] = [
+const SCRIPT_NAME: &str = "script.sh";
+
+const SCRIPT: &[u8] = b"#!/bin/eggsh\necho script-ran $1\n";
+
+const LINK: &str = "/home/docs/a-link";
+
+const LINK_TARGET: &str = "a.txt";
+
+const SECOND_NAME: &str = "/home/docs/a-second";
+
+const FIRST_SESSION: [&[u8]; 5] = [
     b"mkdir /home/docs /home/docs/deep; echo hello > /home/docs/a.txt; echo more >> /home/docs/a.txt; cat /home/docs/a.txt\r",
     b"cp /media/host/large.bin /home/docs/large.bin; echo x > /home/old.txt; mv /home/old.txt /home/docs/deep/new.txt; echo gone > /home/gone.txt; rm /home/gone.txt; mkdir /Applications/Tool; echo tool > /Applications/Tool/run.txt; sync; echo EGGOS-PERSIST synced $?\r",
     b"ls /home /home/docs\r",
+    b"ln -s a.txt /home/docs/a-link; ln /home/docs/a.txt /home/docs/a-second; readlink /home/docs/a-link; /media/host/script.sh arg; sync; echo EGGOS-PERSIST linked $?\r",
     b"poweroff\r",
 ];
 
@@ -75,8 +89,9 @@ const COPY_LOOP: &str = concat!(
     "echo EGGOS-PERSIST copied\r"
 );
 
-const SECOND_SESSION: [&[u8]; 2] = [
+const SECOND_SESSION: [&[u8]; 3] = [
     b"cat /home/docs/a.txt /home/docs/deep/new.txt /Applications/Tool/run.txt; wc -c /home/docs/large.bin\r",
+    b"readlink /home/docs/a-link; cat /home/docs/a-link /home/docs/a-second; ls -l /home/docs/a-second\r",
     COPY_LOOP.as_bytes(),
 ];
 
@@ -121,6 +136,7 @@ fn first_output() -> [Vec<Line>; FIRST_SESSION.len()] {
             "deep",
             "large.bin",
         ]),
+        whole(&[LINK_TARGET, "script-ran arg", "EGGOS-PERSIST linked 0"]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -176,7 +192,11 @@ fn prepare(arch: &Arch) -> Result<Files, String> {
     std::fs::create_dir_all(&apps).map_err(|e| format!("{}: {e}", apps.display()))?;
     let large = pattern(0x5eed_0001, LARGE_FILE_BYTES);
     let second = pattern(0x5eed_0002, LARGE_FILE_BYTES);
-    for (name, bytes) in [("large.bin", &large), ("second.bin", &second)] {
+    for (name, bytes) in [
+        ("large.bin", large.as_slice()),
+        ("second.bin", second.as_slice()),
+        (SCRIPT_NAME, SCRIPT),
+    ] {
         let path = apps.join(name);
         std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     }
@@ -349,6 +369,47 @@ fn expect_contents(
     Ok(())
 }
 
+fn expect_links(arch: &str, volume: &mut Volume<MemoryDisk>) -> Result<(), String> {
+    let Some(link) = node_at(volume, LINK) else {
+        return Err(format!("{arch}: the disk image has no {LINK}"));
+    };
+    if eggos_eggfs::kind_of(link) != Kind::SymbolicLink {
+        return Err(format!(
+            "{arch}: the disk image's {LINK} is not a symbolic link"
+        ));
+    }
+    let target = volume
+        .link_target(link)
+        .map_err(|e| format!("{arch}: {LINK}: {e:?}"))?;
+    if target != LINK_TARGET.as_bytes() {
+        return Err(format!(
+            "{arch}: the disk image's {LINK} points to `{}`, not `{LINK_TARGET}`",
+            String::from_utf8_lossy(&target)
+        ));
+    }
+    let first = node_at(volume, "/home/docs/a.txt");
+    let second = node_at(volume, SECOND_NAME);
+    let (Some(file), true) = (first, first == second) else {
+        return Err(format!(
+            "{arch}: the disk image's {SECOND_NAME} is not a second name of /home/docs/a.txt"
+        ));
+    };
+    let links = volume
+        .attributes(file)
+        .map_err(|e| format!("{arch}: /home/docs/a.txt: {e:?}"))?
+        .links;
+    if links != 2 {
+        return Err(format!(
+            "{arch}: the disk image's /home/docs/a.txt has {links} links, not 2"
+        ));
+    }
+    Ok(())
+}
+
+fn second_name_listed(line: &str) -> bool {
+    line.ends_with(&format!(" {SECOND_NAME}")) && line.split_whitespace().nth(1) == Some("2")
+}
+
 fn check_garbage_disk(arch: &Arch, kernel: &Path, files: &Files) -> Result<(), String> {
     let garbage = pattern(0x6a5b_a6e0, GARBAGE_BYTES);
     reset_disk_image(&files.garbage, 8 << 20)?;
@@ -440,6 +501,8 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     )?;
     expect_contents(arch.name, &mut volume, "/home/gone.txt", None)?;
     expect_contents(arch.name, &mut volume, "/home/old.txt", None)?;
+    expect_contents(arch.name, &mut volume, SECOND_NAME, Some(b"hello\nmore\n"))?;
+    expect_links(arch.name, &mut volume)?;
 
     let second = boot_on_disk(
         arch,
@@ -457,8 +520,14 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let lines: Vec<&str> = second.console.lines().map(str::trim_end).collect();
     let read_back = ["hello", "more", "x", "tool"];
     let read_back_line = format!("{LARGE_FILE_BYTES} /home/docs/large.bin");
+    let through_links = [LINK_TARGET, "hello", "more", "hello", "more"];
     let mut from = 0;
-    for wanted in read_back.iter().copied().chain([read_back_line.as_str()]) {
+    for wanted in read_back
+        .iter()
+        .copied()
+        .chain([read_back_line.as_str()])
+        .chain(through_links)
+    {
         match lines[from..].iter().position(|line| *line == wanted) {
             Some(at) => from += at + 1,
             None => {
@@ -468,6 +537,12 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
                 ));
             }
         }
+    }
+    if !lines[from..].iter().any(|line| second_name_listed(line)) {
+        return Err(format!(
+            "{}: the second boot's `ls -l {SECOND_NAME}` did not count 2 links",
+            arch.name
+        ));
     }
     if has_line(&second.console, COPIED_LINE) {
         return Err(format!(
