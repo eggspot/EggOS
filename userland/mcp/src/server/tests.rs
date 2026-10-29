@@ -204,7 +204,8 @@ fn the_tools_are_listed_once_initialized() {
             "wm_restore",
             "wm_close",
             "wm_show",
-            "wm_act"
+            "wm_act",
+            "wm_drag"
         ]
     );
 }
@@ -1658,6 +1659,24 @@ fn input_tools_run_wm_with_options_then_two_dashes_then_their_words() {
             r#"{"window":129,"dy":16,"x":5,"y":6}"#,
             "scroll --at 5 6 -- 129 0 16",
             r#"{"window":129,"x":5,"y":6,"dy":16}"#,
+        ),
+        (
+            "wm_scroll",
+            r#"{"window":129,"dy":0,"dx":-2}"#,
+            "scroll -- 129 -2 0",
+            r#"{"window":129,"dy":0,"dx":-2}"#,
+        ),
+        (
+            "wm_click",
+            r#"{"window":129,"x":10,"y":20,"double":true}"#,
+            "click --button left --double -- 129 10 20",
+            r#"{"window":129,"x":10,"y":20,"button":"left","double":true}"#,
+        ),
+        (
+            "wm_drag",
+            r#"{"window":129,"x":1,"y":2,"to_x":30,"to_y":40}"#,
+            "drag --button left -- 129 1 2 30 40",
+            r#"{"window":129,"x":1,"y":2,"to_x":30,"to_y":40,"button":"left"}"#,
         ),
         (
             "wm_menu_list",

@@ -1209,6 +1209,9 @@ impl<'a> EditorWindow<'a> {
             Input::Wheel { x, y, notches } if self.area().contains(x, y) => {
                 self.wheel(notches, self.shift_held);
             }
+            Input::SidewaysWheel { x, y, notches } if self.area().contains(x, y) => {
+                self.wheel(-notches, true);
+            }
             _ => {}
         }
         !self.closing

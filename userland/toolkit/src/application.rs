@@ -119,6 +119,11 @@ fn in_scale_1(input: Input, scale: i32) -> Input {
             y: y.div_euclid(scale),
             notches,
         },
+        Input::SidewaysWheel { x, y, notches } => Input::SidewaysWheel {
+            x: x.div_euclid(scale),
+            y: y.div_euclid(scale),
+            notches,
+        },
         other => other,
     }
 }

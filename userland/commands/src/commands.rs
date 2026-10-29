@@ -2,10 +2,10 @@
 //! `agentlog`, `tee` and `trash`) and `help`. Slice 2 adds every other command.
 
 use crate::errors::{
-    ALREADY_EXISTS, APP_EXISTS, DAMAGED, ELEMENT_CANNOT, ELEMENT_DISABLED, FAILED, IS_A_FOLDER,
-    NO_SUCH_APP, NO_SUCH_COMMAND, NO_SUCH_ELEMENT, NO_SUCH_FILE, NO_SUCH_MENU_ITEM, NO_SUCH_WINDOW,
-    NO_WINDOW_SERVER, NOT_A_FOLDER, NOT_AN_APP, NOT_IN_TRASH, PERMISSION_DENIED, PERSON_ACTIVE,
-    PIXELS_ONLY, READ_ONLY, TOO_MANY_ENTRIES, USAGE,
+    ALREADY_EXISTS, APP_EXISTS, DAMAGED, DIALOG_OPEN, ELEMENT_CANNOT, ELEMENT_DISABLED, FAILED,
+    IS_A_FOLDER, NO_SUCH_APP, NO_SUCH_COMMAND, NO_SUCH_ELEMENT, NO_SUCH_FILE, NO_SUCH_MENU_ITEM,
+    NO_SUCH_WINDOW, NO_WINDOW_SERVER, NOT_A_FOLDER, NOT_AN_APP, NOT_IN_TRASH, PERMISSION_DENIED,
+    PERSON_ACTIVE, PIXELS_ONLY, READ_ONLY, TOO_MANY_ENTRIES, USAGE,
 };
 use crate::{
     CommandDefinition, CommandError, Count, Effect, ErrorDefinition, Field, FieldType, JSON_OPTION,
@@ -75,6 +75,27 @@ const WINDOW_ERRORS: [CommandError; 4] = [
     exits(&PERSON_ACTIVE, 75),
     exits(&NO_WINDOW_SERVER, 1),
 ];
+
+const POINTER_ERRORS: [CommandError; 5] = [
+    exits(&USAGE, 2),
+    exits(&NO_SUCH_WINDOW, 1),
+    exits(&PERSON_ACTIVE, 75),
+    exits(&NO_WINDOW_SERVER, 1),
+    exits(&DIALOG_OPEN, 1),
+];
+
+const BUTTON_OPTION: OptionDefinition = valued(
+    None,
+    Some("button"),
+    "button",
+    ValueType::Choice(&["left", "right", "middle"]),
+    "The button: left (the default), right or middle.",
+);
+
+const NOTCHES: ValueType = ValueType::Integer {
+    minimum: -16,
+    maximum: 16,
+};
 
 /// `ls --json`'s records.
 pub const LS_FIELDS: [Field; 9] = [
@@ -387,15 +408,13 @@ pub const WM_CLICK: CommandDefinition = CommandDefinition {
     words: &["wm", "click"],
     summary: "Clicks a point of a window.",
     description: "Clicks a mouse button at x, y of the window's content without moving the \
-                  person's pointer or raising the window. Refused while a person uses the \
-                  machine (exit 75).",
-    options: &[valued(
-        None,
-        Some("button"),
-        "button",
-        ValueType::Choice(&["left", "right", "middle"]),
-        "The button: left (the default), right or middle.",
-    )],
+                  person's pointer or raising the window; --double clicks twice in one step, a \
+                  double-click. Refused while the window has a dialog open (aim at the \
+                  dialog) and while a person uses the machine (exit 75).",
+    options: &[
+        BUTTON_OPTION,
+        long_flag("double", "Double-click: two clicks in one step."),
+    ],
     operands: &[
         WINDOW_OPERAND,
         operand("x", PIXELS, Count::One),
@@ -403,8 +422,30 @@ pub const WM_CLICK: CommandDefinition = CommandDefinition {
     ],
     outputs: TEXT_ONLY,
     max_effect: Effect::Control,
-    errors: &WINDOW_ERRORS,
+    errors: &POINTER_ERRORS,
     surface: Surface::NoGui("people click with their own pointer"),
+};
+
+/// `wm drag`.
+pub const WM_DRAG: CommandDefinition = CommandDefinition {
+    words: &["wm", "drag"],
+    summary: "Drags with a mouse button held across a window.",
+    description: "Presses a mouse button at x, y of the window's content, moves the pointer to \
+                  to-x, to-y in steps and releases it there, without moving the person's \
+                  pointer or the window. Refused while the window has a dialog open (aim at \
+                  the dialog) and while a person uses the machine (exit 75).",
+    options: &[BUTTON_OPTION],
+    operands: &[
+        WINDOW_OPERAND,
+        operand("x", PIXELS, Count::One),
+        operand("y", PIXELS, Count::One),
+        operand("to-x", PIXELS, Count::One),
+        operand("to-y", PIXELS, Count::One),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Control,
+    errors: &POINTER_ERRORS,
+    surface: Surface::NoGui("people drag with their own pointer"),
 };
 
 /// `wm type`.
@@ -439,8 +480,10 @@ pub const WM_PRESS: CommandDefinition = CommandDefinition {
 pub const WM_SCROLL: CommandDefinition = CommandDefinition {
     words: &["wm", "scroll"],
     summary: "Turns the mouse wheel over a window.",
-    description: "Turns the wheel dy notches (up when positive) over the content's centre or \
-                  --at x y; dx must be 0. Refused while a person uses the machine (exit 75).",
+    description: "Turns the wheel dy notches (up when positive) and dx notches sideways (right \
+                  when positive) over the content's centre or --at x y; not both 0. Refused \
+                  while the window has a dialog open (aim at the dialog) and while a person \
+                  uses the machine (exit 75).",
     options: &[OptionDefinition {
         short: None,
         long: Some("at"),
@@ -454,26 +497,12 @@ pub const WM_SCROLL: CommandDefinition = CommandDefinition {
     }],
     operands: &[
         WINDOW_OPERAND,
-        operand(
-            "dx",
-            ValueType::Integer {
-                minimum: 0,
-                maximum: 0,
-            },
-            Count::One,
-        ),
-        operand(
-            "dy",
-            ValueType::Integer {
-                minimum: -16,
-                maximum: 16,
-            },
-            Count::One,
-        ),
+        operand("dx", NOTCHES, Count::One),
+        operand("dy", NOTCHES, Count::One),
     ],
     outputs: TEXT_ONLY,
     max_effect: Effect::Control,
-    errors: &WINDOW_ERRORS,
+    errors: &POINTER_ERRORS,
     surface: Surface::NoGui("people scroll with their own pointer"),
 };
 
@@ -816,7 +845,7 @@ pub const HELP: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order.
-pub const COMMANDS: [CommandDefinition; 27] = [
+pub const COMMANDS: [CommandDefinition; 28] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
@@ -832,6 +861,7 @@ pub const COMMANDS: [CommandDefinition; 27] = [
     WM_CAPTURE,
     WM_CLICK,
     WM_CLOSE,
+    WM_DRAG,
     WM_FOCUS,
     WM_LIST,
     WM_MAXIMISE,

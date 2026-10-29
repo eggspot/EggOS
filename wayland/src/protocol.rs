@@ -348,6 +348,7 @@ pub mod pointer {
     pub const RELEASED: u32 = 0;
     pub const PRESSED: u32 = 1;
     pub const VERTICAL_SCROLL: u32 = 0;
+    pub const HORIZONTAL_SCROLL: u32 = 1;
     pub const ROLE: u32 = 0;
 }
 

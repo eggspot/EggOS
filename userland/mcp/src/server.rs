@@ -1809,7 +1809,7 @@ struct Decimals {
 }
 
 impl Decimals {
-    const COUNT: usize = 11;
+    const COUNT: usize = 14;
     const WINDOW: usize = 0;
     const X: usize = 1;
     const Y: usize = 2;
@@ -1821,11 +1821,15 @@ impl Decimals {
     const WIDTH: usize = 8;
     const HEIGHT: usize = 9;
     const ELEMENT: usize = 10;
+    const SIDEWAYS: usize = 11;
+    const TO_X: usize = 12;
+    const TO_Y: usize = 13;
 
     fn of_window_call(checked: &Checked) -> Self {
         let (x, y) = checked.point.unwrap_or((0, 0));
         let (menu, entry) = checked.menu_item.unwrap_or((0, 0));
         let (width, height) = checked.size.unwrap_or((0, 0));
+        let (to_x, to_y) = checked.to_point.unwrap_or((0, 0));
         let values = [
             i64::from(checked.window.unwrap_or(0)),
             i64::from(x),
@@ -1838,6 +1842,9 @@ impl Decimals {
             i64::from(width),
             i64::from(height),
             i64::from(checked.element.unwrap_or(0)),
+            i64::from(checked.sideways.unwrap_or(0)),
+            i64::from(to_x),
+            i64::from(to_y),
         ];
         let mut decimals = Self {
             digits: [[0; 20]; Self::COUNT],
@@ -1880,9 +1887,12 @@ fn push_window_words<'w>(
             push("--max-bytes");
             push(decimals.get(Decimals::MAX_BYTES));
         }
-        Kind::WmClick => {
+        Kind::WmClick | Kind::WmDrag => {
             push("--button");
             push(checked.button.unwrap_or(Button::Left).name());
+            if checked.double {
+                push("--double");
+            }
         }
         Kind::WmScroll if checked.point.is_some() => {
             push("--at");
@@ -1906,8 +1916,14 @@ fn push_window_words<'w>(
         }
         Kind::WmType => push(arguments::typed_text(checked, typed).unwrap_or("")),
         Kind::WmPress => push(arguments::keys_text(checked, typed).unwrap_or("")),
+        Kind::WmDrag => {
+            push(decimals.get(Decimals::X));
+            push(decimals.get(Decimals::Y));
+            push(decimals.get(Decimals::TO_X));
+            push(decimals.get(Decimals::TO_Y));
+        }
         Kind::WmScroll => {
-            push("0");
+            push(decimals.get(Decimals::SIDEWAYS));
             push(decimals.get(Decimals::NOTCHES));
         }
         Kind::WmMenuChoose => {
@@ -2180,6 +2196,12 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
         writer.key("y");
         writer.u64(u64::from(y));
     }
+    if let Some((x, y)) = checked.to_point {
+        writer.key("to_x");
+        writer.u64(u64::from(x));
+        writer.key("to_y");
+        writer.u64(u64::from(y));
+    }
     if let Some((width, height)) = checked.size {
         writer.key("width");
         writer.u64(u64::from(width));
@@ -2198,6 +2220,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
         writer.key("button");
         writer.string(button.name());
     }
+    if checked.double {
+        writer.key("double");
+        writer.bool(true);
+    }
     if let Some(keys) = arguments::keys_text(checked, scratch.words) {
         writer.key("keys");
         writer.string(keys);
@@ -2209,6 +2235,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if let Some(notches) = checked.notches {
         writer.key("dy");
         writer.i64(i64::from(notches));
+    }
+    if let Some(sideways) = checked.sideways.filter(|&sideways| sideways != 0) {
+        writer.key("dx");
+        writer.i64(i64::from(sideways));
     }
     if let Some(width) = checked.max_width {
         writer.key("max_width");
@@ -2269,7 +2299,8 @@ fn succeeded(tool: &Tool, outcome: &RunOutcome, content_length: usize) -> bool {
         | Kind::WmMaximise
         | Kind::WmRestore
         | Kind::WmClose
-        | Kind::WmAct => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
+        | Kind::WmAct
+        | Kind::WmDrag => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
         _ => outcome.stdout_cut || outcome.ended == Ended::Exited(0),
     }
 }

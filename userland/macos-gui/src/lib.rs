@@ -8,6 +8,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod alert;
+pub mod clicks;
 pub mod colour;
 pub mod geometry;
 pub mod keys;

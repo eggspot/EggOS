@@ -175,9 +175,13 @@ impl InputState {
                 self.mouse(if pressed { down } else { up }, record.a, record.b)
             }
             kind::WHEEL => {
-                let delta = record.d as i32 * WHEEL_DELTA;
+                let (number, notches) = match record.d {
+                    0 => (message::MOUSE_HORIZONTAL_WHEEL, record.c as i32),
+                    vertical => (message::MOUSE_WHEEL, vertical as i32),
+                };
+                let delta = notches * WHEEL_DELTA;
                 Event::Input {
-                    message: message::MOUSE_WHEEL,
+                    message: number,
                     wparam: (usize::from(delta as i16 as u16) << 16) | self.mouse_keys(),
                     lparam: point_parameter(record.a, record.b),
                     point: (record.a, record.b),
@@ -429,6 +433,16 @@ mod tests {
             panic!("a wheel record is input");
         };
         assert_eq!(wparam >> 16, 120);
+        let Event::Input {
+            message: number,
+            wparam,
+            ..
+        } = state.translate(&record(kind::WHEEL, 0, 0, (-1i32) as u32, 0))
+        else {
+            panic!("a sideways wheel record is input");
+        };
+        assert_eq!(number, message::MOUSE_HORIZONTAL_WHEEL);
+        assert_eq!((wparam >> 16) as u16 as i16, -120);
     }
 
     #[test]

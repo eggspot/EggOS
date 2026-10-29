@@ -115,6 +115,8 @@ pub enum Kind {
     WmShow,
     /// `wm_act`: an action on one element of a window (D161).
     WmAct,
+    /// `wm_drag` (D162).
+    WmDrag,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -292,7 +294,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 35] = [
+pub const TOOLS: [Tool; 36] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -447,6 +449,7 @@ pub const TOOLS: [Tool; 35] = [
     tool(&registry::WM_CLOSE, Kind::WmClose, window_twin(&["close"])),
     tool(&registry::WM_SHOW, Kind::WmShow, window_twin(&["show"])),
     tool(&registry::WM_ACT, Kind::WmAct, window_twin(&["act"])),
+    tool(&registry::WM_DRAG, Kind::WmDrag, window_twin(&["drag"])),
 ];
 
 /// The tool named `name`.

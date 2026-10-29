@@ -111,13 +111,7 @@ impl Desktop {
         let target = *self.window_at(slot);
         self.agent.driven = Some((target.id, self.now_ms));
         self.damage_driven(damage);
-        let point = match input {
-            InjectedInput::PointerMove { x, y }
-            | InjectedInput::Click { x, y, .. }
-            | InjectedInput::Wheel { x, y, .. } => Some((x, y)),
-            InjectedInput::Key { .. } | InjectedInput::Character(_) => None,
-        };
-        if let Some((x, y)) = point
+        if let Some((x, y)) = input.point()
             && self.is_visible(slot)
         {
             self.damage_agent_pointer(damage);

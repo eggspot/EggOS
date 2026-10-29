@@ -100,7 +100,7 @@ pub mod request {
     pub const TYPE_IN_TERMINAL: u32 = encode(WRITE, 17, size::TYPE_IN_TERMINAL);
     pub const START_MOVE_OR_RESIZE: u32 = encode(WRITE, 18, size::START_MOVE_OR_RESIZE);
     pub const CAPTURE_WINDOW: u32 = encode(READ | WRITE, 19, size::CAPTURE_WINDOW);
-    pub const SEND_INPUT: u32 = encode(WRITE, 20, size::SEND_INPUT);
+    pub const SEND_INPUT: u32 = encode(READ | WRITE, 20, size::SEND_INPUT);
     pub const SET_MENU: u32 = encode(WRITE, 21, size::SET_MENU);
     pub const GET_MENU: u32 = encode(READ | WRITE, 22, size::GET_MENU);
     pub const CHOOSE_MENU: u32 = encode(WRITE, 23, size::CHOOSE_MENU);
@@ -124,16 +124,52 @@ pub mod input_kind {
     pub const POINTER_MOVE: u32 = 0;
     /// Button `code` is pressed and released at (`x`, `y`).
     pub const CLICK: u32 = 1;
-    /// The wheel turns by `value` notches (up when positive) at (`x`, `y`).
+    /// The wheel turns by `value` notches (up when positive) and sideways by `code` notches
+    /// (right when positive, as a signed word) at (`x`, `y`); not both 0 (D162).
     pub const WHEEL: u32 = 2;
     /// Key `code` is pressed and released with the [`super::modifier`] bits in `value` held.
     pub const KEY: u32 = 3;
     /// The printable ASCII character `code` is typed, as the US keymap types it.
     pub const CHARACTER: u32 = 4;
+    /// Button `code` is clicked twice at (`x`, `y`) in one step, a double-click (D162).
+    pub const DOUBLE_CLICK: u32 = 5;
+    /// Button `code` is pressed at (`x`, `y`), the pointer moves to the point `value` holds
+    /// ([`super::drag_end`]) in [`super::DRAG_STEPS`] moves, and the button is released there
+    /// (D162).
+    pub const DRAG: u32 = 6;
 }
 
-/// The most wheel notches one `SendInput` turns, either way; more are clamped to it.
+/// The most wheel notches one `SendInput` turns, either way and on either axis; more are
+/// clamped to it.
 pub const MAX_WHEEL_NOTCHES: i32 = 16;
+
+/// The pointer moves a `Drag` makes from where it presses to where it releases.
+pub const DRAG_STEPS: u32 = 8;
+
+/// A `Drag`'s end point as its `value` carries it: `x` in the low 16 bits, `y` in the high.
+pub const fn drag_end(x: u16, y: u16) -> u32 {
+    x as u32 | ((y as u32) << 16)
+}
+
+/// Where `SendInput` writes back which window the input went to and how (D162).
+pub mod send_input_reply {
+    /// The window that got the input, or the open dialog that refused it.
+    pub const RECEIVER: usize = 0;
+    /// One of [`super::input_outcome`].
+    pub const OUTCOME: usize = 4;
+}
+
+/// What became of `SendInput`'s input.
+pub mod input_outcome {
+    /// The window named got it.
+    pub const SENT: u32 = 0;
+    /// The window named has a dialog open: keys and characters went to the dialog, as a
+    /// person's would.
+    pub const SENT_TO_DIALOG: u32 = 1;
+    /// The window named has a dialog open: pointer input is not sent, since its point means
+    /// nothing in the dialog; aim at the dialog instead.
+    pub const DIALOG_OPEN: u32 = 2;
+}
 
 /// The longest app name `OpenApp` carries, in bytes.
 pub const APP_NAME_CAPACITY: usize = size::OPEN_APP - 4;
@@ -156,6 +192,8 @@ pub mod event {
     pub const POINTER_MOVE: u16 = 2;
     pub const POINTER_LEAVE: u16 = 3;
     pub const BUTTON: u16 = 4;
+    /// `d` notches up when positive; when `d` is 0, `c` notches sideways, right when positive
+    /// (D162).
     pub const WHEEL: u16 = 5;
     pub const KEY: u16 = 6;
     pub const FOCUS_IN: u16 = 7;

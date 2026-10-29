@@ -1,4 +1,4 @@
-//! The MCP tools (D136, D137, D143, D147, D149, D150, D157 to D161): each a front-end over a
+//! The MCP tools (D136, D137, D143, D147, D149, D150, D157 to D162): each a front-end over a
 //! command, its CLI twin, with the names, arguments, results and annotations they shipped with.
 //! The MCP server writes each tool's `inputSchema` from its [`Argument`]s when it lists them.
 
@@ -407,7 +407,15 @@ const NET_LOOKUP_ARGUMENTS: [Argument; 1] = [required(described(
     "The host name to look up, such as example.com.",
 ))];
 
-const CLICK_ARGUMENTS: [Argument; 4] = [
+const BUTTON: Argument = defaulting(
+    Argument {
+        choices: &["left", "right", "middle"],
+        ..optional("button", JsonType::String, Mapping::Option("--button"))
+    },
+    DefaultValue::Text("left"),
+);
+
+const CLICK_ARGUMENTS: [Argument; 5] = [
     WINDOW,
     required(whole(
         "x",
@@ -423,13 +431,48 @@ const CLICK_ARGUMENTS: [Argument; 4] = [
         "Window pixels from the content's top edge.",
         Mapping::Operand,
     )),
+    BUTTON,
     defaulting(
-        Argument {
-            choices: &["left", "right", "middle"],
-            ..optional("button", JsonType::String, Mapping::Option("--button"))
-        },
-        DefaultValue::Text("left"),
+        described(
+            optional("double", JsonType::Boolean, Mapping::Option("--double")),
+            "Set to true for a double-click: two clicks in one step, which apps count as one \
+             double-click.",
+        ),
+        DefaultValue::Boolean(false),
     ),
+];
+
+const DRAG_ARGUMENTS: [Argument; 6] = [
+    WINDOW,
+    required(whole(
+        "x",
+        0,
+        65_535,
+        "Where the drag starts: window pixels from the content's left edge.",
+        Mapping::Operand,
+    )),
+    required(whole(
+        "y",
+        0,
+        65_535,
+        "Where the drag starts: window pixels from the content's top edge.",
+        Mapping::Operand,
+    )),
+    required(whole(
+        "to_x",
+        0,
+        65_535,
+        "Where the drag ends: window pixels from the content's left edge.",
+        Mapping::Operand,
+    )),
+    required(whole(
+        "to_y",
+        0,
+        65_535,
+        "Where the drag ends: window pixels from the content's top edge.",
+        Mapping::Operand,
+    )),
+    BUTTON,
 ];
 
 const TYPE_ARGUMENTS: [Argument; 2] = [
@@ -456,13 +499,13 @@ const PRESS_ARGUMENTS: [Argument; 2] = [
     )),
 ];
 
-const SCROLL_ARGUMENTS: [Argument; 4] = [
+const SCROLL_ARGUMENTS: [Argument; 5] = [
     WINDOW,
     required(whole(
         "dy",
         -16,
         16,
-        "Notches, up when positive; not 0.",
+        "Notches, up when positive; 0 only with dx.",
         Mapping::Operand,
     )),
     whole(
@@ -478,6 +521,16 @@ const SCROLL_ARGUMENTS: [Argument; 4] = [
         65_535,
         "Window pixels from the content's top edge; with x.",
         Mapping::Option("--at"),
+    ),
+    defaulting(
+        whole(
+            "dx",
+            -16,
+            16,
+            "Notches sideways, right when positive.",
+            Mapping::Operand,
+        ),
+        DefaultValue::Integer(0),
     ),
 ];
 
@@ -932,10 +985,12 @@ pub const WM_CLICK: ToolDefinition = operating(
     "wm_click",
     "Click in a window",
     "Clicks a mouse button at a point of a window's content, as `wm click` does, without \
-         moving the person's pointer or raising the window. x and y are window pixels from the \
-         content's top-left corner: wm_capture's image coordinates times its scale. Refused while \
-         a person is using the keyboard or the pointer: wait a moment and retry. Needs the run \
-         grant: input can do anything a person can, in the terminal too.",
+         moving the person's pointer or raising the window; double: true double-clicks (opens a \
+         file in Files, selects a word). x and y are window pixels from the content's top-left \
+         corner: wm_capture's image coordinates times its scale. Refused with dialog_open while \
+         the window has a dialog open: click in the dialog, whose id the error names. Refused \
+         while a person is using the keyboard or the pointer: wait a moment and retry. Needs \
+         the run grant: input can do anything a person can, in the terminal too.",
     &["wm", "click"],
     &[],
     &CLICK_ARGUMENTS,
@@ -973,13 +1028,30 @@ pub const WM_PRESS: ToolDefinition = operating(
 pub const WM_SCROLL: ToolDefinition = operating(
     "wm_scroll",
     "Scroll in a window",
-    "Turns the mouse wheel dy notches (up when positive) over a point of a window's content, \
-         its centre by default, as `wm scroll` does; sideways scrolling is not supported yet. \
-         Refused while a person is using the machine: wait a moment and retry. Needs the run \
-         grant: input can do anything a person can, in the terminal too.",
+    "Turns the mouse wheel dy notches (up when positive) and dx notches sideways (right when \
+         positive) over a point of a window's content, its centre by default, as `wm scroll` \
+         does. Refused with dialog_open while the window has a dialog open, and while a person \
+         is using the machine: wait a moment and retry. Needs the run grant: input can do \
+         anything a person can, in the terminal too.",
     &["wm", "scroll"],
     &[],
     &SCROLL_ARGUMENTS,
+);
+
+/// `wm_drag`.
+pub const WM_DRAG: ToolDefinition = operating(
+    "wm_drag",
+    "Drag in a window",
+    "Presses a mouse button at x, y of a window's content, moves the pointer to to_x, to_y in \
+         steps and releases it there, as `wm drag` does: moves a slider or a scroll bar's \
+         thumb, selects text, draws a line. Does not move the person's pointer or the window \
+         (move a window with wm_move). Both points are window pixels, as wm_click takes them. \
+         Refused with dialog_open while the window has a dialog open, and while a person is \
+         using the machine: wait a moment and retry. Needs the run grant: input can do \
+         anything a person can, in the terminal too.",
+    &["wm", "drag"],
+    &[],
+    &DRAG_ARGUMENTS,
 );
 
 /// `wm_menu_list`.
@@ -1155,9 +1227,9 @@ pub const WM_ACT: ToolDefinition = operating(
     &ACT_ARGUMENTS,
 );
 
-/// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's and
-/// D161's.
-pub const TOOLS: [ToolDefinition; 35] = [
+/// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's
+/// and D162's.
+pub const TOOLS: [ToolDefinition; 36] = [
     LS,
     CAT,
     PS,
@@ -1193,6 +1265,7 @@ pub const TOOLS: [ToolDefinition; 35] = [
     WM_CLOSE,
     WM_SHOW,
     WM_ACT,
+    WM_DRAG,
 ];
 
 impl ToolDefinition {

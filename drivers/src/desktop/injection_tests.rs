@@ -1,6 +1,6 @@
 use super::protocol::{
-    DiscardEvents, EventRecord, MAX_WHEEL_NOTCHES, QUEUE_CAPACITY, Request, input_kind, modifier,
-    request, size,
+    DRAG_STEPS, DiscardEvents, EventRecord, MAX_WHEEL_NOTCHES, QUEUE_CAPACITY, Request, drag_end,
+    input_kind, modifier, request, size,
 };
 use super::*;
 use crate::input::keymap::{Modifiers, key_for_ascii};
@@ -79,7 +79,7 @@ fn send(
 #[test]
 fn the_requests_have_linux_s_encoding_and_parse_their_fields() {
     assert_eq!(request::CAPTURE_WINDOW, 0xc028_7713);
-    assert_eq!(request::SEND_INPUT, 0x4018_7714);
+    assert_eq!(request::SEND_INPUT, 0xc018_7714);
     let mut capture = [0u8; size::CAPTURE_WINDOW];
     capture[..4].copy_from_slice(&7u32.to_ne_bytes());
     capture[4..8].copy_from_slice(&3u32.to_ne_bytes());
@@ -156,9 +156,41 @@ fn hostile_input_arguments_are_invalid() {
         Ok(InjectedInput::Wheel {
             x: 1,
             y: 2,
-            notches: -MAX_WHEEL_NOTCHES
+            notches: -MAX_WHEEL_NOTCHES,
+            sideways: 0
         })
     );
+    assert_eq!(
+        InjectedInput::from_request(input_kind::WHEEL, 1, 2, 40, 0),
+        Ok(InjectedInput::Wheel {
+            x: 1,
+            y: 2,
+            notches: 0,
+            sideways: MAX_WHEEL_NOTCHES
+        })
+    );
+    assert_eq!(
+        InjectedInput::from_request(input_kind::DRAG, 1, 2, 0x110, drag_end(300, 7)),
+        Ok(InjectedInput::Drag {
+            x: 1,
+            y: 2,
+            to_x: 300,
+            to_y: 7,
+            button: 0x110
+        })
+    );
+    for kind in [input_kind::DOUBLE_CLICK, input_kind::DRAG] {
+        assert_eq!(
+            InjectedInput::from_request(kind, 0, 0, u32::from(key::A), 0),
+            invalid,
+            "{kind}"
+        );
+        assert_eq!(
+            InjectedInput::from_request(kind, -1, 0, 0x110, 0),
+            invalid,
+            "{kind}"
+        );
+    }
     assert_eq!(
         InjectedInput::from_request(input_kind::KEY, 0, 0, 31, modifier::CTRL | modifier::SHIFT),
         Ok(InjectedInput::Key {
@@ -343,10 +375,22 @@ fn the_terminal_s_input_comes_back_for_its_own_handlers() {
         x: 0,
         y: 0,
         notches: -2,
+        sideways: 0,
     };
     assert_eq!(
         send(&mut desktop, terminal, wheel, &mut events),
         Ok(Injected::ForTerminal(TerminalInput::Scroll { notches: -2 }))
+    );
+    let sideways = InjectedInput::Wheel {
+        x: 0,
+        y: 0,
+        notches: 0,
+        sideways: 3,
+    };
+    assert_eq!(
+        send(&mut desktop, terminal, sideways, &mut events),
+        Err(WindowError::Unsupported),
+        "the terminal does not scroll sideways"
     );
     let click = InjectedInput::Click {
         x: 1,
@@ -647,4 +691,197 @@ fn a_query_goes_to_the_window_s_app_unless_it_is_the_terminal_s_or_a_person_acts
         Err(WindowError::QueueFull)
     );
     assert!(events.records.is_empty());
+}
+
+#[test]
+fn a_double_click_is_two_clicks_in_one_step() {
+    let (mut desktop, _, second) = desktop_with_two_windows();
+    let mut events = Recorded::default();
+    let double = InjectedInput::DoubleClick {
+        x: 7,
+        y: 8,
+        button: crate::input::button::LEFT,
+    };
+    assert_eq!(
+        send(&mut desktop, second, double, &mut events),
+        Ok(Injected::Queued)
+    );
+    let records = events.take();
+    let buttons: Vec<(i32, i32, u32)> = records
+        .iter()
+        .filter(|record| record.kind == event::BUTTON)
+        .map(|record| (record.a, record.b, record.d))
+        .collect();
+    assert_eq!(buttons, [(7, 8, 1), (7, 8, 0), (7, 8, 1), (7, 8, 0)]);
+    assert_eq!(records.len(), 7, "enter, move, four buttons, leave");
+}
+
+#[test]
+fn a_drag_presses_moves_in_steps_and_releases_at_the_end() {
+    let (mut desktop, _, second) = desktop_with_two_windows();
+    let mut events = Recorded::default();
+    let drag = InjectedInput::Drag {
+        x: 10,
+        y: 100,
+        to_x: 90,
+        to_y: 20,
+        button: crate::input::button::LEFT,
+    };
+    assert_eq!(
+        send(&mut desktop, second, drag, &mut events),
+        Ok(Injected::Queued)
+    );
+    let records = events.take();
+    assert_eq!(records.len(), DRAG_STEPS as usize + 5);
+    assert_eq!(records[0].kind, event::POINTER_ENTER);
+    assert_eq!(
+        (records[1].kind, records[1].a, records[1].b),
+        (event::POINTER_MOVE, 10, 100)
+    );
+    assert_eq!(
+        (records[2].kind, records[2].a, records[2].b, records[2].d),
+        (event::BUTTON, 10, 100, 1)
+    );
+    let moves: Vec<(i32, i32)> = records[3..3 + DRAG_STEPS as usize]
+        .iter()
+        .map(|record| {
+            assert_eq!(record.kind, event::POINTER_MOVE);
+            assert_eq!(record.c, 1, "the moves say the left button is held");
+            (record.a, record.b)
+        })
+        .collect();
+    assert_eq!(moves[0], (20, 90));
+    assert_eq!(moves[DRAG_STEPS as usize - 1], (90, 20));
+    assert!(moves.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    let release = records[3 + DRAG_STEPS as usize];
+    assert_eq!(
+        (release.kind, release.a, release.b, release.d),
+        (event::BUTTON, 90, 20, 0)
+    );
+    let content = desktop.content_rect(second).unwrap();
+    let outside = InjectedInput::Drag {
+        x: 1,
+        y: 1,
+        to_x: content.width,
+        to_y: 1,
+        button: crate::input::button::LEFT,
+    };
+    assert_eq!(
+        send(&mut desktop, second, outside, &mut events),
+        Err(WindowError::Invalid),
+        "the end must be in the content too"
+    );
+    events.room = DRAG_STEPS as usize + 4;
+    assert_eq!(
+        send(&mut desktop, second, drag, &mut events),
+        Err(WindowError::QueueFull)
+    );
+    assert!(events.records.is_empty());
+}
+
+#[test]
+fn the_wheel_sends_one_record_for_each_axis_it_turns() {
+    let (mut desktop, _, second) = desktop_with_two_windows();
+    let mut events = Recorded::default();
+    let both = InjectedInput::Wheel {
+        x: 3,
+        y: 4,
+        notches: -2,
+        sideways: 5,
+    };
+    send(&mut desktop, second, both, &mut events).unwrap();
+    let wheels: Vec<(u32, u32)> = events
+        .take()
+        .into_iter()
+        .filter(|record| record.kind == event::WHEEL)
+        .map(|record| (record.c, record.d))
+        .collect();
+    assert_eq!(wheels, [(0, -2i32 as u32), (5, 0)]);
+    let sideways = InjectedInput::Wheel {
+        x: 3,
+        y: 4,
+        notches: 0,
+        sideways: -1,
+    };
+    send(&mut desktop, second, sideways, &mut events).unwrap();
+    let wheels: Vec<(u32, u32)> = events
+        .take()
+        .into_iter()
+        .filter(|record| record.kind == event::WHEEL)
+        .map(|record| (record.c, record.d))
+        .collect();
+    assert_eq!(wheels, [(-1i32 as u32, 0)]);
+}
+
+#[test]
+fn a_window_with_a_dialog_open_passes_keys_to_it_and_refuses_points() {
+    let (mut desktop, first, _) = desktop_with_two_windows();
+    let created = desktop
+        .create(CLIENT, 1, u32::from(first), 200, 100, 0)
+        .unwrap();
+    desktop
+        .commit(
+            CLIENT,
+            u32::from(created.window),
+            &[],
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    let dialog = created.window;
+    let mut events = Recorded::default();
+    assert_eq!(
+        send(
+            &mut desktop,
+            first,
+            InjectedInput::Character(b'y'),
+            &mut events
+        ),
+        Ok(Injected::QueuedForDialog {
+            dialog: u32::from(dialog)
+        })
+    );
+    let records = events.take();
+    assert!(!records.is_empty());
+    assert!(records.iter().all(|record| record.window == dialog));
+    let click = InjectedInput::Click {
+        x: 1,
+        y: 1,
+        button: crate::input::button::LEFT,
+    };
+    assert_eq!(
+        send(&mut desktop, first, click, &mut events),
+        Ok(Injected::DialogOpen {
+            dialog: u32::from(dialog)
+        })
+    );
+    assert!(events.records.is_empty(), "nothing sent");
+    assert_eq!(
+        send(&mut desktop, dialog, click, &mut events),
+        Ok(Injected::Queued),
+        "aimed at the dialog itself"
+    );
+    desktop
+        .set_state(CLIENT, u32::from(first), 1, &mut Damage::new(), &mut events)
+        .unwrap();
+    events.take();
+    assert_eq!(
+        send(&mut desktop, first, click, &mut events),
+        Ok(Injected::DialogOpen {
+            dialog: u32::from(dialog)
+        }),
+        "a minimised window's dialog is still open"
+    );
+    desktop
+        .destroy(
+            CLIENT,
+            u32::from(dialog),
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    assert_eq!(
+        send(&mut desktop, first, click, &mut events),
+        Ok(Injected::Queued)
+    );
 }

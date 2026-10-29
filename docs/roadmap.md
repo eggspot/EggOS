@@ -490,7 +490,15 @@ The release path (the release-path review's issues #141-#145, after the items ab
   (the app answers within 500 ms, else pixels only), `userland/element-tree`, the toolkit's
   widget trees (Settings, the installer's dialogs) and Files' entries as list items, `eggway`'s
   title and app id, `wm show [--json]`, `wm act`, and MCP `wm_show` (`view`) and `wm_act`
-  (`run`); the MCP boot reads Settings' tree and invokes its macOS card by id. Next: the
+  (`run`); the MCP boot reads Settings' tree and invokes its macOS card by id. Then agents
+  drag, double-click and scroll sideways **done** (D162): `SEND_INPUT` kinds 5 (a
+  double-click in one step) and 6 (a drag: press, 8 moves, release), the wheel's sideways
+  axis (`Wheel` records' `c`; the toolkit's `SidewaysWheel`, the Text Editor, Win32's
+  `WM_MOUSEHWHEEL`, AppKit's `deltaX`, Wayland's horizontal axis) and AppKit's `clickCount`;
+  input aimed at a window with a dialog open reaches the dialog (keys) or is refused with
+  `dialog_open` (points); `wm drag`, `wm click --double`, `wm scroll <dx>`, MCP `wm_drag` and
+  the `double` and `dx` arguments; the MCP boot opens a folder in Files with a double-click
+  found through `wm_show`. Next: the
   Windows layer's HWND tree with drawn text (win-paint's text in `wm_show`), the macOS
   layer's NSView tree, then slice 2 (every command, examples as tests) and slice 3 (pages and
   previews).

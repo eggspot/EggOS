@@ -9,7 +9,7 @@ pub const DEVICE: &CStr = c"/dev/window";
 pub const LIST_WINDOW: u32 = 0xc060_770b;
 pub const MANAGE_WINDOW: u32 = 0x4010_770c;
 pub const CAPTURE_WINDOW: u32 = 0xc028_7713;
-pub const SEND_INPUT: u32 = 0x4018_7714;
+pub const SEND_INPUT: u32 = 0xc018_7714;
 pub const GET_MENU: u32 = 0xc100_7716;
 pub const CHOOSE_MENU: u32 = 0x4104_7717;
 pub const LIST_SIZE: usize = 96;
@@ -31,7 +31,9 @@ const USAGE: &[u8] =
     b"usage: wm list [--json] | wm focus|minimise|maximise|restore|close [--] <id> | \
       wm move [--] <id> <x> <y> | wm size [--] <id> <width> <height> | \
       wm capture [-o <file.png>] [--max-width <n>] [--max-bytes <n>] [--] <id> | \
-      wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
+      wm click [--button left|right|middle] [--double] [--] <id> <x> <y> | \
+      wm drag [--button left|right|middle] [--] <id> <x> <y> <to-x> <to-y> | \
+      wm type [--] <id> <text> | \
       wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | \
       wm menu [--] <id> | wm menu --choose [--label <label>] [--] <id> <menu> <entry> | \
       wm show [--json] [--] <id> | \
@@ -200,7 +202,7 @@ fn write_window<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
 pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     match arguments.first().map(|verb| verb.to_bytes()) {
         Some(b"capture") => return crate::window_capture::capture(output, &arguments[1..]),
-        Some(verb @ (b"click" | b"type" | b"press" | b"scroll")) => {
+        Some(verb @ (b"click" | b"drag" | b"type" | b"press" | b"scroll")) => {
             return crate::window_input::send(output, verb, &arguments[1..]);
         }
         Some(b"menu") => return crate::window_menu::menu(output, &arguments[1..]),

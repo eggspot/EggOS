@@ -106,7 +106,7 @@ pub enum ArgumentProblem {
     /// `keys` is empty, longer than [`MAX_KEYS_BYTES`] or holds more than letters, digits
     /// and `+`.
     BadKeys,
-    /// `dy` is 0 or more than [`MAX_NOTCHES`] either way.
+    /// `dy` or `dx` is more than [`MAX_NOTCHES`] either way, or both are 0.
     BadNotches,
     /// `max_width` is outside [`MIN_IMAGE_WIDTH`] to [`MAX_IMAGE_WIDTH`].
     BadImageWidth,
@@ -149,6 +149,7 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("name") => "name is required",
             ArgumentProblem::Missing("window") => "window is required: an id wm_list shows",
             ArgumentProblem::Missing("x") => "x and y are required",
+            ArgumentProblem::Missing("to_x") => "to_x and to_y are required: where the drag ends",
             ArgumentProblem::Missing("width") => "width and height are required",
             ArgumentProblem::Missing("text") => "text is required",
             ArgumentProblem::Missing("keys") => "keys is required",
@@ -203,7 +204,7 @@ impl ArgumentProblem {
                  ctrl+s: 1 to 32 letters, digits and +"
             }
             ArgumentProblem::BadNotches => {
-                "dy must be a whole number of notches from -16 to 16, not 0"
+                "dy must be a whole number of notches from -16 to 16, as dx, and not both 0"
             }
             ArgumentProblem::BadImageWidth => "max_width must be a whole number from 16 to 1568",
             ArgumentProblem::BadTime => {
@@ -403,6 +404,12 @@ pub struct Checked {
     pub text: Option<usize>,
     /// `wm_scroll`'s notches (`dy`), up when positive.
     pub notches: Option<i32>,
+    /// `wm_scroll`'s sideways notches (`dx`), right when positive (D162).
+    pub sideways: Option<i32>,
+    /// `wm_click`'s `double` (D162).
+    pub double: bool,
+    /// `wm_drag`'s end point, in window pixels (`to_x`, `to_y`) (D162).
+    pub to_point: Option<(u32, u32)>,
     /// `wm_capture`'s widest image, in pixels.
     pub max_width: Option<u32>,
     /// `clock_set`'s time.
@@ -691,7 +698,7 @@ fn window_arguments<'a>(
             }
             checked.max_width = Some(width as u32);
         }
-        Kind::WmClick => {
+        Kind::WmClick | Kind::WmDrag => {
             checked.point = Some(point(get("x"), get("y"))?.ok_or(ArgumentProblem::Missing("x"))?);
             checked.button = Some(match get("button") {
                 None => Button::Left,
@@ -701,6 +708,14 @@ fn window_arguments<'a>(
                     .ok_or(ArgumentProblem::BadButton)?,
                 Some(_) => return Err(ArgumentProblem::BadButton),
             });
+            match kind {
+                Kind::WmDrag => {
+                    checked.to_point = Some(
+                        point(get("to_x"), get("to_y"))?.ok_or(ArgumentProblem::Missing("to_x"))?,
+                    );
+                }
+                _ => checked.double = flag(get("double"), "double")?,
+            }
         }
         Kind::WmType => {
             checked.text = Some(short_text(
@@ -723,15 +738,21 @@ fn window_arguments<'a>(
             )?);
         }
         Kind::WmScroll => {
-            let notches = match get("dy") {
-                None => return Err(ArgumentProblem::Missing("dy")),
+            let notches = |value: Option<Value<'a>>| match value {
+                None => Ok(0),
                 Some(Value::Number(number)) => number
                     .as_i64()
-                    .filter(|notches| *notches != 0 && notches.unsigned_abs() <= MAX_NOTCHES)
-                    .ok_or(ArgumentProblem::BadNotches)?,
-                Some(_) => return Err(ArgumentProblem::BadNotches),
+                    .filter(|notches| notches.unsigned_abs() <= MAX_NOTCHES)
+                    .ok_or(ArgumentProblem::BadNotches),
+                Some(_) => Err(ArgumentProblem::BadNotches),
             };
-            checked.notches = Some(notches as i32);
+            let dy = get("dy").ok_or(ArgumentProblem::Missing("dy"))?;
+            let (dy, dx) = (notches(Some(dy))?, notches(get("dx"))?);
+            if dy == 0 && dx == 0 {
+                return Err(ArgumentProblem::BadNotches);
+            }
+            checked.notches = Some(dy as i32);
+            checked.sideways = Some(dx as i32);
             checked.point = point(get("x"), get("y"))?;
         }
         Kind::WmMove => {
@@ -1263,6 +1284,58 @@ mod tests {
         assert_eq!(result.point, None);
         let (result, _) = checked("wm_scroll", r#"{"window":5,"dy":1,"x":3,"y":4}"#);
         assert_eq!(result.unwrap().point, Some((3, 4)));
+        let (result, _) = checked("wm_scroll", r#"{"window":5,"dy":0,"dx":-3}"#);
+        let result = result.unwrap();
+        assert_eq!((result.notches, result.sideways), (Some(0), Some(-3)));
+        let (result, _) = checked("wm_click", r#"{"window":5,"x":1,"y":2,"double":true}"#);
+        assert!(result.unwrap().double);
+        let (result, _) = checked(
+            "wm_drag",
+            r#"{"window":5,"x":1,"y":2,"to_x":30,"to_y":40,"button":"right"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(
+            (result.point, result.to_point, result.button),
+            (Some((1, 2)), Some((30, 40)), Some(Button::Right))
+        );
+        for (tool, arguments, problem) in [
+            (
+                "wm_scroll",
+                r#"{"window":1,"dy":0}"#,
+                ArgumentProblem::BadNotches,
+            ),
+            (
+                "wm_scroll",
+                r#"{"window":1,"dy":0,"dx":17}"#,
+                ArgumentProblem::BadNotches,
+            ),
+            (
+                "wm_click",
+                r#"{"window":1,"x":1,"y":1,"double":1}"#,
+                ArgumentProblem::WrongType("double"),
+            ),
+            (
+                "wm_drag",
+                r#"{"window":1,"x":1,"y":1}"#,
+                ArgumentProblem::Missing("to_x"),
+            ),
+            (
+                "wm_drag",
+                r#"{"window":1,"x":1,"y":1,"to_x":2}"#,
+                ArgumentProblem::BadPoint,
+            ),
+            (
+                "wm_drag",
+                r#"{"window":1,"x":1,"y":1,"to_x":2,"to_y":3,"double":true}"#,
+                ArgumentProblem::Unknown,
+            ),
+        ] {
+            assert_eq!(
+                checked(tool, arguments).0.err(),
+                Some(problem),
+                "{tool} {arguments}"
+            );
+        }
         for (tool, arguments, problem) in [
             ("wm_capture", r#"{"window":999999999}"#, None),
             (

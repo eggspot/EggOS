@@ -10619,3 +10619,68 @@ the license, by an explicit instruction recorded here.
   fields, labels, `performClick:`, `setStringValue:`); the Text Editor's text as a text field;
   Files' path field taking `set-text`; a QEMU check that Files' entries show as list items and
   that win-paint's text shows; accessibility (a screen reader) reading the same trees.
+
+## D162 Agents drag, double-click and scroll sideways, and input aimed at a window with a dialog open reaches the dialog (D141's and D143's "Not yet"; extends D141, D143, D160, D161) — Decided by the build loop (the dialog rule decided by research)
+- **Why.** D141 and D143 left an agent unable to drag (a slider, a scroll bar's thumb, a text
+  selection), to double-click (open a file in Files, select a word), to scroll sideways, and
+  sent its keys to a window whose dialog the app was waiting on, so they were lost.
+- **The protocol** (docs/windows.md). `SEND_INPUT` is now read-write: it writes back the window
+  that got the input and an outcome (`send_input_reply`, `input_outcome`: sent, sent to the
+  window's open dialog, not sent because of it); the request number is `0xc0187714`. Kind 5
+  is a double-click: two presses and releases in one step, so every app's own clock sees them
+  within its double-click time. Kind 6 is a drag: the button pressed at (x, y), `DRAG_STEPS`
+  (8) `PointerMove` records with the button's held bit (what Win32's `MK_LBUTTON` and the
+  toolkit read), and the release at the end point, which `value` carries as x in its low 16
+  bits and y in its high (`drag_end`), both points inside the content. The wheel's `code` is
+  sideways notches (right when positive), both axes clamped to 16 and not both 0; each axis
+  turned is one `Wheel` record, the sideways one with `d` 0 and the notches in `c`, which no
+  record used before. The terminal's window takes the vertical wheel only.
+- **Dialogs** (decided by research: option B of four). For a person the desktop already treats
+  a `Dialog` window as modal: a click on its parent focuses the dialog and does nothing else.
+  Input aimed at a window with a dialog open now does the same: keys and characters go to the
+  topmost dialog (as a person's keys would; the reply and `wm` say so: `pressed enter in window
+  129's open dialog, window 130`), and pointer input is not sent at all, because a point in
+  the parent means nothing in the dialog and redirecting it could press the dialog's
+  `Delete` or `Overwrite` by accident: `wm` fails with the new code `dialog_open` (category
+  busy, fix `wm capture`) naming the dialog's id. The dialog of a minimised or covered window
+  is open all the same (the stack, not visibility, decides). Rejected: redirecting points
+  as-is (unsafe), mapping them through the screen onto the dialog (meaningless for minimised
+  or covered windows, which injection serves) and a second request to ask for the dialog
+  (racy).
+- **The apps.** The toolkit decodes a sideways record as `Input::SidewaysWheel` (scaled like
+  the wheel); the Text Editor scrolls sideways with it; the Windows layer sends
+  `WM_MOUSEHWHEEL` (0x020E, `LAST_MOUSE` now) with the delta positive to the right; eggway
+  sends `wl_pointer` axis 1 (horizontal) with the value positive to the right; the macOS layer
+  gives `NSEvent` `deltaX` and `scrollingDeltaX` (negative for a turn to the right, as AppKit
+  signs it) and a real `clickCount` (`eggos_macos_gui::clicks::ClickCounter`: left presses
+  within 500 ms and 4 pixels count up), so a double-click works in Mac apps for people and
+  agents alike. Files, the toolkit and the Text Editor already count double-clicks by their
+  own clocks.
+- **Front-ends** (D22). CLI: `wm click --double`, `wm drag [--button b] [--] <id> <x> <y>
+  <to-x> <to-y>`, `wm scroll <id> <dx> <dy>` with dx from -16 to 16 (`userland/coreutils/
+  src/window_input.rs`); the registry gains `WM_DRAG` (COMMANDS 28, `drag` in `NOUN_VERBS`),
+  `DIALOG_OPEN` (errors 40), `--double` and the notches range. MCP: `wm_drag` (`run`, TOOLS
+  36), `wm_click`'s `double` and `wm_scroll`'s `dx`, both optional and appended to the shipped
+  schemas, so every earlier call means what it meant; the audit logs `to_x`, `to_y`, `double`
+  and a non-zero `dx`. GUI: none, by D22's surface rule (people drag and double-click with
+  their own pointer).
+- **Check.** Host tests: the new kinds' fields and hostile values, a double-click's four
+  button records, a drag's press, eight interpolated moves with the held bit and release, a
+  drag past the content and one that does not fit the queue, one record per wheel axis, a
+  dialog taking keys and refusing points (and still open while its parent is minimised, gone
+  once destroyed), the toolkit's and Win32's sideways decoding, the Text Editor's sideways
+  scroll, `ClickCounter`, every new `wm` form against the fake (with its dialogs), the MCP
+  arguments and schemas. QEMU (the MCP boot, all three architectures): `wm_drag` refused for
+  its grant in boot 1; in boot 2 a folder made in the home folder is found as a list item in
+  Files' `wm_show` tree and opened by `wm_click` with `double: true`, which the path field's
+  value then shows.
+- **Cost.** No hot path changes: a step's records are counted before any is sent, as before;
+  the drag is 11 records, inside the 256-record queue.
+- **Decided without research.** The drag's 8 moves (enough for apps that act on motion, few
+  enough for one atomic step); the end point packed into `value` instead of a larger request
+  (the request keeps its size and every caller its buffer); `dy` stays required in
+  `wm_scroll` (0 is now allowed with `dx`) so its shipped `required` list is unchanged;
+  AppKit's 500 ms double-click time against the toolkit's 400 ms.
+- **Not yet.** Win32 `WM_LBUTTONDBLCLK` for classes with `CS_DBLCLKS`; a mouse's own sideways
+  wheel (the virtio tablet's horizontal axis in the kernel's input path); dragging between two
+  windows (drag and drop); non-ASCII typing (part 33).

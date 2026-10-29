@@ -771,6 +771,7 @@ impl<const N: usize> WidgetTree<N> {
                 Response::Nothing
             }
             Input::CloseRequest
+            | Input::SidewaysWheel { .. }
             | Input::Resize { .. }
             | Input::StateChanged { .. }
             | Input::Overflow => Response::Nothing,

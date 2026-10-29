@@ -437,7 +437,7 @@ fn route_input(
         point.1.saturating_sub(origin.1),
     );
     let lparam = match number {
-        message::MOUSE_WHEEL => lparam,
+        message::MOUSE_WHEEL | message::MOUSE_HORIZONTAL_WHEEL => lparam,
         _ => point_parameter(local.0, local.1),
     };
     Some(message(target, lparam, local))

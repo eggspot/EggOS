@@ -27,8 +27,9 @@ use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
     MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
-    create_reply, element_action, get_menu_reply, get_tree_reply, list_reply, put_double_word,
-    put_word, query_kind, read_query_reply, request, set_size_reply, size, tree_answer,
+    create_reply, element_action, get_menu_reply, get_tree_reply, input_outcome, list_reply,
+    put_double_word, put_word, query_kind, read_query_reply, request, send_input_reply,
+    set_size_reply, size, tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -320,12 +321,32 @@ pub fn ioctl<P: Platform>(
             }
             let injected = on_windows::<P, _>(|desktop, _, damage, events| {
                 let injected = desktop.send_input(window, input, events)?;
-                desktop.note_agent_input(window, input, damage);
+                match injected {
+                    Injected::QueuedForDialog { dialog } => {
+                        desktop.note_agent_input(dialog, input, damage)
+                    }
+                    Injected::DialogOpen { .. } => {}
+                    Injected::Queued | Injected::ForTerminal(_) => {
+                        desktop.note_agent_input(window, input, damage)
+                    }
+                }
                 Ok(injected)
             })?;
-            if let Injected::ForTerminal(input) = injected {
-                send_to_terminal::<P>(input);
-            }
+            let (receiver, outcome) = match injected {
+                Injected::Queued => (window, input_outcome::SENT),
+                Injected::ForTerminal(input) => {
+                    send_to_terminal::<P>(input);
+                    (window, input_outcome::SENT)
+                }
+                Injected::QueuedForDialog { dialog } => (dialog, input_outcome::SENT_TO_DIALOG),
+                Injected::DialogOpen { dialog } => (dialog, input_outcome::DIALOG_OPEN),
+            };
+            bytes.fill(0);
+            put_word(bytes, send_input_reply::RECEIVER, receiver);
+            put_word(bytes, send_input_reply::OUTCOME, outcome);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
         }
         Request::GetMenu { window } => {
             let mut pool = [0u8; MENU_POOL_CAPACITY];

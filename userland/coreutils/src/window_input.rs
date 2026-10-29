@@ -2,22 +2,26 @@ use crate::output::{FAILURE, Output};
 use crate::system::{Duration, System};
 use crate::wm::{SEND_INPUT, SEND_INPUT_SIZE, USAGE_STATUS, number, open_device, refused, usage};
 use core::ffi::CStr;
+use eggos_commands::errors;
 use eggos_runtime::errno::Errno;
 
 pub const HELP: &[u8] = b"Window ids are the ones `wm list` shows; coordinates are pixels of the \
 window's content, from its top-left corner, as `wm capture` shows them at scale 1.\n\
-wm click: --button left (the default), right or middle.\n\
+wm click: --button left (the default), right or middle; --double clicks twice in one step.\n\
+wm drag: presses the button at x y, moves to to-x to-y in steps and releases it there.\n\
 wm type: printable ASCII only, typed with the US keyboard; Enter and other keys are `wm press`.\n\
 wm press: one key, after any of ctrl+, shift+, alt+ and super+ (as in ctrl+s or ctrl+shift+t). \
 Keys: a to z, 0 to 9, F1 to F12, Enter, Tab, Escape (Esc), Backspace, Delete, Insert, Home, \
 End, PageUp, PageDown, Up, Down, Left, Right, Space, and Shift, Ctrl, Alt or Super alone. \
 Names are not case-sensitive.\n\
-wm scroll: dy notches of the wheel, up when positive, at --at x y or the content's centre; \
-dx must be 0 (sideways scrolling is not supported yet).\n\
+wm scroll: dy notches of the wheel, up when positive, and dx sideways, right when positive, \
+at --at x y or the content's centre.\n\
+A window with a dialog open passes keys and typing to the dialog and refuses clicks, drags \
+and scrolling: aim at the dialog, which wm list shows, instead.\n\
 A person always wins: while someone holds a key or a button, or for half a second after \
 they last used the keyboard or the pointer, input is refused and wm exits with 75.\n";
 
-const MAX_POSITIONALS: usize = 3;
+const MAX_POSITIONALS: usize = 5;
 pub const RETRY_PAUSE: Duration = Duration {
     seconds: 0,
     nanoseconds: 20_000_000,
@@ -28,6 +32,13 @@ const KIND_CLICK: u32 = 1;
 const KIND_WHEEL: u32 = 2;
 const KIND_KEY: u32 = 3;
 const KIND_CHARACTER: u32 = 4;
+const KIND_DOUBLE_CLICK: u32 = 5;
+const KIND_DRAG: u32 = 6;
+
+const MAX_NOTCHES: i32 = 16;
+
+const SENT_TO_DIALOG: u32 = 1;
+const DIALOG_OPEN: u32 = 2;
 
 pub const BUTTONS: [(&[u8], u32); 3] = [(b"left", 0x110), (b"right", 0x111), (b"middle", 0x112)];
 
@@ -116,6 +127,7 @@ pub struct Arguments<'a> {
     pub max_width: Option<&'a [u8]>,
     pub max_bytes: Option<&'a [u8]>,
     pub choose: bool,
+    pub double: bool,
     pub label: Option<&'a [u8]>,
 }
 
@@ -144,6 +156,7 @@ pub fn parse<'a>(arguments: &[&'a CStr], options: &[&[u8]]) -> Option<Arguments<
                 b"--max-width" => parsed.max_width = Some(value()?),
                 b"--max-bytes" => parsed.max_bytes = Some(value()?),
                 b"--choose" => parsed.choose = true,
+                b"--double" => parsed.double = true,
                 b"--label" => parsed.label = Some(value()?),
                 b"--at" => {
                     let x = value()?;
@@ -223,6 +236,12 @@ impl Request {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Delivered {
+    receiver: u32,
+    outcome: u32,
+}
+
 #[derive(Debug)]
 struct Sender {
     device: usize,
@@ -230,7 +249,7 @@ struct Sender {
 }
 
 impl Sender {
-    fn send<S: System>(&mut self, system: &mut S, request: &Request) -> Result<(), Errno> {
+    fn send<S: System>(&mut self, system: &mut S, request: &Request) -> Result<Delivered, Errno> {
         loop {
             let mut bytes = request.bytes();
             match system.device_control(self.device, SEND_INPUT, &mut bytes) {
@@ -238,7 +257,16 @@ impl Sender {
                     self.retries += 1;
                     system.sleep(RETRY_PAUSE)?;
                 }
-                result => return result,
+                Ok(()) => {
+                    let word = |at: usize| {
+                        u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+                    };
+                    return Ok(Delivered {
+                        receiver: word(0),
+                        outcome: word(4),
+                    });
+                }
+                Err(errno) => return Err(errno),
             }
         }
     }
@@ -246,7 +274,8 @@ impl Sender {
 
 pub fn send<S: System>(output: &mut Output<S>, verb: &[u8], arguments: &[&CStr]) -> i32 {
     let options: &[&[u8]] = match verb {
-        b"click" => &[b"--button"],
+        b"click" => &[b"--button", b"--double"],
+        b"drag" => &[b"--button"],
         b"scroll" => &[b"--at"],
         _ => &[],
     };
@@ -255,6 +284,7 @@ pub fn send<S: System>(output: &mut Output<S>, verb: &[u8], arguments: &[&CStr])
     };
     let wanted = match verb {
         b"click" | b"scroll" => 3,
+        b"drag" => 5,
         _ => 2,
     };
     if parsed.count != wanted {
@@ -271,6 +301,7 @@ pub fn send<S: System>(output: &mut Output<S>, verb: &[u8], arguments: &[&CStr])
     let mut sender = Sender { device, retries: 0 };
     let status = match verb {
         b"click" => click(output, &mut sender, window, &parsed),
+        b"drag" => drag(output, &mut sender, window, &parsed),
         b"type" => type_text(output, &mut sender, window, parsed.positionals[1]),
         b"press" => press(output, &mut sender, window, parsed.positionals[1]),
         _ => scroll(output, &mut sender, window, &parsed),
@@ -279,62 +310,164 @@ pub fn send<S: System>(output: &mut Output<S>, verb: &[u8], arguments: &[&CStr])
     status
 }
 
+fn button_named<S: System>(output: &mut Output<S>, parsed: &Arguments<'_>) -> Option<u32> {
+    let name = parsed.button.unwrap_or(b"left");
+    let found = BUTTONS
+        .iter()
+        .find(|(known, _)| lowercase_equals(name, known))
+        .map(|&(_, code)| code);
+    if found.is_none() {
+        output.error(&[b"unknown button '", name, b"' (left, right or middle)"]);
+    }
+    found
+}
+
+fn point_at<S: System>(output: &mut Output<S>, x: &[u8], y: &[u8]) -> Option<(i32, i32)> {
+    match (coordinate(x), coordinate(y)) {
+        (Some(x), Some(y)) => Some((x, y)),
+        _ => {
+            output.error(&[b"invalid point ", x, b" ", y]);
+            None
+        }
+    }
+}
+
+fn write_point<S: System>(output: &mut Output<S>, (x, y): (i32, i32)) {
+    output.write_number(x as u64, 0);
+    output.write(b",");
+    output.write_number(y as u64, 0);
+}
+
+fn write_window_ending<S: System>(output: &mut Output<S>, window: &[u8], delivered: Delivered) {
+    output.write(b" in window ");
+    output.write(window);
+    if delivered.outcome == SENT_TO_DIALOG {
+        output.write(b"'s open dialog, window ");
+        output.write_number(u64::from(delivered.receiver), 0);
+    }
+    output.write(b"\n");
+}
+
+fn dialog_open<S: System>(output: &mut Output<S>, window: &[u8], dialog: u32) -> i32 {
+    let mut digits = [0u8; 12];
+    let dialog = decimal(dialog, &mut digits);
+    output.coded(
+        &errors::DIALOG_OPEN,
+        &[
+            window,
+            b": the window has a dialog open, window ",
+            dialog,
+            b": aim at the dialog",
+        ],
+    );
+    FAILURE
+}
+
+fn pointer_sent<S: System>(
+    output: &mut Output<S>,
+    window: &[u8],
+    result: Result<Delivered, Errno>,
+    report: impl FnOnce(&mut Output<S>),
+) -> i32 {
+    match result {
+        Ok(delivered) if delivered.outcome == DIALOG_OPEN => {
+            dialog_open(output, window, delivered.receiver)
+        }
+        Ok(delivered) => {
+            report(output);
+            write_window_ending(output, window, delivered);
+            0
+        }
+        Err(Errno::EOPNOTSUPP) => {
+            output.error(&[
+                window,
+                b": the terminal's window takes keys, characters and the wheel only",
+            ]);
+            FAILURE
+        }
+        Err(errno) => refused(output, window, errno),
+    }
+}
+
 fn click<S: System>(
     output: &mut Output<S>,
     sender: &mut Sender,
     window: u32,
     parsed: &Arguments<'_>,
 ) -> i32 {
-    let name = parsed.button.unwrap_or(b"left");
-    let Some(&(_, code)) = BUTTONS
-        .iter()
-        .find(|(known, _)| lowercase_equals(name, known))
-    else {
-        output.error(&[b"unknown button '", name, b"' (left, right or middle)"]);
+    let Some(code) = button_named(output, parsed) else {
         return USAGE_STATUS;
     };
-    let (Some(x), Some(y)) = (
-        coordinate(parsed.positionals[1]),
-        coordinate(parsed.positionals[2]),
-    ) else {
+    let Some(point) = point_at(output, parsed.positionals[1], parsed.positionals[2]) else {
+        return USAGE_STATUS;
+    };
+    let request = Request {
+        window,
+        kind: match parsed.double {
+            true => KIND_DOUBLE_CLICK,
+            false => KIND_CLICK,
+        },
+        x: point.0,
+        y: point.1,
+        code,
+        value: 0,
+    };
+    let result = sender.send(&mut output.system, &request);
+    let name = parsed.button.unwrap_or(b"left");
+    pointer_sent(output, parsed.positionals[0], result, |output| {
+        output.write(match parsed.double {
+            true => &b"double-clicked "[..],
+            false => &b"clicked "[..],
+        });
+        output.write(name);
+        output.write(b" at ");
+        write_point(output, point);
+    })
+}
+
+fn drag<S: System>(
+    output: &mut Output<S>,
+    sender: &mut Sender,
+    window: u32,
+    parsed: &Arguments<'_>,
+) -> i32 {
+    let Some(code) = button_named(output, parsed) else {
+        return USAGE_STATUS;
+    };
+    let Some(from) = point_at(output, parsed.positionals[1], parsed.positionals[2]) else {
+        return USAGE_STATUS;
+    };
+    let Some(to) = point_at(output, parsed.positionals[3], parsed.positionals[4]) else {
+        return USAGE_STATUS;
+    };
+    let (Ok(to_x), Ok(to_y)) = (u16::try_from(to.0), u16::try_from(to.1)) else {
         output.error(&[
             b"invalid point ",
-            parsed.positionals[1],
+            parsed.positionals[3],
             b" ",
-            parsed.positionals[2],
+            parsed.positionals[4],
+            b" (at most 65535)",
         ]);
         return USAGE_STATUS;
     };
     let request = Request {
         window,
-        kind: KIND_CLICK,
-        x,
-        y,
+        kind: KIND_DRAG,
+        x: from.0,
+        y: from.1,
         code,
-        value: 0,
+        value: u32::from(to_x) | (u32::from(to_y) << 16),
     };
-    match sender.send(&mut output.system, &request) {
-        Ok(()) => {
-            output.write(b"clicked ");
-            output.write(name);
-            output.write(b" at ");
-            output.write_number(x as u64, 0);
-            output.write(b",");
-            output.write_number(y as u64, 0);
-            output.write(b" in window ");
-            output.write(parsed.positionals[0]);
-            output.write(b"\n");
-            0
-        }
-        Err(Errno::EOPNOTSUPP) => {
-            output.error(&[
-                parsed.positionals[0],
-                b": the terminal's window takes keys, characters and the wheel only",
-            ]);
-            FAILURE
-        }
-        Err(errno) => refused(output, parsed.positionals[0], errno),
-    }
+    let result = sender.send(&mut output.system, &request);
+    let name = parsed.button.unwrap_or(b"left");
+    pointer_sent(output, parsed.positionals[0], result, |output| {
+        output.write(b"dragged ");
+        output.write(name);
+        output.write(b" from ");
+        write_point(output, from);
+        output.write(b" to ");
+        write_point(output, to);
+    })
 }
 
 fn type_text<S: System>(
@@ -351,6 +484,10 @@ fn type_text<S: System>(
     }
     let mut window_text = [0u8; 12];
     let window_text = decimal(window, &mut window_text);
+    let mut last = Delivered {
+        receiver: window,
+        outcome: 0,
+    };
     for (typed, &byte) in text.iter().enumerate() {
         let request = Request {
             window,
@@ -360,13 +497,16 @@ fn type_text<S: System>(
             code: u32::from(byte),
             value: 0,
         };
-        if let Err(errno) = sender.send(&mut output.system, &request) {
-            output.write(b"typed ");
-            output.write_number(typed as u64, 0);
-            output.write(b" of ");
-            output.write_number(text.len() as u64, 0);
-            output.write(b" characters\n");
-            return refused(output, window_text, errno);
+        match sender.send(&mut output.system, &request) {
+            Ok(delivered) => last = delivered,
+            Err(errno) => {
+                output.write(b"typed ");
+                output.write_number(typed as u64, 0);
+                output.write(b" of ");
+                output.write_number(text.len() as u64, 0);
+                output.write(b" characters\n");
+                return refused(output, window_text, errno);
+            }
         }
     }
     output.write(b"typed ");
@@ -375,6 +515,10 @@ fn type_text<S: System>(
     output.write_number(text.len() as u64, 0);
     output.write(b" characters into window ");
     output.write(window_text);
+    if last.outcome == SENT_TO_DIALOG {
+        output.write(b"'s open dialog, window ");
+        output.write_number(u64::from(last.receiver), 0);
+    }
     output.write(b"\n");
     0
 }
@@ -402,16 +546,18 @@ fn press<S: System>(output: &mut Output<S>, sender: &mut Sender, window: u32, ke
     let mut window_text = [0u8; 12];
     let window_text = decimal(window, &mut window_text);
     match sender.send(&mut output.system, &request) {
-        Ok(()) => {
+        Ok(delivered) => {
             output.write(b"pressed ");
             output.write(keys);
-            output.write(b" in window ");
-            output.write(window_text);
-            output.write(b"\n");
+            write_window_ending(output, window_text, delivered);
             0
         }
         Err(errno) => refused(output, window_text, errno),
     }
+}
+
+fn notches(text: &[u8]) -> Option<i32> {
+    number(text).filter(|notches| notches.abs() <= MAX_NOTCHES)
 }
 
 fn scroll<S: System>(
@@ -420,32 +566,28 @@ fn scroll<S: System>(
     window: u32,
     parsed: &Arguments<'_>,
 ) -> i32 {
-    let (Some(dx), Some(dy)) = (number(parsed.positionals[1]), number(parsed.positionals[2]))
-    else {
+    let (Some(dx), Some(dy)) = (
+        notches(parsed.positionals[1]),
+        notches(parsed.positionals[2]),
+    ) else {
         output.error(&[
             b"invalid scroll ",
             parsed.positionals[1],
             b" ",
             parsed.positionals[2],
+            b" (notches from -16 to 16)",
         ]);
         return USAGE_STATUS;
     };
     let window_text = parsed.positionals[0];
-    if dx != 0 {
-        output.error(&[b"sideways scrolling is not supported yet: dx must be 0"]);
-        return FAILURE;
-    }
-    if dy == 0 {
-        output.error(&[b"nothing to scroll: dy is 0"]);
+    if dx == 0 && dy == 0 {
+        output.error(&[b"nothing to scroll: dx and dy are 0"]);
         return USAGE_STATUS;
     }
     let point = match parsed.at {
-        Some((x, y)) => match (coordinate(x), coordinate(y)) {
-            (Some(x), Some(y)) => (x, y),
-            _ => {
-                output.error(&[b"invalid point ", x, b" ", y]);
-                return USAGE_STATUS;
-            }
+        Some((x, y)) => match point_at(output, x, y) {
+            Some(point) => point,
+            None => return USAGE_STATUS,
         },
         None => match output
             .system
@@ -461,20 +603,20 @@ fn scroll<S: System>(
         kind: KIND_WHEEL,
         x: point.0,
         y: point.1,
-        code: 0,
+        code: dx as u32,
         value: dy as u32,
     };
-    match sender.send(&mut output.system, &request) {
-        Ok(()) => {
-            output.write(b"scrolled ");
-            output.write(parsed.positionals[2]);
-            output.write(b" notches in window ");
-            output.write(window_text);
-            output.write(b"\n");
-            0
+    let result = sender.send(&mut output.system, &request);
+    pointer_sent(output, window_text, result, |output| {
+        output.write(b"scrolled ");
+        output.write(parsed.positionals[2]);
+        output.write(b" notches");
+        if dx != 0 {
+            output.write(b" and ");
+            output.write(parsed.positionals[1]);
+            output.write(b" sideways");
         }
-        Err(errno) => refused(output, window_text, errno),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -482,7 +624,9 @@ mod tests {
     use super::*;
     use crate::fake::{Fake, FakeWindow};
     use crate::wm::{BUSY_STATUS, KERNEL_CLIENT, wm};
-    use eggos_drivers::desktop::protocol::{input_kind, modifier, request, size};
+    use eggos_drivers::desktop::protocol::{
+        MAX_WHEEL_NOTCHES, input_kind, input_outcome, modifier, request, size,
+    };
     use eggos_drivers::input::{button, key, keymap};
 
     fn machine() -> Fake {
@@ -514,14 +658,28 @@ mod tests {
         assert_eq!(SEND_INPUT_SIZE, size::SEND_INPUT);
         assert_eq!(crate::wm::CAPTURE_SIZE, size::CAPTURE_WINDOW);
         assert_eq!(
-            [KIND_CLICK, KIND_WHEEL, KIND_KEY, KIND_CHARACTER],
+            [
+                KIND_CLICK,
+                KIND_WHEEL,
+                KIND_KEY,
+                KIND_CHARACTER,
+                KIND_DOUBLE_CLICK,
+                KIND_DRAG
+            ],
             [
                 input_kind::CLICK,
                 input_kind::WHEEL,
                 input_kind::KEY,
-                input_kind::CHARACTER
+                input_kind::CHARACTER,
+                input_kind::DOUBLE_CLICK,
+                input_kind::DRAG
             ]
         );
+        assert_eq!(
+            [SENT_TO_DIALOG, DIALOG_OPEN],
+            [input_outcome::SENT_TO_DIALOG, input_outcome::DIALOG_OPEN]
+        );
+        assert_eq!(MAX_NOTCHES, MAX_WHEEL_NOTCHES);
         assert_eq!(
             BUTTONS.map(|(_, code)| code),
             [button::LEFT, button::RIGHT, button::MIDDLE].map(u32::from)
@@ -682,10 +840,116 @@ mod tests {
         let (status, fake) = run(&[c"scroll", c"64", c"0", c"1"], machine());
         assert_eq!(status, 0, "the terminal scrolls its view");
         assert_eq!(fake.sent_input, [[64, KIND_WHEEL, 0, 0, 0, 1]]);
-        let (status, fake) = run(&[c"scroll", c"129", c"2", c"0"], machine());
-        assert_eq!(status, FAILURE);
-        assert!(fake.errors().contains("sideways"));
+        let (status, fake) = run(&[c"scroll", c"129", c"2", c"-1"], machine());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.sent_input,
+            [[129, KIND_WHEEL, 50, 25, 2, -1i32 as u32]]
+        );
+        assert_eq!(
+            fake.output(),
+            "scrolled -1 notches and 2 sideways in window 129\n"
+        );
+        let (status, fake) = run(&[c"scroll", c"64", c"2", c"0"], machine());
+        assert_eq!(status, FAILURE, "the terminal does not scroll sideways");
         assert!(fake.sent_input.is_empty());
+        for (dx, dy) in [(c"0", c"0"), (c"17", c"0"), (c"0", c"-17")] {
+            let (status, fake) = run(&[c"scroll", c"129", dx, dy], machine());
+            assert_eq!(status, 2, "{dx:?} {dy:?}");
+            assert!(fake.sent_input.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_double_click_and_a_drag_send_one_step_each() {
+        let (status, fake) = run(&[c"click", c"--double", c"129", c"10", c"20"], machine());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.sent_input,
+            [[129, KIND_DOUBLE_CLICK, 10, 20, 0x110, 0]]
+        );
+        assert_eq!(
+            fake.output(),
+            "double-clicked left at 10,20 in window 129\n"
+        );
+        let (status, fake) = run(
+            &[
+                c"drag",
+                c"--button",
+                c"right",
+                c"129",
+                c"1",
+                c"2",
+                c"90",
+                c"40",
+            ],
+            machine(),
+        );
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.sent_input,
+            [[129, KIND_DRAG, 1, 2, 0x111, 90 | (40 << 16)]]
+        );
+        assert_eq!(
+            fake.output(),
+            "dragged right from 1,2 to 90,40 in window 129\n"
+        );
+        assert_eq!(
+            fake.sent_input[0][5],
+            eggos_drivers::desktop::protocol::drag_end(90, 40)
+        );
+        for arguments in [
+            &[c"drag", c"129", c"1", c"2", c"3"][..],
+            &[c"drag", c"129", c"1", c"2", c"3", c"70000"][..],
+            &[c"drag", c"--double", c"129", c"1", c"2", c"3", c"4"][..],
+        ] {
+            let (status, fake) = run(arguments, machine());
+            assert_eq!(status, 2, "{arguments:?}");
+            assert!(fake.sent_input.is_empty());
+        }
+        let (status, fake) = run(&[c"drag", c"64", c"1", c"2", c"3", c"4"], machine());
+        assert_eq!(status, FAILURE);
+        assert!(
+            fake.errors()
+                .contains("keys, characters and the wheel only")
+        );
+    }
+
+    #[test]
+    fn a_window_with_a_dialog_open_passes_keys_on_and_refuses_points() {
+        let mut fake = machine();
+        fake.dialogs.push((129, 130));
+        let (status, fake) = run(&[c"press", c"129", c"enter"], fake);
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "pressed enter in window 129's open dialog, window 130\n"
+        );
+        let mut fake = machine();
+        fake.dialogs.push((129, 130));
+        let (status, fake) = run(&[c"type", c"129", c"ok"], fake);
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "typed 2 of 2 characters into window 129's open dialog, window 130\n"
+        );
+        for arguments in [
+            &[c"click", c"129", c"1", c"1"][..],
+            &[c"drag", c"129", c"1", c"1", c"2", c"2"][..],
+            &[c"scroll", c"--at", c"1", c"1", c"129", c"0", c"1"][..],
+        ] {
+            let mut fake = machine();
+            fake.dialogs.push((129, 130));
+            let (status, fake) = run(arguments, fake);
+            assert_eq!(status, FAILURE, "{arguments:?}");
+            assert_eq!(
+                fake.errors(),
+                "wm: 129: the window has a dialog open, window 130: aim at the dialog\n  \
+                 try: wm capture\n",
+                "{arguments:?}"
+            );
+            assert!(fake.sent_input.is_empty());
+        }
     }
 
     #[test]

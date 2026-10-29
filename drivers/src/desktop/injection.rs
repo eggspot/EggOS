@@ -6,7 +6,8 @@
 //! their last input, injected input is refused ([`WindowError::Busy`]).
 
 use super::protocol::{
-    EventRecord, EventSink, MAX_WHEEL_NOTCHES, WindowError, event, input_kind, modifier, query_kind,
+    DRAG_STEPS, EventRecord, EventSink, MAX_WHEEL_NOTCHES, WindowError, event, input_kind,
+    modifier, query_kind,
 };
 use super::{Desktop, KERNEL_CLIENT, WindowId, codepoint, colour, key_modifiers};
 use crate::display::{Damage, Rect};
@@ -30,6 +31,8 @@ const MODIFIER_KEYS: [(Modifiers, u16); 4] = [
 
 const KNOWN_MODIFIERS: u32 = modifier::SHIFT | modifier::CTRL | modifier::ALT | modifier::SUPER;
 
+const DRAG_MOVES: i32 = DRAG_STEPS as i32;
+
 /// One step of input for one window, as `SEND_INPUT` asks for it. Coordinates are pixels of
 /// the window's content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +41,25 @@ pub enum InjectedInput {
     PointerMove { x: u32, y: u32 },
     /// `button` (`BTN_LEFT`, `BTN_RIGHT` or `BTN_MIDDLE`) is pressed and released at (`x`, `y`).
     Click { x: u32, y: u32, button: u16 },
-    /// The wheel turns by `notches`, up when positive, at (`x`, `y`).
-    Wheel { x: u32, y: u32, notches: i32 },
+    /// `button` is pressed and released twice at (`x`, `y`) in one step: a double-click.
+    DoubleClick { x: u32, y: u32, button: u16 },
+    /// `button` is pressed at (`x`, `y`), the pointer moves to (`to_x`, `to_y`) in
+    /// [`DRAG_STEPS`] moves, and the button is released there.
+    Drag {
+        x: u32,
+        y: u32,
+        to_x: u32,
+        to_y: u32,
+        button: u16,
+    },
+    /// The wheel turns by `notches`, up when positive, and sideways by `sideways`, right when
+    /// positive, at (`x`, `y`).
+    Wheel {
+        x: u32,
+        y: u32,
+        notches: i32,
+        sideways: i32,
+    },
     /// Key `code` is pressed and released with `modifiers` held.
     Key { code: u16, modifiers: Modifiers },
     /// The printable ASCII character is typed as the US keymap types it.
@@ -49,8 +69,9 @@ pub enum InjectedInput {
 impl InjectedInput {
     /// The input `SEND_INPUT`'s fields ask for; [`WindowError::Invalid`] for an unknown kind, a
     /// negative coordinate, a button other than left, right and middle, a key code that is 0
-    /// or a button's, modifier bits other than Shift, Ctrl, Alt and Super, no wheel notch, or a
-    /// character that is not printable ASCII. Notches past [`MAX_WHEEL_NOTCHES`] are clamped.
+    /// or a button's, modifier bits other than Shift, Ctrl, Alt and Super, no wheel notch on
+    /// either axis, or a character that is not printable ASCII. Notches past
+    /// [`MAX_WHEEL_NOTCHES`] are clamped.
     pub fn from_request(
         kind: u32,
         x: i32,
@@ -64,6 +85,12 @@ impl InjectedInput {
                 u32::try_from(y).map_err(|_| WindowError::Invalid)?,
             ))
         };
+        let pointer_button = || {
+            u16::try_from(code)
+                .ok()
+                .filter(|&code| matches!(code, button::LEFT | button::RIGHT | button::MIDDLE))
+                .ok_or(WindowError::Invalid)
+        };
         match kind {
             input_kind::POINTER_MOVE => {
                 let (x, y) = point()?;
@@ -71,19 +98,43 @@ impl InjectedInput {
             }
             input_kind::CLICK => {
                 let (x, y) = point()?;
-                let button = u16::try_from(code)
-                    .ok()
-                    .filter(|&code| matches!(code, button::LEFT | button::RIGHT | button::MIDDLE))
-                    .ok_or(WindowError::Invalid)?;
-                Ok(Self::Click { x, y, button })
+                Ok(Self::Click {
+                    x,
+                    y,
+                    button: pointer_button()?,
+                })
+            }
+            input_kind::DOUBLE_CLICK => {
+                let (x, y) = point()?;
+                Ok(Self::DoubleClick {
+                    x,
+                    y,
+                    button: pointer_button()?,
+                })
+            }
+            input_kind::DRAG => {
+                let (x, y) = point()?;
+                Ok(Self::Drag {
+                    x,
+                    y,
+                    to_x: value & 0xffff,
+                    to_y: value >> 16,
+                    button: pointer_button()?,
+                })
             }
             input_kind::WHEEL => {
                 let (x, y) = point()?;
                 let notches = (value as i32).clamp(-MAX_WHEEL_NOTCHES, MAX_WHEEL_NOTCHES);
-                if notches == 0 {
+                let sideways = (code as i32).clamp(-MAX_WHEEL_NOTCHES, MAX_WHEEL_NOTCHES);
+                if notches == 0 && sideways == 0 {
                     return Err(WindowError::Invalid);
                 }
-                Ok(Self::Wheel { x, y, notches })
+                Ok(Self::Wheel {
+                    x,
+                    y,
+                    notches,
+                    sideways,
+                })
             }
             input_kind::KEY => {
                 let code = u16::try_from(code)
@@ -137,8 +188,43 @@ pub enum TerminalInput {
 pub enum Injected {
     /// In the window's client's queue.
     Queued,
+    /// The window has a dialog open: the key or character went to window `dialog`, the
+    /// dialog, as a person's keys would.
+    QueuedForDialog { dialog: u32 },
+    /// Nowhere: the window has dialog `dialog` open, and a point in the window means nothing
+    /// in the dialog.
+    DialogOpen { dialog: u32 },
     /// Nowhere yet: it is the terminal's, for the caller to hand over.
     ForTerminal(TerminalInput),
+}
+
+impl InjectedInput {
+    /// The point in the window's content the input aims at, its end point for a drag; `None`
+    /// for keys and characters.
+    pub fn point(self) -> Option<(u32, u32)> {
+        match self {
+            InjectedInput::PointerMove { x, y }
+            | InjectedInput::Click { x, y, .. }
+            | InjectedInput::DoubleClick { x, y, .. }
+            | InjectedInput::Wheel { x, y, .. } => Some((x, y)),
+            InjectedInput::Drag { to_x, to_y, .. } => Some((to_x, to_y)),
+            InjectedInput::Key { .. } | InjectedInput::Character(_) => None,
+        }
+    }
+
+    fn records(self) -> usize {
+        match self {
+            InjectedInput::PointerMove { .. } => 1,
+            InjectedInput::Click { .. } => 3,
+            InjectedInput::DoubleClick { .. } => 5,
+            InjectedInput::Drag { .. } => DRAG_STEPS as usize + 3,
+            InjectedInput::Wheel {
+                notches, sideways, ..
+            } => 1 + usize::from(notches != 0) + usize::from(sideways != 0),
+            InjectedInput::Key { modifiers, .. } => 2 + 2 * held_modifier_keys(modifiers),
+            InjectedInput::Character(_) => 0,
+        }
+    }
 }
 
 /// What a window's content shows: its size, the part its buffer covers and the colour of the
@@ -283,14 +369,18 @@ impl Desktop {
     /// Sends `input` to window `window`, any client's, as one step: straight to its client's
     /// queue, with `FocusIn` before and `FocusOut` after unless it is the focused window, and
     /// `PointerEnter` and `PointerLeave` around pointer input unless the pointer is over it; a
-    /// click is a move, a press and a release; a key is its modifiers' keys down, the key down
-    /// and up, and the modifiers up. Focus, hover and the pointer stay as they were. The
-    /// terminal's keys, characters and wheel come back as [`Injected::ForTerminal`].
-    /// [`WindowError::NoSuchWindow`] for no such window, [`WindowError::Busy`] while
-    /// [`Self::person_is_active`], [`WindowError::Invalid`] for a point outside the content or
-    /// a character no key types, [`WindowError::Unsupported`] for pointer input to the
-    /// terminal, [`WindowError::QueueFull`] when the client's queue lacks room for the whole
-    /// step (nothing is sent).
+    /// click is a move, a press and a release, a double-click two of those presses and
+    /// releases, a drag a press, [`DRAG_STEPS`] moves and a release; the wheel is one record
+    /// for each axis it turns; a key is its modifiers' keys down, the key down and up, and the
+    /// modifiers up. Focus, hover and the pointer stay as they were. A window with a dialog
+    /// open passes keys and characters to the dialog ([`Injected::QueuedForDialog`]) and
+    /// refuses pointer input ([`Injected::DialogOpen`], nothing sent), as the desktop treats a
+    /// person's. The terminal's keys, characters and wheel come back as
+    /// [`Injected::ForTerminal`]. [`WindowError::NoSuchWindow`] for no such window,
+    /// [`WindowError::Busy`] while [`Self::person_is_active`], [`WindowError::Invalid`] for a
+    /// point outside the content or a character no key types, [`WindowError::Unsupported`] for
+    /// pointer input or sideways scrolling in the terminal, [`WindowError::QueueFull`] when the
+    /// client's queue lacks room for the whole step (nothing is sent).
     pub fn send_input(
         &mut self,
         window: u32,
@@ -301,8 +391,7 @@ impl Desktop {
         if self.person_is_active() {
             return Err(WindowError::Busy);
         }
-        let target = *self.window_at(slot);
-        if target.id == self.terminal_window() {
+        if self.window_at(slot).id == self.terminal_window() {
             return match input {
                 InjectedInput::Key { code, modifiers } => {
                     Ok(Injected::ForTerminal(TerminalInput::Key {
@@ -313,14 +402,46 @@ impl Desktop {
                 InjectedInput::Character(byte) => {
                     Ok(Injected::ForTerminal(TerminalInput::Character(byte)))
                 }
-                InjectedInput::Wheel { notches, .. } => {
-                    Ok(Injected::ForTerminal(TerminalInput::Scroll { notches }))
-                }
-                InjectedInput::PointerMove { .. } | InjectedInput::Click { .. } => {
-                    Err(WindowError::Unsupported)
-                }
+                InjectedInput::Wheel {
+                    notches,
+                    sideways: 0,
+                    ..
+                } if notches != 0 => Ok(Injected::ForTerminal(TerminalInput::Scroll { notches })),
+                _ => Err(WindowError::Unsupported),
             };
         }
+        match self.open_dialog(slot) {
+            Some(dialog) if input.point().is_some() => Ok(Injected::DialogOpen {
+                dialog: u32::from(self.window_at(dialog).id),
+            }),
+            Some(dialog) => {
+                self.queue_input(dialog, input, events)?;
+                Ok(Injected::QueuedForDialog {
+                    dialog: u32::from(self.window_at(dialog).id),
+                })
+            }
+            None => {
+                self.queue_input(slot, input, events)?;
+                Ok(Injected::Queued)
+            }
+        }
+    }
+
+    fn open_dialog(&self, slot: usize) -> Option<usize> {
+        self.stack[..self.stack_length]
+            .iter()
+            .rev()
+            .map(|&dialog| usize::from(dialog))
+            .find(|&dialog| self.window_at(dialog).parent == Some(slot as u8))
+    }
+
+    fn queue_input(
+        &mut self,
+        slot: usize,
+        input: InjectedInput,
+        events: &mut dyn EventSink,
+    ) -> Result<(), WindowError> {
+        let target = *self.window_at(slot);
         if target.client == KERNEL_CLIENT {
             return Err(WindowError::Unsupported);
         }
@@ -331,28 +452,19 @@ impl Desktop {
             }
             other => other,
         };
-        let point = match input {
-            InjectedInput::PointerMove { x, y }
-            | InjectedInput::Click { x, y, .. }
-            | InjectedInput::Wheel { x, y, .. } => Some((x, y)),
-            InjectedInput::Key { .. } | InjectedInput::Character(_) => None,
+        let start = match input {
+            InjectedInput::Drag { x, y, .. } => Some((x, y)),
+            other => other.point(),
         };
-        if let Some((x, y)) = point
-            && (x >= target.content_width || y >= target.content_height)
-        {
+        let outside = |point: Option<(u32, u32)>| {
+            point.is_some_and(|(x, y)| x >= target.content_width || y >= target.content_height)
+        };
+        if outside(start) || outside(input.point()) {
             return Err(WindowError::Invalid);
         }
         let focus = self.focus != Some(slot);
-        let hover = point.is_some() && self.hover != Some(slot);
-        let records = 2 * usize::from(focus)
-            + 2 * usize::from(hover)
-            + match input {
-                InjectedInput::PointerMove { .. } => 1,
-                InjectedInput::Click { .. } => 3,
-                InjectedInput::Wheel { .. } => 2,
-                InjectedInput::Key { modifiers, .. } => 2 + 2 * held_modifier_keys(modifiers),
-                InjectedInput::Character(_) => 0,
-            };
+        let hover = start.is_some() && self.hover != Some(slot);
+        let records = 2 * usize::from(focus) + 2 * usize::from(hover) + input.records();
         if events.room(target.client) < records {
             return Err(WindowError::QueueFull);
         }
@@ -362,7 +474,7 @@ impl Desktop {
         if focus {
             send(event::FOCUS_IN, 0, 0, 0, 0, events);
         }
-        if let Some((x, y)) = point {
+        if let Some((x, y)) = start {
             let (x, y) = (x as i32, y as i32);
             if hover {
                 send(event::POINTER_ENTER, x, y, 0, 0, events);
@@ -373,8 +485,40 @@ impl Desktop {
                     send(event::BUTTON, x, y, u32::from(button), 1, events);
                     send(event::BUTTON, x, y, u32::from(button), 0, events);
                 }
-                InjectedInput::Wheel { notches, .. } => {
-                    send(event::WHEEL, x, y, 0, notches as u32, events);
+                InjectedInput::DoubleClick { button, .. } => {
+                    for _ in 0..2 {
+                        send(event::BUTTON, x, y, u32::from(button), 1, events);
+                        send(event::BUTTON, x, y, u32::from(button), 0, events);
+                    }
+                }
+                InjectedInput::Drag {
+                    to_x, to_y, button, ..
+                } => {
+                    send(event::BUTTON, x, y, u32::from(button), 1, events);
+                    let (to_x, to_y) = (to_x as i32, to_y as i32);
+                    let held = held_button_bit(button);
+                    for step in 1..=DRAG_MOVES {
+                        let along = |from: i32, to: i32| from + (to - from) * step / DRAG_MOVES;
+                        send(
+                            event::POINTER_MOVE,
+                            along(x, to_x),
+                            along(y, to_y),
+                            held,
+                            0,
+                            events,
+                        );
+                    }
+                    send(event::BUTTON, to_x, to_y, u32::from(button), 0, events);
+                }
+                InjectedInput::Wheel {
+                    notches, sideways, ..
+                } => {
+                    if notches != 0 {
+                        send(event::WHEEL, x, y, 0, notches as u32, events);
+                    }
+                    if sideways != 0 {
+                        send(event::WHEEL, x, y, sideways as u32, 0, events);
+                    }
                 }
                 _ => {}
             }
@@ -413,7 +557,15 @@ impl Desktop {
         if focus {
             send(event::FOCUS_OUT, 0, 0, 0, 0, events);
         }
-        Ok(Injected::Queued)
+        Ok(())
+    }
+}
+
+fn held_button_bit(code: u16) -> u32 {
+    match code {
+        button::LEFT => 1,
+        button::RIGHT => 2,
+        _ => 4,
     }
 }
 

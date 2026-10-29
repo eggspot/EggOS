@@ -12,6 +12,7 @@ use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::{Runtime, autorelease, methods, sel, send, send_bool, send1, send2};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use eggos_macos_gui::clicks::ClickCounter;
 use eggos_macos_gui::geometry::point_of_pixel;
 use eggos_macos_gui::keys::modifier;
 use eggos_macos_gui::menu::Chosen;
@@ -30,6 +31,7 @@ static LAUNCHED: AtomicBool = AtomicBool::new(false);
 static LEFT_HELD: AtomicBool = AtomicBool::new(false);
 static REPORTED: AtomicBool = AtomicBool::new(false);
 static WINDOWS: Exclusive<Buffer<Id>> = Exclusive::new(Buffer::new());
+static CLICKS: Exclusive<ClickCounter> = Exclusive::new(ClickCounter::new());
 
 /// The NSApplication instance, nil before `sharedApplication`.
 pub fn application() -> Id {
@@ -269,7 +271,17 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             if button == MouseButton::Left {
                 LEFT_HELD.store(pressed, Ordering::Relaxed);
             }
-            mouse(window, event_kind, x, y, number, 0.0, time);
+            let clicks = match (button, pressed) {
+                (MouseButton::Left, true) => CLICKS.with(|clicks| clicks.press(time, x, y)),
+                (MouseButton::Left, false) => CLICKS.with(|clicks| clicks.release()),
+                _ => 1,
+            };
+            let location = point_of_pixel(x, y, content_height(window));
+            let event = event::mouse(event_kind, window, location, number, 0.0, time);
+            if !event.is_null() {
+                event::fields(event).clicks = clicks;
+            }
+            deliver(event);
         }
         Input::Wheel { x, y, notches } => {
             mouse(
@@ -281,6 +293,14 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
                 f64::from(notches),
                 time,
             );
+        }
+        Input::SidewaysWheel { x, y, notches } => {
+            let location = point_of_pixel(x, y, content_height(window));
+            let event = event::mouse(kind::SCROLL_WHEEL, window, location, 0, 0.0, time);
+            if !event.is_null() {
+                event::fields(event).delta_x = -f64::from(notches);
+            }
+            deliver(event);
         }
         Input::Key {
             code,

@@ -185,11 +185,11 @@ its tools, schemas, annotations, refusal codes and `instructions`. `eggsh` does 
 
 **`wm`'s own verbs:** `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
-item 48; `show` is a core verb).
+item 48; `show` is a core verb), `drag` (D162).
 
 **Commands in the registry:** `agentlog`, `app install`, `app list`, `app open`, `app
 uninstall`, `cat`, `help`, `ls`, `ps`, `tee`, `trash`, `wm act` (D161), `wm capture`, `wm
-click`, `wm close`, `wm focus`, `wm list`, `wm maximise`, `wm menu`, `wm minimise`, `wm move`,
+click`, `wm close`, `wm drag` (D162), `wm focus`, `wm list`, `wm maximise`, `wm menu`, `wm minimise`, `wm move`,
 `wm press`, `wm restore`, `wm scroll`, `wm show` (D161), `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`, `ping`,
 `nslookup`, `fetch` and `edit`, which tools run already, first).
 
@@ -230,6 +230,7 @@ click`, `wm close`, `wm focus`, `wm list`, `wm maximise`, `wm menu`, `wm minimis
 | `no_such_element` | not_found | `wm act`: no element of that id now | `wm show` |
 | `element_cannot` | usage | `wm act`: the element's role does not take the action | |
 | `element_disabled` | refused | `wm act`: the element is disabled | `wm show` |
+| `dialog_open` | busy | `wm click`, `wm drag`, `wm scroll`: the window has a dialog open, which the message names (D162) | `wm capture` |
 | `no_such_app`, `app_exists`, `not_an_app` | not_found, exists, usage | `app` | `app list` for the first |
 | `not_in_trash` | not_found | `trash -r` | `trash -l` |
 | `no_such_command` | not_found | `help` | `help` |
@@ -240,7 +241,9 @@ parity test compares each schema byte for byte with the shipped one), and D160 a
 `wm_move` (`x`, `y`), `wm_size` (`width`, `height`), `wm_minimise`, `wm_maximise`,
 `wm_restore` and `wm_close`: effect `change`, grant `run`, idempotent but for `wm_close`. D161
 adds `wm_show` (effect `read`, grant `view`) and `wm_act` (`element`, `action`, `text`;
-effect `control`, grant `run`). Their
+effect `control`, grant `run`). D162 adds `wm_drag` (`x`, `y`, `to_x`, `to_y`, `button`;
+effect `control`, grant `run`) and two optional arguments to shipped tools, `wm_click`'s
+`double` and `wm_scroll`'s `dx`, so their schemas grew by those (old calls are unchanged). Their
 effects: `read` for the reading tools, `wm_capture` and `wm_menu_list`; `change` for
 `clock_sync`, `app_install`, `app_open`, `edit_open` and the seven new `wm` tools; `destroy` for
 `tee`, `trash`, `fetch`, `clock_set` and `app_uninstall`; `control` for `run`, the input tools

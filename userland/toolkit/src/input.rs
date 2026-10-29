@@ -67,6 +67,8 @@ pub enum Input {
     },
     /// The wheel turned by `notches` (positive up) over (`x`, `y`).
     Wheel { x: i32, y: i32, notches: i32 },
+    /// The wheel turned sideways by `notches` (positive right) over (`x`, `y`) (D162).
+    SidewaysWheel { x: i32, y: i32, notches: i32 },
     /// A key was pressed or released; `character` is what it types under the US layout, or 0.
     Key {
         code: u16,
@@ -128,6 +130,11 @@ pub fn decode(record: &[u8; RECORD_SIZE]) -> Option<Event> {
                 _ => MouseButton::Middle,
             },
             pressed: d != 0,
+        },
+        5 if d == 0 && c != 0 => Input::SidewaysWheel {
+            x: a,
+            y: b,
+            notches: c as i32,
         },
         5 => Input::Wheel {
             x: a,
@@ -202,6 +209,14 @@ mod tests {
                 x: 4,
                 y: 5,
                 notches: -2
+            })
+        );
+        assert_eq!(
+            decode(&record(5, 1, [0, 4, 5, (-3i32) as u32, 0])).map(|event| event.input),
+            Some(Input::SidewaysWheel {
+                x: 4,
+                y: 5,
+                notches: -3
             })
         );
         assert_eq!(

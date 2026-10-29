@@ -84,7 +84,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "wm_click",
-        r#"{"type":"object","properties":{"window":{"type":"integer","minimum":0,"maximum":999999999,"description":"The window's id, as wm_list shows it."},"x":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's left edge."},"y":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's top edge."},"button":{"type":"string","enum":["left","right","middle"],"default":"left"}},"required":["window","x","y"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"window":{"type":"integer","minimum":0,"maximum":999999999,"description":"The window's id, as wm_list shows it."},"x":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's left edge."},"y":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's top edge."},"button":{"type":"string","enum":["left","right","middle"],"default":"left"},"double":{"type":"boolean","description":"Set to true for a double-click: two clicks in one step, which apps count as one double-click.","default":false}},"required":["window","x","y"],"additionalProperties":false}"#,
     ),
     (
         "wm_type",
@@ -96,7 +96,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "wm_scroll",
-        r#"{"type":"object","properties":{"window":{"type":"integer","minimum":0,"maximum":999999999,"description":"The window's id, as wm_list shows it."},"dy":{"type":"integer","minimum":-16,"maximum":16,"description":"Notches, up when positive; not 0."},"x":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's left edge; with y."},"y":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's top edge; with x."}},"required":["window","dy"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"window":{"type":"integer","minimum":0,"maximum":999999999,"description":"The window's id, as wm_list shows it."},"dy":{"type":"integer","minimum":-16,"maximum":16,"description":"Notches, up when positive; 0 only with dx."},"x":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's left edge; with y."},"y":{"type":"integer","minimum":0,"maximum":65535,"description":"Window pixels from the content's top edge; with x."},"dx":{"type":"integer","minimum":-16,"maximum":16,"default":0,"description":"Notches sideways, right when positive."}},"required":["window","dy"],"additionalProperties":false}"#,
     ),
     (
         "wm_menu_list",

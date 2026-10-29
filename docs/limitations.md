@@ -159,10 +159,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `__weak` and exceptions, most of Foundation, signal handlers, other frameworks and riscv64
   do not run yet.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
-  app window's content as a PNG and `wm click`, `type`, `press` and `scroll` operate it, but
-  the terminal's window can't be captured, takes no pointer input, and drag, double-click,
-  sideways scrolling and non-ASCII typing are not in yet; input goes to the window named even
-  when a dialog of it is open; a minimised Wayland app does not repaint after input (eggway
+  app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it, but
+  the terminal's window can't be captured, takes no pointer input or sideways scrolling, and
+  non-ASCII typing is not in yet; clicks, drags and scrolling aimed at a window with a dialog
+  open are refused (keys go to the dialog: D162); Windows programs get no `WM_LBUTTONDBLCLK`
+  (a double-click is two `WM_LBUTTONDOWN`s), and no mouse sends a sideways wheel yet (only
+  `wm scroll` and agents do); a minimised Wayland app does not repaint after input (eggway
   sends no frame callbacks to minimised surfaces) until it is restored; every process is root
   until users come (M10), so any program can capture and send input; agents get it only
   through the MCP server's grants (`view` to see, `run` to operate, D143). Input to a window

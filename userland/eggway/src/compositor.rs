@@ -1816,16 +1816,16 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
             if client.output_room() < OUTPUT_CAPACITY / 2 {
                 return;
             }
-            let notches = d as i32;
+            let (axis, steps) = match d {
+                0 => (pointer::HORIZONTAL_SCROLL, c as i32),
+                vertical => (pointer::VERTICAL_SCROLL, (vertical as i32).saturating_neg()),
+            };
             each_of(client, Interface::Pointer, |client, id, version| {
                 let _ = client.queue(
                     id,
                     version,
                     pointer::AXIS_DISCRETE,
-                    &[
-                        Value::Uint(pointer::VERTICAL_SCROLL),
-                        Value::Int(notches.saturating_neg()),
-                    ],
+                    &[Value::Uint(axis), Value::Int(steps)],
                 );
                 let _ = client.queue(
                     id,
@@ -1833,10 +1833,8 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
                     pointer::AXIS,
                     &[
                         Value::Uint(time),
-                        Value::Uint(pointer::VERTICAL_SCROLL),
-                        Value::Fixed(wire::fixed(
-                            notches.saturating_neg().saturating_mul(WHEEL_STEP),
-                        )),
+                        Value::Uint(axis),
+                        Value::Fixed(wire::fixed(steps.saturating_mul(WHEEL_STEP))),
                     ],
                 );
             });

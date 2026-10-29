@@ -45,6 +45,8 @@ pub struct EventFields {
     pub character: u32,
     pub button: isize,
     pub delta: f64,
+    pub delta_x: f64,
+    pub clicks: isize,
     pub time_ms: u32,
 }
 
@@ -174,7 +176,7 @@ extern "C" fn click_count(this: Id, _: Sel) -> isize {
         kind::LEFT_MOUSE_DOWN
         | kind::LEFT_MOUSE_UP
         | kind::RIGHT_MOUSE_DOWN
-        | kind::RIGHT_MOUSE_UP => 1,
+        | kind::RIGHT_MOUSE_UP => fields(this).clicks.max(1),
         _ => 0,
     }
 }
@@ -193,6 +195,10 @@ extern "C" fn timestamp(this: Id, _: Sel) -> f64 {
 
 extern "C" fn delta(this: Id, _: Sel) -> f64 {
     fields(this).delta
+}
+
+extern "C" fn delta_x(this: Id, _: Sel) -> f64 {
+    fields(this).delta_x
 }
 
 extern "C" fn no(_: Id, _: Sel) -> u8 {
@@ -225,7 +231,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "buttonNumber" => button_number,
         "window" => window,
         "timestamp" => timestamp,
+        "deltaX" => delta_x,
         "deltaY" => delta,
+        "scrollingDeltaX" => delta_x,
         "scrollingDeltaY" => delta,
         "isARepeat" => no,
         "dealloc" => dealloc,

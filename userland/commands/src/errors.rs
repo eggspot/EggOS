@@ -139,6 +139,15 @@ pub const NO_SUCH_MENU_ITEM: ErrorDefinition = error(
     "Use the numbers or the label wm menu shows.",
     None,
 );
+/// `wm click`, `wm drag` and `wm scroll`: the window has a dialog open, so a point in it means
+/// nothing; the dialog takes the input instead (D162).
+pub const DIALOG_OPEN: ErrorDefinition = error(
+    "dialog_open",
+    Category::Busy,
+    "The window waits for its dialog: see the dialog with wm capture and the id the error \
+     names, then aim at the dialog.",
+    Some("wm capture"),
+);
 /// `wm show` and `wm act`: the window's app gives no element tree (D161).
 pub const PIXELS_ONLY: ErrorDefinition = error(
     "pixels_only",
@@ -291,7 +300,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 39] = [
+pub const ALL: [&ErrorDefinition; 40] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -310,6 +319,7 @@ pub const ALL: [&ErrorDefinition; 39] = [
     &PERSON_ACTIVE,
     &NO_WINDOW_SERVER,
     &NO_SUCH_MENU_ITEM,
+    &DIALOG_OPEN,
     &PIXELS_ONLY,
     &NO_SUCH_ELEMENT,
     &ELEMENT_CANNOT,

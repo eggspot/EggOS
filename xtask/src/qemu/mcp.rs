@@ -23,7 +23,9 @@
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
 //!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
-//!    Editor window that `wm_list` shows (D149); then uninstalling the app; then, with a
+//!    Editor window that `wm_list` shows (D149), Files opened by name, a new folder found as a
+//!    list item in its element tree and opened by `wm_click`'s double-click (D162); then
+//!    uninstalling the app; then, with a
 //!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
 //!    which must show every call. The disk image read back must hold the audit log, with
 //!    `asked` records and no written content.
@@ -105,7 +107,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 26] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 27] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -166,6 +168,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 26] = [
     (
         "wm_act",
         r#"{"window":64,"element":1,"action":"focus"}"#,
+        "run",
+    ),
+    (
+        "wm_drag",
+        r#"{"window":64,"x":1,"y":1,"to_x":2,"to_y":2}"#,
         "run",
     ),
 ];
@@ -1409,7 +1416,90 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
         "Opened /media/host/readme.txt in Text Editor.",
     )?;
     window_titled(client, "readme.txt - Text Editor")?;
+    files_session(client)?;
     Ok(())
+}
+
+/// The folder the Files step makes in the home folder and opens with a double-click (D162).
+const DOUBLE_CLICKED_FOLDER: &str = "opened-by-double-click";
+
+fn files_session(client: &mut Client) -> Result<(), String> {
+    let home = String::from_utf8_lossy(eggos_files::trash::HOME).into_owned();
+    let folder = format!("{home}/{DOUBLE_CLICKED_FOLDER}");
+    client.call(
+        "run",
+        &format!(r#"{{"program":"/bin/mkdir","arguments":["{folder}"]}}"#),
+    )?;
+    succeeds(client, "app_open", r#"{"name":"Files"}"#, "Opened")?;
+    let files = window_titled(client, eggos_files::files_window::TITLE)?;
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    let (x, y) = loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{files}}}"#),
+            " list-item ",
+        )?;
+        if let Some(point) = list_item_centre(&tree.all(), DOUBLE_CLICKED_FOLDER, "folder") {
+            break point;
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!(
+                "wm_show of Files lists no folder {DOUBLE_CLICKED_FOLDER} as a list item: {}",
+                tree.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    };
+    succeeds(
+        client,
+        "wm_click",
+        &format!(r#"{{"window":{files},"x":{x},"y":{y},"double":true}}"#),
+        "double-clicked left",
+    )?;
+    let opened = format!("\"Path\" = \"{folder}\"");
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    loop {
+        let tree = succeeds(
+            client,
+            "wm_show",
+            &format!(r#"{{"window":{files}}}"#),
+            " text-field ",
+        )?;
+        if tree.all().contains(&opened) {
+            break;
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!(
+                "the double-click on {DOUBLE_CLICKED_FOLDER} did not open it: {}",
+                tree.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    }
+    run_program(client, &["/bin/wm", "close", &files.to_string()])?;
+    Ok(())
+}
+
+fn list_item_centre(tree: &str, name: &str, value: &str) -> Option<(u32, u32)> {
+    let wanted = format!("\"{name}\" = \"{value}\"");
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        words.next()?;
+        if words.next() != Some("list-item") || !line.ends_with(&wanted) {
+            return None;
+        }
+        let (x, y) = words.next()?.split_once(',')?;
+        let (width, height) = words.next()?.split_once('x')?;
+        let centre = |start: &str, length: &str| -> Option<u32> {
+            Some(start.parse::<u32>().ok()? + length.parse::<u32>().ok()? / 2)
+        };
+        Some((centre(x, width)?, centre(y, height)?))
+    })
 }
 
 /// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows and
@@ -1489,6 +1579,19 @@ mod tests {
                     \"macOS\"";
         assert_eq!(super::card_element(tree, "macOS"), Some(402));
         assert_eq!(super::card_element(tree, "Linux"), None);
+    }
+
+    #[test]
+    fn a_files_entry_is_found_in_wm_show_s_lines() {
+        let tree = "1 window 0,0 720x480 \"Files\"\n  20 text-field 180,8 520x24 [focusable] \
+                    \"Path\" = \"/home/root\"\n  30 list 180,40 540x440 \"Entries\"\n    \
+                    1000 list-item 180,40 540x24 \"notes.txt\" = \"file\"\n    1001 list-item \
+                    180,64 540x24 [selected] \"opened-by-double-click\" = \"folder\"";
+        assert_eq!(
+            super::list_item_centre(tree, super::DOUBLE_CLICKED_FOLDER, "folder"),
+            Some((450, 76))
+        );
+        assert_eq!(super::list_item_centre(tree, "notes.txt", "folder"), None);
     }
 
     #[test]

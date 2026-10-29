@@ -184,6 +184,7 @@ pub struct Fake {
     pub window_pixels: BTreeMap<u32, (u32, u32, Vec<u32>)>,
     pub sent_input: Vec<[u32; 6]>,
     pub input_results: Vec<Option<Errno>>,
+    pub dialogs: Vec<(u32, u32)>,
     pub menus: BTreeMap<u32, Vec<u8>>,
     pub chosen_menus: Vec<[u32; 3]>,
     pub chosen_labels: Vec<Vec<u8>>,
@@ -238,6 +239,7 @@ impl Default for Fake {
             window_pixels: BTreeMap::new(),
             sent_input: Vec::new(),
             input_results: Vec::new(),
+            dialogs: Vec::new(),
             menus: BTreeMap::new(),
             chosen_menus: Vec::new(),
             chosen_labels: Vec::new(),
@@ -673,7 +675,9 @@ impl System for Fake {
                 else {
                     return Err(Errno::ENOENT);
                 };
-                if window.client == crate::wm::KERNEL_CLIENT && request[1] <= 1 {
+                let pointer = matches!(request[1], 0 | 1 | 5 | 6);
+                let sideways = request[1] == 2 && request[4] != 0;
+                if window.client == crate::wm::KERNEL_CLIENT && (pointer || sideways) {
                     return Err(Errno::EOPNOTSUPP);
                 }
                 if !self.input_results.is_empty()
@@ -681,7 +685,21 @@ impl System for Fake {
                 {
                     return Err(errno);
                 }
-                self.sent_input.push(request);
+                let dialog = self
+                    .dialogs
+                    .iter()
+                    .find(|(parent, _)| *parent == request[0])
+                    .map(|&(_, dialog)| dialog);
+                let (receiver, outcome) = match dialog {
+                    Some(dialog) if pointer || request[1] == 2 => (dialog, 2),
+                    Some(dialog) => (dialog, 1),
+                    None => (request[0], 0),
+                };
+                if outcome != 2 {
+                    self.sent_input.push(request);
+                }
+                argument[0..4].copy_from_slice(&receiver.to_ne_bytes());
+                argument[4..8].copy_from_slice(&outcome.to_ne_bytes());
                 Ok(())
             }
             (crate::wm::GET_MENU, crate::wm::GET_MENU_SIZE) => {

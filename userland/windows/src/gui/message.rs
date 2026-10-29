@@ -36,6 +36,7 @@ pub const RIGHT_BUTTON_UP: u32 = 0x0205;
 pub const MIDDLE_BUTTON_DOWN: u32 = 0x0207;
 pub const MIDDLE_BUTTON_UP: u32 = 0x0208;
 pub const MOUSE_WHEEL: u32 = 0x020a;
+pub const MOUSE_HORIZONTAL_WHEEL: u32 = 0x020e;
 
 pub const SIZE_RESTORED: usize = 0;
 pub const SIZE_MINIMIZED: usize = 1;
@@ -47,7 +48,7 @@ pub const ID_CANCEL: usize = 2;
 
 /// The first and last mouse message numbers.
 pub const FIRST_MOUSE: u32 = MOUSE_MOVE;
-pub const LAST_MOUSE: u32 = MOUSE_WHEEL;
+pub const LAST_MOUSE: u32 = MOUSE_HORIZONTAL_WHEEL;
 
 /// `wParam` holding a low and a high 16-bit word, as `MAKEWPARAM` packs them.
 pub fn word_pair(low: usize, high: usize) -> usize {

@@ -73,7 +73,7 @@ run-eggos.sh` the script's own path works too.
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu and read its controls as an element tree (D161) | `wm_capture`, `wm_menu_list`, `wm_show` |
 | `write` | write files below `/home/root`, download files there, and move them to the Trash | `tee`, `fetch`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
-| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `clock_set`, `clock_sync` |
+| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `wm_drag`, `clock_set`, `clock_sync` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -114,10 +114,11 @@ run-eggos.sh` the script's own path works too.
 | `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
 | `app_uninstall` | Uninstalls an app (`name`, `confirm`) | `app uninstall -- <name>` | `install` |
 | `wm_capture` | A window's content as a PNG image (`window`; `max_width`, 16 to 1568, 1024 by default) | `wm capture -o /run/eggmcpd-capture.png --max-width <n> --max-bytes 716800 -- <window>` | `view` |
-| `wm_click` | Clicks in a window (`window`, `x`, `y`, `button`: `left`, `right` or `middle`) | `wm click --button <button> -- <window> <x> <y>` | `run` |
+| `wm_click` | Clicks in a window (`window`, `x`, `y`, `button`: `left`, `right` or `middle`; `double: true` double-clicks, D162) | `wm click --button <button> [--double] -- <window> <x> <y>` | `run` |
 | `wm_type` | Types printable ASCII into a window (`window`, `text`, at most 96 characters) | `wm type -- <window> <text>` | `run` |
 | `wm_press` | Presses a key with modifiers in a window (`window`, `keys` such as `Enter` or `ctrl+s`) | `wm press -- <window> <keys>` | `run` |
-| `wm_scroll` | Turns the wheel `dy` notches (-16 to 16) in a window, at `x`, `y` or the centre | `wm scroll [--at <x> <y>] -- <window> 0 <dy>` | `run` |
+| `wm_scroll` | Turns the wheel `dy` notches and `dx` notches sideways (-16 to 16 each, not both 0; `dx` 0 by default, D162) in a window, at `x`, `y` or the centre | `wm scroll [--at <x> <y>] -- <window> <dx> <dy>` | `run` |
+| `wm_drag` | Presses a button at `x`, `y` of a window, moves to `to_x`, `to_y` in steps and releases it there (`button`, D162): a slider, a scroll bar's thumb, a text selection | `wm drag --button <button> -- <window> <x> <y> <to-x> <to-y>` | `run` |
 | `wm_menu_list` | A window's main menu, the one a macOS app shows in the top bar (`window`): each menu's number and title, each entry's number, label, key equivalent and `[disabled]`, separators as `----` (D147) | `wm menu -- <window>` | `view` |
 | `wm_focus` | Brings a window to the front (`window`), restoring it if minimised, and gives it the keyboard (D160) | `wm focus -- <window>` | `run` |
 | `wm_move` | Moves a window's top-left corner to `x`, `y` (screen pixels, 0 to 65535) (D160) | `wm move -- <window> <x> <y>` | `run` |
@@ -133,8 +134,8 @@ command model's registry (D160, docs/ux/command-model.md, `userland/commands`): 
 `inputSchema` is written from the registry when the tools are listed, the same bytes as before
 for the shipped tools. The reading tools, `wm_capture`, `wm_menu_list` and `wm_show` are
 `readOnlyHint`;
-`tee`, `trash`, `fetch`, `run`, `clock_set`, `app_uninstall`, the four input tools,
-`wm_menu_choose` and `wm_act` are `destructiveHint`, so clients ask their user before them; the seven window
+`tee`, `trash`, `fetch`, `run`, `clock_set`, `app_uninstall`, the input tools (`wm_click`,
+`wm_type`, `wm_press`, `wm_scroll`, `wm_drag`), `wm_menu_choose` and `wm_act` are `destructiveHint`, so clients ask their user before them; the seven window
 tools of D160 change windows but are neither. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
 component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. A refusal is
@@ -163,8 +164,8 @@ pixels, shown as 320x220 (scale 1/2). Window coordinates for wm_click and wm_scr
 coordinates times 2.
 ```
 
-- **One coordinate space.** `wm_click` and `wm_scroll` take window pixels from the content's
-  top-left corner; a capture shrunk to `max_width` says its scale, and image coordinates times
+- **One coordinate space.** `wm_click`, `wm_drag` and `wm_scroll` take window pixels from the
+  content's top-left corner; a capture shrunk to `max_width` says its scale, and image coordinates times
   the scale are window pixels. The PNG is at most 700 KiB: a larger one is shrunk one more step
   until it fits (D141), so the 1 MiB answer always holds it.
 - **Any window, without showing it.** Captures read the window's own buffer, so a covered or
@@ -176,6 +177,13 @@ coordinates times 2.
   machine; wait a moment and retry.` `wm_type` says how many characters it typed before that.
   With `--no-window` there is no keyboard or pointer, so this never happens: the agent is the
   only one at the machine.
+- **Drag, double-click, sideways and dialogs (D162).** `wm_drag` presses, moves in steps and
+  releases in one step, `wm_click` with `double: true` double-clicks (a Files entry opens),
+  `wm_scroll` takes `dx`. A window with a dialog open (a message box, a file picker, an alert)
+  passes `wm_type` and `wm_press` to the dialog, as your own keys would go, and the result says
+  so; `wm_click`, `wm_drag` and `wm_scroll` are refused with `dialog_open`, naming the dialog's
+  window id, since a point in the window means nothing in the dialog: capture the dialog and
+  aim at it.
 - **Controls by name, not pixels (D161).** `wm_show` asks the window's app for its element
   tree and `wm_act` acts on one element by its id: an agent reads Settings' cards, Files'
   entries or a dialog's buttons as structure, then invokes, focuses, selects or sets the text
@@ -326,7 +334,7 @@ clock at boot (D150). The log in Settings comes after the release.
 
 The 2026-07-28 protocol version, resources and prompts; the other commands' tools
 (`settings`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; element trees from Windows and macOS apps (D161); drag, double-click, sideways scrolling and non-ASCII typing; capturing the
+is returned as before); `outputSchema`; element trees from Windows and macOS apps (D161); non-ASCII typing; capturing the
 terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
 (after networking); the log in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.
