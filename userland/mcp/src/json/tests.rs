@@ -186,6 +186,26 @@ fn numbers_are_read_as_unsigned_integers_only_when_they_are() {
 }
 
 #[test]
+fn numbers_are_read_as_signed_integers_only_when_they_fit() {
+    for (text, expected) in [
+        ("0", Some(0)),
+        ("-0", Some(0)),
+        ("-16", Some(-16)),
+        ("9223372036854775807", Some(i64::MAX)),
+        ("9223372036854775808", None),
+        ("-9223372036854775808", Some(i64::MIN)),
+        ("-9223372036854775809", None),
+        ("-1.5", None),
+        ("-1e3", None),
+    ] {
+        let Value::Number(number) = value(text) else {
+            panic!("{text} is a number");
+        };
+        assert_eq!(number.as_i64(), expected, "{text}");
+    }
+}
+
+#[test]
 fn the_writer_places_commas_and_escapes() {
     let text = written(|writer| {
         writer.begin_object();
@@ -225,6 +245,37 @@ fn base64_is_rfc_4648_s() {
     ] {
         assert_eq!(written(|writer| writer.string_base64(bytes)), encoded);
     }
+}
+
+#[test]
+fn base64_in_pieces_of_any_length_is_the_text_of_one_piece() {
+    let bytes: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+    let whole = written(|writer| writer.string_base64(&bytes));
+    let mut buffer = vec![0u8; 4096];
+    for piece in [1, 2, 3, 4, 5, 7, 131, 999, 1000] {
+        let mut writer = JsonWriter::new(&mut buffer);
+        writer.begin_string();
+        let mut carry = Base64Carry::default();
+        for chunk in bytes.chunks(piece) {
+            writer.base64_piece(&mut carry, chunk);
+        }
+        writer.base64_piece(&mut carry, &[]);
+        writer.base64_end(carry);
+        writer.end_string();
+        assert_eq!(writer.as_bytes(), whole.as_bytes(), "pieces of {piece}");
+    }
+    let uneven = [1usize, 2, 4, 1, 3, 989];
+    let mut writer = JsonWriter::new(&mut buffer);
+    writer.begin_string();
+    let mut carry = Base64Carry::default();
+    let mut start = 0;
+    for length in uneven {
+        writer.base64_piece(&mut carry, &bytes[start..start + length]);
+        start += length;
+    }
+    writer.base64_end(carry);
+    writer.end_string();
+    assert_eq!(writer.as_bytes(), whole.as_bytes());
 }
 
 #[test]

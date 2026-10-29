@@ -11,7 +11,7 @@
 
 use crate::json::{Object, Str, Value};
 use crate::paths::MAX_PATH_BYTES;
-use crate::tools::{Kind, Operand, Tool};
+use crate::tools::{DEFAULT_IMAGE_WIDTH, Kind, MAX_IMAGE_WIDTH, MIN_IMAGE_WIDTH, Operand, Tool};
 
 /// The most bytes `tee` writes in a call (as much as `cat` reads back).
 pub const MAX_CONTENT_BYTES: usize = 128 * 1024;
@@ -25,6 +25,18 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 10_000;
 /// `run`'s longest time limit, in seconds.
 pub const MAX_TIMEOUT_SECONDS: u64 = 60;
+/// The most bytes `wm_type` types in a call, printable ASCII only: the audit record escapes
+/// the logged arguments again, up to four bytes for a `\` or `"`, and its field keeps 512
+/// bytes, so the whole text is always logged.
+pub const MAX_TYPED_TEXT_BYTES: usize = 96;
+/// The most bytes of `wm_press`'s keys.
+pub const MAX_KEYS_BYTES: usize = 32;
+/// The largest window id (`wm` reads at most nine digits).
+pub const MAX_WINDOW_ID: u64 = 999_999_999;
+/// The largest coordinate in a window.
+pub const MAX_COORDINATE: u64 = 65_535;
+/// The most wheel notches one scroll turns, either way (the window server's own limit).
+pub const MAX_NOTCHES: u64 = 16;
 
 /// Why a call's arguments are refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +66,21 @@ pub enum ArgumentProblem {
     BadWords,
     /// `timeout_seconds` is not 1 to 60.
     BadTimeout,
+    /// `window` is not a whole number from 0 to [`MAX_WINDOW_ID`].
+    BadWindow,
+    /// `x` or `y` is not a whole number from 0 to [`MAX_COORDINATE`], or only one is given.
+    BadPoint,
+    /// `button` is not `left`, `right` or `middle`.
+    BadButton,
+    /// `text` is empty, longer than [`MAX_TYPED_TEXT_BYTES`] or not printable ASCII.
+    BadText,
+    /// `keys` is empty, longer than [`MAX_KEYS_BYTES`] or holds more than letters, digits
+    /// and `+`.
+    BadKeys,
+    /// `dy` is 0 or more than [`MAX_NOTCHES`] either way.
+    BadNotches,
+    /// `max_width` is outside [`MIN_IMAGE_WIDTH`] to [`MAX_IMAGE_WIDTH`].
+    BadImageWidth,
 }
 
 impl ArgumentProblem {
@@ -66,6 +93,11 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("path") => "path is required",
             ArgumentProblem::Missing("program") => "program is required",
             ArgumentProblem::Missing("name") => "name is required",
+            ArgumentProblem::Missing("window") => "window is required: an id wm_list shows",
+            ArgumentProblem::Missing("x") => "x and y are required",
+            ArgumentProblem::Missing("text") => "text is required",
+            ArgumentProblem::Missing("keys") => "keys is required",
+            ArgumentProblem::Missing("dy") => "dy is required",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
@@ -84,6 +116,26 @@ impl ArgumentProblem {
                 "at most 32 arguments, 4096 bytes in all, none holding a NUL"
             }
             ArgumentProblem::BadTimeout => "timeout_seconds must be a whole number from 1 to 60",
+            ArgumentProblem::BadWindow => {
+                "window must be a window id as wm_list shows it: a whole number from 0 to \
+                 999999999"
+            }
+            ArgumentProblem::BadPoint => {
+                "x and y are whole numbers of window pixels from 0 to 65535, given together"
+            }
+            ArgumentProblem::BadButton => "button is left, right or middle",
+            ArgumentProblem::BadText => {
+                "text must be 1 to 96 printable ASCII characters; press Enter and other keys \
+                 with wm_press"
+            }
+            ArgumentProblem::BadKeys => {
+                "keys must be one key after any of ctrl+, shift+, alt+ and super+, such as \
+                 ctrl+s: 1 to 32 letters, digits and +"
+            }
+            ArgumentProblem::BadNotches => {
+                "dy must be a whole number of notches from -16 to 16, not 0"
+            }
+            ArgumentProblem::BadImageWidth => "max_width must be a whole number from 16 to 1568",
         }
     }
 }
@@ -120,6 +172,31 @@ impl AppName {
         match valid {
             true => Ok(name),
             false => Err(ArgumentProblem::BadName),
+        }
+    }
+}
+
+/// A mouse button `wm_click` presses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    /// The left button, the default.
+    Left,
+    /// The right button.
+    Right,
+    /// The middle button.
+    Middle,
+}
+
+impl Button {
+    /// Every button.
+    pub const ALL: [Button; 3] = [Button::Left, Button::Right, Button::Middle];
+
+    /// Its name, as the tool and `wm click --button` take it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Button::Left => "left",
+            Button::Right => "right",
+            Button::Middle => "middle",
         }
     }
 }
@@ -181,6 +258,20 @@ pub struct Checked {
     pub words: Words,
     /// The time limit, in milliseconds.
     pub time_limit_ms: u64,
+    /// The window's id.
+    pub window: Option<u32>,
+    /// A point in the window's content, in window pixels (`x`, `y`).
+    pub point: Option<(u32, u32)>,
+    /// `wm_click`'s button.
+    pub button: Option<Button>,
+    /// `wm_press`'s keys' length, in the words buffer.
+    pub keys: Option<usize>,
+    /// `wm_type`'s text's length, in the words buffer.
+    pub text: Option<usize>,
+    /// `wm_scroll`'s notches (`dy`), up when positive.
+    pub notches: Option<i32>,
+    /// `wm_capture`'s widest image, in pixels.
+    pub max_width: Option<u32>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -190,7 +281,7 @@ pub struct Decoded<'s> {
     pub path: &'s mut [u8],
     /// `tee`'s content ([`MAX_CONTENT_BYTES`]).
     pub content: &'s mut [u8],
-    /// `run`'s arguments ([`WORDS_BYTES`]).
+    /// `run`'s arguments, `wm_type`'s text or `wm_press`'s keys ([`WORDS_BYTES`]).
     pub words: &'s mut [u8],
 }
 
@@ -273,7 +364,130 @@ pub fn check(
             Some(_) => return Err(ArgumentProblem::BadTimeout),
         };
     }
+    if tool.twin.operand == Operand::Window {
+        window_arguments(tool.kind, &get, decoded.words, &mut checked)?;
+    }
     Ok(checked)
+}
+
+fn whole(
+    value: Option<Value<'_>>,
+    most: u64,
+    problem: ArgumentProblem,
+) -> Result<Option<u64>, ArgumentProblem> {
+    match value {
+        None => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|&value| value <= most)
+            .map(Some)
+            .ok_or(problem),
+        Some(_) => Err(problem),
+    }
+}
+
+fn point(
+    x: Option<Value<'_>>,
+    y: Option<Value<'_>>,
+) -> Result<Option<(u32, u32)>, ArgumentProblem> {
+    let x = whole(x, MAX_COORDINATE, ArgumentProblem::BadPoint)?;
+    let y = whole(y, MAX_COORDINATE, ArgumentProblem::BadPoint)?;
+    match (x, y) {
+        (Some(x), Some(y)) => Ok(Some((x as u32, y as u32))),
+        (None, None) => Ok(None),
+        _ => Err(ArgumentProblem::BadPoint),
+    }
+}
+
+fn short_text(
+    value: Option<Value<'_>>,
+    name: &'static str,
+    buffer: &mut [u8],
+    most: usize,
+    allowed: fn(u8) -> bool,
+    problem: ArgumentProblem,
+) -> Result<usize, ArgumentProblem> {
+    let text = match value {
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(problem),
+        None => return Err(ArgumentProblem::Missing(name)),
+    };
+    let room = buffer.get_mut(..most).ok_or(problem)?;
+    let decoded = text.decode_into(room).ok_or(problem)?;
+    match !decoded.is_empty() && decoded.bytes().all(allowed) {
+        true => Ok(decoded.len()),
+        false => Err(problem),
+    }
+}
+
+fn window_arguments<'a>(
+    kind: Kind,
+    get: &impl Fn(&str) -> Option<Value<'a>>,
+    words: &mut [u8],
+    checked: &mut Checked,
+) -> Result<(), ArgumentProblem> {
+    let window = whole(get("window"), MAX_WINDOW_ID, ArgumentProblem::BadWindow)?
+        .ok_or(ArgumentProblem::Missing("window"))?;
+    checked.window = Some(window as u32);
+    match kind {
+        Kind::WmCapture => {
+            let width = whole(
+                get("max_width"),
+                u64::from(MAX_IMAGE_WIDTH),
+                ArgumentProblem::BadImageWidth,
+            )?
+            .unwrap_or(u64::from(DEFAULT_IMAGE_WIDTH));
+            if width < u64::from(MIN_IMAGE_WIDTH) {
+                return Err(ArgumentProblem::BadImageWidth);
+            }
+            checked.max_width = Some(width as u32);
+        }
+        Kind::WmClick => {
+            checked.point = Some(point(get("x"), get("y"))?.ok_or(ArgumentProblem::Missing("x"))?);
+            checked.button = Some(match get("button") {
+                None => Button::Left,
+                Some(Value::Str(name)) => Button::ALL
+                    .into_iter()
+                    .find(|button| name.equals(button.name()))
+                    .ok_or(ArgumentProblem::BadButton)?,
+                Some(_) => return Err(ArgumentProblem::BadButton),
+            });
+        }
+        Kind::WmType => {
+            checked.text = Some(short_text(
+                get("text"),
+                "text",
+                words,
+                MAX_TYPED_TEXT_BYTES,
+                |byte| (b' '..=b'~').contains(&byte),
+                ArgumentProblem::BadText,
+            )?);
+        }
+        Kind::WmPress => {
+            checked.keys = Some(short_text(
+                get("keys"),
+                "keys",
+                words,
+                MAX_KEYS_BYTES,
+                |byte| byte.is_ascii_alphanumeric() || byte == b'+',
+                ArgumentProblem::BadKeys,
+            )?);
+        }
+        Kind::WmScroll => {
+            let notches = match get("dy") {
+                None => return Err(ArgumentProblem::Missing("dy")),
+                Some(Value::Number(number)) => number
+                    .as_i64()
+                    .filter(|notches| *notches != 0 && notches.unsigned_abs() <= MAX_NOTCHES)
+                    .ok_or(ArgumentProblem::BadNotches)?,
+                Some(_) => return Err(ArgumentProblem::BadNotches),
+            };
+            checked.notches = Some(notches as i32);
+            checked.point = point(get("x"), get("y"))?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn flag(value: Option<Value<'_>>, name: &'static str) -> Result<bool, ArgumentProblem> {
@@ -417,6 +631,16 @@ fn names_of(object: Object<'_>, out: &mut crate::json::JsonWriter<'_>, shown: us
         out.string(text);
     }
     out.end_array();
+}
+
+/// `wm_type`'s text in `buffer`, the words buffer, that [`Checked::text`] measures.
+pub fn typed_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.text?)?).ok()
+}
+
+/// `wm_press`'s keys in `buffer`, the words buffer, that [`Checked::keys`] measures.
+pub fn keys_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.keys?)?).ok()
 }
 
 /// The path or program in `buffer` that [`Checked::path`] measures.
@@ -635,6 +859,106 @@ mod tests {
                 .unwrap()
                 .path,
             Some(17)
+        );
+    }
+
+    #[test]
+    fn window_tools_take_a_window_and_their_own_words() {
+        let (result, _) = checked("wm_capture", r#"{"window":129}"#);
+        let result = result.unwrap();
+        assert_eq!(result.window, Some(129));
+        assert_eq!(result.max_width, Some(DEFAULT_IMAGE_WIDTH));
+        let (result, _) = checked("wm_capture", r#"{"window":0,"max_width":16}"#);
+        assert_eq!(result.unwrap().max_width, Some(MIN_IMAGE_WIDTH));
+        let (result, _) = checked("wm_click", r#"{"window":5,"x":0,"y":65535}"#);
+        let result = result.unwrap();
+        assert_eq!(result.point, Some((0, 65535)));
+        assert_eq!(result.button, Some(Button::Left));
+        let (result, _) = checked("wm_click", r#"{"window":5,"x":1,"y":2,"button":"middle"}"#);
+        assert_eq!(result.unwrap().button, Some(Button::Middle));
+        let (result, buffers) = checked("wm_type", r#"{"window":5,"text":" ~a\"\\"}"#);
+        let result = result.unwrap();
+        assert_eq!(typed_text(&result, &buffers.words), Some(" ~a\"\\"));
+        assert_eq!(keys_text(&result, &buffers.words), None);
+        let (result, buffers) = checked("wm_press", r#"{"window":5,"keys":"ctrl+S"}"#);
+        assert_eq!(keys_text(&result.unwrap(), &buffers.words), Some("ctrl+S"));
+        let (result, _) = checked("wm_scroll", r#"{"window":5,"dy":-16}"#);
+        let result = result.unwrap();
+        assert_eq!(result.notches, Some(-16));
+        assert_eq!(result.point, None);
+        let (result, _) = checked("wm_scroll", r#"{"window":5,"dy":1,"x":3,"y":4}"#);
+        assert_eq!(result.unwrap().point, Some((3, 4)));
+        for (tool, arguments, problem) in [
+            ("wm_capture", r#"{"window":999999999}"#, None),
+            (
+                "wm_capture",
+                r#"{"window":1000000000}"#,
+                Some(ArgumentProblem::BadWindow),
+            ),
+            (
+                "wm_capture",
+                r#"{"window":1,"max_width":1569}"#,
+                Some(ArgumentProblem::BadImageWidth),
+            ),
+            (
+                "wm_click",
+                r#"{"window":1,"y":1}"#,
+                Some(ArgumentProblem::BadPoint),
+            ),
+            (
+                "wm_click",
+                r#"{"window":1,"x":1,"y":1,"button":1}"#,
+                Some(ArgumentProblem::BadButton),
+            ),
+            (
+                "wm_type",
+                r#"{"window":1}"#,
+                Some(ArgumentProblem::Missing("text")),
+            ),
+            (
+                "wm_type",
+                r#"{"window":1,"text":"	"}"#,
+                Some(ArgumentProblem::BadText),
+            ),
+            (
+                "wm_press",
+                r#"{"window":1,"keys":""}"#,
+                Some(ArgumentProblem::BadKeys),
+            ),
+            (
+                "wm_scroll",
+                r#"{"window":1,"dy":-17}"#,
+                Some(ArgumentProblem::BadNotches),
+            ),
+            (
+                "wm_scroll",
+                r#"{"window":1,"dy":"1"}"#,
+                Some(ArgumentProblem::BadNotches),
+            ),
+            (
+                "wm_scroll",
+                r#"{"window":1}"#,
+                Some(ArgumentProblem::Missing("dy")),
+            ),
+        ] {
+            assert_eq!(
+                checked(tool, arguments).0.err(),
+                problem,
+                "{tool} {arguments}"
+            );
+        }
+        let exact = format!(
+            r#"{{"window":1,"text":"{}"}}"#,
+            "x".repeat(MAX_TYPED_TEXT_BYTES)
+        );
+        assert_eq!(
+            checked("wm_type", &exact).0.unwrap().text,
+            Some(MAX_TYPED_TEXT_BYTES)
+        );
+        let exact = format!(r#"{{"window":1,"keys":"{}"}}"#, "x".repeat(MAX_KEYS_BYTES));
+        assert_eq!(
+            checked("wm_press", &exact).0.unwrap().keys,
+            Some(MAX_KEYS_BYTES)
         );
     }
 

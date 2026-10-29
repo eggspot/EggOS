@@ -1,7 +1,7 @@
 //! `eggmcpd`'s system calls: the agent channel's loop, the grants from `/proc/cmdline`,
 //! running a CLI twin with its input given and its output captured, in a process group of its
-//! own that is stopped whole, the checks of what is at a path, the audit log on `/var/log` and
-//! the clocks.
+//! own that is stopped whole, the checks of what is at a path, `wm_capture`'s file in `/run`,
+//! the audit log on `/var/log` and the clocks.
 
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::{GENERATIONS, LOG_FOLDER, LOG_PATH, RECORD_BYTES, ROTATE_BYTES, ROTATED_PATHS};
@@ -11,7 +11,9 @@ use crate::paths::{HOME, MAX_PATH_BYTES};
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
 };
-use crate::system::{Ended, FileState, Invocation, MAX_COMMAND_WORDS, RunOutcome, System};
+use crate::system::{
+    CaptureFile, Ended, FileState, Invocation, MAX_COMMAND_WORDS, RunOutcome, System,
+};
 use core::ffi::CStr;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::process::{ChildStack, Spawn, spawn};
@@ -32,6 +34,13 @@ const O_RDONLY: usize = 0;
 const O_RDWR: usize = 2;
 const O_WRONLY: usize = 1;
 const O_CREAT: usize = 0o100;
+const O_EXCL: usize = 0o200;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: usize = 0o100_000;
+#[cfg(not(target_arch = "aarch64"))]
+const O_NOFOLLOW: usize = 0o400_000;
+const CAPTURE_MODE: usize = 0o600;
+const AT_EMPTY_PATH: usize = 0x1000;
 const O_APPEND: usize = 0o2000;
 const O_NONBLOCK: usize = 0o4000;
 const O_CLOEXEC: usize = 0o2_000_000;
@@ -362,6 +371,22 @@ fn statx(path: &CStr, mask: usize, flags: usize) -> Result<[u8; STATX_BYTES], Er
             AT_FDCWD,
             path.as_ptr() as usize,
             flags,
+            mask,
+            status.as_mut_ptr() as usize,
+            0,
+        ],
+    )?;
+    Ok(status)
+}
+
+fn statx_open(descriptor: usize, mask: usize) -> Result<[u8; STATX_BYTES], Errno> {
+    let mut status = [0u8; STATX_BYTES];
+    call(
+        number::STATX,
+        [
+            descriptor,
+            c"".as_ptr() as usize,
+            AT_EMPTY_PATH,
             mask,
             status.as_mut_ptr() as usize,
             0,
@@ -763,6 +788,68 @@ impl System for Linux {
                 _ => FileState::Other,
             },
         }
+    }
+
+    fn remove_capture(&mut self, path: &str) {
+        let mut buffer = [0u8; 64];
+        if let Some(path) = c_path(path, &mut buffer) {
+            let _ = call(
+                number::UNLINKAT,
+                [AT_FDCWD, path.as_ptr() as usize, 0, 0, 0, 0],
+            );
+        }
+    }
+
+    fn create_capture(&mut self, path: &str) -> Result<(), Errno> {
+        let mut buffer = [0u8; 64];
+        let path = c_path(path, &mut buffer).ok_or(Errno::EINVAL)?;
+        let file = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, CAPTURE_MODE)?;
+        close(file);
+        Ok(())
+    }
+
+    fn open_capture(&mut self, path: &str) -> Result<CaptureFile, Errno> {
+        let mut buffer = [0u8; 64];
+        let path = c_path(path, &mut buffer).ok_or(Errno::EINVAL)?;
+        let file = open(path, O_RDONLY | O_NOFOLLOW, 0)?;
+        let status = match statx_open(file, STATX_TYPE | STATX_SIZE) {
+            Ok(status) if mode_of(&status) & S_IFMT == S_IFREG => status,
+            Ok(_) => {
+                close(file);
+                return Err(Errno::EINVAL);
+            }
+            Err(error) => {
+                close(file);
+                return Err(error);
+            }
+        };
+        Ok(CaptureFile {
+            descriptor: file,
+            size: size_of(&status),
+        })
+    }
+
+    fn read_capture(&mut self, file: &CaptureFile, out: &mut [u8]) -> Result<usize, Errno> {
+        loop {
+            match call(
+                number::READ,
+                [
+                    file.descriptor,
+                    out.as_mut_ptr() as usize,
+                    out.len(),
+                    0,
+                    0,
+                    0,
+                ],
+            ) {
+                Err(Errno::EINTR) => continue,
+                result => return result,
+            }
+        }
+    }
+
+    fn close_capture(&mut self, file: CaptureFile) {
+        close(file.descriptor);
     }
 
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno> {

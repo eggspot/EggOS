@@ -311,6 +311,14 @@ mod tests {
     }
 
     #[test]
+    fn the_mcp_server_knows_wm_s_busy_status_and_largest_window_id() {
+        assert_eq!(eggos_mcp::tools::BUSY_STATUS, BUSY_STATUS);
+        let largest = eggos_mcp::arguments::MAX_WINDOW_ID.to_string();
+        assert_eq!(number(largest.as_bytes()), Some(999_999_999));
+        assert_eq!(number(format!("{largest}0").as_bytes()), None);
+    }
+
+    #[test]
     fn without_a_window_server_the_device_cannot_be_opened() {
         let mut fake = windows();
         fake.window_server = false;

@@ -280,7 +280,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -328,7 +328,7 @@ fi
 if [ -n "$mcp_allow_given" ]; then
   case ",$mcp_allow," in
     *,,*)
-      echo "run-eggos.sh: --mcp-allow takes write, run or install, separated by commas" >&2
+      echo "run-eggos.sh: --mcp-allow takes view, write, run or install, separated by commas" >&2
       exit 2 ;;
   esac
   set -f
@@ -336,9 +336,9 @@ if [ -n "$mcp_allow_given" ]; then
   IFS=,
   for grant in $mcp_allow; do
     case "$grant" in
-      write | run | install) ;;
+      view | write | run | install) ;;
       *)
-        echo "run-eggos.sh: --mcp-allow: unknown grant '$grant' (write, run or install, lowercase)" >&2
+        echo "run-eggos.sh: --mcp-allow: unknown grant '$grant' (view, write, run or install, lowercase)" >&2
         exit 2 ;;
     esac
   done
@@ -503,7 +503,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
 for ($i = 0; $i -lt $Rest.Count; $i++) {{
     $argument = $Rest[$i]
     if ($argument -eq '--serial') {{
@@ -540,8 +540,8 @@ $McpAllowList = ''
 if ($null -ne $McpAllow) {{
     $GrantNames = @(($McpAllow -join ',') -split ',')
     foreach ($GrantName in $GrantNames) {{
-        if ($GrantName -cnotin @('write', 'run', 'install')) {{
-            [Console]::Error.WriteLine("run-eggos.ps1: -McpAllow: unknown grant '$GrantName' (write, run or install, lowercase, separated by commas)")
+        if ($GrantName -cnotin @('view', 'write', 'run', 'install')) {{
+            [Console]::Error.WriteLine("run-eggos.ps1: -McpAllow: unknown grant '$GrantName' (view, write, run or install, lowercase, separated by commas)")
             exit 2
         }}
     }}
@@ -724,11 +724,11 @@ claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\p
 
 Claude Code, or any MCP client, then starts EggOS and talks to its built-in MCP server. Agents
 can list and read files in `/home` and `/media/host` and list processes, windows and installed
-apps. With grants you give when starting it (`--mcp-allow write,run,install`, `-McpAllow` in
-PowerShell), they can also write files below `/home/root` and move them to the Trash (`write`),
-install apps from `/media/host`, open and uninstall them (`install`), and run programs (`run`,
-which can do anything a program can, so it implies the others). Without grants they only
-read. Replacing or trashing a file and uninstalling an app ask you first when the client can
+apps. With grants you give when starting it (`--mcp-allow view,write,run,install`,
+`-McpAllow` in PowerShell), they can also see what app windows show (`view`), write files below
+`/home/root` and move them to the Trash (`write`), install apps from `/media/host`, open and
+uninstall them (`install`), and run programs and click and type in any window (`run`, which can
+do anything a program can, so it implies the others). Without grants they only read. Replacing or trashing a file and uninstalling an app ask you first when the client can
 ask (Claude Code can). Every call is recorded in `/var/log/agent-audit.log`, which `agentlog`
 shows; an agent with `run` could erase it. Not yet: grants you can change while EggOS runs,
 per-agent grants, MCP over the network. See docs/mcp.md.
@@ -883,14 +883,16 @@ mod tests {
             shell.contains("if [ -n \"$no_window$mcp_allow_given\" ] && [ -z \"$mcp\" ]; then")
         );
         assert!(shell.contains("    *,,*)\n"));
-        assert!(shell.contains("      write | run | install) ;;\n"));
+        assert!(shell.contains("      view | write | run | install) ;;\n"));
         assert!(shell.contains("set -f\n"));
         assert!(shell.contains(
             "if [ -n \"$mcp_allow\" ]; then\n  set -- \"$@\" \"-append\" \"eggos.mcp_allow=$mcp_allow\"\n"
         ));
         assert!(powershell.contains("    [string[]]$McpAllow,\n"));
         assert!(powershell.contains("$GrantNames = @(($McpAllow -join ',') -split ',')"));
-        assert!(powershell.contains("if ($GrantName -cnotin @('write', 'run', 'install')) {"));
+        assert!(
+            powershell.contains("if ($GrantName -cnotin @('view', 'write', 'run', 'install')) {")
+        );
         assert!(powershell.contains("(($null -ne $McpAllow) -and -not $Mcp)"));
         assert!(powershell.contains(
             "if ($McpAllowList) {\n    $QemuArgs += @(\"-append\", \"eggos.mcp_allow=$McpAllowList\")\n"
@@ -907,6 +909,7 @@ mod tests {
             ["-append", "eggos.mcp_allow=write,run"]
         );
         assert_eq!(qemu::check_grants("write,run,install"), Ok(()));
+        assert_eq!(qemu::check_grants("view"), Ok(()));
         for wrong in [
             "",
             "write,",

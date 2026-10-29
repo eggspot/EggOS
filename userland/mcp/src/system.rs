@@ -1,6 +1,7 @@
 //! What the server needs from the machine, as a trait: running a CLI twin with its input given
 //! and its output captured, asking whether a path is a symbolic link and what is there,
-//! appending to the audit log, the clocks and the console. `linux.rs` makes the system calls;
+//! making, reading and removing the file `wm_capture`'s twin writes, appending to the audit
+//! log, the clocks and the console. `linux.rs` makes the system calls;
 //! the tests script a fake.
 
 use eggos_runtime::errno::Errno;
@@ -83,6 +84,15 @@ pub enum FileState {
     Other,
 }
 
+/// The capture file, open for reading: its descriptor and its size, both from the one opening.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CaptureFile {
+    /// The open file's descriptor.
+    pub descriptor: usize,
+    /// Its size when it was opened, from that descriptor.
+    pub size: u64,
+}
+
 /// The machine, as the server uses it.
 pub trait System {
     /// Runs `invocation`, keeping its output in `stdout` and its errors in `stderr`; a command
@@ -98,6 +108,20 @@ pub trait System {
     fn is_link(&mut self, path: &str) -> bool;
     /// What is at `path`, not following a last symbolic link.
     fn file_state(&mut self, path: &str) -> FileState;
+    /// Removes the file at `path` if there is one (a symbolic link itself, never what it
+    /// names).
+    fn remove_capture(&mut self, path: &str);
+    /// Makes an empty file at `path` that only its owner can read and write, failing if
+    /// anything is already there (`O_EXCL`, `O_NOFOLLOW`), and closes it.
+    fn create_capture(&mut self, path: &str) -> Result<(), Errno>;
+    /// Opens the regular file at `path` for reading, never through a symbolic link
+    /// (`O_NOFOLLOW`), and sizes it from the open descriptor: `EINVAL` for anything but a
+    /// regular file.
+    fn open_capture(&mut self, path: &str) -> Result<CaptureFile, Errno>;
+    /// Reads the next bytes of `file` into `out`; 0 at its end.
+    fn read_capture(&mut self, file: &CaptureFile, out: &mut [u8]) -> Result<usize, Errno>;
+    /// Closes `file`.
+    fn close_capture(&mut self, file: CaptureFile);
     /// Appends `record` to the audit log, durably.
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno>;
     /// The wall clock's seconds.

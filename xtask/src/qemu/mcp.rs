@@ -6,19 +6,31 @@
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
 //!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
-//!    paths outside the roots, hostile lines, and every changing tool refused with its grant
-//!    named.
-//! 2. `--mcp-allow write,run,install`: writing, replacing with `confirm`, reading back, refused
-//!    paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a program
-//!    stopped at its time limit), installing, opening and uninstalling an app; then, with a
-//!    client that can ask its user, a trash declined and one accepted through
-//!    `elicitation/create`; last `agentlog` through `run`, which must show every call. The disk
-//!    image read back must hold the audit log, with `asked` records and no written content.
+//!    paths outside the roots, hostile lines, and every tool that needs a grant refused with
+//!    its grant named (`wm_capture` with `view`).
+//! 2. `--mcp-allow view,write,run,install`: writing, replacing with `confirm`, reading back,
+//!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
+//!    program stopped at its time limit), installing and opening an app; then the windows
+//!    (D143): Settings opened by name and captured at scale 1/2, a click on its macOS card
+//!    through `wm_click` that `settings get` sees, on x86_64 and aarch64 `win-paint` captured,
+//!    minimised, typed into with `wm_type` and captured again with the text, `linux-paint`
+//!    captured, covered by Settings, clicked and captured recoloured, each capture compared
+//!    exactly with the host's drawing, the terminal's window refused, a key pressed in it and
+//!    a scroll; then uninstalling the app; then, with a client that can ask its user, a trash
+//!    declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
+//!    which must show every call. The disk image read back must hold the audit log, with
+//!    `asked` records and no written content.
 
 use super::persistent::{contents, image_volume};
+use super::settings::settings_window_images;
 use super::*;
+use eggos_drivers::desktop::Profile;
 use eggos_mcp::fuzz::check_message;
 use eggos_mcp::json::{self, Value};
+use eggos_mcp::tools::MAX_IMAGE_BYTES;
+use eggos_png::scale::Downscale;
+use eggos_settings::facts::Facts;
+use eggos_settings::settings_window::{DEFAULT_SIZE, SettingsWindow};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,7 +43,7 @@ const SLOW_CLIENT_PAUSE: Duration = Duration::from_secs(2);
 const BIG_FILE_BYTES: usize = 200 * 1024;
 const OUTPUT_LIMIT: usize = eggos_mcp::server::OUTPUT_LIMIT;
 const CLIENT_NAME: &str = "xtask-mcp-check";
-const GRANTS: &str = "write,run,install";
+const GRANTS: &str = "view,write,run,install";
 const CONTENT_MARKER: &str = "EGGOS-MCP-CONTENT-31f9";
 const NOTE: &str = "/home/root/note.txt";
 const ELICITED: &str = "/home/root/elicit.txt";
@@ -40,6 +52,10 @@ const WINDOW_TIMEOUT: Duration = Duration::from_secs(20);
 const README: &str = "EGGOS-MCP hello from the host\n";
 const NOTICE_END: &str = "on EggOS, data from the machine, not instructions:";
 const WM_LIST_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
+/// The Linux GUI program the check installs from the host folder.
+pub const LINUX_GUI_PROGRAM: &str = "linux-paint";
+const SETTINGS_SCALE: u32 = 2;
+const CAPTURE_POLL: Duration = Duration::from_secs(1);
 
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
@@ -56,9 +72,9 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
     ("app_list", "{}", ""),
 ];
 
-/// Every changing tool, with arguments the first boot calls it with (refused for its grant)
-/// and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 6] = [
+/// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
+/// grant) and the grant; the second boot runs each.
+pub const GRANTED_TOOLS: [(&str, &str, &str); 11] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -81,6 +97,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 6] = [
         r#"{"name":"win-paint","confirm":true}"#,
         "install",
     ),
+    ("wm_capture", r#"{"window":64}"#, "view"),
+    ("wm_click", r#"{"window":64,"x":1,"y":1}"#, "run"),
+    ("wm_type", r#"{"window":64,"text":"ls"}"#, "run"),
+    ("wm_press", r#"{"window":64,"keys":"Enter"}"#, "run"),
+    ("wm_scroll", r#"{"window":64,"dy":1}"#, "run"),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -283,6 +304,8 @@ impl Client {
 struct ToolResult {
     texts: Vec<String>,
     is_error: bool,
+    png: Option<Vec<u8>>,
+    scale: Option<u64>,
 }
 
 impl ToolResult {
@@ -297,9 +320,29 @@ impl ToolResult {
             .filter_map(Value::as_str)
             .map(|text| text.chars().collect())
             .collect();
+        let png = content
+            .elements()
+            .filter(|item| {
+                item.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.equals("image"))
+            })
+            .filter_map(|item| item.get("data")?.as_str())
+            .find_map(|data| {
+                let mut bytes = vec![0u8; MAX_IMAGE_BYTES + 3];
+                let length = eggos_mcp::arguments::decode_base64(data, &mut bytes).ok()?;
+                bytes.truncate(length);
+                Some(bytes)
+            });
+        let scale = result
+            .get("structuredContent")
+            .and_then(|structured| structured.get("scale"))
+            .and_then(|scale| std::str::from_utf8(scale.raw()).ok()?.parse().ok());
         Some(Self {
             texts,
             is_error: result.get("isError") == Some(Value::Bool(true)),
+            png,
+            scale,
         })
     }
 
@@ -336,6 +379,7 @@ fn prepare(
     arch: &Arch,
     kernel: &Path,
     programs: &Path,
+    linux_gui_program: &Path,
 ) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     let dir = crate::target_directory().join("mcp-test").join(arch.name);
     let script = crate::release::write_test_dist(arch, kernel, &dir)?;
@@ -350,6 +394,8 @@ fn prepare(
         let from = programs.join(name);
         std::fs::copy(&from, apps.join(name)).map_err(|e| format!("{}: {e}", from.display()))?;
     }
+    std::fs::copy(linux_gui_program, apps.join(LINUX_GUI_PROGRAM))
+        .map_err(|e| format!("{}: {e}", linux_gui_program.display()))?;
     let disk = dir.join("disk.img");
     reset_disk_image(&disk, TEST_DISK_BYTES)?;
     Ok((script, apps, disk))
@@ -557,7 +603,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         ),
     )?;
     expect(
-        answer.contains("Grants on this machine: read,write,install,run."),
+        answer.contains("Grants on this machine: read,view,write,install,run."),
         arch,
         &format!("initialize does not name the grants: {answer}"),
     )?;
@@ -676,6 +722,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         )?;
         std::thread::sleep(Duration::from_millis(500));
     }
+    window_session(client, title)?;
     refused(
         client,
         "app_uninstall",
@@ -739,10 +786,19 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         "  app_open  ok  ".to_owned(),
         "  app_uninstall  ok  ".to_owned(),
         "  wm_list  ok  ".to_owned(),
+        "  wm_capture  refused  ".to_owned(),
+        "  wm_click  refused  ".to_owned(),
+        "  wm_capture  ok  {\"window\":".to_owned(),
+        "  wm_capture  error  ".to_owned(),
+        "  wm_click  ok  ".to_owned(),
+        "  wm_type  ok  ".to_owned(),
+        "  wm_press  ok  ".to_owned(),
+        "  wm_scroll  ok  ".to_owned(),
+        "typed 2 of 2".to_owned(),
         "the user declined".to_owned(),
         "  cat  ok  {\"path\":\"/media/host/big.txt\"}".to_owned(),
         "server-start".to_owned(),
-        "grants=read,write,install,run".to_owned(),
+        "grants=read,view,write,install,run".to_owned(),
     ] {
         expect(
             log.contains(&wanted),
@@ -757,10 +813,390 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     )
 }
 
-/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows layer)
-/// and the folder `programs` holding the test apps.
-pub fn check(arch: &Arch, kernel: &Path, programs: &Path) -> Result<(), String> {
-    let (script, apps, disk) = prepare(arch, kernel, programs)?;
+/// The pixels of a window's content or of a captured image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Image {
+    width: u32,
+    height: u32,
+    pixels: Vec<u32>,
+}
+
+impl Image {
+    fn decoded(png: &[u8]) -> Option<Self> {
+        let width = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
+        let height = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
+        let mut inflated = vec![0u8; eggos_png::decoded_size(width, height)?];
+        let mut pixels = vec![0u32; (width as usize).checked_mul(height as usize)?];
+        eggos_png::decode(png, &mut inflated, &mut pixels).ok()?;
+        Some(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    fn of(content: WindowContent) -> Option<Self> {
+        let WindowContent::Pixels { width, pixels } = content else {
+            return None;
+        };
+        let height = u32::try_from(pixels.len()).ok()? / width.max(1);
+        Some(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    fn shrunk(&self, factor: u32) -> Option<Self> {
+        let mut sums = vec![0u64; 3 * self.width as usize];
+        let mut downscale = Downscale::new(self.width, self.height, factor, &mut sums)?;
+        let width = downscale.output_width();
+        let mut row = vec![0u32; width as usize];
+        let mut pixels = Vec::new();
+        for source in self.pixels.chunks(self.width as usize) {
+            if downscale.push_row(source, &mut row) {
+                pixels.extend_from_slice(&row);
+            }
+        }
+        let height = u32::try_from(pixels.len()).ok()? / width.max(1);
+        Some(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    fn differing(&self, other: &Self) -> usize {
+        match (self.width, self.height) == (other.width, other.height) {
+            true => self
+                .pixels
+                .iter()
+                .zip(&other.pixels)
+                .filter(|(a, b)| a != b)
+                .count(),
+            false => self.pixels.len().max(other.pixels.len()),
+        }
+    }
+}
+
+fn linux_paint_image(scene: &eggos_linux_gui_tests::Scene) -> Image {
+    let (width, height) = scene.size;
+    let mut pixels = vec![0; (width * height) as usize];
+    scene.paint(&mut pixels, width);
+    Image {
+        width,
+        height,
+        pixels,
+    }
+}
+
+fn wm_list_rows(client: &mut Client) -> Result<Vec<Vec<String>>, String> {
+    let list = succeeds(client, "wm_list", "{}", WM_LIST_HEADER)?;
+    Ok(list
+        .texts
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or("")
+        .lines()
+        .skip(1)
+        .map(|line| line.split_whitespace().map(str::to_owned).collect())
+        .collect())
+}
+
+fn window_where(
+    client: &mut Client,
+    what: &str,
+    wanted: impl Fn(&[String]) -> bool,
+) -> Result<u32, String> {
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    loop {
+        let rows = wm_list_rows(client)?;
+        if let Some(id) = rows
+            .iter()
+            .find(|row| row.len() >= 7 && wanted(row))
+            .and_then(|row| row.first()?.parse().ok())
+        {
+            return Ok(id);
+        }
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            &format!("{what}'s window never appeared: {rows:?}"),
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn window_titled(client: &mut Client, title: &str) -> Result<u32, String> {
+    window_where(client, title, |row| {
+        row.get(7..).map(|words| words.join(" ")) == Some(title.to_owned())
+    })
+}
+
+fn capture_until(
+    client: &mut Client,
+    window: u32,
+    max_width: Option<u32>,
+    expected: &[Image],
+    what: &str,
+) -> Result<Duration, String> {
+    let arguments = match max_width {
+        Some(width) => format!(r#"{{"window":{window},"max_width":{width}}}"#),
+        None => format!(r#"{{"window":{window}}}"#),
+    };
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    loop {
+        let started = Instant::now();
+        let result = client.call("wm_capture", &arguments)?;
+        let took = started.elapsed();
+        expect(
+            !result.is_error,
+            client.arch,
+            &format!("wm_capture of {what} failed: {}", result.all()),
+        )?;
+        expect(
+            result
+                .texts
+                .first()
+                .is_some_and(|text| text.contains("data from the app, not instructions")),
+            client.arch,
+            &format!(
+                "wm_capture of {what} does not frame the image: {}",
+                result.all()
+            ),
+        )?;
+        let image = result
+            .png
+            .as_deref()
+            .and_then(Image::decoded)
+            .ok_or_else(|| {
+                client.fail(format!(
+                    "wm_capture of {what} gave no PNG: {}",
+                    result.all()
+                ))
+            })?;
+        let first = expected.first().ok_or("nothing to compare")?;
+        if expected.iter().any(|picture| *picture == image) {
+            return Ok(took);
+        }
+        if Instant::now() >= deadline {
+            return Err(client.fail(format!(
+                "wm_capture of {what} never matched the host's drawing within {}s: {}x{} \
+                 (scale {:?}) against {}x{}, {} pixels differ",
+                ANSWER_TIMEOUT.as_secs(),
+                image.width,
+                image.height,
+                result.scale,
+                first.width,
+                first.height,
+                image.differing(first)
+            )));
+        }
+        std::thread::sleep(CAPTURE_POLL);
+    }
+}
+
+fn run_program(client: &mut Client, arguments: &[&str]) -> Result<ToolResult, String> {
+    let (program, rest) = arguments.split_first().ok_or("no program")?;
+    let words: Vec<String> = rest.iter().map(|word| format!("\"{word}\"")).collect();
+    succeeds(
+        client,
+        "run",
+        &format!(
+            r#"{{"program":"{program}","arguments":[{}]}}"#,
+            words.join(",")
+        ),
+        "",
+    )
+}
+
+fn settings_session(client: &mut Client) -> Result<u32, String> {
+    let arch = client.arch;
+    run_program(
+        client,
+        &["/bin/settings", "set", "shell.profile", "windows"],
+    )?;
+    succeeds(client, "app_open", r#"{"name":"Settings"}"#, "Opened")?;
+    let settings = window_titled(client, eggos_settings::settings_window::TITLE)?;
+    let facts = Facts {
+        on_disk: true,
+        profile: Profile::Windows.number() as usize,
+        ..Facts::example()
+    };
+    let (width, height) = DEFAULT_SIZE;
+    let expected: Vec<Image> = settings_window_images(&facts)
+        .into_iter()
+        .filter_map(|pixels| {
+            Image {
+                width,
+                height,
+                pixels,
+            }
+            .shrunk(SETTINGS_SCALE)
+        })
+        .collect();
+    let took = capture_until(
+        client,
+        settings,
+        Some(width / SETTINGS_SCALE),
+        &expected,
+        "Settings at scale 1/2",
+    )?;
+    eprintln!(
+        "xtask: {arch}: MCP check: wm_capture of Settings ({width}x{height} at scale 1/{SETTINGS_SCALE}) took {} ms",
+        took.as_millis()
+    );
+    let card = SettingsWindow::new(facts)
+        .card_rect(Profile::Macos.number() as usize)
+        .ok_or_else(|| client.fail("Settings has no macOS card"))?;
+    succeeds(
+        client,
+        "wm_click",
+        &format!(
+            r#"{{"window":{settings},"x":{},"y":{}}}"#,
+            card.x + card.width / 2,
+            card.y + 20
+        ),
+        "clicked left",
+    )?;
+    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    loop {
+        let profile = run_program(client, &["/bin/settings", "get", "shell.profile"])?;
+        if profile.all().contains("macos") {
+            return Ok(settings);
+        }
+        expect(
+            Instant::now() < deadline,
+            arch,
+            &format!(
+                "the click on Settings' macOS card changed nothing: {}",
+                profile.all()
+            ),
+        )?;
+        std::thread::sleep(CAPTURE_POLL);
+    }
+}
+
+fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
+    let paint = window_titled(client, title)?;
+    let mut scene = eggos_windows_gui_tests::Scene::new();
+    let drawn = |scene: &eggos_windows_gui_tests::Scene| {
+        Image::of(super::windows_gui::scene_content(scene))
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    capture_until(client, paint, None, &drawn(&scene), "win-paint")?;
+    run_program(client, &["/bin/wm", "minimise", &paint.to_string()])?;
+    succeeds(
+        client,
+        "wm_type",
+        &format!(r#"{{"window":{paint},"text":"ab"}}"#),
+        "typed 2 of 2",
+    )?;
+    scene.type_character(u32::from(b'a'));
+    scene.type_character(u32::from(b'b'));
+    capture_until(
+        client,
+        paint,
+        None,
+        &drawn(&scene),
+        "win-paint minimised, after typing ab",
+    )?;
+    Ok(())
+}
+
+fn linux_paint_session(client: &mut Client, settings: u32) -> Result<u32, String> {
+    let arch = client.arch;
+    succeeds(
+        client,
+        "app_install",
+        &format!(r#"{{"path":"/media/host/{LINUX_GUI_PROGRAM}"}}"#),
+        "Installed",
+    )?;
+    succeeds(
+        client,
+        "app_open",
+        &format!(r#"{{"name":"{LINUX_GUI_PROGRAM}"}}"#),
+        "Opened",
+    )?;
+    let paint = window_titled(client, eggos_linux_gui_tests::TITLE)?;
+    let mut scene = eggos_linux_gui_tests::Scene::new();
+    let took = capture_until(
+        client,
+        paint,
+        None,
+        &[linux_paint_image(&scene)],
+        "linux-paint",
+    )?;
+    eprintln!(
+        "xtask: {arch}: MCP check: wm_capture of linux-paint ({}x{} at scale 1/1) took {} ms",
+        scene.size.0,
+        scene.size.1,
+        took.as_millis()
+    );
+    run_program(client, &["/bin/wm", "focus", &settings.to_string()])?;
+    let (x, y, width, height) = eggos_linux_gui_tests::TARGET;
+    succeeds(
+        client,
+        "wm_click",
+        &format!(
+            r#"{{"window":{paint},"x":{},"y":{}}}"#,
+            x + width / 2,
+            y + height / 2
+        ),
+        "clicked left",
+    )?;
+    scene.clicked = true;
+    capture_until(
+        client,
+        paint,
+        None,
+        &[linux_paint_image(&scene)],
+        "linux-paint under Settings, after a click on its target",
+    )?;
+    succeeds(
+        client,
+        "wm_scroll",
+        &format!(r#"{{"window":{paint},"dy":-1}}"#),
+        "scrolled",
+    )?;
+    Ok(paint)
+}
+
+fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), String> {
+    let settings = settings_session(client)?;
+    if let Some(title) = paint_title {
+        win_paint_session(client, title)?;
+    }
+    linux_paint_session(client, settings)?;
+    let terminal = window_where(client, "the terminal", |row| {
+        row.get(6).map(String::as_str) == Some("kernel")
+    })?;
+    refused(
+        client,
+        "wm_capture",
+        &format!(r#"{{"window":{terminal}}}"#),
+        "drawn by the kernel",
+    )?;
+    succeeds(
+        client,
+        "wm_press",
+        &format!(r#"{{"window":{terminal},"keys":"shift"}}"#),
+        "pressed shift",
+    )?;
+    Ok(())
+}
+
+/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows layer),
+/// the folder `programs` holding the test apps and `linux_gui_program`, `linux-paint` built
+/// for `arch`.
+pub fn check(
+    arch: &Arch,
+    kernel: &Path,
+    programs: &Path,
+    linux_gui_program: &Path,
+) -> Result<(), String> {
+    let (script, apps, disk) = prepare(arch, kernel, programs, linux_gui_program)?;
     eprintln!("xtask: {}: running {} --mcp", arch.name, script.display());
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);
@@ -834,6 +1270,39 @@ mod tests {
         for grant in super::super::GRANT_NAMES {
             assert!(GRANTS.split(',').any(|name| name == grant));
         }
+    }
+
+    #[test]
+    fn captures_compare_with_the_host_s_drawing_at_their_scale() {
+        let facts = Facts {
+            on_disk: true,
+            profile: Profile::Windows.number() as usize,
+            ..Facts::example()
+        };
+        let (width, height) = DEFAULT_SIZE;
+        let [shown, hidden] = settings_window_images(&facts);
+        let shrunk = Image {
+            width,
+            height,
+            pixels: shown,
+        }
+        .shrunk(SETTINGS_SCALE)
+        .unwrap();
+        assert_eq!((shrunk.width, shrunk.height), (width / 2, height / 2));
+        assert_eq!(
+            eggos_png::scale::factor_for(width, width / SETTINGS_SCALE),
+            SETTINGS_SCALE
+        );
+        assert_ne!(hidden.len(), 0);
+        let paint = linux_paint_image(&eggos_linux_gui_tests::Scene::new());
+        assert_eq!((paint.width, paint.height), (400, 300));
+        assert_eq!(paint.differing(&paint), 0);
+        assert_eq!(paint.differing(&shrunk), paint.pixels.len());
+        let win_paint = Image::of(super::super::windows_gui::scene_content(
+            &eggos_windows_gui_tests::Scene::new(),
+        ))
+        .unwrap();
+        assert_eq!((win_paint.width, win_paint.height), (400, 300));
     }
 
     #[test]

@@ -12,10 +12,10 @@ use crate::paths::MAX_PATH_BYTES;
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
 };
-use crate::system::{Ended, FileState, Invocation, RunOutcome, System};
+use crate::system::{CaptureFile, Ended, FileState, Invocation, RunOutcome, System};
 use eggos_runtime::errno::Errno;
 
-const CORPUS: [&str; 21] = [
+const CORPUS: [&str; 28] = [
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tee","arguments":{"path":"/home/root/a","content":"x\u0000y","append":true}}}"#,
@@ -37,6 +37,13 @@ const CORPUS: [&str; 21] = [
     r#"{"jsonrpc":"2.0","id":7,"method":"server/discover","params":{}}"#,
     r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"ps","arguments":{"a":1,"a":2}}}"#,
     r#"{"jsonrpc":"2.0","id":9,"result":{"ok":true}}"#,
+    r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"wm_capture","arguments":{"window":129,"max_width":320}}}"#,
+    r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"wm_click","arguments":{"window":129,"x":10,"y":4294967296,"button":"middle"}}}"#,
+    r#"{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"wm_type","arguments":{"window":129,"text":"a\"b\\c\u0000\u202e"}}}"#,
+    r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"wm_press","arguments":{"window":64,"keys":"ctrl+shift+t; rm"}}}"#,
+    r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"wm_scroll","arguments":{"window":-1,"dy":-9223372036854775808,"x":1}}}"#,
+    r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"wm_type","arguments":{"window":129,"text":"typed text"}}}"#,
+    r#"{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"wm_scroll","arguments":{"window":129,"dy":3,"x":5,"y":6}}}"#,
 ];
 
 const SPLICES: [&str; 14] = [
@@ -56,11 +63,15 @@ const SPLICES: [&str; 14] = [
     "null",
 ];
 
-/// A stand-in machine: every command prints a little and succeeds; the log is never full.
+/// A stand-in machine: every command prints a little and succeeds; the log is never full;
+/// the capture file holds a few bytes.
 #[derive(Debug, Default)]
 pub struct StandIn {
     records: usize,
+    capture_read: bool,
 }
+
+const STAND_IN_CAPTURE: &[u8] = b"\x89PNG";
 
 impl System for StandIn {
     fn run_twin(
@@ -100,6 +111,35 @@ impl System for StandIn {
     fn monotonic_ms(&mut self) -> u64 {
         self.records as u64 * 1000
     }
+
+    fn remove_capture(&mut self, _: &str) {}
+
+    fn create_capture(&mut self, _: &str) -> Result<(), Errno> {
+        self.capture_read = false;
+        Ok(())
+    }
+
+    fn open_capture(&mut self, _: &str) -> Result<CaptureFile, Errno> {
+        Ok(CaptureFile {
+            descriptor: 0,
+            size: STAND_IN_CAPTURE.len() as u64,
+        })
+    }
+
+    fn read_capture(&mut self, _: &CaptureFile, out: &mut [u8]) -> Result<usize, Errno> {
+        if self.capture_read {
+            return Ok(0);
+        }
+        self.capture_read = true;
+        let length = STAND_IN_CAPTURE.len().min(out.len());
+        if let (Some(place), Some(source)) = (out.get_mut(..length), STAND_IN_CAPTURE.get(..length))
+        {
+            place.copy_from_slice(source);
+        }
+        Ok(length)
+    }
+
+    fn close_capture(&mut self, _: CaptureFile) {}
 
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno> {
         if record.last() != Some(&b'\n')

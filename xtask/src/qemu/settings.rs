@@ -224,6 +224,26 @@ impl<'a> Boot<'a> {
     }
 }
 
+/// The Settings window's content at its default size as the host draws it from `facts`,
+/// with the text field's caret shown and hidden: the two states a frame of the real window can
+/// be in.
+pub(super) fn settings_window_images(facts: &Facts) -> [Vec<u32>; 2] {
+    settings_images(&SettingsWindow::new(*facts))
+}
+
+fn settings_images(settings: &SettingsWindow) -> [Vec<u32>; 2] {
+    let (width, height) = DEFAULT_SIZE;
+    [true, false].map(|caret_shown| {
+        let mut tree = settings.widgets().clone();
+        if !caret_shown {
+            tree.tick(CARET_HIDDEN_MS);
+        }
+        let mut pixels = vec![0; (width * height) as usize];
+        tree.render(&mut pixels, width, height, 1);
+        pixels
+    })
+}
+
 pub(super) struct Screen {
     pub(super) qmp: Qmp,
     pub(super) desktop: Desktop,
@@ -288,17 +308,11 @@ impl Screen {
         let Some((id, settings)) = &self.settings else {
             return vec![Vec::new()];
         };
-        let (width, height) = DEFAULT_SIZE;
-        let render = |caret_shown: bool| {
-            let mut tree = settings.widgets().clone();
-            if !caret_shown {
-                tree.tick(CARET_HIDDEN_MS);
-            }
-            let mut pixels = vec![0; (width * height) as usize];
-            tree.render(&mut pixels, width, height, 1);
-            vec![(*id, WindowContent::Pixels { width, pixels })]
-        };
-        vec![render(true), render(false)]
+        let (width, _) = DEFAULT_SIZE;
+        settings_images(settings)
+            .into_iter()
+            .map(|pixels| vec![(*id, WindowContent::Pixels { width, pixels })])
+            .collect()
     }
 
     pub(super) fn check(
@@ -627,18 +641,9 @@ mod tests {
 
     #[test]
     fn the_host_draws_settings_with_and_without_the_caret() {
-        let mut screen_contents = Vec::new();
-        let settings = SettingsWindow::new(Facts::example());
+        let screen_contents = settings_window_images(&Facts::example());
         let (width, height) = DEFAULT_SIZE;
-        for caret_shown in [true, false] {
-            let mut tree = settings.widgets().clone();
-            if !caret_shown {
-                tree.tick(CARET_HIDDEN_MS);
-            }
-            let mut pixels = vec![0; (width * height) as usize];
-            tree.render(&mut pixels, width, height, 1);
-            screen_contents.push(pixels);
-        }
+        assert_eq!(screen_contents[0].len(), (width * height) as usize);
         assert_ne!(screen_contents[0], screen_contents[1]);
         assert_eq!(
             screen_contents[0][0],

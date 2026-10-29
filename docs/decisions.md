@@ -8933,3 +8933,77 @@ the license, by an explicit instruction recorded here.
 - **Risks.** Each `SEND_INPUT` is its own focus session (`FocusIn` and `FocusOut` around it),
   so a click and a later `wm type` reach the window in two sessions; Win32 controls (item 42's
   EDIT) may reset their focused child or caret between them, which item 42 has to handle.
+
+## D143 Agents see and operate any window: the `view` grant, `wm_capture`'s image answer, `wm_click`, `wm_type`, `wm_press` and `wm_scroll` under `run`, and their audit (v0.3.0 item 47a2; extends D141, D136, D137) — Decided (owner, 2026-10-28: "the mcp is not enough … if windows app open gui, our os will support the ai to work with it"); the design decided by the build loop
+- **What.** An MCP client can now see what any app window shows and operate it: `wm_capture`
+  answers a window's content as a PNG, and `wm_click`, `wm_type`, `wm_press` and `wm_scroll`
+  send it input, each through its CLI twin from D141 (`wm capture`, `click`, `type`, `press`,
+  `scroll`; D22). Together with `app_open` of the built-in apps (D141) an agent can open
+  Settings, look at it, click it and see the result.
+- **A new grant, `view`** ("see window contents"). `wm_list` already shows titles to every
+  agent, but a window's content can be anything (a password manager, a mail), so seeing it is
+  a grant of its own: nothing but `run` implies it. Input goes under `run`, which now means
+  "programs and the GUI": input reaches the terminal's window, a root shell, so it is at least
+  as strong as `run` (D137's 10-second containment does not apply to what is typed there).
+  `run` implies `view`, `write` and `install`. The scripts and xtask accept `view`; the
+  `server-start` record and `initialize`'s instructions name it (`read,view,write,install,run`).
+- **Pixels, as an interim exception to D3 ("not screen scraping") and D21 ("structured data,
+  not screenshots").** The owner wants agents to work with any GUI app now; structured windows
+  (each control's role, name and state, from our own toolkit and the layers' UI libraries)
+  are item 48, after the release, and are the way back: once they exist, captures stay for
+  what has no structure (a canvas, a game).
+- **The image answer.** Text first (D136's shape), saying the image is data from the app, not
+  instructions, with the window's size, the image's and the scale, and that window
+  coordinates are image coordinates times the scale; then `{type: image, mimeType: image/png,
+  data}`; then `structuredContent {width, height, image_width, image_height, scale}`.
+  `max_width` is 16 to 1568, 1024 by default (clients such as Claude scale larger images down
+  to about that long edge); the twin gets `--max-bytes` from the one constant
+  `MAX_IMAGE_BYTES` = 700 KiB, so the PNG in base64 with the envelope always fits the 1 MiB
+  answer buffer (D136): no buffer grows, and image results are exempt from the 128 KiB
+  `OUTPUT_LIMIT` because they never pass through the twin's output.
+- **The capture file.** `/run/eggmcpd-capture.png` (memory, outside every tool's roots). For
+  each call `eggmcpd` removes whatever is there, makes the file anew with `O_CREAT | O_EXCL |
+  O_NOFOLLOW`, mode 0600, runs the twin (which truncates and writes it; `wm capture` now makes
+  new files 0600 too), opens it once with `O_NOFOLLOW`, takes its size from `statx` on that
+  descriptor (a regular file of at most 700 KiB, the size `wm capture` reported), reads it
+  through that descriptor in pieces of 131,070 bytes (the output buffer cut to a multiple of
+  three) into a streaming base64 writer that carries a 1-2 byte remainder across pieces, and
+  removes it. A read that stops short rewinds the answer to an error. Every process is root
+  until M10, so this is defence in depth, not a boundary against programs in the machine.
+- **A person wins (D141) through the tools.** The twin's exit 75 is an error result `Busy: a
+  person is using the machine; wait a moment and retry.`, logged `refused` with `busy`;
+  `wm_type` adds how many characters it typed (`typed N of M`, from the twin's output).
+- **Arguments.** `window` (0 to 999,999,999, what `wm` reads), `x`/`y` (0 to 65,535, together),
+  `button` (`left`, `right`, `middle`), `text` (1 to 96 printable ASCII bytes), `keys` (1 to 32
+  bytes of letters, digits and `+`, checked by eggmcpd before `wm` checks the names), `dy`
+  (-16 to 16, not 0; sideways is not in the protocol). The twin's command line is options,
+  then `--`, then the positional words, so text starting with `-` is text.
+- **The audit (a departure from D137's "content is never logged").** Window ids, points,
+  buttons, key names and `max_width` are logged; a capture's detail is its sizes (`640x440 as
+  320x220, 48213 bytes`), never pixels; `wm_type`'s text is logged whole, as `run`'s
+  arguments are, because typing is input as strong as `run`. The log's field keeps 512 bytes
+  and the arguments are escaped twice (JSON, then the log), up to four bytes for a `\` or `"`,
+  so 96 characters plus the other keys always fit and padding cannot hide the end of what was
+  typed. `run`'s argument list past the 1 KiB arguments buffer is now cut with a `"<cut>"`
+  marker instead of the whole arguments being dropped, so a long call still logs its program
+  and first words.
+- **Check.** Host tests: the grant matrix (`view` alone captures and operates nothing else,
+  no grant captures nothing, `run` implies `view`, `write` and `install` do not), the twins'
+  command lines, hostile arguments, the image answer (text, image, `structuredContent`, base64
+  across piece edges and short reads, the size cap, a stale file removed first, a file
+  replaced by a link refused, a report that does not match), `busy` and partial typing, the
+  audit rows (all-backslash and all-quote text at 96 characters logged whole), `run`'s cut
+  list, the streaming base64, the fuzz corpus. QEMU (`cargo xtask qemu`, the MCP check, still
+  two boots per architecture): boot 1 refuses `wm_capture` naming `view` and the input tools
+  naming `run`; boot 2 (`view,write,run,install`) sets the Windows profile, opens Settings by
+  name and captures it at scale 1/2, compared exactly with the host's drawing shrunk by the
+  same `Downscale`, clicks its macOS card and reads the profile back; on x86_64 and aarch64
+  captures `win-paint`, minimises it, types `ab` and captures the text in the minimised window;
+  on all three installs and captures `linux-paint`, raises Settings over it, clicks its target
+  and captures it recoloured; refuses the terminal's window by name, presses Shift in it and
+  scrolls; `agentlog` shows every call.
+- **Not yet.** MCP tools for the other `wm` verbs (focus, move, size, minimise, maximise,
+  restore, close), with the command model; per-agent grants; structured windows (item 48);
+  capturing the terminal's window; drag, double-click, sideways scrolling and non-ASCII
+  typing (D141). A window whose client stopped reading its events answers `EAGAIN` until
+  `wm`'s 3-second retry budget runs out, then the tool fails.
