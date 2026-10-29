@@ -4,6 +4,9 @@
 //! program paints it.
 
 use crate::linux::{self, O_NONBLOCK, O_RDWR};
+use eggos_element_tree::{
+    MAX_TEXT_BYTES, answer_query, read_query, request as query_request, size as query_size,
+};
 use eggos_runtime::errno::Errno;
 use eggos_windows_gui::colour::token;
 use eggos_windows_gui::surface::Rect;
@@ -205,6 +208,29 @@ impl Device {
         let _ = self.request(DESTROY, &mut buffer.window.to_ne_bytes());
         // SAFETY: the caller's duty.
         unsafe { unmap(buffer) };
+    }
+
+    /// Reads the text of query `serial`, an agent's `set-text` (D161, `READ_QUERY`), into
+    /// `text`; its length.
+    pub fn query_text(&self, serial: u32, text: &mut [u8; MAX_TEXT_BYTES]) -> Result<usize, Errno> {
+        let mut query = [0u8; query_size::READ_QUERY];
+        put(&mut query, read_query::SERIAL, serial);
+        self.request(query_request::READ_QUERY as usize, &mut query)?;
+        let length = (word(&query, read_query::TEXT_LENGTH) as usize).min(MAX_TEXT_BYTES);
+        text[..length].copy_from_slice(&query[read_query::TEXT..read_query::TEXT + length]);
+        Ok(length)
+    }
+
+    /// Answers query `serial` with `outcome` and, for a tree, its bytes (`ANSWER_QUERY`).
+    pub fn answer_query(&self, serial: u32, outcome: u32, tree: &[u8]) -> Result<(), Errno> {
+        let mut answer = [0u8; query_size::ANSWER_QUERY];
+        put(&mut answer, answer_query::SERIAL, serial);
+        put(&mut answer, answer_query::OUTCOME, outcome);
+        answer[answer_query::BUFFER..answer_query::BUFFER + 8]
+            .copy_from_slice(&(tree.as_ptr() as u64).to_ne_bytes());
+        answer[answer_query::LENGTH..answer_query::LENGTH + 8]
+            .copy_from_slice(&(tree.len() as u64).to_ne_bytes());
+        self.request(query_request::ANSWER_QUERY as usize, &mut answer)
     }
 
     /// Reads the waiting event records into `records`; 0 when none waits.

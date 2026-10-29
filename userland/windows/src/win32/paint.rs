@@ -100,8 +100,17 @@ fn draw<R>(
     })
 }
 
+fn remember_drawn(hdc: usize, rect: Rect, units: &[u16]) {
+    with(|gui| {
+        if let Some(window) = gui.contexts.get(hdc).map(|context| context.window) {
+            gui.drawn.record(window, rect, units);
+        }
+    });
+}
+
 /// `BeginPaint`'s work: a painting context on `window`'s region waiting to be painted (now
-/// validated), the region, and whether the background is still to erase.
+/// validated), the region, and whether the background is still to erase. The text drawn in
+/// the region before is forgotten (D162): the paint draws what is there now.
 pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
     let (hdc, region, erase) = try_with(|gui| {
         let target = gui.window_mut(window)?;
@@ -109,6 +118,7 @@ pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
         let erase = target.erase;
         target.update = Rect::default();
         target.erase = false;
+        gui.drawn.forget_in(window, region);
         let hdc = gui
             .contexts
             .insert(DeviceContext::new(window, true, region))
@@ -355,6 +365,9 @@ unsafe extern "efiapi" fn draw_text_w(
             None => text::measure(cells, bounds, format).height(),
         }
     });
+    if drawn.is_ok() {
+        remember_drawn(hdc, text::measure(cells, bounds, format), units);
+    }
     match drawn {
         Ok(height) => height,
         Err(code) => fail(code, 0),
@@ -536,6 +549,10 @@ unsafe extern "efiapi" fn text_out_w(
             text::text_out(surface, x, y, units, foreground, context.text_background());
         }
     });
+    if drawn.is_ok() {
+        let (width, height) = text::extent(units);
+        remember_drawn(hdc, Rect::sized(x, y, width, height), units);
+    }
     match drawn {
         Ok(()) => TRUE,
         Err(code) => fail(code, FALSE),

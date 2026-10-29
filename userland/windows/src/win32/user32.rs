@@ -409,6 +409,7 @@ pub fn remove_window(handle: usize) {
         gui.queue.forget(handle);
         gui.contexts.retain(|context| context.window != handle);
         gui.timers.kill_window(handle);
+        gui.drawn.forget_window(handle);
         let window = gui.windows.remove(handle)?;
         if window.is_child() {
             let parent = window.parent;

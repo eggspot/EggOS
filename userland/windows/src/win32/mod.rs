@@ -21,6 +21,7 @@ mod controls;
 mod crt;
 mod dialog;
 mod directory;
+mod elements;
 mod environment;
 mod file;
 mod file_picker;

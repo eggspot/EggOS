@@ -18,6 +18,7 @@
 use super::window_device::{self, Buffer, Device};
 use super::{SpinLock, call_program, error, error_for, heap, thread_environment};
 use crate::gui::classes::ClassTable;
+use crate::gui::drawn::DrawnTexts;
 use crate::gui::input::{Event, InputState, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects::{self, ContextTable, ObjectTable};
@@ -26,6 +27,7 @@ use crate::gui::timers::Timers;
 use crate::gui::windows::{self, Pixels, Procedure, WindowTable};
 use crate::linux;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use eggos_element_tree::QUERY_EVENT;
 use eggos_runtime::futex::WakeCount;
 
 const PENDING_CHARACTERS: usize = 8;
@@ -52,6 +54,7 @@ pub struct Gui {
     pub menus: usize,
     pub tracking: Option<super::menu::Tracking>,
     pub active_root: usize,
+    pub drawn: DrawnTexts,
     input: InputState,
     characters: [PendingCharacter; PENDING_CHARACTERS],
     next_character: usize,
@@ -71,6 +74,7 @@ impl Gui {
             menus: 0,
             tracking: None,
             active_root: 0,
+            drawn: DrawnTexts::new(),
             input: InputState::default(),
             characters: [PendingCharacter::default(); PENDING_CHARACTERS],
             next_character: 0,
@@ -250,7 +254,9 @@ const NO_DELIVERY: Delivery = Delivery {
     lparam: 0,
 };
 
-fn deliver(delivery: &Delivery, thread: u32) {
+/// Calls `delivery`'s window procedure when thread `thread` owns the window, else posts it to
+/// the window's thread.
+pub fn deliver(delivery: &Delivery, thread: u32) {
     if delivery.thread == thread {
         send(
             delivery.window,
@@ -291,8 +297,14 @@ fn read_events(thread: u32) {
         let read = device.read_events(&mut records).unwrap_or(0);
         let mut deliveries = [NO_DELIVERY; RECORDS_PER_READ];
         let mut count = 0;
+        let mut queries = [None; RECORDS_PER_READ];
+        let mut asked = 0;
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
-            if let Some(delivery) = handle_event(&device, &Record::parse(record)) {
+            let record = Record::parse(record);
+            if record.kind == QUERY_EVENT {
+                queries[asked] = Some(record);
+                asked += 1;
+            } else if let Some(delivery) = handle_event(&device, &record) {
                 deliveries[count] = delivery;
                 count += 1;
             }
@@ -303,6 +315,9 @@ fn read_events(thread: u32) {
         }
         for delivery in &deliveries[..count] {
             deliver(delivery, thread);
+        }
+        for query in queries[..asked].iter().flatten() {
+            super::elements::answer(&device, query, thread);
         }
         if read < records.len() {
             return;

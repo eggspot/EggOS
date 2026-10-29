@@ -18,7 +18,8 @@
 //!    (D143): Settings opened by name and captured at scale 1/2, its macOS card found in
 //!    `wm_show`'s element tree and invoked by its id with `wm_act` (D161), which `settings get`
 //!    sees, on x86_64 and aarch64 `win-paint` captured,
-//!    minimised, typed into with `wm_type`, captured again with the text and closed (an
+//!    minimised, typed into with `wm_type`, captured again with the text, its drawn text read
+//!    from `wm_show` (D162) and closed (an
 //!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
@@ -1300,6 +1301,22 @@ fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
         None,
         &drawn(&scene),
         "win-paint minimised, after typing ab",
+    )?;
+    let tree = succeeds(
+        client,
+        "wm_show",
+        &format!(r#"{{"window":{paint}}}"#),
+        " text ",
+    )?;
+    expect(
+        tree.all().contains(" text ")
+            && tree.all().contains("\"EggOS win-paint\"")
+            && tree.all().contains("ab\""),
+        client.arch,
+        &format!(
+            "wm_show of win-paint does not list the text it drew: {}",
+            tree.all()
+        ),
     )?;
     run_program(client, &["/bin/wm", "close", &paint.to_string()])?;
     let deadline = Instant::now() + WINDOW_TIMEOUT;

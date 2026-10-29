@@ -4,6 +4,7 @@
 //! on `/dev/window`.
 
 pub mod classes;
+pub mod drawn;
 pub mod input;
 pub mod menus;
 pub mod message;
