@@ -22,6 +22,8 @@ behaviour. A UX regression is treated like a performance regression.
 - `font-8x16.txt`: Egg Mono 8x16, the system font, every printable ASCII glyph as pixel art.
 - `font-ui-16.txt`: Egg Sans 16, the proportional UI font of the toolkit, ASCII and Latin-1 as
   pixel art with each glyph's advance width (D132).
+- `app-icons-v0.3.md`: installed apps' own icons (item 45, D148): where they show, no badge,
+  the `app.icon` file and its blend, choosing and scaling the source image, `.zip` installs.
 - `toolkit-v0.3.md`: the v0.3.0 GUI toolkit's widgets (text, buttons, checkboxes, radios,
   cards, lists, text fields, scroll views, focus and keyboard navigation) and the Settings
   app's first version (item 34).
