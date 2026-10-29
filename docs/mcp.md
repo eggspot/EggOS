@@ -63,7 +63,7 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps | `ls`, `cat`, `ps`, `wm_list`, `app_list` |
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included | `wm_capture` |
 | `write` | write files below `/home/root` and move them to the Trash | `tee`, `trash` |
-| `install` | install apps from `/media/host`, open and uninstall installed apps | `app_install`, `app_open`, `app_uninstall` |
+| `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
 | `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
@@ -94,7 +94,8 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`) | `app install -- <path>` | `install` |
-| `app_open` | Opens an installed app, or the built-in `Terminal`, `Files` or `Settings`, by name (`name`) | `app open -- <name>` | `install` |
+| `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
+| `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
 | `app_uninstall` | Uninstalls an app (`name`, `confirm`) | `app uninstall -- <name>` | `install` |
 | `wm_capture` | A window's content as a PNG image (`window`; `max_width`, 16 to 1568, 1024 by default) | `wm capture -o /run/eggmcpd-capture.png --max-width <n> --max-bytes 716800 -- <window>` | `view` |
 | `wm_click` | Clicks in a window (`window`, `x`, `y`, `button`: `left`, `right` or `middle`) | `wm click --button <button> -- <window> <x> <y>` | `run` |

@@ -400,11 +400,22 @@ D16):
     `app list` and `app_list` name it. A QEMU test installs `mac-paint.zip` and compares the
     desktop's and the launcher's frames, its own icon in them. Next: `app icon` and `app_icon`,
     icons in the installer's dialogs and title bars, 2x images, binary property lists.
+46. **done** — users can now open, edit, find in and save text files in a native Text Editor
+    (D149, docs/apps.md, Claude Fable's docs/ux/text-editor-v0.3.md), replacing old item 24's
+    terminal `edit`: Files opens text files in it, the launcher lists it (Notepad, TextEdit,
+    gedit), `edit <path>` opens a file in a window of its own and returns, `app open "Text
+    Editor"` and the MCP tool `edit_open` open it too. New, Open, Save and Save As (a path bar,
+    no picker yet), find with next, previous and `Match case`, undo and redo, cut, copy and
+    paste, line numbers, `Ln, Col` and `Modified` in the status bar, CRLF files and byte-order
+    marks kept, up to 4 MiB of UTF-8, both Ctrl and Cmd in every profile; the editing logic is
+    the host-tested `eggos-editor` crate. A QEMU test opens a file with `edit`, types, finds,
+    saves and closes it, every frame compared, and `cat` reads the saved text. Next: word wrap,
+    replace, a file picker, a shared clipboard, text beyond Egg Mono's glyphs.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
-Editor; 29 an RTC driver for `date`. Moved after the release: networking and the terminal's
-`edit`; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
+Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date`. Moved after
+the release: networking; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
 
 ## Milestones
 

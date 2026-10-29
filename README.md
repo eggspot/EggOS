@@ -75,6 +75,8 @@ another image, `--no-disk` none (then `/home` is in memory and nothing is kept),
 `--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Type
 `settings` to open [Settings](docs/settings.md) and pick the Windows, macOS or Linux layout
 profile (where the window controls are and which shortcuts work); it is kept on the disk.
+Type `edit notes.txt` (or double-click a text file in Files) to open it in the Text Editor
+([docs/apps.md](docs/apps.md#the-text-editor-edit)).
 Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 

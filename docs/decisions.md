@@ -9412,3 +9412,110 @@ the license, by an explicit instruction recorded here.
   interlaced PNGs; 16-bit and compressed bitmap entries; `.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`;
   ZIP64 and encrypted entries; the installer window's chooser for a `.zip` with several
   programs and `--entry` in the MCP tool.
+
+## D149 The Text Editor: a native GUI editor that Files opens text in, `edit`, `app open "Text Editor"` and `edit_open` (v0.3.0 item 46; replaces old item 24, the terminal `edit`; extends D133, D135, D137, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/text-editor-v0.3.md`; the command's shape, headless installs, the MCP tool and the built-in name decided by research)
+- **What.** Item 46: "a native GUI editor (open, save, find) that Files uses for text; it
+  replaces old item 24, the terminal `edit`." Users open a text file from Files (double-click,
+  Enter, `Open`), from the launcher (`Text Editor`, found as Notepad, TextEdit, gedit, Kate,
+  editor, notes), from the terminal (`edit notes.txt`) or from an agent (`edit_open`), and
+  edit it as in Notepad, TextEdit or gedit: type, select, cut, copy and paste, undo and redo,
+  find, save and save as, new and open.
+- **Design (Claude Fable, D16).** `docs/ux/text-editor-v0.3.md`: one window per document,
+  720x480 (480x300 at least); a toolbar of `New`, `Open`, `Save`, `Save As` and `Find`; a bar
+  slot under it for the find bar (field, `<`, `>`, `Match case`, the result `<n> of <m>`, `,
+  from top`, `, from end` or `Not found`, `×`) or the path bar of Open and Save As (there is no
+  file picker yet); the text view in Egg Mono 8x16 on `field.bg` with a gutter of line
+  numbers (`16 + 8 x digits`, two digits at least), tabs to the next multiple of 8, a
+  character Egg Mono lacks drawn `?`, word wrap off and both scroll bars; a status bar with
+  `Ln <l>, Col <c>`, ` · <n> selected`, `Modified` or `New file`, and `LF` or `CRLF`; the title
+  `*<name> - Text Editor`, a name over 49 bytes cut to 46 and `...`, so the title fits 64
+  bytes; in-window panels (`Save changes to <name>?` with `Don't Save`, `Cancel`, `Save`;
+  `Replace <name>?`) and notices; one key map with both Ctrl and Cmd in every profile, as Files
+  has; a context menu (Undo, Redo, Cut, Copy, Paste, Select All); the shell lists it in the
+  launcher only (Notepad, TextEdit and gedit are not pinned on their systems), and its windows
+  show in the dock and the taskbar with a drawn icon, an off-white page with grey lines and the
+  yolk caret (three tokens with values already in the set).
+- **The logic, host-tested.** A new `no_std` crate, `eggos-editor` (`userland/editor`): the
+  document (`document.rs`) is UTF-8 with `\n` breaks in one piece of caller memory, so drawing
+  and finding read plain slices, with an index of line starts kept by every edit (an edit
+  moves the text after it; a gap buffer can follow if the weekly performance pass finds typing
+  in a large file slow); loading takes a byte-order mark and CRLF out and saving puts them
+  back, so a Windows file stays one; `history.rs` keeps undo steps one after another in one
+  byte log (header, bytes taken out, bytes put in, length, so it walks both ways), typing and
+  runs of Backspace or Delete growing one step, at most 1024 steps, the oldest dropped when the
+  log is full, and a serial per state so `Modified` is exact after undoing back to the saved
+  text; `find.rs` (ASCII letters match either case unless `Match case`, wrapping, the rank
+  among non-overlapping matches), `words.rs`, `columns.rs` and `editor.rs` (caret, anchor, the
+  column Up and Down keep, the editor's own clipboard, as Files' is); `file.rs` checks a file in
+  a pass of its own (a regular file of at most 4 MiB, UTF-8 with no NUL) before the document is
+  touched, so a refused Open leaves the document as it was, and saves through
+  `.<name>.saving` beside the file, synced and renamed over it (the old permissions kept), so a
+  failed save never leaves half a file. The window (`editor_window.rs`, the `window` feature)
+  is pure state over the editor and `eggos-app`'s `Files`, like Files' window, so the host tests
+  and the QEMU test's expected frames run the code the program shows.
+- **Bounded memory.** 4 MiB of text (a larger file is refused with `<name> is too large to open
+  (over 4 MB).`, a larger edit with `The document is full (4 MB).`), its line index, a history
+  log of twice that (so any one edit can be undone) and a 4 MiB clipboard, each an anonymous
+  mapping made when the editor starts; pages cost memory only when the document touches them,
+  so a small file costs a few pages. Nothing runs while no editor is open (CLAUDE.md notes 3
+  and 8).
+- **The program** (as D134 and D135): `/bin/text-editor [<path>]` and `/bin/edit` are two more
+  names of `/bin/settings` (hard links), so the toolkit and the fonts are in the image once;
+  the image grows by the editor's code in that program only. `text-editor` opens the window in
+  the foreground on `path` (made absolute against the working folder) or on `Untitled`; a path
+  with nothing at it is a new file the first save makes (as vi, nano and gedit do). The
+  toolkit's `View` gains `close_requested` (so a window can ask before closing) and
+  `take_title` (the title follows the document), `Window::set_title`, and the canvas draws Egg
+  Mono glyphs (`mono_glyph`); the runtime's `Spawn` gains `in_own_session` (`setsid`).
+- **Files** opens a text file in the editor when `/bin/text-editor` is installed, as a child
+  like the installer's window, with no size limit of its own (the editor refuses over 4 MiB);
+  without it, `cat` in the Terminal stays (D135). This closes D135's "until the Text Editor".
+- **The shell.** `AppId::TextEditor`, named `Text Editor`, listed in the launcher after
+  Terminal and like Files always listed: launching it without `/bin/text-editor` says `Text
+  Editor is not installed.` (the kernel records whether the image has it, as for Files). Each
+  launch opens a new window, as Notepad from Start does; the dock's icon of running editors
+  focuses them. A window whose title ends with ` - Text Editor` is the editor's, so its icon
+  and grouping are right. `app open "Text Editor"` and the MCP `app_open` open it by name.
+- **The command and headless installs** (decided by research). `edit [--] [<path>]` checks the
+  desktop (`/dev/window`'s work area), refuses a file the editor would refuse with the
+  editor's words, starts `/bin/text-editor` in a session of its own with its standard streams
+  on a pipe nobody reads, prints `Opened <path> in Text Editor.` and returns at once, as
+  `notepad file`, `open -e file` and `gedit file` do; a foreground editor would hold the
+  terminal and be stopped by the MCP server's 10 s limit. Changing `OPEN_APP` to carry a path
+  was rejected: a new ABI for what a child process does already. With no desktop it says
+  there is no desktop to open the Text Editor on, names `cat` and `tee`, and fails; no terminal editor and no `edit --replace` (a CLI-only replace would be a
+  front end the GUI lacks, D22). Old item 24's terminal `edit` was never built, so there are
+  not two editors to keep in step; a terminal editor is "Not yet".
+- **Three front ends (D22).** GUI: the window, Files and the launcher. CLI: `edit` opens it;
+  reading and writing text are `cat` and `tee`, finding is `grep`. MCP (decided by research):
+  `edit_open {path}`, the twin `edit -- <path>`, paths in `/home` and `/media/host` like
+  `cat`'s, under the `install` grant like `app_open` (it opens a window from a built-in program;
+  `view` is for seeing windows and `run` would be too strong), neither read-only nor
+  destructive (saving needs input through the `wm_*` tools, under `run`); `cat` and `tee` read
+  and write the text, and the window is operated with the `wm_*` tools like any other.
+- **Points decided by the build loop.** Notices name errors as Files does, with the error's
+  message (`Could not save notes.txt (No space left on device).`), not Fable's `ENOENT`
+  names. Shift with the wheel or a click is tracked from the Shift keys' own events (the
+  window server's wheel and button events carry no modifiers). The caret's damage is the text
+  view; edits redraw the window. The new icon is checked pixel by pixel; its two hashes join the
+  pinned table when the batch is built.
+- **Testing.** Host: the document's line index through inserts and removals, the room's
+  limits, boundaries, CRLF and the byte-order mark both ways, refusing what is not text; the
+  streaming UTF-8 check in pieces; opening by kind, 4 MiB and one byte more, saving over a file,
+  read-only places, a missing folder and a full disk; columns and tabs; words; finding,
+  wrapping and ranks; undo coalescing, the log's limits and serials; the editor's motions,
+  selections, clipboard, Backspace and Delete over whole characters; the window's title, new
+  file, refusals, CRLF, find bar, close question and its three answers, Save As through the
+  bar for `Untitled`, `Replace`, Open, New, the context menu, clicks, double-clicks and the
+  gutter, the gutter's width, a full document and drawing with the caret shown and hidden; the
+  catalogue, the icon, `app open`'s built-in name, `edit`'s arguments, Files' request and the
+  MCP tool's twin, grant and roots. QEMU on all three architectures (`xtask/src/qemu/
+  text_editor.rs`): the shell writes `/tmp/notes.txt`, `edit` opens it, typing, Ctrl+F `egg`
+  (`1 of 2`), Esc, Ctrl+S and the close control each give the frame the host draws, and `cat`
+  prints the saved text; the MCP boot opens the share's text file with `edit_open` and sees its
+  window in `wm_list`.
+- **Not yet.** Word wrap; a file picker; a clipboard shared with other programs; changing the
+  line ending or the encoding; a read-only mode for files that are not text; auto-indent and
+  indenting a selection; replace; go to line; syntax colouring; reloading a file changed on
+  disk; one window per file (opening a file twice gives two windows); a terminal editor; text
+  in Egg Mono only (other characters show `?`).

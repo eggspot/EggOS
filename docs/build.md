@@ -158,6 +158,12 @@ holds what used to be written in them.
   Enter, clicks in the paint view, `c`, `Clear`, `Info` and Esc, the `File` menu and Esc, and
   Cmd+Q, which must end the app with status 0. It is skipped like the macOS programs boot test
   (D147).
+- **The Text Editor boot test** (`xtask/src/qemu/text_editor.rs`, every architecture) boots
+  the release kernel with no disk, writes `/tmp/notes.txt` at the prompt and opens it with
+  `edit`, then compares the display with the host's render (the desktop, and the editor's
+  window drawn by `eggos-editor` over a file system in memory holding the same file, with the
+  caret shown or hidden) after typing, Ctrl+F and `egg`, Esc, Ctrl+S and the close control;
+  `cat` must then print the saved text (D149).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is

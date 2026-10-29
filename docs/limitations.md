@@ -189,11 +189,17 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   a folder, and shows no free space in its status bar (no `statfs` yet); its clipboard holds
   one item inside the Files process, shared with no other program and lost when Files
   closes; times follow the wall clock, which counts from the boot until an RTC driver lands
-  (item 29); a text file opens with `cat` in the Terminal window until the Text Editor (item
-  46); each click on the desktop's `Host share` opens another Files window; folders nest at
+  (item 29); a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
+  in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
   most 32 levels deep in a copy, a move across file systems or a delete; the MCP tools for
   files come with the MCP server (item 28, after the release);
 - the Trash holds only what is on the home folder's file system (`/home`): an item in `/tmp`
   or `/Applications` is deleted for good after a question, and the read-only host share's are
   neither trashed nor changed;
+- the Text Editor (D149) edits UTF-8 text of up to 4 MiB in Egg Mono, so a character beyond
+  ASCII and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
+  go-to-line, no syntax colouring and no file picker (Open and Save As take a typed path); its
+  clipboard is its own, shared with no other program; a file that is not text is refused, not
+  shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
+  it and there is no terminal editor;
 - copy and paste of text, and scaling for high-density displays.

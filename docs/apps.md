@@ -1,7 +1,8 @@
 # Apps on the desktop: the catalogue and `app.manifest`
 
 The desktop shell (D133, `docs/ux/desktop-v0.3-gui.md` section 6) lists the built-in apps
-(Terminal, Files, Settings) and every installed app in its launcher, on the dock or taskbar
+(Terminal, Files, Settings, and in the launcher only the Text Editor, D149) and every installed
+app in its launcher, on the dock or taskbar
 when they have windows, and as desktop icons. An installed app is a folder under
 `/Applications` that holds its program and a manifest. `/Applications` lives on the disk when
 one is attached (D131), so installed apps survive a reboot.
@@ -95,7 +96,8 @@ app list
   desktop at once, then its folder; nothing of it is left (D18). The layer it ran through
   stays. `app: could not uninstall <name>: it is not installed` otherwise.
 - **`app open <name>`** opens an app as a double-click on its icon does (`OPEN_APP`, D137):
-  the built-in `Terminal`, `Files` or `Settings` (D141; a built-in wins over an installed app
+  the built-in `Terminal`, `Files`, `Settings` or `Text Editor` (D141, D149; a built-in wins
+  over an installed app
   of the same name), or an installed app through its layer, a console app in a terminal. It
   prints `Opened <name>.`; `app: <name> is not installed`, or `app: could not open <name>: <error>` without a
   desktop. It is the MCP tool `app_open`'s twin.
@@ -125,6 +127,33 @@ app list
   server (D21, after the release); installing a missing layer (the component manager, D18);
   `--force` to replace an installed app (uninstall it first).
 
+## The Text Editor: `edit`
+
+The Text Editor (D149, `docs/ux/text-editor-v0.3.md`) edits text files of up to 4 MiB of UTF-8
+in a window of its own: New, Open, Save, Save As and Find in its toolbar, undo and redo, cut,
+copy and paste, line numbers, `Ln, Col`, `Modified` and `LF` or `CRLF` in its status bar, both
+Ctrl and Cmd in every profile. A file that is not UTF-8 or holds a NUL is refused; a CRLF
+file and a byte-order mark are kept as they were when it is saved.
+
+```
+edit [--] [<path>]
+```
+
+- **`edit <path>`** opens the file in a Text Editor window and returns at once, printing
+  `Opened <path> in Text Editor.`; the window runs on its own (a session of its own). A path
+  with nothing at it opens as a new file that the first save makes; with no path, an untitled
+  document. A folder, a file that is not text or one over 4 MiB is refused with the editor's
+  words (`edit: notes.bin is not a text file.`).
+- With no desktop (a terminal-only install, or before the desktop starts) `edit` says there is
+  no desktop to open the Text Editor on and fails: `cat` shows a file and `tee` writes one.
+  There is no terminal editor yet.
+- Files opens a text file in the editor (double-click, Enter or `Open`) when it is installed;
+  the launcher's `Text Editor` and `app open "Text Editor"` open an untitled one; the MCP tool
+  `edit_open` is `edit`'s twin ([mcp.md](mcp.md)).
+- The window is `/bin/text-editor [<path>]`, another name of the Settings program, as `edit`
+  is.
+- Status: 0 opened, 1 refused or failed, 2 a usage error.
+
 ## `app.manifest`
 
 A text file of at most 1024 bytes: the line `eggos-app 1`, then one `key=value` line per
@@ -153,6 +182,7 @@ are kept.
 |-----|--------|
 | Terminal | Focuses the terminal's window (restoring it if it is minimised). |
 | Settings, Files | Focuses its window if it has one, else starts `/bin/settings` or `/bin/files` as a process. Without `/bin/files` (D18), Files says `Files is not installed.` |
+| Text Editor | Starts `/bin/text-editor` on an untitled document, a new window each time (D149); the dock's icon of running editors focuses them. Without it, `Text Editor is not installed.` |
 | Host share | Starts Files on `/media/host` (`/bin/files /media/host`, D135); without Files it focuses the terminal and runs `ls /media/host` in it. |
 | An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first. The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D147) opens its window, a console program writes in the terminal. |
 | `Install from host share...` | Starts the installer's window on `/media/host` (above). |
