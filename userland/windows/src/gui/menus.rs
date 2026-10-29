@@ -9,7 +9,7 @@ pub const MAX_MENUS: usize = 16;
 pub const MAX_ITEMS: usize = 24;
 /// The longest label kept, in UTF-16 units.
 pub const MAX_LABEL: usize = 40;
-const HANDLE_BASE: usize = 0x100_0000;
+const HANDLE_BASE: usize = 0x140_0000;
 
 /// `AppendMenuW`'s flags this layer reads.
 pub mod flag {
@@ -119,11 +119,11 @@ mod tests {
         let entry = table.get_mut(menu).unwrap();
         assert!(entry.append(0, 101, &label));
         assert!(entry.append(flag::SEPARATOR, 0, &[]));
-        assert!(entry.append(flag::POPUP | flag::GRAYED, 0x100_1234, &[]));
+        assert!(entry.append(flag::POPUP | flag::GRAYED, 0x140_1234, &[]));
         let items = table.get(menu).unwrap().items();
         assert_eq!(items[0].label(), &label[..]);
         assert!(items[1].is_separator() && !items[0].is_separator());
-        assert_eq!(items[2].popup(), Some(0x100_1234));
+        assert_eq!(items[2].popup(), Some(0x140_1234));
         assert!(items[2].is_grayed());
         let entry = table.get_mut(menu).unwrap();
         while entry.append(0, 1, &[0x41; 60]) {}

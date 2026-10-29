@@ -246,8 +246,13 @@ fn is_folder(path: &[u8]) -> Option<bool> {
 fn resolve(window: usize, typed: &[u16], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
     let mut eggos = [0u8; PATH_CAPACITY];
     let length = text::eggos_path(text::utf16_chars(typed), &mut eggos)? - 1;
-    let verbatim: [u16; 4] = [0x5c, 0x5c, 0x3f, 0x5c];
-    let bare = typed.strip_prefix(&verbatim[..]).unwrap_or(typed);
+    let slash = |unit: u16| unit == u16::from(b'\\') || unit == u16::from(b'/');
+    let verbatim = typed.len() >= 4
+        && slash(typed[0])
+        && slash(typed[1])
+        && typed[2] == u16::from(b'?')
+        && slash(typed[3]);
+    let bare = if verbatim { &typed[4..] } else { typed };
     let drive = bare.len() >= 2 && bare[1] == u16::from(b':');
     if drive && !matches!(bare[0], 0x43 | 0x63) {
         return None;
@@ -765,15 +770,18 @@ unsafe fn pick(request: *mut OpenFileName, kind: PickerKind) -> Bool {
         Some((length, path)) => unsafe { write_result(&mut local, &path[..length]) }.map(|_| true),
         None => Ok(false),
     });
-    // SAFETY: the caller's structure holds `size` writable bytes; the local's first `size`
-    // bytes are its fields as the call left them.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            (&raw const local).cast::<u8>(),
-            request.cast::<u8>(),
-            size as usize,
-        )
-    };
+    let base = request.cast::<u8>();
+    let offset_field = base
+        .wrapping_add(core::mem::offset_of!(OpenFileName, file_offset))
+        .cast::<u16>();
+    let extension_field = base
+        .wrapping_add(core::mem::offset_of!(OpenFileName, file_extension))
+        .cast::<u16>();
+    // SAFETY: the field lies inside the version-400 structure the caller's `size` covers; only
+    // the two fields the call sets are written back.
+    unsafe { offset_field.write_unaligned(local.file_offset) };
+    // SAFETY: as above.
+    unsafe { extension_field.write_unaligned(local.file_extension) };
     match outcome {
         Ok(chosen) => Bool::from(chosen),
         Err(code) => {
