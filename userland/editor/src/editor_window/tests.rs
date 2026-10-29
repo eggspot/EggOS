@@ -319,6 +319,75 @@ fn open_replaces_the_document_and_reports_a_missing_file() {
 }
 
 #[test]
+fn the_open_bar_asks_before_it_replaces_changes_typed_while_it_shows() {
+    let mut owned = Owned::new(4096);
+    let mut driver = Driver::new(&mut owned, Some(NOTES));
+    driver.click(driver.window.tool_rect(Tool::Open));
+    assert_eq!(driver.window.bar(), Bar::Open);
+    driver.type_text("dos.txt");
+    let view = driver.window.text_view();
+    driver.click(Rect::new(view.x + 40, view.y + 8, 1, 1));
+    driver.type_text("x");
+    assert!(driver.window.editor().is_modified());
+    driver.click(driver.window.action_rect());
+    assert_eq!(
+        driver.window.dialog_line(0),
+        Some("Save changes to notes.txt?")
+    );
+    assert!(driver.text().contains('x'));
+    driver.press(key::ESC, '\u{1b}', 0);
+    assert_eq!(driver.window.dialog_line(0), None);
+    assert_eq!(driver.window.bar(), Bar::Open);
+    assert!(driver.text().contains('x'));
+    driver.click(driver.window.action_rect());
+    driver.press(key::ENTER, '\r', 0);
+    assert!(driver.saved("/home/root/notes.txt").contains('x'));
+    assert_eq!(driver.text(), "a\nb\n");
+    assert_eq!(driver.window.title(), "dos.txt - Text Editor");
+    assert_eq!(driver.window.bar(), Bar::Closed);
+}
+
+#[test]
+fn the_scroll_bars_of_a_very_wide_line_stay_in_their_tracks() {
+    const WIDE: &[u8] = b"/home/root/wide.txt";
+    let mut owned = Owned::new(1024 * 1024);
+    let mut files = disk();
+    files.file("/home/root/wide.txt", &vec![b'a'; 512 * 1024], 5);
+    let mut window = EditorWindow::new(owned.editor(), &mut files, Some(WIDE), 0);
+    let end = Input::Key {
+        code: key::END,
+        pressed: true,
+        modifiers: Modifiers(0),
+        character: 0,
+    };
+    window.handle(&mut files, end, 10);
+    let (track, thumb) = window.horizontal_bar().unwrap();
+    assert!(thumb.x > track.x && thumb.right() <= track.right());
+    assert!(track.right() - thumb.right() <= 1);
+    let (x, y) = (thumb.x + thumb.width / 2, thumb.y + thumb.height / 2);
+    for input in [
+        Input::PointerMove { x, y },
+        Input::Button {
+            x,
+            y,
+            button: MouseButton::Left,
+            pressed: true,
+        },
+        Input::PointerMove { x: track.x, y },
+        Input::Button {
+            x: track.x,
+            y,
+            button: MouseButton::Left,
+            pressed: false,
+        },
+    ] {
+        window.handle(&mut files, input, 20);
+    }
+    let (track, thumb) = window.horizontal_bar().unwrap();
+    assert_eq!(thumb.x, track.x);
+}
+
+#[test]
 fn new_asks_about_changes_first() {
     let mut owned = Owned::new(4096);
     let mut driver = Driver::new(&mut owned, Some(NOTES));

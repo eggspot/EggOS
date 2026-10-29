@@ -172,6 +172,11 @@ pub fn reason(problem: Problem) -> Line {
             listing.as_str()
         ),
         Problem::NoSuchEntry => line.write_str("it holds no program at the path --entry gives"),
+        Problem::ReservedName => line.write_str(
+            "it holds a file named app.manifest, app.manifest.tmp or app.icon, which the \
+             installer writes itself",
+        ),
+        Problem::TooLarge => line.write_str("its files would take more than 4 GiB once extracted"),
         Problem::Failed(error) => {
             line.push_bytes(error.message());
             Ok(())
@@ -276,6 +281,12 @@ mod tests {
             architecture: Architecture::Riscv64,
         };
         assert_eq!(kind(linux).as_str(), "Linux program");
+        assert_eq!(
+            reason(Problem::TooLarge).as_str(),
+            "its files would take more than 4 GiB once extracted"
+        );
+        assert!(reason(Problem::ReservedName).as_str().contains("app.manifest"));
+        assert_eq!(crate::installer::MAX_EXTRACTED_BYTES, 4 << 30);
     }
 
     #[test]

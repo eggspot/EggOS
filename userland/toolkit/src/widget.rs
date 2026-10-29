@@ -462,11 +462,13 @@ pub fn scroll_bar(rect: Rect, content: i32, offset: i32) -> Option<(Rect, Rect)>
         SCROLL_BAR_WIDTH,
         rect.height,
     );
-    let length = (rect.height * rect.height / content)
-        .max(MIN_THUMB)
-        .min(rect.height);
-    let travel = rect.height - length;
-    let position = offset * travel / (content - rect.height);
+    let height = i64::from(rect.height);
+    let length = (height * height / i64::from(content))
+        .max(i64::from(MIN_THUMB))
+        .min(height);
+    let travel = height - length;
+    let position = i64::from(offset) * travel / (i64::from(content) - height);
+    let (length, position) = (length as i32, position.clamp(0, travel) as i32);
     Some((
         track,
         Rect::new(track.x, rect.y + position, SCROLL_BAR_WIDTH, length),

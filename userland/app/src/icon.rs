@@ -27,8 +27,11 @@ pub const MAX_SIDE: u32 = 1024;
 /// The most candidate images one source offers.
 pub const MAX_CANDIDATES: usize = 32;
 
-const PLIST_BYTES: usize = 16 * 1024;
+/// The most bytes of an `Info.plist` read.
+pub const PLIST_BYTES: usize = 16 * 1024;
+
 const ICON_KEY: &[u8] = b"<key>CFBundleIconFile</key>";
+const EXECUTABLE_KEY: &[u8] = b"<key>CFBundleExecutable</key>";
 const STRING_START: &[u8] = b"<string>";
 const STRING_END: &[u8] = b"</string>";
 const ICNS_SUFFIX: &[u8] = b".icns";
@@ -383,10 +386,19 @@ pub fn bundle_of(program: &[u8]) -> Option<&[u8]> {
 
 /// The value of `CFBundleIconFile` in an XML property list, if it is a plain file name.
 pub fn plist_icon_file(plist: &[u8]) -> Option<&[u8]> {
+    plist_file_name(plist, ICON_KEY)
+}
+
+/// The value of `CFBundleExecutable` in an XML property list, if it is a plain file name.
+pub fn plist_executable(plist: &[u8]) -> Option<&[u8]> {
+    plist_file_name(plist, EXECUTABLE_KEY)
+}
+
+fn plist_file_name<'p>(plist: &'p [u8], key_element: &[u8]) -> Option<&'p [u8]> {
     let key = plist
-        .windows(ICON_KEY.len())
-        .position(|window| window == ICON_KEY)?;
-    let after = &plist[key + ICON_KEY.len()..];
+        .windows(key_element.len())
+        .position(|window| window == key_element)?;
+    let after = &plist[key + key_element.len()..];
     let start = after.iter().position(|byte| !byte.is_ascii_whitespace())?;
     let value = after[start..].strip_prefix(STRING_START)?;
     let end = value

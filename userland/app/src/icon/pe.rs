@@ -2,10 +2,15 @@
 //! documentation: the resource directory (the optional header's third data directory), a tree
 //! of type, name and language tables; the first `RT_GROUP_ICON` in its own order, first
 //! language, lists its images by `RT_ICON` id, each a PNG or a bitmap entry. Resource
-//! addresses are mapped to file offsets through the section table.
+//! addresses are mapped to file offsets through the section table, read once. At most
+//! [`MAX_GROUP_ENTRIES`] of a group's entries are looked at, and none once the candidates are
+//! full, so a crafted program cannot make the search long.
 
-use super::{Candidate, Candidates, Format, bitmap, png_side};
+use super::{Candidate, Candidates, Format, MAX_CANDIDATES, bitmap, png_side};
 use crate::reader::Reader;
+
+/// The most entries of an icon group looked at.
+pub const MAX_GROUP_ENTRIES: u64 = 64;
 
 const RT_ICON: u32 = 3;
 const RT_GROUP_ICON: u32 = 14;
@@ -38,9 +43,36 @@ fn u32_at(reader: &mut impl Reader, offset: u64) -> Option<u32> {
         .then(|| u32::from_le_bytes(bytes))
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct Section {
+    start: u32,
+    length: u32,
+    raw_size: u32,
+    raw: u32,
+}
+
+impl Section {
+    fn read(reader: &mut impl Reader, at: u64) -> Option<Self> {
+        let virtual_size = u32_at(reader, at + 8)?;
+        let start = u32_at(reader, at + 12)?;
+        let raw_size = u32_at(reader, at + 16)?;
+        let raw = u32_at(reader, at + 20)?;
+        Some(Self {
+            start,
+            length: virtual_size.max(raw_size),
+            raw_size,
+            raw,
+        })
+    }
+
+    fn contains(&self, address: u32) -> bool {
+        address >= self.start && address - self.start < self.length
+    }
+}
+
 struct Image {
-    sections: u64,
-    count: u16,
+    sections: [Section; MAX_SECTIONS],
+    count: usize,
     resources: u32,
 }
 
@@ -65,31 +97,33 @@ impl Image {
             return None;
         }
         let resources = u32_at(reader, directories + 8 * RESOURCE_DIRECTORY)?;
-        Some(Self {
-            sections: optional + optional_size,
-            count,
+        let table = optional + optional_size;
+        let mut image = Self {
+            sections: [Section::default(); MAX_SECTIONS],
+            count: 0,
             resources,
-        })
+        };
+        let wanted = usize::from(count);
+        for (index, slot) in image.sections.iter_mut().enumerate().take(wanted) {
+            let Some(section) = Section::read(reader, table + 40 * index as u64) else {
+                break;
+            };
+            *slot = section;
+            image.count = index + 1;
+        }
+        Some(image)
     }
 
-    fn offset_of(&self, reader: &mut impl Reader, address: u32) -> Option<u64> {
-        for index in 0..u64::from(self.count).min(MAX_SECTIONS as u64) {
-            let at = self.sections + 40 * index;
-            let virtual_size = u32_at(reader, at + 8)?;
-            let start = u32_at(reader, at + 12)?;
-            let raw_size = u32_at(reader, at + 16)?;
-            let raw = u32_at(reader, at + 20)?;
-            let length = virtual_size.max(raw_size);
-            if address >= start && address - start < length {
-                let inside = address - start;
-                return (inside < raw_size).then_some(u64::from(raw) + u64::from(inside));
-            }
-        }
-        None
+    fn offset_of(&self, address: u32) -> Option<u64> {
+        let section = self.sections[..self.count]
+            .iter()
+            .find(|section| section.contains(address))?;
+        let inside = address - section.start;
+        (inside < section.raw_size).then_some(u64::from(section.raw) + u64::from(inside))
     }
 
     fn table(&self, reader: &mut impl Reader, offset: u32) -> Option<(u64, u32)> {
-        let at = self.offset_of(reader, self.resources.checked_add(offset)?)?;
+        let at = self.offset_of(self.resources.checked_add(offset)?)?;
         let named = u32::from(u16_at(reader, at + 12)?);
         let numbered = u32::from(u16_at(reader, at + 14)?);
         Some((at + 16, (named + numbered).min(MAX_ENTRIES)))
@@ -105,17 +139,22 @@ impl Image {
         })
     }
 
-    fn data(&self, reader: &mut impl Reader, kind: u32, id: Option<u32>) -> Option<(u64, u64)> {
-        let types = self.find(reader, 0, Some(kind))?;
-        let names = self.find(reader, types & !SUBDIRECTORY, id)?;
-        let languages = self.find(reader, names & !SUBDIRECTORY, None)?;
-        if types & SUBDIRECTORY == 0 || names & SUBDIRECTORY == 0 || languages & SUBDIRECTORY != 0 {
+    fn data(&self, reader: &mut impl Reader, types: u32, id: Option<u32>) -> Option<(u64, u64)> {
+        if types & SUBDIRECTORY == 0 {
             return None;
         }
-        let entry = self.offset_of(reader, self.resources.checked_add(languages)?)?;
+        let names = self.find(reader, types & !SUBDIRECTORY, id)?;
+        if names & SUBDIRECTORY == 0 {
+            return None;
+        }
+        let languages = self.find(reader, names & !SUBDIRECTORY, None)?;
+        if languages & SUBDIRECTORY != 0 {
+            return None;
+        }
+        let entry = self.offset_of(self.resources.checked_add(languages)?)?;
         let address = u32_at(reader, entry)?;
         let size = u32_at(reader, entry + 4)?;
-        Some((self.offset_of(reader, address)?, u64::from(size)))
+        Some((self.offset_of(address)?, u64::from(size)))
     }
 }
 
@@ -124,21 +163,27 @@ pub fn candidates(reader: &mut impl Reader, list: &mut Candidates) {
     let Some(image) = Image::read(reader) else {
         return;
     };
-    let Some((group, group_size)) = image.data(reader, RT_GROUP_ICON, None) else {
+    let Some(groups) = image.find(reader, 0, Some(RT_GROUP_ICON)) else {
+        return;
+    };
+    let Some((group, group_size)) = image.data(reader, groups, None) else {
+        return;
+    };
+    let Some(icons) = image.find(reader, 0, Some(RT_ICON)) else {
         return;
     };
     let Some(count) = u16_at(reader, group + 4) else {
         return;
     };
-    for index in 0..u64::from(count) {
+    for index in 0..u64::from(count).min(MAX_GROUP_ENTRIES) {
         let at = GROUP_HEADER + GROUP_ENTRY * index;
-        if at + GROUP_ENTRY > group_size {
+        if at + GROUP_ENTRY > group_size || list.len() == MAX_CANDIDATES {
             break;
         }
         let Some(id) = u16_at(reader, group + at + 12) else {
             break;
         };
-        let Some((offset, length)) = image.data(reader, RT_ICON, Some(u32::from(id))) else {
+        let Some((offset, length)) = image.data(reader, icons, Some(u32::from(id))) else {
             continue;
         };
         if offset + length > reader.size() {
@@ -310,6 +355,19 @@ mod tests {
                 (256, PNG_RANK, Format::Png)
             ]
         );
+    }
+
+    #[test]
+    fn the_search_stops_once_the_candidates_are_full() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend_from_slice(&16u32.to_be_bytes());
+        png.extend_from_slice(&16u32.to_be_bytes());
+        let images: Vec<(u16, Vec<u8>)> = (1..=40).map(|id| (id, png.clone())).collect();
+        let program = program_with_icons(&images);
+        let mut list = Candidates::new();
+        candidates(&mut Bytes(&program), &mut list);
+        assert_eq!(list.len(), MAX_CANDIDATES);
+        assert!(list.iter().all(|candidate| candidate.side == 16));
     }
 
     #[test]

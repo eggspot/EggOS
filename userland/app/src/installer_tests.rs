@@ -596,6 +596,124 @@ fn a_zip_with_several_programs_needs_an_entry_and_one_with_none_is_refused() {
 }
 
 #[test]
+fn a_zip_holding_a_file_the_installer_writes_is_refused() {
+    let program = windows_program(0x8664);
+    for planted in [
+        "app.manifest",
+        "app.manifest.tmp",
+        "APP.ICON",
+        "app.icon/x",
+        "App.Manifest",
+    ] {
+        let archive = zip(&[stored("Tool.exe", &program), stored(planted, b"x")]);
+        let mut files = host_with("/media/host/tool.zip", &archive);
+        assert_eq!(
+            refused(&mut files, "/media/host/tool.zip", X86_64),
+            Problem::ReservedName,
+            "{planted}"
+        );
+        assert!(files.log.is_empty(), "{planted}");
+    }
+    assert!(is_reserved(b"app.manifest") && is_reserved(b"App.Icon"));
+    assert!(!is_reserved(b"bin/app.manifest") && !is_reserved(b"app.manifests"));
+    let nested = zip(&[
+        stored("Tool.exe", &program),
+        stored("docs/app.manifest", b"x"),
+    ]);
+    let mut files = host_with("/media/host/tool.zip", &nested);
+    let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    assert!(manifest_of(&files, "Tool").contains("run=Tool.exe\n"));
+    assert!(files.find("/Applications/Tool/docs/app.manifest").is_some());
+}
+
+#[test]
+fn a_zip_larger_than_the_limit_once_extracted_is_refused() {
+    let program = windows_program(0x8664);
+    let mut archive = zip(&[
+        stored("tool.exe", &program),
+        stored("a.bin", b"a"),
+        stored("b.bin", b"b"),
+    ]);
+    let central: Vec<usize> = archive
+        .windows(4)
+        .enumerate()
+        .filter(|(_, window)| *window == [0x50, 0x4b, 0x01, 0x02])
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(central.len(), 3);
+    for &at in &central[1..] {
+        archive[at + 24..at + 28].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
+    }
+    let mut files = host_with("/media/host/big.zip", &archive);
+    assert_eq!(
+        refused(&mut files, "/media/host/big.zip", X86_64),
+        Problem::TooLarge
+    );
+}
+
+#[test]
+fn a_zipped_bundle_s_program_is_the_one_its_info_plist_names() {
+    let plist = b"<dict><key>CFBundleExecutable</key>\n<string>firefox</string></dict>";
+    let archive = zip(&[
+        stored("Firefox.app/Contents/Info.plist", plist),
+        stored(
+            "Firefox.app/Contents/MacOS/firefox",
+            &mach_o(0x0100_000c, 2),
+        ),
+        stored(
+            "Firefox.app/Contents/MacOS/plugin-container",
+            &mach_o(0x0100_000c, 2),
+        ),
+        stored("Firefox.app/Contents/MacOS/libxul.dylib", b"library"),
+    ]);
+    let mut files = host_with("/media/host/Firefox.zip", &archive);
+    let plan = planned(&mut files, "/media/host/Firefox.zip", Aarch64);
+    assert_eq!(plan.name(), "Firefox");
+    assert_eq!(plan.run(), b"Firefox.app/Contents/MacOS/firefox");
+    let chosen = plan_entry(
+        &mut files,
+        b"/media/host/Firefox.zip",
+        None,
+        Some(b"Firefox.app"),
+        Aarch64,
+    )
+    .unwrap();
+    assert_eq!(chosen.run(), b"Firefox.app/Contents/MacOS/firefox");
+    let mut names = [Name::new(b""); 4];
+    assert_eq!(
+        archive_programs(&mut files, b"/media/host/Firefox.zip", &mut names),
+        (1, 0)
+    );
+    assert_eq!(names[0].as_str(), "Firefox.app");
+}
+
+#[test]
+fn the_programs_of_a_zip_are_listed_for_the_window_s_chooser() {
+    let program = windows_program(0x8664);
+    let archive = zip(&[
+        stored("bin/a.exe", &program),
+        stored("bin/notes.txt", b"text"),
+        stored("bin/b.exe", &program),
+        stored(&format!("{}.exe", "x".repeat(70)), &program),
+        stored("c.exe", &program),
+    ]);
+    let mut files = host_with("/media/host/tools.zip", &archive);
+    let mut names = [Name::new(b""); 2];
+    assert_eq!(
+        archive_programs(&mut files, b"/media/host/tools.zip", &mut names),
+        (2, 2)
+    );
+    assert_eq!(names[0].as_str(), "bin/a.exe");
+    assert_eq!(names[1].as_str(), "bin/b.exe");
+    let mut none = [Name::new(b""); 2];
+    assert_eq!(
+        archive_programs(&mut files, b"/media/host/missing.zip", &mut none),
+        (0, 0)
+    );
+}
+
+#[test]
 fn a_damaged_entry_fails_the_install_and_leaves_nothing() {
     let program = windows_program(0x8664);
     let mut zip = zip(&[

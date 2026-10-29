@@ -827,9 +827,11 @@ impl<const N: usize> WidgetTree<N> {
         let Some((_, thumb)) = scroll_bar(rect, content, drag.start_offset) else {
             return;
         };
-        let travel = (rect.height - thumb.height).max(1);
-        let moved = (y - drag.grab_y) * (content - rect.height) / travel;
-        self.scroll_to(drag.widget, drag.start_offset + moved);
+        let travel = i64::from((rect.height - thumb.height).max(1));
+        let range = i64::from(content - rect.height);
+        let moved = i64::from(y - drag.grab_y) * range / travel;
+        let offset = (i64::from(drag.start_offset) + moved).clamp(0, range.max(0));
+        self.scroll_to(drag.widget, offset as i32);
     }
 
     fn wheel(&mut self, x: i32, y: i32, notches: i32) {

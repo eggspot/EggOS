@@ -163,6 +163,7 @@ enum Then {
     Close,
     New,
     Open,
+    OpenFile(Path),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +255,14 @@ fn field(placeholder: &'static str) -> Field {
     }
 }
 
+fn scaled(value: i32, times: i32, over: i32) -> i32 {
+    if over == 0 {
+        return 0;
+    }
+    let product = i64::from(value) * i64::from(times) / i64::from(over);
+    product.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 fn shown_name(path: &[u8]) -> &str {
     core::str::from_utf8(files::file_name(path)).unwrap_or("?")
 }
@@ -337,7 +346,7 @@ impl<'a> EditorWindow<'a> {
             damage: Damage::new(),
         };
         if let Some(path) = path {
-            window.open_path(files, path);
+            window.open_path(files, path, true);
         }
         window.update_title();
         window.damage_all();
@@ -589,7 +598,7 @@ impl<'a> EditorWindow<'a> {
         );
         let length = (width * width / content).max(MIN_THUMB).min(width);
         let travel = width - length;
-        let position = self.scroll_x * travel / (content - width);
+        let position = scaled(self.scroll_x, travel, content - width);
         Some((
             track,
             Rect::new(track.x + position, track.y, length, SCROLL_BAR_WIDTH),
@@ -657,7 +666,11 @@ impl<'a> EditorWindow<'a> {
     }
 
     fn changed(&mut self) {
-        self.widest = None;
+        self.changed_with_widest(None);
+    }
+
+    fn changed_with_widest(&mut self, widest: Option<usize>) {
+        self.widest = widest;
         self.keep_caret_visible();
         self.restart_caret();
         self.update_title();
@@ -809,14 +822,14 @@ impl<'a> EditorWindow<'a> {
         self.damage_all();
     }
 
-    fn when_saved(&mut self, then: Then) {
+    fn when_saved(&mut self, files: &mut impl Files, then: Then) {
         match self.editor.is_modified() {
             true => self.ask_to_save(then),
-            false => self.carry_out(then),
+            false => self.carry_out(files, then),
         }
     }
 
-    fn carry_out(&mut self, then: Then) {
+    fn carry_out(&mut self, files: &mut impl Files, then: Then) {
         match then {
             Then::Close => self.closing = true,
             Then::New => {
@@ -826,6 +839,7 @@ impl<'a> EditorWindow<'a> {
                 self.after_load();
             }
             Then::Open => self.open_bar(Bar::Open),
+            Then::OpenFile(path) => self.open_path(files, path.as_bytes(), false),
         }
     }
 
@@ -842,14 +856,14 @@ impl<'a> EditorWindow<'a> {
         self.show_notice(format_args!("{}", line.as_str()));
     }
 
-    fn open_path(&mut self, files: &mut impl Files, path: &[u8]) {
+    fn open_path(&mut self, files: &mut impl Files, path: &[u8], missing_is_new: bool) {
         let Some(held) = Path::from(path) else {
             let name = shown_name(path);
             self.show_notice(format_args!("Could not open {name} (File name too long)."));
             return;
         };
         match file::check(files, path, self.editor.document().capacity()) {
-            Err(OpenProblem::Missing) if self.bar != Bar::Open => {
+            Err(OpenProblem::Missing) if missing_is_new => {
                 self.editor.clear();
                 self.path = Some(held);
                 self.exists = false;
@@ -910,7 +924,7 @@ impl<'a> EditorWindow<'a> {
         if self.write_to(files, path.as_bytes())
             && let Some(then) = then
         {
-            self.carry_out(then);
+            self.carry_out(files, then);
         }
     }
 
@@ -931,7 +945,8 @@ impl<'a> EditorWindow<'a> {
             return;
         };
         match self.bar {
-            Bar::Open => self.open_path(files, path.as_bytes()),
+            Bar::Open if self.editor.is_modified() => self.ask_to_save(Then::OpenFile(path)),
+            Bar::Open => self.open_path(files, path.as_bytes(), false),
             Bar::SaveAs => {
                 let other = self.path() != Some(path.as_bytes());
                 if other && files.status(path.as_bytes()).is_ok() {
@@ -964,7 +979,7 @@ impl<'a> EditorWindow<'a> {
             let then = self.pending.take();
             self.close_bar();
             if let Some(then) = then {
-                self.carry_out(then);
+                self.carry_out(files, then);
             }
         }
     }
@@ -1103,6 +1118,17 @@ impl<'a> EditorWindow<'a> {
         }
     }
 
+    fn typed_in_line(&mut self, widest_before: Option<usize>, result: Result<(), Full>) {
+        match result {
+            Ok(()) => {
+                let line = self.editor.document().line(self.editor.caret_line());
+                let widest = widest_before.map(|widest| widest.max(view_width(line)));
+                self.changed_with_widest(widest);
+            }
+            Err(Full) => self.full(),
+        }
+    }
+
     fn rows_per_page(&self) -> usize {
         let (_, height) = self.view_size();
         ((height / ROW_HEIGHT) - 1).max(1) as usize
@@ -1225,7 +1251,7 @@ impl<'a> EditorWindow<'a> {
         };
         self.damage_all();
         match (asked, button) {
-            (Asked::SaveChanges(then), 0) => self.carry_out(then),
+            (Asked::SaveChanges(then), 0) => self.carry_out(files, then),
             (Asked::SaveChanges(then), 2) => self.save(files, Some(then)),
             (Asked::Replace(then), 1) => {
                 if let Some(path) = self.typed_path() {
@@ -1372,8 +1398,8 @@ impl<'a> EditorWindow<'a> {
 
     fn tool(&mut self, files: &mut impl Files, tool: Tool) {
         match tool {
-            Tool::New => self.when_saved(Then::New),
-            Tool::Open => self.when_saved(Then::Open),
+            Tool::New => self.when_saved(files, Then::New),
+            Tool::Open => self.when_saved(files, Then::Open),
             Tool::Save => self.save(files, None),
             Tool::SaveAs => {
                 self.pending = None;
@@ -1547,8 +1573,9 @@ impl<'a> EditorWindow<'a> {
                 else {
                     return;
                 };
+                let widest = self.widest.filter(|_| !self.editor.has_selection());
                 let typed = self.editor.type_character(typed);
-                self.edited(typed);
+                self.typed_in_line(widest, typed);
             }
             _ => {}
         }
@@ -1611,7 +1638,7 @@ impl<'a> EditorWindow<'a> {
                     let travel = (track.height - thumb.height).max(1);
                     let (_, height) = self.view_size();
                     let range = self.content_height() - height;
-                    self.scroll_y = start + (y - grab) * range / travel;
+                    self.scroll_y = start.saturating_add(scaled(y - grab, range, travel));
                     self.clamp_scroll();
                     self.damage_all();
                 }
@@ -1621,7 +1648,7 @@ impl<'a> EditorWindow<'a> {
                     let travel = (track.width - thumb.width).max(1);
                     let (width, _) = self.view_size();
                     let range = self.content_width() - width;
-                    self.scroll_x = start + (x - grab) * range / travel;
+                    self.scroll_x = start.saturating_add(scaled(x - grab, range, travel));
                     self.clamp_scroll();
                     self.damage_all();
                 }

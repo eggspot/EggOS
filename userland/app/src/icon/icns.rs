@@ -82,6 +82,7 @@ pub fn candidates(reader: &mut impl Reader, list: &mut Candidates) {
             });
         } else if let Some(side) = side_of(&ARGB_TYPES, &kind)
             && peeked
+            && data_length >= ARGB.len() as u64
             && &first == ARGB
         {
             list.push(Candidate {
@@ -300,5 +301,9 @@ mod tests {
         let file = icns(&[(b"is32", vec![0x10; 3 * 256]), (b"il32", vec![0; 3 * 1024])]);
         candidates(&mut Bytes(&file[..file.len() - 1]), &mut list);
         assert_eq!(list.len(), 1);
+        let mut none = Candidates::new();
+        let short = icns(&[(b"ic04", Vec::new()), (b"ARGB", vec![0; 4])]);
+        candidates(&mut Bytes(&short), &mut none);
+        assert_eq!(none.len(), 0);
     }
 }

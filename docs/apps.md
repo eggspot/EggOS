@@ -57,14 +57,19 @@ app list
   `architecture`, `icon`) and everything is synced. It prints `Installed <name> in
   /Applications/<name>.`
 - **A `.zip`** (D148, told by its first bytes) installs the one program it holds: a `.exe`,
-  the program of an `.app` bundle in it (`X.app/Contents/MacOS/X`), or a file without an
+  the program of an `.app` bundle in it (the file in `X.app/Contents/MacOS/` its `Info.plist`'s
+  `CFBundleExecutable` names, else `X.app/Contents/MacOS/X`), or a file without an
   extension that is an ELF; nothing inside another bundle's `Contents` counts. The whole
   archive is extracted into `/Applications/<name>/` (macOS's `__MACOSX` metadata left out), so
   the program's files and DLLs come along, and `run` is the program's path inside it; the name
   comes from the program (`bin/win-paint.exe` gives `win-paint`, `Paint.app` gives `Paint`). An
   archive with several programs is refused with their list (`it holds several programs (a.exe,
   b.exe): choose one with --entry <path>`); `--entry <path>` chooses one (a bundle's own path
-  names its program too). Stored and deflated entries are read (our own inflate, shared with
+  names its program too); the installer's window lists them to choose from instead, and the
+  MCP tool `app_install` takes the path as `entry`. An archive holding a file named
+  `app.manifest`, `app.manifest.tmp` or `app.icon` at its top (the files the installer writes)
+  is refused, and so is one whose files would take more than 4 GiB once extracted. Stored and
+  deflated entries are read (our own inflate, shared with
   the PNG decoder); ZIP64, encryption and other methods are refused as `not a zip archive EggOS
   can open`, and an entry whose name would leave the folder (absolute, `..`, a backslash or a
   colon) as `it holds a file whose name points outside its folder`. Each entry's CRC-32 is
@@ -113,8 +118,10 @@ app list
   <name>.`, with `Close` and `Open`, which opens the app as its icon does) or the reason it
   cannot, and for uninstall `Uninstall <name>?` with what it removes, `Cancel` and
   `Uninstall`. Given a folder that is not an `.app`, the window lists the programs in it
-  (four at most) to choose from. The window is `/usr/libexec/app-window`, another name of
-  the Settings program, so the toolkit is in the image once.
+  (four at most) to choose from; given a `.zip` holding several programs and no `--entry`, it
+  lists them by their paths inside it the same way. The window is
+  `/usr/libexec/app-window`, another name of the Settings program, so the toolkit is in the
+  image once.
 - The desktop starts the same window: the launcher's `Install from host share...` row (while
   the share is mounted) opens it on `/media/host`, and `Uninstall...` in an installed app's
   menu (its desktop icon's or its launcher row's) asks to uninstall it.

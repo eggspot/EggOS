@@ -6,7 +6,7 @@
 
 use crate::architecture::Architecture;
 use crate::files::Files;
-use crate::installer::{self, Plan};
+use crate::installer::{self, Plan, Refused};
 use crate::messages::{self, Line};
 use core::fmt::Write;
 use eggos_app_manifest::Source;
@@ -39,7 +39,20 @@ pub fn install_prompt(
     name: Option<&[u8]>,
     machine: Architecture,
 ) -> (Dialog, Option<Plan>) {
-    match installer::plan(files, path, name, machine) {
+    let (dialog, plan) = install_prompt_entry(files, path, name, None, machine);
+    (dialog, plan.ok())
+}
+
+/// [`install_prompt`], with the program a `.zip` holds chosen by `entry`
+/// ([`installer::plan_entry`]): the prompt and its plan, or the message and why there is none.
+pub fn install_prompt_entry(
+    files: &mut impl Files,
+    path: &[u8],
+    name: Option<&[u8]>,
+    entry: Option<&[u8]>,
+    machine: Architecture,
+) -> (Dialog, Result<Plan, Refused>) {
+    match installer::plan_entry(files, path, name, entry, machine) {
         Ok(plan) => {
             let kind = messages::kind(plan.program());
             let mut from = Line::new();
@@ -69,13 +82,13 @@ pub fn install_prompt(
                 plan.name(),
                 lines,
             );
-            (dialog, Some(plan))
+            (dialog, Ok(plan))
         }
         Err(refused) => {
             let line =
                 messages::install_failed(refused.name.as_str(), "this", machine, refused.problem);
             let dialog = Dialog::message(AppIcon::of(refused.name.as_str(), None), line.as_str());
-            (dialog, None)
+            (dialog, Err(refused))
         }
     }
 }
@@ -284,12 +297,30 @@ impl Dialog {
     /// The chooser: the programs `names` (at most [`MAX_CHOICES`]; `more` others not shown)
     /// found in `folder`.
     pub fn choose(folder: &str, names: &[&str], more: usize) -> Self {
+        let mut line = Line::new();
+        if more > 0 {
+            let _ = write!(line, "and {more} more: app install <path> installs any");
+        }
+        Self::chooser(folder, names, line.as_str())
+    }
+
+    /// The chooser of the programs `names` (at most [`MAX_CHOICES`]; `more` others not shown)
+    /// in the `.zip` at `archive`, each by its path inside it.
+    pub fn choose_entry(archive: &str, names: &[&str], more: usize) -> Self {
+        let mut line = Line::new();
+        if more > 0 {
+            let _ = write!(line, "and {more} more not listed");
+        }
+        Self::chooser(archive, names, line.as_str())
+    }
+
+    fn chooser(place: &str, names: &[&str], more_line: &str) -> Self {
         let mut dialog = Self::new(Request::Cancel);
         dialog.icon(AppIcon::of("?", None));
         let mut heading = Line::new();
         let _ = core::fmt::Write::write_fmt(
             &mut heading,
-            format_args!("Install a program from {folder}"),
+            format_args!("Install a program from {place}"),
         );
         dialog.line(heading.as_str(), colour::TEXT);
         match names.is_empty() {
@@ -312,12 +343,7 @@ impl Dialog {
                 }
             }
         }
-        if more > 0 {
-            let mut line = Line::new();
-            let _ = core::fmt::Write::write_fmt(
-                &mut line,
-                format_args!("and {more} more: app install <path> installs any"),
-            );
+        if !more_line.is_empty() {
             let id = dialog.tree.add(
                 dialog.root,
                 Place::at(
@@ -326,7 +352,7 @@ impl Dialog {
                     Length::Fill(PADDING),
                     Length::Px(LINE_HEIGHT),
                 ),
-                Kind::label(line.as_str(), colour::TEXT_DIM),
+                Kind::label(more_line, colour::TEXT_DIM),
             );
             dialog.keep_label(id);
         }
@@ -649,6 +675,14 @@ mod tests {
         );
         assert_eq!(press(&mut dialog, key::ENTER), Some(Request::Choose(0)));
         assert!(dialog.texts().any(|line| line.starts_with("and 3 more")));
+        let zipped = Dialog::choose_entry("/media/host/tools.zip", &["bin/a.exe", "bin/b.exe"], 2);
+        assert_eq!(
+            zipped.texts().next(),
+            Some("Install a program from /media/host/tools.zip")
+        );
+        assert_eq!(zipped.button_text(Request::Choose(1)), Some("bin/b.exe"));
+        assert!(zipped.texts().any(|line| line == "and 2 more not listed"));
+        assert!(!zipped.texts().any(|line| line.contains("install")));
         let empty = Dialog::choose("/media/host", &[], 0);
         assert_eq!(
             empty.texts().nth(1),
