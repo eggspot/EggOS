@@ -691,3 +691,24 @@ fn a_refused_line_is_skipped_up_to_the_end_of_its_quote() {
     assert!(shell.system.ran.is_empty());
     assert_eq!(output(&shell), "after\n");
 }
+
+#[test]
+fn an_interactive_shell_goes_home_and_writes_the_welcome_before_its_first_prompt() {
+    let welcome = b"Welcome to EggOS. Type help. Apps: the egg, or Super.\n";
+    let mut interactive = shell(true);
+    interactive
+        .system
+        .contents
+        .insert("/etc/motd".to_owned(), welcome.to_vec());
+    interactive.greet();
+    assert_eq!(interactive.system.working_directory, "/home");
+    assert_eq!(output(&interactive).as_bytes(), welcome);
+    let mut script = shell(false);
+    script
+        .system
+        .contents
+        .insert("/etc/motd".to_owned(), welcome.to_vec());
+    script.greet();
+    assert_eq!(script.system.working_directory, "/");
+    assert_eq!(output(&script), "");
+}

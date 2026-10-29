@@ -10109,3 +10109,59 @@ the license, by an explicit instruction recorded here.
   were sized by reasoning and research, not by measuring the kernel's low-water mark during the
   exhaustion test; the build phase measures it and adjusts the numbers if the kernel comes
   within a frame of the bottom.
+
+## D156 Switchers feel at home in their first minute and see when an agent drives: the `Agent` chip, the driven window and the agent's arrow, the keys the host steals, the first text and pressed controls (issue #142, partly; extends D16, D21, D22, D107, D132, D133, D136, D141, D143) — Decided by the build loop (design by Claude Fable, `docs/ux/desktop-v0.3-gui.md` section 14)
+- **Why.** The desktop's first frame was sound, but five gaps would embarrass the release in
+  front of switchers and in the AI demo: nothing showed that an agent was driving the
+  desktop; a Mac host keeps Cmd+Tab and Cmd+Space and nothing said which keys reach EggOS; the
+  terminal's first text was init's noise; and the window controls had no pressed look.
+  Claude Fable's brief in the issue became the design record (section 14), checked against the
+  code; this decision implements its items 1, 3, 4 (in part) and 5.
+- **The agent, seen** (`drivers/src/desktop/agent.rs`). The kernel tells the desktop each frame
+  whether an agent is connected (`agent_channel::is_connected`: the MCP server holds
+  `/dev/agent` and the host side is there; `Desktop::set_agent_connected`). While it is, an
+  `Agent` chip (56x20, radius 4) sits left of the top bar's power button (at 1280: x 1180, y 4)
+  or 16 px left of the taskbar's clock, whose items then stop 16 px before the chip. Idle it is
+  `bar.hover` with dim text; for `AGENT_ACTING_MS` (1000 ms) after a capture, a delivered input
+  step or a chosen menu item (the kernel calls `note_agent_action` and `note_agent_input` in
+  the `CAPTURE_WINDOW`, `SEND_INPUT` and `CHOOSE_MENU` requests, after they succeed) it is the
+  accent with dark text. Its tooltip says `An AI agent is connected. Log: agentlog`; a click
+  focuses the Terminal and types `agentlog` (`Action::ShowAgentLog`, `AGENT_LOG_LINE`), the CLI
+  command whose MCP twin is the audit log itself, so nothing GUI-only is added (D22). The
+  window an input step went to says ` (agent)` in the accent after its title for that second,
+  laid out as ` (not responding)`, which wins when both apply. A pointer step draws a second
+  arrow, the accent where the arrow is white, at the step's point on the screen for that
+  second, under the person's pointer; the person's pointer never moves (D141).
+- **The keys the host steals.** The top bar's system item has a tooltip, `Apps  Super` (macOS
+  layout) or `Activities  Super` (Linux), drawn below the bar (top-bar tooltips now open below
+  it); Start's says `Start  Super`. The launcher shows at most 7 rows and a footer line at
+  y 368, `Super: apps   Alt+Tab: windows   Alt+F4: close` (Fable shortened the brief's text,
+  which did not fit 456 px; `Esc: back` went). `run-eggos.sh` on a macOS host, in its window
+  mode, and the release notes' `Keys` say `release::MAC_HOST_KEYS`: Cmd is the Super key,
+  Option+Tab and Option+F4 work, Cmd+Tab, Cmd+Space and Cmd+Q stay with macOS.
+- **The first text.** init gives programs `HOME=/home/root` and makes that folder (on the disk,
+  or in memory with `--no-disk`); an interactive eggsh goes to `$HOME` and writes `/etc/motd`
+  before its first prompt, so the Terminal shows the banner, `Welcome to EggOS. Type help. Apps:
+  the egg, or Super.` and `eggsh:/home/root# `. The motd names no version: the banner just above
+  it does, and a static file needs no generation in every image (Fable's record asked for the
+  build's version in it; this was chosen without research, the owner can overrule it).
+- **Pressed controls.** A left press on an active close, minimise or maximise control darkens
+  its circle with `quarter()` (close `#AC3F39`, minimise `#AE872D`, maximise `#2E8F45`) while
+  the pointer stays on it; the action now happens on the release over the same control, as on
+  macOS, Windows and GNOME; leaving undarkens it and a release elsewhere does nothing. A
+  non-closable window's close keeps acting on the press (it only asks the client).
+- **Checks.** Host tests: the chip's place in both panels, its idle and acting pixels, its
+  click's action and the taskbar's limit; the driven window's suffix ending after 1000 ms; the
+  system item's tooltip below the bar; the pressed circle's colour and the action on release
+  only; the agent's arrow's pixels; `agent_channel::is_connected`; eggsh's greeting; the notes'
+  and script's Mac line. The boot tests' expected lines follow the new motd and `$HOME`.
+- **Not yet.** Item 2, the first boot that opens Settings on `Where are you coming from?`
+  (init starting `/bin/settings --welcome` when a disk is attached and no profile is saved,
+  Settings centring itself): not built in this pass. init's `init: starting` line still reaches
+  the Terminal: sending it to the serial console only needs a serial-only device (a `/dev/kmsg`
+  of our own) that EggOS does not have yet. The QEMU screendump checks of section 14.6 (an
+  `--mcp` boot with a scripted client within 1 s and after 1.2 s, the launcher's footer, the
+  tooltip at (8, 32), the pressed close circle) are left to the build phase, which also checks
+  that a frame comes soon enough after 1000 ms for the chip to go idle by 1.2 s (the desktop's
+  tick runs with frames and at least once a second; if that is too late, a wake at the expiry
+  is needed).

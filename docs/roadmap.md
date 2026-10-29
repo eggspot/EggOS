@@ -429,6 +429,14 @@ The release path (the release-path review's issues #141-#145, after the items ab
   layers, a v0.3.0 exception to D18 until the component manager; the install, Files, MCP and
   macOS GUI boot tests boot the release artifact itself, with no `--add`; `cargo xtask
   sample-apps` builds our own apps to try. Next: the layers as optional components (M14).
+- #142 **partly done** — switchers feel at home in their first minute and see when an agent
+  drives (D156, docs/ux/desktop-v0.3-gui.md section 14): the `Agent` chip while an MCP client
+  is connected (yellow while it acts, a click runs `agentlog`), ` (agent)` on the driven
+  window's title and a yellow arrow where its pointer input went; tooltips `Apps  Super`,
+  `Activities  Super` and `Start  Super`, the launcher's footer of keys, the Mac host line in
+  `run-eggos.sh` and the release notes; `/etc/motd` and eggsh starting in `/home/root`; window
+  controls that darken while pressed and act on release. Next: first boot asks "Where are you
+  coming from?", init's line on the serial console only, the screendump checks.
 - #143 **done** — a program that uses up memory, or a damaged disk, can't crash EggOS (D155):
   programs' pages, memory files, window buffers, pipes, `/tmp` files, threads and socket
   queues stop at a kernel reserve (a thirty-second of memory, 2 to 16 MiB, shown by `free` and

@@ -454,7 +454,12 @@ if [ -n "$command_line" ]; then
   set -- "$@" {command_line_args}
 fi
 case "$mode" in
-  window) say "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here." ;;
+  window)
+    say "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
+    if [ "$(uname -s)" = Darwin ]; then
+      say "run-eggos.sh: {MAC_HOST_KEYS}"
+    fi
+    ;;
   serial) say "run-eggos.sh: booting EggOS $version ($arch) on this terminal. Quit: Ctrl-A then X." ;;
   mcp-headless) say "run-eggos.sh: booting EggOS $version ($arch) with no screen for an MCP client on this script's standard input and output: EggOS draws its desktop in memory, where apps open for the agent; the console is in $dir/eggos-$arch-serial.log." ;;
   *) say "run-eggos.sh: booting EggOS $version ($arch) for an MCP client on this script's standard input and output; the console is in $dir/eggos-$arch-serial.log." ;;
@@ -696,6 +701,11 @@ exit $LASTEXITCODE
 
 const REPOSITORY_URL: &str = "https://github.com/eggspot/EggOS";
 
+/// What a Mac host keeps and what reaches EggOS: `run-eggos.sh` says it on macOS and the release
+/// notes' `Keys` end with it (docs/ux/desktop-v0.3-gui.md 14.3).
+pub const MAC_HOST_KEYS: &str = "Inside EggOS, Cmd is the Super key: Cmd alone opens apps, \
+     Option+Tab switches windows, Option+F4 closes. Cmd+Tab, Cmd+Space and Cmd+Q stay with macOS.";
+
 /// The QEMU release the run scripts need at least: the one CI tests with (Ubuntu 24.04's).
 pub const QEMU_MINIMUM_VERSION: &str = "8.2";
 
@@ -877,6 +887,7 @@ The layout you pick in Settings decides the habits, as on the system you came fr
 - The Text Editor takes Ctrl or Cmd with S (save), F (find), Z (undo), X, C and V in every
   layout.
 - The terminal the script runs in: Ctrl-A then X quits QEMU.
+- {MAC_HOST_KEYS}
 
 The keyboard layout is US only.
 
@@ -1235,6 +1246,10 @@ mod tests {
         assert!(notes.contains("runs as root"));
         assert!(notes.contains("is not your approval"));
         assert!(notes.contains("`reboot` restarts it"));
+        assert!(notes.contains(&format!("- {MAC_HOST_KEYS}\n")));
+        let script = shell_script(&[]);
+        assert!(script.contains("if [ \"$(uname -s)\" = Darwin ]; then"));
+        assert!(script.contains(&format!("say \"run-eggos.sh: {MAC_HOST_KEYS}\"")));
         for grant in ["`view`", "`write`", "`install`", "`run`"] {
             assert!(notes.contains(&format!("| {grant} |")), "{grant}");
         }

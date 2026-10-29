@@ -91,6 +91,15 @@ pub fn is_present() -> bool {
     CHANNEL.lock().is_some()
 }
 
+/// Whether an agent is connected: the channel is open (the MCP server holds it) and its host
+/// side is connected; what the desktop's `Agent` chip shows (D156).
+pub fn is_connected() -> bool {
+    CHANNEL
+        .lock()
+        .as_ref()
+        .is_some_and(|channel| channel.open && channel.port.host_connected())
+}
+
 /// Opens the channel for its one opener.
 pub fn open() -> Result<(), OpenError> {
     let mut guard = CHANNEL.lock();

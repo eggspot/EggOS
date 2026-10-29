@@ -5,9 +5,10 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
 
 ## Using it
 
-- `eggsh` on a terminal is interactive: it writes the prompt `eggsh:<working directory># `
+- `eggsh` on a terminal is interactive: it starts in `$HOME` (`/home/root`, which init makes)
+  and writes `/etc/motd`, then the prompt `eggsh:<working directory># `
   (`$ ` for a user other than root; `PS1` replaces it, `PS2` the `> ` of a continued line),
-  reads a line, and runs its commands. `^D` at an empty prompt ends it (`exit`), `^C` gives a
+  reads a line, and runs its commands (D156). `^D` at an empty prompt ends it (`exit`), `^C` gives a
   fresh prompt and sets `$?` to 130.
 - At the prompt the shell edits the line itself (D125): delete or backspace erases a
   character, `^U` the line, `^W` the last word, and the up and down arrows go back and forth

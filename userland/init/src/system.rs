@@ -12,6 +12,8 @@ const CONFIG_PATH: &[u8] = b"/etc/eggos/init.conf\0";
 
 const CONSOLE: usize = 1;
 const AT_FDCWD: usize = -100isize as usize;
+const HOME_DIRECTORY: &[u8] = b"/home/root\0";
+const HOME_DIRECTORY_MODE: usize = 0o755;
 const O_RDONLY_CLOEXEC: usize = 0o2_000_000;
 const EINTR: isize = 4;
 const ECHILD: isize = 10;
@@ -35,7 +37,7 @@ const REBOOT_RESTART: usize = 0x0123_4567;
 const REBOOT_HALT: usize = 0xcdef_0123;
 
 const ENVIRONMENT: [&[u8]; 5] = [
-    b"HOME=/\0",
+    b"HOME=/home/root\0",
     b"TERM=linux\0",
     b"PATH=/bin\0",
     b"XDG_RUNTIME_DIR=/run/user/0\0",
@@ -117,6 +119,17 @@ pub fn run(_startup: &Startup) -> i32 {
     if exists(DISPLAY_SERVER) && exists(DISPLAY_DEVICE) {
         start_display_server(&mut services.display);
     }
+    call(
+        number::MKDIRAT,
+        [
+            AT_FDCWD,
+            HOME_DIRECTORY.as_ptr() as usize,
+            HOME_DIRECTORY_MODE,
+            0,
+            0,
+            0,
+        ],
+    );
     let config = read_config();
     let name = config.login.program_name();
     let mut backoff = Backoff::default();

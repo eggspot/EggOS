@@ -601,6 +601,7 @@ pub fn run(startup: &Startup) -> i32 {
         shell.import(variable.to_bytes());
     }
     shell.set_working_directory_variable();
+    shell.greet();
     if let Some(text) = text {
         shell.run_text(text);
     } else if let Some(file) = file {

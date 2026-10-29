@@ -309,8 +309,10 @@ pub fn ioctl<P: Platform>(
             if crate::input::person_holds_input() || crate::input::has_pending_events() {
                 return Err(Errno::EBUSY);
             }
-            let injected = on_windows::<P, _>(|desktop, _, _, events| {
-                desktop.send_input(window, input, events)
+            let injected = on_windows::<P, _>(|desktop, _, damage, events| {
+                let injected = desktop.send_input(window, input, events)?;
+                desktop.note_agent_input(window, input, damage);
+                Ok(injected)
             })?;
             if let Injected::ForTerminal(input) = injected {
                 send_to_terminal::<P>(input);
@@ -344,7 +346,9 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EBUSY);
             }
             on_windows::<P, _>(|desktop, _, damage, events| {
-                desktop.choose_menu(window, menu, entry, label, damage, events)
+                desktop.choose_menu(window, menu, entry, label, damage, events)?;
+                desktop.note_agent_action(damage);
+                Ok(())
             })?;
         }
     }
@@ -365,9 +369,10 @@ fn capture<P: Platform>(
     buffer: u64,
     length: u64,
 ) -> Result<CapturedRows, Errno> {
-    let (layout, pixels) = on_windows::<P, _>(|desktop, buffers, _, _| {
+    let (layout, pixels) = on_windows::<P, _>(|desktop, buffers, damage, _| {
         let layout = desktop.content_layout(window)?;
         let id = WindowId::try_from(window).map_err(|_| WindowError::NoSuchWindow)?;
+        desktop.note_agent_action(damage);
         Ok((layout, buffers.shared(id)))
     })?;
     let rows = layout

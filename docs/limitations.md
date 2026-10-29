@@ -29,7 +29,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   them while EggOS runs; `run` is full control, the audit log included. Agents see windows as
   pixels for now (D143); windows as structured data come after the release (item 48).
   Commands run as root (file permissions are not enforced yet). Reached only through the run
-  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB.
+  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB. The desktop shows
+  an `Agent` chip while a client is connected and marks what it drives for a second (D156);
+  the first boot does not ask "Where are you coming from?" yet.
 - **One disk, and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
   `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run

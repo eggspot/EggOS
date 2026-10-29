@@ -1133,3 +1133,36 @@ fn painting_with_popups_and_the_pointer_in_many_rects_equals_painting_the_whole_
     }
     assert!(pieces == whole);
 }
+
+#[test]
+fn a_pressed_control_darkens_and_acts_only_when_released_over_it() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    let close = desktop.control_of(window, Part::Close).unwrap();
+    let fill = (close.x + 4 + 6, close.y + 8 + 1);
+    let mut events = Recorded::default();
+    press(&mut desktop, close.x + 10, close.y + 14, &mut events);
+    assert!(
+        events.of_kind(event::CLOSE_REQUEST).is_empty(),
+        "not before the release"
+    );
+    assert_eq!(
+        at(&painted(&desktop), fill.0, fill.1),
+        paint::quarter(colour::BUTTON_CLOSE)
+    );
+    move_to(&mut desktop, 5, 400, &mut events);
+    assert_eq!(
+        at(&painted(&desktop), fill.0, fill.1),
+        colour::BUTTON_CLOSE,
+        "off the control while pressed"
+    );
+    move_to(&mut desktop, close.x + 10, close.y + 14, &mut events);
+    release(&mut desktop, &mut events);
+    assert_eq!(events.of_kind(event::CLOSE_REQUEST).len(), 1);
+    let minimise = desktop.control_of(window, Part::Minimise).unwrap();
+    press(&mut desktop, minimise.x + 10, minimise.y + 14, &mut events);
+    move_to(&mut desktop, 5, 400, &mut events);
+    release(&mut desktop, &mut events);
+    assert!(desktop.is_shown(window), "released elsewhere: nothing");
+    assert_eq!(paint::quarter(colour::BUTTON_CLOSE), 0x00ac_3f39);
+}

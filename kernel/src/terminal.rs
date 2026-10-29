@@ -118,6 +118,8 @@ fn grid_pixels() -> Option<Box<[u32]>> {
 static SCREEN: LeafSpinLock<Option<Box<Screen>>> = LeafSpinLock::new_leaf(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static RENDER_PENDING: AtomicBool = AtomicBool::new(false);
+
+static AGENT_CONNECTED: AtomicBool = AtomicBool::new(false);
 static APPLICATION_CURSOR_KEYS: AtomicBool = AtomicBool::new(false);
 static DRAWER: AtomicPtr<WaitQueue> = AtomicPtr::new(core::ptr::null_mut());
 static KEYS_TO_TERMINAL: AtomicBool = AtomicBool::new(true);
@@ -412,6 +414,7 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     let now = window::time_ms::<P>();
     let mut queues = Queues::new(clients, now);
     desktop.set_time(now);
+    desktop.set_agent_connected(AGENT_CONNECTED.load(Ordering::Relaxed), damage);
     while let Some(event) = input::next_event() {
         let asked = match event {
             InputEvent::PointerMove { x, y } => {
@@ -649,6 +652,7 @@ pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
 /// the console's input. Returns how many rectangles the flush showed. Does not return when the
 /// power menu powered the machine off or restarted it.
 pub fn show<P: Platform>() -> Result<usize, &'static str> {
+    AGENT_CONNECTED.store(crate::agent_channel::is_connected(), Ordering::Relaxed);
     let drawn = display::draw(|framebuffer| {
         SCREEN
             .lock()
@@ -664,6 +668,10 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
         Some(Action::Restart) => take_machine_down::<P>(reboot::Action::Restart),
         Some(action @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_))) => {
             run_launch::<P>(action)
+        }
+        Some(Action::ShowAgentLog) => {
+            move_view::<P>(ViewMove::Live);
+            console::receive_from_keyboard::<P>(eggos_drivers::desktop::AGENT_LOG_LINE);
         }
         Some(Action::None) | None => {}
     }

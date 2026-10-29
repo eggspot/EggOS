@@ -14,6 +14,7 @@
 //! when the kernel hands the desktop a new catalogue ([`Desktop::set_catalogue`]) or a client
 //! sets a menu ([`Desktop::set_menu`]).
 
+mod agent;
 mod catalogue;
 mod desktop_icons;
 mod events;
@@ -44,6 +45,7 @@ mod tests;
 #[cfg(test)]
 mod window_tests;
 
+pub use agent::{AGENT_ACTING_MS, AGENT_LABEL, AGENT_LOG_LINE, AGENT_SUFFIX, AGENT_TOOLTIP};
 pub use catalogue::{
     ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
     MAX_INSTALLED,
@@ -56,7 +58,8 @@ pub use injection::{
     TerminalInput,
 };
 pub use launcher::{
-    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS, TEXT_EDITOR_MISSING,
+    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, NOTICE_MS,
+    TEXT_EDITOR_MISSING,
 };
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
@@ -225,6 +228,9 @@ pub enum Action {
     Type(AppId),
     /// Start the installer's window to uninstall the app ([`Catalogue::uninstall`]).
     Uninstall(AppId),
+    /// Focus the terminal and type `agentlog` in it, as the `Agent` chip's click asks
+    /// ([`AGENT_LOG_LINE`]).
+    ShowAgentLog,
 }
 
 /// Where the desktop reads windows' pixels: the buffers the kernel keeps for them.
@@ -282,6 +288,7 @@ pub struct Desktop {
     resize: Option<Resize>,
     last_title_press: Option<(usize, u32, u32, u32)>,
     control_hover: Option<(usize, Part)>,
+    control_pressed: Option<(usize, Part)>,
     menu_open: bool,
     menu_hover: Option<usize>,
     switcher: Option<Switcher>,
@@ -308,6 +315,7 @@ pub struct Desktop {
     clock: [u8; CLOCK_GLYPHS],
     clock_length: u8,
     clock_shows_time_of_day: bool,
+    agent: agent::AgentState,
 }
 
 impl Desktop {
@@ -365,6 +373,7 @@ impl Desktop {
             resize: None,
             last_title_press: None,
             control_hover: None,
+            control_pressed: None,
             menu_open: false,
             menu_hover: None,
             switcher: None,
@@ -391,6 +400,7 @@ impl Desktop {
             clock: [b' '; CLOCK_GLYPHS],
             clock_length: 0,
             clock_shows_time_of_day: false,
+            agent: agent::AgentState::default(),
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -1153,6 +1163,12 @@ impl Desktop {
         if self.control_hover.is_some_and(|hover| hover.0 == slot) {
             self.control_hover = None;
         }
+        if self
+            .control_pressed
+            .is_some_and(|pressed| pressed.0 == slot)
+        {
+            self.control_pressed = None;
+        }
         self.forget_in_popups(slot, damage, events);
         if focused {
             self.focus = None;
@@ -1630,6 +1646,7 @@ impl Desktop {
                 self.drag = None;
                 self.resize = None;
                 self.panel_release(damage);
+                self.release_control(damage, events);
             }
             if let Some(grab) = self.grab {
                 let (cx, cy) = self.content_point(grab);
@@ -1718,10 +1735,11 @@ impl Desktop {
         self.set_focus(Some(slot), damage, events);
         let window = *self.window_at(slot);
         match window.part_at(x, y, self.profile.control_side()) {
-            Some(Part::Minimise) => self.minimise(slot, damage, events),
+            Some(Part::Minimise) => self.press_control(slot, Part::Minimise, damage),
             Some(Part::Maximise) if window.can_maximise() => {
-                self.toggle_maximise(slot, damage, events)
+                self.press_control(slot, Part::Maximise, damage)
             }
+            Some(Part::Close) if window.closable => self.press_control(slot, Part::Close, damage),
             Some(Part::Close) => self.request_close(slot, events),
             Some(Part::TitleBar) => {
                 let press = (x, y, self.now_ms);
@@ -1744,6 +1762,30 @@ impl Desktop {
             Some(Part::Maximise | Part::Border) | None => {}
         }
         Action::None
+    }
+
+    fn press_control(&mut self, slot: usize, part: Part, damage: &mut Damage) {
+        self.control_pressed = Some((slot, part));
+        damage.add(self.window_at(slot).title_bar());
+    }
+
+    fn release_control(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
+        let Some((slot, part)) = self.control_pressed.take() else {
+            return;
+        };
+        let (x, y) = self.pointer;
+        if self.control_under(self.hit(x, y)) != Some((slot, part)) {
+            if self.is_visible(slot) {
+                damage.add(self.window_at(slot).title_bar());
+            }
+            return;
+        }
+        damage.add(self.window_at(slot).title_bar());
+        match part {
+            Part::Close => self.request_close(slot, events),
+            Part::Minimise => self.minimise(slot, damage, events),
+            _ => self.toggle_maximise(slot, damage, events),
+        }
     }
 
     fn other_button_down(
@@ -1964,6 +2006,7 @@ impl Desktop {
         };
         if let Some(slot) = self.content_holding(clip) {
             self.draw_content(&mut canvas, self.window_at(slot), contents);
+            self.draw_agent_pointer(&mut canvas);
             self.draw_pointer(&mut canvas);
             return;
         }
@@ -1987,6 +2030,7 @@ impl Desktop {
         }
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
+        self.draw_agent_pointer(&mut canvas);
         self.draw_pointer(&mut canvas);
     }
 
@@ -2103,6 +2147,12 @@ impl Desktop {
                 true => colour,
                 false => colour::BUTTON_INACTIVE,
             };
+            let pressed = self.control_pressed == Some((slot, part))
+                && self.control_hover == Some((slot, part));
+            let fill = match active && pressed {
+                true => paint::quarter(fill),
+                false => fill,
+            };
             canvas.rounded(circle, &paint::INSET_R6, true, true, fill);
             if active && self.control_hover == Some((slot, part)) {
                 let glyph = match part {
@@ -2124,9 +2174,10 @@ impl Desktop {
                 }
             }
         }
-        let suffix = match window.not_responding {
-            true => NOT_RESPONDING,
-            false => "",
+        let (suffix, suffix_ink) = match (window.not_responding, self.agent_drives(slot)) {
+            (true, _) => (NOT_RESPONDING, title_text),
+            (false, true) => (AGENT_SUFFIX, colour::ACCENT),
+            (false, false) => ("", title_text),
         };
         let room = windows::title_room(outside.width).saturating_sub(suffix.len());
         let (text, cut) = windows::cut_title(window.title(), room);
@@ -2135,8 +2186,12 @@ impl Desktop {
         let width = glyphs as u32 * GLYPH_WIDTH as u32;
         let mut x = outside.x + outside.width.saturating_sub(width) / 2;
         let y = outside.y + 1 + (TITLE_HEIGHT - GLYPH_HEIGHT as u32) / 2;
-        for part in [text, ellipsis, suffix] {
-            canvas.text(x, y, part, title_text);
+        for (part, ink) in [
+            (text, title_text),
+            (ellipsis, title_text),
+            (suffix, suffix_ink),
+        ] {
+            canvas.text(x, y, part, ink);
             x += part.chars().count() as u32 * GLYPH_WIDTH as u32;
         }
     }

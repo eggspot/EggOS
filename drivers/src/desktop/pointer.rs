@@ -180,9 +180,30 @@ pub fn pixel_at(shape: PointerShape, at: (u32, u32), x: u32, y: u32) -> Option<u
     bitmap.pixel(column as u32, row as u32)
 }
 
+/// As [`pixel_at`] for the arrow, in the agent's colours (docs/ux/desktop-v0.3-gui.md 14.1):
+/// its white pixels in the accent, its outline black.
+pub fn agent_arrow_pixel_at(at: (u32, u32), x: u32, y: u32) -> Option<u32> {
+    pixel_at(PointerShape::Arrow, at, x, y).map(|pixel| match pixel {
+        WHITE => super::colour::ACCENT,
+        other => other,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_s_arrow_is_the_arrow_in_the_accent_with_its_black_outline() {
+        let at = (100, 50);
+        assert_eq!(agent_arrow_pixel_at(at, 100, 50), Some(BLACK));
+        assert_eq!(
+            agent_arrow_pixel_at(at, 101, 52),
+            Some(super::super::colour::ACCENT)
+        );
+        assert_eq!(pixel_at(PointerShape::Arrow, at, 101, 52), Some(WHITE));
+        assert_eq!(agent_arrow_pixel_at(at, 111, 50), None);
+    }
 
     #[test]
     fn each_shape_s_listed_size_is_its_bitmap_s() {

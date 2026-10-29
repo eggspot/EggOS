@@ -1177,7 +1177,10 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
-        whole(&["Welcome to EggOS.", "eggos"]),
+        whole(&[
+            "Welcome to EggOS. Type help. Apps: the egg, or Super.",
+            "eggos",
+        ]),
         vec![Line::Whole(format!(
             "Linux localhost 6.1.0-eggos #1 SMP EggOS {} {arch} EggOS",
             env!("CARGO_PKG_VERSION")
@@ -1194,7 +1197,11 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "EGGOS-PIPE last 1",
             "EGGOS-PIPE status 1",
         ]),
-        whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
+        whole(&[
+            "Welcome to EggOS. Type help. Apps: the egg, or Super.",
+            "",
+            "==> /etc/hostname <==",
+        ]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
         whole(&[
@@ -1237,7 +1244,7 @@ const SHELL_LINES: [&str; 19] = [
     "EGGSH-TEST quoting single  quoted double / $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
     "EGGSH-TEST cd /usr/libexec /",
-    "EGGSH-TEST home /",
+    "EGGSH-TEST home /home/root",
     "EGGSH-TEST status 1",
     "eggsh: no-such-command: command not found",
     "EGGSH-TEST not found 127",

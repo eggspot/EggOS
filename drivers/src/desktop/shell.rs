@@ -56,7 +56,9 @@ const TOOLTIP_PADDING: u32 = 8;
 const TOOLTIP_GAP: u32 = 4;
 const TOOLTIP_TEXT_Y: u32 = 4;
 const TOOLTIP_SCREEN_MARGIN: u32 = 8;
-const START_TOOLTIP: &str = "Start";
+const START_TOOLTIP: &str = "Start  Super";
+const APPS_TOOLTIP: &str = "Apps  Super";
+const ACTIVITIES_TOOLTIP: &str = "Activities  Super";
 const POWER_TOOLTIP: &str = "Power";
 
 /// A thing on a panel that a click acts on.
@@ -79,6 +81,8 @@ pub(super) enum PanelItem {
     DockWindow(u8),
     /// The macOS top bar's title of this menu of the main menu it shows.
     MenuTitle(u8),
+    /// The `Agent` chip, while an MCP client is connected (14.1).
+    Agent,
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -356,10 +360,11 @@ impl Desktop {
         };
         let count = 1 + self.listed_windows().count() as u32;
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
-        let limit = self
-            .clock_rect()
-            .x
-            .saturating_sub(TASKBAR_ROOM_BEFORE_CLOCK);
+        let limit = match self.agent_chip() {
+            Some(chip) => chip.x,
+            None => self.clock_rect().x,
+        }
+        .saturating_sub(TASKBAR_ROOM_BEFORE_CLOCK);
         let centred = self.width.saturating_sub(group) / 2;
         let mut x = match centred >= TASKBAR_MARGIN && centred + group <= limit {
             true => centred,
@@ -391,6 +396,9 @@ impl Desktop {
             });
         }
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
+        if let Some(chip) = self.agent_chip() {
+            item(PanelItem::Agent, chip);
+        }
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
     }
@@ -628,6 +636,10 @@ impl Desktop {
                 self.press_menu_title(usize::from(menu), damage, events);
                 Action::None
             }
+            PanelItem::Agent => {
+                self.activate(super::TERMINAL_SLOT, damage, events);
+                Action::ShowAgentLog
+            }
         }
     }
 
@@ -742,6 +754,9 @@ impl Desktop {
     fn tooltip_text(&self, item: PanelItem) -> Option<&str> {
         match (item, self.profile) {
             (PanelItem::Start, _) => Some(START_TOOLTIP),
+            (PanelItem::System, Profile::Macos) => Some(APPS_TOOLTIP),
+            (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
+            (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
             (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
@@ -762,17 +777,17 @@ impl Desktop {
         let item = self.panels.tooltip?;
         let text = self.tooltip_text(item)?;
         let anchor = self.panel_item_rect(item)?;
-        let panel_top = match (self.layout.taskbar, self.dock_rect()) {
-            (Some(bar), _) => bar.y,
-            (None, Some(dock)) => dock.y,
-            (None, None) => return None,
+        let y = match (self.layout.top_bar, self.layout.taskbar, self.dock_rect()) {
+            (Some(bar), _, _) if anchor.y < bar.bottom() => bar.bottom() + TOOLTIP_GAP,
+            (_, Some(bar), _) => bar.y.saturating_sub(TOOLTIP_GAP + TOOLTIP_HEIGHT),
+            (_, None, Some(dock)) => dock.y.saturating_sub(TOOLTIP_GAP + TOOLTIP_HEIGHT),
+            (_, None, None) => return None,
         };
         let width = text.chars().count() as u32 * GLYPH_WIDTH as u32 + 2 * TOOLTIP_PADDING;
         let centred = (anchor.x + anchor.width / 2).saturating_sub(width / 2);
         let x = centred
             .min(self.width.saturating_sub(TOOLTIP_SCREEN_MARGIN + width))
             .max(TOOLTIP_SCREEN_MARGIN);
-        let y = panel_top.saturating_sub(TOOLTIP_GAP + TOOLTIP_HEIGHT);
         Some(Rect::new(x, y, width, TOOLTIP_HEIGHT))
     }
 
@@ -903,7 +918,12 @@ impl Desktop {
         });
         self.draw_menu_titles(canvas);
         self.draw_clock(canvas);
+        self.draw_agent_chip(canvas, self.agent_chip_hovered());
         self.draw_power(canvas, bar);
+    }
+
+    fn agent_chip_hovered(&self) -> bool {
+        self.panels.hover == Some(PanelItem::Agent) || self.panels.pressed == Some(PanelItem::Agent)
     }
 
     fn draw_clock(&self, canvas: &mut Canvas<'_>) {
@@ -978,6 +998,7 @@ impl Desktop {
             }
         });
         self.draw_clock(canvas);
+        self.draw_agent_chip(canvas, self.agent_chip_hovered());
         self.draw_power(canvas, bar);
     }
 

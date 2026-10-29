@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const HOSTNAME: &str = "eggos\n";
-const MOTD: &str = "Welcome to EggOS.\n";
+const MOTD: &str = "Welcome to EggOS. Type help. Apps: the egg, or Super.\n";
 const ENOTDIR: i32 = 20;
 const EROFS: i32 = 30;
 
@@ -111,8 +111,8 @@ fn an_open_file_seeks() -> bool {
     };
     read_at(SeekFrom::Start(11), 5) == Some((11, "EggOS".into()))
         && read_at(SeekFrom::Current(-5), 3) == Some((11, "Egg".into()))
-        && read_at(SeekFrom::End(-2), 10) == Some((16, ".\n".into()))
-        && read_at(SeekFrom::End(5), 10) == Some((23, String::new()))
+        && read_at(SeekFrom::End(-2), 10) == Some((52, ".\n".into()))
+        && read_at(SeekFrom::End(5), 10) == Some((59, String::new()))
         && file.seek(SeekFrom::Current(-100)).is_err()
 }
 

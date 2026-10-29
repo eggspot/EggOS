@@ -29,6 +29,8 @@ pub const INTERRUPTED: i32 = 128 + status::SIGINT as i32;
 pub const MAX_PIPELINE: usize = 16;
 
 const OUTPUT_CAPACITY: usize = 512;
+const MESSAGE_OF_THE_DAY: &[u8] = b"/etc/motd\0";
+const MESSAGE_PIECE: usize = 256;
 
 const STANDARD_INPUT: usize = 0;
 
@@ -286,6 +288,35 @@ impl<'a, S: System> Shell<'a, S> {
     /// Takes a `NAME=value` from the environment the shell started with, exported.
     pub fn import(&mut self, variable: &[u8]) {
         let _ = self.variables.assign(variable, true);
+    }
+
+    /// What an interactive shell does before its first prompt: goes to `$HOME` and writes
+    /// `/etc/motd`, the welcome (docs/ux/desktop-v0.3-gui.md 14.4). Nothing otherwise.
+    pub fn greet(&mut self) {
+        if !self.interactive {
+            return;
+        }
+        let mut home = [0u8; PATH_CAPACITY];
+        let length = match self.variables.get(b"HOME") {
+            Some(value) if value.len() < PATH_CAPACITY => {
+                home[..value.len()].copy_from_slice(value);
+                Some(value.len())
+            }
+            _ => None,
+        };
+        if let Some(length) = length
+            && self.system.change_directory(&home[..=length]).is_ok()
+        {
+            self.set_working_directory_variable();
+        }
+        let Ok(descriptor) = self.system.open(MESSAGE_OF_THE_DAY) else {
+            return;
+        };
+        let mut buffer = [0u8; MESSAGE_PIECE];
+        while let Read::Bytes(count) = self.system.read(descriptor, &mut buffer) {
+            self.system.write(self.output, &buffer[..count]);
+        }
+        self.system.close(descriptor);
     }
 
     /// Sets `PWD` to the working directory, exported.

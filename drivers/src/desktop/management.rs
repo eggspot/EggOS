@@ -188,6 +188,7 @@ impl Desktop {
         self.profile = profile;
         self.layout = super::layout::layout(self.width, self.height, 1, profile);
         self.control_hover = None;
+        self.control_pressed = None;
         self.reset_panels();
         self.icons.last_press = None;
         let work = self.work_area();
@@ -615,6 +616,7 @@ impl Desktop {
         }
         self.tick_notice(damage);
         self.tick_tooltip(damage);
+        self.tick_agent(damage);
         destroyed
     }
 
@@ -832,7 +834,7 @@ impl Desktop {
         self.pointer_drawn = drawn;
     }
 
-    fn control_under(&self, hit: Hit) -> Option<(usize, Part)> {
+    pub(super) fn control_under(&self, hit: Hit) -> Option<(usize, Part)> {
         if self.drag.is_some() || self.resize.is_some() || self.grab.is_some() {
             return None;
         }

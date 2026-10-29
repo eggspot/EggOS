@@ -59,6 +59,12 @@ const MINIMISED_LABEL: &str = "Minimised:";
 const MINIMISED_MAX_ROWS: usize = 7;
 const CHIP_GAP: u32 = 8;
 const PLACEHOLDER: &str = "Search apps";
+const MOST_LAUNCHER_ROWS: usize = 7;
+const FOOTER_Y: u32 = 368;
+const FOOTER_TEXT_Y: u32 = 2;
+/// The launcher's last line: the keys that reach EggOS even where the host keeps others
+/// (docs/ux/desktop-v0.3-gui.md 14.3).
+pub const LAUNCHER_FOOTER: &str = "Super: apps   Alt+Tab: windows   Alt+F4: close";
 const NO_MATCH: &str = "No apps match";
 const MATCH_CAPACITY: usize = 5 + MAX_INSTALLED;
 const MENU_OPEN: &str = "Open";
@@ -325,7 +331,7 @@ impl Desktop {
             .launcher
             .height
             .saturating_sub(PADDING + FIELD_HEIGHT + LIST_GAP + PADDING);
-        (room / LAUNCHER_ROW_HEIGHT).max(1) as usize
+        ((room / LAUNCHER_ROW_HEIGHT) as usize).clamp(1, MOST_LAUNCHER_ROWS)
     }
 
     fn launcher_row(&self, launcher: &Launcher, index: usize) -> Option<Rect> {
@@ -712,6 +718,12 @@ impl Desktop {
         };
         let rect = self.layout.launcher;
         Self::draw_popup_surface(canvas, rect, colour::DOCK);
+        canvas.text(
+            self.content_x(),
+            rect.y + FOOTER_Y + FOOTER_TEXT_Y,
+            LAUNCHER_FOOTER,
+            colour::TEXT_DIM,
+        );
         if self.profile == Profile::Linux {
             canvas.fill(
                 Rect::new(rect.x + DASH_WIDTH, rect.y + 1, 1, rect.height - 2),

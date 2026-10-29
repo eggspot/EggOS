@@ -12,7 +12,7 @@ fn half(pixel: u32) -> u32 {
     (pixel >> 1) & 0x007f_7f7f
 }
 
-fn quarter(pixel: u32) -> u32 {
+pub(super) fn quarter(pixel: u32) -> u32 {
     pixel - ((pixel >> 2) & 0x003f_3f3f)
 }
 

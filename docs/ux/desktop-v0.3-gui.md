@@ -985,3 +985,145 @@ terminal), `docs/limitations.md` lists what moved out of it (maximise, off-scree
 keyboard window operations, the power menu's key) and what is still out (a second terminal,
 item 35's shell, panels per profile), and `docs/decisions.md` records the placement, the
 default profile and the ioctl numbers.
+
+## 14. The first minute, and seeing the agent (issue #142)
+
+Design record by Claude Fable (D16) for the five items of issue #142, checked against
+`drivers/src/desktop` as it is today. Everything above stands; numbers are at 1x and double
+at 2x; the examples are at 1280x800. Token names are the code's `colour::` constants and the
+metrics its constants (`TOOLTIP_DELAY_MS` 600, `CHIP_HEIGHT` 20, `CHIP_PADDING` 8, `CHIP_Y` 4,
+`BAR_TEXT_Y` 6, `POWER_BUTTON_MARGIN` 8, `TASKBAR_CLOCK_FROM_RIGHT` 56,
+`TASKBAR_ROOM_BEFORE_CLOCK` 16, `LAUNCHER_SIZE` 480x400, `LAUNCHER_ROW_HEIGHT` 40).
+
+### 14.1 The Agent chip (D21)
+
+- **Shown while an MCP client is connected**: the agent channel (`kernel/src/agent_channel.rs`)
+  is open (the MCP server holds `/dev/agent`) and its host side is connected
+  (`AgentPort::host_connected`). The kernel tells the desktop on each change
+  (`Desktop::set_agent_connected(bool)`, damaging the chip's panel); nothing is drawn
+  otherwise. With `run-eggos.sh --mcp` that is the whole run, since the client starts the
+  script: the chip's acting state is what says whether it is doing anything.
+- **Geometry.** The chip is `chip_rect` with the label `Agent` (5 glyphs): 56x20, `INSET_R4`,
+  text at x + 8 (`CHIP_PADDING`), glyph top at the chip's y + 2. Top bar (macOS and Linux):
+  right edge at `power_button().x - 8`, y 4 (`CHIP_Y`), so at 1280 the chip is (1180, 4, 56,
+  20), text at (1188, 6). The Linux chips and the macOS menu titles stop at the clock's left
+  - 16 and never reach it. Taskbar (Windows): right edge at `clock_rect().x - 16`, vertically
+  centred in the 40 px bar: (1072, 770, 56, 20), text at (1080, 772). While it shows, the
+  taskbar items' limit (6.4 item 13) is the chip's left - 16 instead of the clock's.
+- **Idle**: fill `BAR_HOVER`, text `TEXT_DIM`. **Acting**: fill `ACCENT` (#F2B33D), text
+  `ICON_DARK` (#0B0E13), for `AGENT_ACTING_MS` = 1000 after the last agent action: a capture
+  (`wm capture`, `Desktop::content_layout`), a delivered input step (`send_input` returning
+  `Ok`; a `Busy`, `Invalid` or `QueueFull` refusal changes nothing on screen and lights
+  nothing) or a chosen main-menu item (`wm_menu_choose`). The desktop keeps
+  `agent_acted_ms: Option<u32>` and its tick damages the chip when the 1000 ms pass. Hover
+  and pressed: `BAR_PRESSED` as a chip's (hover wins over idle, acting wins over hover).
+- **Tooltip**, after 600 ms, the panel tooltip's chrome (6.4 item 3): `An AI agent is
+  connected. Log: agentlog` (39 glyphs, 328 wide). Taskbar: above the bar as today, (936, 732,
+  328, 24). Top bar: below the bar, top at bar bottom + 4 (y 32), centred on the chip and
+  clamped 8 px inside the screen: (944, 32, 328, 24). `tooltip_place` gains the below-the-bar
+  case for every top-bar item (14.3 uses it too).
+- **Click** (`PanelItem::Agent`, `Action::ShowAgentLog`): focuses the Terminal window
+  (restoring it if minimised) and types `\x15agentlog\r` into it, as `Host share` does (6.4
+  item 10). `agentlog` is a CLI command whose MCP twin is the audit log itself (docs/mcp.md):
+  nothing GUI-only is added (D22).
+- **Driven window.** While a delivered input step targeted it in the last 1000 ms (the
+  Terminal included, for `Injected::ForTerminal`), its title gets `AGENT_SUFFIX` = ` (agent)`
+  in `ACCENT`, laid out exactly as ` (not responding)`: the suffix's glyphs come off
+  `title_room`, the title is cut with `...` first, the three parts are centred as one run;
+  only the suffix is `ACCENT` (focused or not). When both apply, ` (not responding)` wins and
+  ` (agent)` is not shown: a window that is not answering is not hearing the agent either.
+  Captures mark nothing: reading is not driving.
+- **Injected pointer.** Injected input never moves the person's pointer (docs/mcp.md promises
+  it; `person_pointer` stays). Instead the desktop draws a second arrow, the agent's: the
+  12x19 `ARROW` with its `o` pixels in `ACCENT` and its `X` pixels `BLACK`, hotspot (0, 0) at
+  the injected point in screen coordinates (the window's content origin + (x, y)), for 1000 ms
+  after the last delivered pointer step (`PointerMove`, `Click`, `Wheel`); a key or character
+  step draws no arrow. It is drawn right before the person's pointer in 3.7's order, so the
+  person's wins where they overlap, and on top of a window covering the point (a pointer is
+  never content). Not drawn while the target window is minimised. Damage: the arrow's rect at
+  the old and the new point. With `--no-window` it is drawn in the offscreen display, so a
+  screendump shows it.
+
+### 14.2 First boot asks "Where are you coming from?"
+
+- `init` (userland/init) starts `/bin/settings --welcome` right after it spawns the login
+  program, without waiting for it, when a disk is attached (the block device's node the kernel
+  publishes exists, found as `/dev/window` and `/dev/agent` are) and
+  `/home/root/.config/eggos/settings` holds no `shell.profile` (a missing file counts); with
+  `--no-disk` nothing opens. The Settings window appears after the prompt, which eggsh prints
+  in its first milliseconds.
+- `settings --welcome`: the Settings window (section 10, 640x440 content) on the Appearance
+  pane, unchanged, placed by `SetPosition` at the work area's centre (`GetWorkArea`; outside
+  642x470, so (319, 143) in the macOS profile at 1280x800), on top and focused as every new
+  window is (3.2). A card click saves as today (docs/settings.md); the window stays open until
+  the user closes it, and the next boot does not ask because the key is saved.
+
+### 14.3 The keys the host steals
+
+- **Top bar system item tooltip** (`PanelItem::System`, today without one): `Apps  Super` in
+  the macOS profile, `Activities  Super` in the Linux profile; drawn below the bar, top at
+  y 32, centred on the 96 px hit target and clamped 8 px inside the screen: (8, 32, 104, 24)
+  and (8, 32, 152, 24). Start's tooltip becomes `Start  Super` (112 wide, above the taskbar as
+  today). The power button keeps no top-bar tooltip.
+- **Launcher footer**, every profile: `visible_rows` becomes 7 (rows at launcher y 48 to 328,
+  which also keeps 6.4 item 15's `Minimised:` line, at y 336, always in room), then one 20 px
+  line at launcher y 368 (glyph top 370), x 12 (76 with the Linux dash), in `TEXT_DIM`. The
+  brief's text is 58 glyphs (464 px) and the room is 456 px (392 with the dash) in the 8x16
+  font the launcher draws with, so the text is `Super: apps   Alt+Tab: windows   Alt+F4:
+  close` (46 glyphs, 368 px): `Esc: back` is dropped, since the host steals no Esc.
+- `run-eggos.sh` on a macOS host (`uname -s` = `Darwin`), in the window mode only, says one
+  line through `say`: `run-eggos.sh: inside EggOS, Cmd is the Super key: Cmd alone opens apps,
+  Option+Tab switches windows, Option+F4 closes. Cmd+Tab, Cmd+Space and Cmd+Q stay with
+  macOS.` The release notes' `Keys` section (xtask `release_notes`) gets the paragraph `Inside
+  EggOS, Cmd is the Super key: Cmd alone opens apps, Option+Tab switches windows, Option+F4
+  closes. Cmd+Tab, Cmd+Space and Cmd+Q stay with macOS.` as its last item.
+
+### 14.4 The first text anyone reads
+
+- `init: starting /bin/eggsh` (and init's other `init:` lines) go to the serial console only:
+  init writes them to the serial port's device node, not to fd 1; the banner `EggOS <version>`
+  stays on both. The reboot test's serial expectation is unchanged.
+- `/etc/motd` becomes `Welcome to EggOS <version>. Type help. Apps: the egg, or Super.` with
+  the build's version, not a literal: xtask writes the member from `CARGO_PKG_VERSION` when it
+  builds the initramfs, as init's banner already does, so a release cannot ship a stale one.
+  eggsh prints `/etc/motd` at an interactive start, before its first prompt.
+- eggsh starts in `/home/root` (`HOME=/home/root` in init's environment), prompt
+  `eggsh:/home/root# `; the Terminal's first frame is the banner, the motd and that prompt.
+  The boot-to-prompt test's expected lines change in the same PR; `SHELL_PROMPT` (`eggsh:/`)
+  still matches.
+
+### 14.5 Pressed window controls
+
+- `control_pressed: Option<(slot, Part)>` beside `control_hover`: set by a left button-down on
+  an active control (`closable` for close, `can_maximise` for maximise; an inactive
+  `BUTTON_INACTIVE` circle and a dialog's parent's controls take no press), cleared on
+  button-up. While set and the pointer is over that control, the circle is drawn in
+  `quarter()` of its colour, the hover glyph on top: close #E5534B -> #AC3F39, minimise
+  #E8B33C -> #AE872D, maximise #3DBE5C -> #2E8F45, the same on either control side.
+- The action moves from button-down to button-up over the same control (close, minimise,
+  maximise and restore), as macOS, Windows and GNOME do. Leaving the control while pressed
+  undarkens it; coming back darkens it again; releasing outside does nothing. The press still
+  raises and focuses the window at button-down, and a press on the title bar is unchanged.
+
+### 14.6 Checks and front-ends
+
+Screendump checks, in the QEMU boot tests on all three architectures (`--no-window` where a
+window is not needed):
+
+1. Boot `--mcp`; a scripted client sends `wm_click` to the test window; a screendump within 1 s
+   shows the chip filled `#F2B33D` at (1180, 4) (or (1072, 770) in the Windows profile), the
+   accent arrow at the clicked point and the title `Test (agent)`; 1.2 s later the chip is
+   `#26303F` and the title plain. The host test hashes the chip's rects and the suffix layout.
+2. A fresh disk: a screendump at the first prompt + 300 ms shows Settings (642x470) centred over
+   the Terminal; a QMP click on `Windows` gives the 40 px taskbar; after a reboot no Settings
+   window shows. First-frame tests boot `--no-disk` or with a saved profile.
+3. The launcher open: the footer line at y 368; the pointer resting on (48, 14) for 700 ms:
+   the tooltip at (8, 32).
+4. The first prompt's frame: `Welcome to EggOS <version>. Type help. Apps: the egg, or Super.`
+   on the row under the banner, the prompt `eggsh:/home/root#` under it, no `init:` line.
+5. A QMP button-down on the close control without release: a `#AC3F39` circle; release over it:
+   the close request.
+
+D22: the chip's click runs `agentlog`, which already exists as a CLI command and whose MCP side
+is the audit log every tool call writes; the footer, tooltips, motd and pressed look change no
+capability. Nothing GUI-only is added.

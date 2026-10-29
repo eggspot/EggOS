@@ -216,6 +216,13 @@ junk calls; past it, every call is refused until the server starts again. **An a
 can delete or change the log** (it can do anything a program can): with `run`, the log records
 what the agent did through the tools, not what it could hide.
 
+While an MCP client is connected, the desktop's panel shows an `Agent` chip (left of the top
+bar's power button, or of the taskbar's clock): grey while it waits, yellow for a second after
+each capture, input step or menu choice the agent makes; the window its input went to says
+` (agent)` after its title for that second, and its pointer input draws a second, yellow arrow
+where it went (the person's pointer never moves). Clicking the chip runs `agentlog` in the
+Terminal (D156, docs/ux/desktop-v0.3-gui.md section 14).
+
 `agentlog` shows it, one row per call:
 
 ```
