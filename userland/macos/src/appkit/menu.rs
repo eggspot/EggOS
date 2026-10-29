@@ -13,12 +13,13 @@ use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, message, methods, sel, send2};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use eggos_macos_gui::keys::modifier;
 use eggos_macos_gui::menu::{MAX_MENUS, Pool, answers, key_label};
 
 static MAIN_MENU: AtomicUsize = AtomicUsize::new(0);
 static SHOWN_MENUS: AtomicUsize = AtomicUsize::new(0);
+static CHANGED: AtomicBool = AtomicBool::new(false);
 static TOP_ITEMS: [AtomicUsize; MAX_MENUS] = [const { AtomicUsize::new(0) }; MAX_MENUS];
 
 #[repr(C)]
@@ -124,10 +125,25 @@ pub fn send_to(window: Id) {
 }
 
 fn refresh() {
+    CHANGED.store(false, Ordering::Relaxed);
     let mut index = 0;
     while let Some(window) = application::window_at(index) {
         send_to(window);
         index += 1;
+    }
+}
+
+/// Sends the main menu to the app's windows again if it changed since it was last sent: the
+/// event loop calls it before each read, so a run of `addItem:` and the like costs one send.
+pub fn send_if_changed() {
+    if CHANGED.load(Ordering::Relaxed) {
+        refresh();
+    }
+}
+
+fn mark_changed() {
+    if !main_menu().is_null() {
+        CHANGED.store(true, Ordering::Relaxed);
     }
 }
 
@@ -144,8 +160,8 @@ pub fn set_main_menu(menu: Id) {
 }
 
 fn changed(item: Id) {
-    if !main_menu().is_null() && !item_fields(item).menu.is_null() {
-        refresh();
+    if !item_fields(item).menu.is_null() {
+        mark_changed();
     }
 }
 
@@ -264,9 +280,7 @@ extern "C" fn menu_title(this: Id, _: Sel) -> Id {
 
 extern "C" fn menu_set_title(this: Id, _: Sel, title: Id) {
     store_copy(&mut menu_fields(this).title, title);
-    if !main_menu().is_null() {
-        refresh();
-    }
+    mark_changed();
 }
 
 extern "C" fn add_item(this: Id, _: Sel, item: Id) {
@@ -290,9 +304,7 @@ extern "C" fn remove_all_items(this: Id, _: Sel) {
         objc_release(item);
     }
     items.free();
-    if !main_menu().is_null() {
-        refresh();
-    }
+    mark_changed();
 }
 
 extern "C" fn item_array(this: Id, _: Sel) -> Id {

@@ -1,17 +1,18 @@
 //! NSAlert (`docs/ux/macos-gui-v0.3.md` section 4): `runModal` opens a dialog window of its own on
 //! the key window, draws the toolkit's dialog panel in it (`eggos_macos_gui::alert`), and runs
-//! its own event loop until a button is chosen, while the app's other windows still redraw but
-//! take no input.
+//! its own event loop until a button is chosen, while the app's other windows still redraw,
+//! follow the focus and take new sizes but no input; a close asked of one of them meanwhile is
+//! carried out once the alert is answered.
 
 use super::{
-    NSALERT, NSALERT_META, NSBUTTON, application, server, store_copy, string, view, window,
+    NSALERT, NSALERT_META, NSBUTTON, application, menu, server, store_copy, string, view, window,
     with_text,
 };
 use crate::foundation::{NSARRAY, class_pointer};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, methods, sel, send, send1, send2};
+use crate::objc::{Runtime, autorelease, methods, sel, send, send1, send2};
 use eggos_macos_gui::alert::{Alert, FIRST_BUTTON_RETURN, MAX_BUTTONS};
 use eggos_macos_gui::geometry::Frame;
 use eggos_toolkit::canvas::Canvas;
@@ -123,6 +124,7 @@ struct Modal {
     buffer: server::Buffer,
     focused: bool,
     chosen: Option<usize>,
+    closes_asked: Buffer<u32>,
 }
 
 impl Modal {
@@ -136,8 +138,18 @@ impl Modal {
         if u32::from(event.window) != self.buffer.window {
             if let Some(other) = application::window_with_server_id(u32::from(event.window)) {
                 match event.input {
-                    Input::FocusIn => window::set_key(other, true),
-                    Input::FocusOut => window::set_key(other, false),
+                    Input::FocusIn => application::make_key(other),
+                    Input::FocusOut => application::focus_out(other),
+                    Input::Resize { width, height } => window::resize(other, width, height),
+                    Input::CloseRequest => {
+                        if !self
+                            .closes_asked
+                            .as_slice()
+                            .contains(&u32::from(event.window))
+                        {
+                            self.closes_asked.push(u32::from(event.window));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -204,17 +216,27 @@ extern "C" fn run_modal(this: Id, _: Sel) -> isize {
         buffer,
         focused: true,
         chosen: None,
+        closes_asked: Buffer::new(),
     };
     paint(&modal.alert, &modal.buffer, modal.focused);
     let chosen = loop {
+        let pool = autorelease::push();
+        menu::send_if_changed();
         application::display_all();
         application::read_records(&mut |record| modal.handle(record));
+        autorelease::pop(pool);
         if let Some(chosen) = modal.chosen {
             break chosen;
         }
     };
     // SAFETY: the dialog is done; nothing draws on its buffer any more.
     unsafe { server::destroy(&modal.buffer) };
+    for &id in modal.closes_asked.as_slice() {
+        if let Some(other) = application::window_with_server_id(id) {
+            send1(other, sel!("performClose:"), 0);
+        }
+    }
+    modal.closes_asked.free();
     Alert::answer(chosen)
 }
 

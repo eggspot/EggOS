@@ -18,6 +18,7 @@ use eggos_macos_gui::keys::modifier;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 
+const NS_WINDOW_STYLE_MASK_CLOSABLE: u64 = 1 << 1;
 const NS_WINDOW_STYLE_MASK_RESIZABLE: u64 = 1 << 3;
 
 /// A window's fields.
@@ -72,18 +73,21 @@ pub fn server_id(window: Id) -> u32 {
     fields(window).buffer.window
 }
 
-/// Notes that `view` left `window`'s tree.
-pub fn forget_view(window: Id, view: Id) {
+/// Notes that the tree at `root` left `window`'s: a first responder, tracked view or initial
+/// first responder in it is forgotten, so the window becomes its own first responder, as AppKit
+/// makes it.
+pub fn forget_tree(window: Id, root: Id) {
     let fields = fields(window);
-    if fields.first_responder == view {
-        fields.first_responder = core::ptr::null_mut();
+    for slot in [
+        &mut fields.first_responder,
+        &mut fields.tracking,
+        &mut fields.initial_first_responder,
+    ] {
+        if view::holds(root, *slot) {
+            *slot = core::ptr::null_mut();
+        }
     }
-    if fields.tracking == view {
-        fields.tracking = core::ptr::null_mut();
-    }
-    if fields.initial_first_responder == view {
-        fields.initial_first_responder = core::ptr::null_mut();
-    }
+    fields.dirty = true;
 }
 
 /// Makes `responder` (a view of `window`, or nil for the window) the first responder, as
@@ -173,7 +177,8 @@ fn set_content_frame(window: Id) {
     }
 }
 
-/// Shows `window` (its first show makes its server window), gives it the keyboard and draws it.
+/// Shows `window` (a show while it has no server window makes one), gives it the keyboard and
+/// draws it.
 pub fn show(window: Id) {
     if fields(window).buffer.window == 0 {
         let size = fields(window).content;
@@ -461,10 +466,11 @@ extern "C" fn content_view(this: Id, _: Sel) -> Id {
 
 extern "C" fn set_content_view(this: Id, _: Sel, content: Id) {
     let old = fields(this).content_view;
-    if old == content {
+    if old == content || (!content.is_null() && !super::is(content, &super::NSVIEW)) {
         return;
     }
     if !old.is_null() {
+        forget_tree(this, old);
         view::attach_to_window(old, core::ptr::null_mut());
     }
     fields(this).first_responder = core::ptr::null_mut();
@@ -494,6 +500,9 @@ extern "C" fn close_method(this: Id, _: Sel) {
 }
 
 extern "C" fn perform_close(this: Id, _: Sel, _: Id) {
+    if fields(this).style & NS_WINDOW_STYLE_MASK_CLOSABLE == 0 {
+        return;
+    }
     let delegate = fields(this).delegate;
     let should_close = sel!("windowShouldClose:");
     if responds(delegate, should_close) && !send_bool(delegate, should_close, this as usize) {

@@ -87,6 +87,25 @@ pub fn attach_to_window(view: Id, window: Id) {
     changed(view);
 }
 
+/// Whether `view` (nil or not) is `root` or one of its descendants, found walking down from
+/// `root` so that `view` itself is never read.
+pub fn holds(root: Id, view: Id) -> bool {
+    if view.is_null() {
+        return false;
+    }
+    if root == view {
+        return true;
+    }
+    let mut index = 0;
+    while let Some(&child) = fields(root).subviews.as_slice().get(index) {
+        if holds(child, view) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 fn detach(view: Id) {
     let parent = fields(view).superview;
     if parent.is_null() {
@@ -104,7 +123,7 @@ fn detach(view: Id) {
     *siblings = kept;
     let window = fields(view).window;
     if !window.is_null() {
-        window::forget_view(window, view);
+        window::forget_tree(window, view);
     }
     fields(view).superview = core::ptr::null_mut();
     set_window(view, core::ptr::null_mut());
@@ -174,8 +193,25 @@ extern "C" fn set_frame_size(this: Id, _: Sel, size: Size) {
     );
 }
 
+/// Frees `view` as `-[NSView dealloc]` does: its subviews are let go of (each loses its
+/// superview and window), then its memory. A subclass's `dealloc` releases its own fields first.
+pub fn dispose(view: Id) {
+    let mut subviews = core::mem::replace(&mut fields(view).subviews, Buffer::new());
+    for &child in subviews.as_slice() {
+        fields(child).superview = core::ptr::null_mut();
+        set_window(child, core::ptr::null_mut());
+        objc_release(child);
+    }
+    subviews.free();
+    crate::objc::reference_count::dispose(view);
+}
+
+extern "C" fn dealloc(this: Id, _: Sel) {
+    dispose(this);
+}
+
 extern "C" fn add_subview(this: Id, _: Sel, view: Id) {
-    if view.is_null() || view == this {
+    if view.is_null() || !super::is(view, &NSVIEW) || holds(view, this) {
         return;
     }
     objc_retain(view);
@@ -370,6 +406,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
     let view = methods![
         "initWithFrame:" => init_with_frame,
         "init" => init,
+        "dealloc" => dealloc,
         "frame" => frame,
         "bounds" => bounds,
         "setFrame:" => set_frame,

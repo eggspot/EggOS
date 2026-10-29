@@ -34,14 +34,6 @@ impl Default for Pool {
     }
 }
 
-fn clean(byte: u8) -> u8 {
-    if byte < 0x20 || byte == 0x7f {
-        b' '
-    } else {
-        byte
-    }
-}
-
 impl Pool {
     pub const fn new() -> Self {
         Self {
@@ -62,14 +54,21 @@ impl Pool {
         self.menus
     }
 
-    fn push_cleaned(&mut self, text: &[u8]) {
-        for &byte in text {
-            self.bytes[self.length] = clean(byte);
-            self.length += 1;
+    fn push_cleaned(&mut self, text: &str) {
+        for character in text.chars() {
+            let shown = match character.is_control() {
+                true => ' ',
+                false => character,
+            };
+            let mut encoded = [0u8; 4];
+            for &byte in shown.encode_utf8(&mut encoded).as_bytes() {
+                self.bytes[self.length] = byte;
+                self.length += 1;
+            }
         }
     }
 
-    fn append(&mut self, kind: u8, label: &[u8], key_label: Option<&[u8]>) -> bool {
+    fn append(&mut self, kind: u8, label: &str, key_label: Option<&str>) -> bool {
         let needed = 2 + label.len() + key_label.map_or(0, |key_label| key_label.len() + 1);
         if self.length + needed > POOL_CAPACITY {
             return false;
@@ -89,7 +88,7 @@ impl Pool {
 
     /// Starts a menu titled `title`; false when no more fit.
     pub fn menu(&mut self, title: &str) -> bool {
-        if self.menus == MAX_MENUS || !self.append(b'M', title.as_bytes(), None) {
+        if self.menus == MAX_MENUS || !self.append(b'M', title, None) {
             return false;
         }
         self.menus += 1;
@@ -97,7 +96,7 @@ impl Pool {
         true
     }
 
-    fn entry(&mut self, kind: u8, label: &[u8], key_label: Option<&[u8]>) -> bool {
+    fn entry(&mut self, kind: u8, label: &str, key_label: Option<&str>) -> bool {
         if self.menus == 0 || self.entries == MAX_ENTRIES || !self.append(kind, label, key_label) {
             return false;
         }
@@ -108,12 +107,12 @@ impl Pool {
     /// Adds an item to the last menu; false when it does not fit.
     pub fn item(&mut self, label: &str, key_label: &str, enabled: bool) -> bool {
         let kind = if enabled { b'I' } else { b'D' };
-        self.entry(kind, label.as_bytes(), Some(key_label.as_bytes()))
+        self.entry(kind, label, Some(key_label))
     }
 
     /// Adds a separator to the last menu; false when it does not fit.
     pub fn separator(&mut self) -> bool {
-        self.entry(b'-', b"", None)
+        self.entry(b'-', "", None)
     }
 }
 
@@ -210,6 +209,24 @@ mod tests {
             b"Mmac-paint\nIAbout mac-paint\t\n-\nIQuit mac-paint\tCmd+Q\nMFile\nDClose with tabs\tCmd+W\n"
         );
         assert_eq!(pool.menus(), 2);
+    }
+
+    #[test]
+    fn every_control_character_becomes_a_space_as_the_server_wants() {
+        let mut pool = Pool::new();
+        assert!(pool.menu("A\u{85}B"));
+        assert!(pool.item("C\u{9f}\u{7f}D", "E\u{80}", true));
+        assert!(pool.item("caf\u{e9} \u{a0}", "", true));
+        assert_eq!(
+            pool.as_bytes(),
+            "MA B\nIC  D\tE \nIcaf\u{e9} \u{a0}\t\n".as_bytes()
+        );
+        assert!(
+            core::str::from_utf8(pool.as_bytes())
+                .unwrap()
+                .split(['\n', '\t'])
+                .all(|label| !label.chars().any(char::is_control))
+        );
     }
 
     #[test]

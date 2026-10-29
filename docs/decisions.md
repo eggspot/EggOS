@@ -9307,6 +9307,20 @@ the license, by an explicit instruction recorded here.
   the first titled with the app's name; a click opens it in the popup chrome, Up, Down, Left,
   Right, Enter and Esc work, and the titles dim while a dialog of the window is focused. The
   Windows and Linux profiles show no menu in 0.3.0; key equivalents still work there.
+- **The main menu for commands and agents (D22, notes 4 and 6; review round 1).** A person's
+  pointer and keys were the only way to choose an item, so an agent could not reach "About" or
+  "Clear". Two new requests, added as D141 added `CAPTURE_WINDOW` and `SEND_INPUT`: `GET_MENU`
+  (`0xc1007716`, 256 bytes, root only) reads any window's pool as `SET_MENU` last set it, and
+  `CHOOSE_MENU` (`0x400c7717`, 12 bytes: window, menu, entry; root only) chooses an enabled
+  item of any window's menu exactly as a person's choice does (the open menu closes, the
+  window gets `MenuChosen`), on a covered, minimised or unfocused window, in every profile,
+  under D141's "a person wins" (`EBUSY`) and queue room (`EAGAIN`) rules; `EINVAL` for no such
+  menu or item, a separator or a disabled item. `wm menu <id>` lists the menus and entries with
+  their numbers, key labels and `[disabled]`; `wm menu --choose <id> <menu> <entry>` takes the
+  numbers or a title and a label (a word of digits is always a number). The MCP tools are
+  `wm_menu_list` (the `view` grant, read-only: a menu shows what an app offers, as its window
+  does) and `wm_menu_choose` (the `run` grant, audited with its window, menu and entry, as
+  `wm_click`), extending D143's list.
 - **Events.** One connection, blocking reads; each record becomes an NSEvent sent through
   `-[NSApplication sendEvent:]`: a key press first goes to the main menu's key equivalents
   (exact modifiers; an upper-case key asks for Shift), and Cmd+Q (Super, which the server lets
@@ -9339,13 +9353,40 @@ the license, by an explicit instruction recorded here.
   macos-programs`, `-framework AppKit -framework Foundation`, arm64 and x86_64) and assembled as
   `mac-paint.app`; its host model is `tests/macos-gui` (`eggos-macos-gui-tests`), drawn with
   the same `eggos-macos-gui` functions, so every frame is compared exactly.
+- **Review round 1 fixes.** Removing a view now forgets a first responder, tracked view or
+  initial first responder anywhere in the removed tree (the window becomes the first
+  responder), and `setContentView:` forgets the initial one too: before, a field inside a
+  removed panel stayed first responder and its next key walked freed memory. NSView, NSButton
+  and NSTextField have `dealloc` (subviews let go of, their strings released). `addSubview:`
+  and `setContentView:` refuse what is not a view, and `addSubview:` an ancestor (a cycle).
+  `setPlaceholderString:` keeps one copy the field owns instead of a new permanent one per call.
+  A window shown again after `orderOut:` or `close` is listed once. The modal alert's loop
+  follows the focus (the key window too), resizes the other windows, carries out a close asked
+  of them after the answer, and drains an autorelease pool per pass. Lines and ovals are cut
+  to the canvas first, so far-away coordinates cost nothing and cannot overflow. A C1 control
+  character in a menu label is a space, as the ASCII ones are (the server refuses every
+  control character). `performClose:` does nothing for a window without the closable mask;
+  the last window closed asks `applicationShouldTerminateAfterLastWindowClosed:` when the
+  delegate has it (an app without it still ends: it would have no menu to quit from); a
+  disabled field takes no typing; `setDelegate:` on NSApplication releases the old delegate;
+  menu edits are sent once per event-loop pass; `NSApplicationMain` with `NSMainNibFile` or
+  `NSMainStoryboardFile` in Info.plist says it cannot load the interface and exits 1 instead
+  of waiting with nothing on screen.
 - **Check.** The macOS GUI boot test (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64): `app
   install /media/host/mac-paint.app`, open it from the launcher (Cmd+Space, its name, Enter),
   then compare each frame with the host's render: the window with its field focused and the
   menu titles in the top bar; `Hello` typed and Enter renaming the window; a click painting a
   square; `c` clearing it (keyDown); another square and the `Clear` button (target/action); the
   `Info` button's alert and Esc; the `File` menu opened in the top bar and closed; Cmd+Q ending
-  the app with status 0. Skipped, as the console test is, without the macOS programs.
+  the app with status 0; then the terminal runs mac-paint again as the last command of a
+  pipeline whose first command waits for a console line before `wm menu --choose <id> File
+  Clear` (the shell has no `&`), a click paints a square, the line (1.5 s after the click, so
+  a person no longer wins) clears it through the menu, and after Cmd+Q the command's saved
+  output says `chose File > Clear in window <id>` with status 0. Host tests cover `GET_MENU`
+  and `CHOOSE_MENU` in the desktop model (encoding, any window, disabled items and separators,
+  busy, a full queue, the open menu closing), `wm menu` against the fake, and the two tools'
+  grants, command lines, arguments and audit. Skipped, as the console test is, without the
+  macOS programs.
 - **Not yet.** Nib and storyboard files, Swift apps, views nested below the content view's
   subviews are drawn but not tested, flipped views (`isFlipped` is NO), layers and Core
   Animation, Auto Layout (constraints are ignored; frames are what the app sets), resizing a
@@ -9355,7 +9396,18 @@ the license, by an explicit instruction recorded here.
   more than one line in a label or `drawInRect:`, selection and the clipboard in text fields,
   submenus below the top level, a menu inside the window in the Windows and Linux profiles,
   alpha blending, anti-aliasing, fonts other than Egg Sans, text beyond the font's glyphs,
-  `NSApplicationMain` loading a main nib, windowless apps, and NSNotification objects.
+  `NSApplicationMain` loading a main nib, windowless apps, and NSNotification objects. From
+  review round 1: the pool's 248 bytes and 6 menus are too small for a typical app's App,
+  File, Edit, View, Window and Help menus (what does not fit is left out; the plan is a
+  request that carries a pointer and a length, as `CAPTURE_WINDOW` does); `dealloc` for
+  NSWindow, NSMenu, NSMenuItem and NSAlert (they leak, as before); opening the menu from the
+  keyboard (an F10-like key, note 7); the MCP check choosing a menu item (no macOS app runs
+  there; the CLI twin is checked in the macOS GUI test); a menu choice while a dialog of the
+  window is open reaches the window, as D141's input does; selectors apps commonly use that
+  are not there yet: NSWindow `setFrame:display:` and `backingScaleFactor`, NSEvent `deltaX`
+  and `scrollingDeltaX`, NSMenu `insertItem:atIndex:` and `removeItem:`, NSMenuItem
+  `setHidden:`, NSApplication `nextEventMatchingMask:untilDate:inMode:dequeue:`, NSView
+  `addTrackingArea:`.
 
 ## D148 Real icons and archives: installing from a `.zip`, our own inflate and PNG decoder, and each installed app's own icon (v0.3.0 item 45; extends D133, D134, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/app-icons-v0.3.md`)
 - **What.** Item 45: "PE icon resources, `.icns`, PNG with our own inflate, installing from

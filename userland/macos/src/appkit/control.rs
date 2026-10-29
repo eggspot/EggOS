@@ -8,8 +8,8 @@ use super::{
     NSBUTTON, NSBUTTON_META, NSCONTROL, NSCONTROL_META, NSTEXTFIELD, NSTEXTFIELD_META, NSVIEW,
     application, drawing, is, store, store_copy, string, view, window, with_text,
 };
-use crate::foundation::permanent;
 use crate::objc::abi::{Id, Sel};
+use crate::objc::buffer::Buffer;
 use crate::objc::{Runtime, methods};
 use eggos_macos_gui::geometry::{Frame, Point};
 use eggos_macos_gui::keys::modifier;
@@ -54,8 +54,7 @@ struct TextFieldFields {
     caret: usize,
     scroll: i32,
     placeholder: Id,
-    placeholder_address: usize,
-    placeholder_length: usize,
+    placeholder_copy: Buffer<u8>,
     text_colour: Id,
     alignment: usize,
     read_only: bool,
@@ -278,16 +277,10 @@ pub fn is_editable(object: Id) -> bool {
 }
 
 fn placeholder_text(fields: &TextFieldFields) -> &'static str {
-    if fields.placeholder_address == 0 {
-        return "";
-    }
-    // SAFETY: a permanent copy `set_placeholder` made, of this length.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            fields.placeholder_address as *const u8,
-            fields.placeholder_length,
-        )
-    };
+    let copy = fields.placeholder_copy.as_slice();
+    // SAFETY: the copy is the field's own until its placeholder changes or the field is freed;
+    // every `Field` made from it lives only within the method that made it, before either.
+    let bytes = unsafe { core::slice::from_raw_parts(copy.as_ptr(), copy.len()) };
     core::str::from_utf8(bytes).unwrap_or("")
 }
 
@@ -370,10 +363,15 @@ extern "C" fn placeholder_string(this: Id, _: Sel) -> Id {
 
 extern "C" fn set_placeholder_string(this: Id, _: Sel, placeholder: Id) {
     store_copy(&mut text_field(this).placeholder, placeholder);
-    let copy = with_text(placeholder, |text| permanent(text.as_bytes()));
-    let fields = text_field(this);
-    fields.placeholder_address = copy.as_ptr() as usize;
-    fields.placeholder_length = copy.len();
+    let copy = &mut text_field(this).placeholder_copy;
+    copy.free();
+    with_text(placeholder, |text| {
+        if copy.reserve(text.len()) {
+            for &byte in text.as_bytes() {
+                copy.push(byte);
+            }
+        }
+    });
     changed(this);
 }
 
@@ -414,11 +412,30 @@ extern "C" fn set_alignment(this: Id, _: Sel, alignment: usize) {
 }
 
 extern "C" fn accepts_first_responder(this: Id, _: Sel) -> u8 {
-    u8::from(is_editable(this) && !control(this).disabled)
+    u8::from(takes_typing(this))
+}
+
+extern "C" fn button_dealloc(this: Id, _: Sel) {
+    let fields = button(this);
+    store(&mut fields.title, core::ptr::null_mut());
+    store(&mut fields.key_equivalent, core::ptr::null_mut());
+    view::dispose(this);
+}
+
+extern "C" fn field_dealloc(this: Id, _: Sel) {
+    let fields = text_field(this);
+    store(&mut fields.placeholder, core::ptr::null_mut());
+    store(&mut fields.text_colour, core::ptr::null_mut());
+    fields.placeholder_copy.free();
+    view::dispose(this);
+}
+
+fn takes_typing(object: Id) -> bool {
+    is_editable(object) && !control(object).disabled
 }
 
 extern "C" fn field_mouse_down(this: Id, _: Sel, event: Id) {
-    if !is_editable(this) {
+    if !takes_typing(this) {
         return;
     }
     let rect = control_rect(this);
@@ -438,7 +455,7 @@ extern "C" fn field_mouse_down(this: Id, _: Sel, event: Id) {
 }
 
 extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
-    if !is_editable(this) {
+    if !takes_typing(this) {
         return;
     }
     let fields_of_event = event::fields(event);
@@ -523,6 +540,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let button_instance = methods![
         "initWithFrame:" => button_init_with_frame,
+        "dealloc" => button_dealloc,
         "title" => title,
         "setTitle:" => set_title,
         "stringValue" => title,
@@ -542,6 +560,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "buttonWithTitle:target:action:" => button_with_title,
     ];
     let field_instance = methods![
+        "dealloc" => field_dealloc,
         "stringValue" => string_value,
         "setStringValue:" => set_string_value,
         "placeholderString" => placeholder_string,

@@ -5,12 +5,12 @@
 
 use super::event::{self, kind};
 use super::{NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, menu, responds, server, view, window};
-use crate::foundation::{NSARRAY, class_pointer};
+use crate::foundation::{NSARRAY, class_pointer, info_string};
 use crate::libsystem::{Exclusive, write_error};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
-use crate::objc::reference_count::objc_retain;
-use crate::objc::{Runtime, autorelease, methods, sel, send, send1, send2};
+use crate::objc::reference_count::{objc_release, objc_retain};
+use crate::objc::{Runtime, autorelease, methods, sel, send, send_bool, send1, send2};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use eggos_macos_gui::geometry::point_of_pixel;
 use eggos_macos_gui::keys::modifier;
@@ -19,6 +19,7 @@ use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE};
 const NS_TERMINATE_CANCEL: usize = 0;
 const RECORDS_PER_READ: usize = 16;
 const NO_WINDOW_SERVER: i32 = 1;
+const NIB_APP: i32 = 1;
 
 static APPLICATION: AtomicUsize = AtomicUsize::new(0);
 static DELEGATE: AtomicUsize = AtomicUsize::new(0);
@@ -68,12 +69,21 @@ pub fn report_no_window_server() {
     }
 }
 
-/// Notes that `window` was shown for the first time: it joins the app's windows (kept for as
-/// long as the app runs) and gets the main menu.
+/// Notes that `window` got a server window: the first time it joins the app's windows (kept for
+/// as long as the app runs); each time its server window gets the main menu.
 pub fn window_shown(window: Id) {
-    objc_retain(window);
-    WINDOWS.with(|windows| windows.push(window));
+    let listed = WINDOWS.with(|windows| windows.as_slice().contains(&window));
+    if !listed {
+        objc_retain(window);
+        WINDOWS.with(|windows| windows.push(window));
+    }
     menu::send_to(window);
+}
+
+/// The server took the keyboard from `window`.
+pub fn focus_out(window: Id) {
+    LEFT_HELD.store(false, Ordering::Relaxed);
+    window::set_key(window, false);
 }
 
 /// Gives `window` the keyboard.
@@ -97,15 +107,22 @@ fn any_shown() -> Option<Id> {
 }
 
 /// Notes that `window` was closed (`closing`) or ordered out; when the last one closes the app
-/// ends, as `applicationShouldTerminateAfterLastWindowClosed:` answering YES makes it.
+/// ends unless its delegate's `applicationShouldTerminateAfterLastWindowClosed:` answers NO (an
+/// app without it ends too: with no window it would have no menu to quit from).
 pub fn window_closed(window: Id, closing: bool) {
     if key_window() == window {
         let next = any_shown().unwrap_or(core::ptr::null_mut());
         KEY_WINDOW.store(next as usize, Ordering::Release);
     }
-    if closing && any_shown().is_none() {
-        terminate();
+    if !closing || any_shown().is_some() {
+        return;
     }
+    let delegate = delegate();
+    let should = sel!("applicationShouldTerminateAfterLastWindowClosed:");
+    if responds(delegate, should) && !send_bool(delegate, should, application() as usize) {
+        return;
+    }
+    terminate();
 }
 
 /// Draws every window in which something changed.
@@ -274,14 +291,8 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             character,
             time,
         )),
-        Input::FocusIn => {
-            KEY_WINDOW.store(window as usize, Ordering::Release);
-            window::set_key(window, true);
-        }
-        Input::FocusOut => {
-            LEFT_HELD.store(false, Ordering::Relaxed);
-            window::set_key(window, false);
-        }
+        Input::FocusIn => make_key(window),
+        Input::FocusOut => focus_out(window),
         Input::CloseRequest => {
             send1(window, sel!("performClose:"), 0);
         }
@@ -311,6 +322,7 @@ fn run() {
     RUNNING.store(true, Ordering::Release);
     while RUNNING.load(Ordering::Acquire) {
         let pool = autorelease::push();
+        menu::send_if_changed();
         display_all();
         read_records(&mut |record| dispatch(record));
         autorelease::pop(pool);
@@ -350,7 +362,10 @@ extern "C" fn set_delegate(_: Id, _: Sel, delegate: Id) {
     if !delegate.is_null() {
         objc_retain(delegate);
     }
-    DELEGATE.store(delegate as usize, Ordering::Release);
+    let old = DELEGATE.swap(delegate as usize, Ordering::AcqRel) as Id;
+    if !old.is_null() {
+        objc_release(old);
+    }
 }
 
 extern "C" fn yes_for(_: Id, _: Sel, _: isize) -> u8 {
@@ -434,6 +449,17 @@ extern "C" fn nil(_: Id, _: Sel) -> Id {
 extern "C" fn ignore_object(_: Id, _: Sel, _: Id) {}
 
 extern "C" fn application_main(_: i32, _: usize) -> i32 {
+    if [&b"NSMainNibFile"[..], &b"NSMainStoryboardFile"[..]]
+        .into_iter()
+        .any(|key| info_string(key).is_some_and(|name| !name.is_empty()))
+    {
+        write_error(
+            b"eggos-macos: this app builds its interface from a nib or storyboard \
+              (NSMainNibFile or NSMainStoryboardFile in its Info.plist), which EggOS cannot \
+              load yet\n",
+        );
+        crate::libsystem::exit(NIB_APP);
+    }
     let class = class_pointer(&NSAPPLICATION).cast();
     let application = send(class, sel!("sharedApplication"));
     send(application, sel!("run"));

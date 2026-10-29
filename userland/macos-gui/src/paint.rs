@@ -14,6 +14,7 @@ use eggos_toolkit::widget::{self, Align, CONTROL_HEIGHT, Field, Kind, Look};
 /// The height of one line of text at size 1.
 pub const LINE_HEIGHT: i32 = 16;
 const SQUARE_ROOT_STEPS: usize = 24;
+const LINE_CLIP_MARGIN: i64 = 2;
 
 /// The glyph size a font of `points` draws at: 1 below 28, 2 from 28.
 pub fn font_scale(points: f64) -> i32 {
@@ -43,20 +44,24 @@ pub fn outline(canvas: &mut Canvas<'_>, height: i32, frame: Frame, colour: Colou
     canvas.fill(Rect::new(rect.right() - 1, rect.y, 1, rect.height), ink);
 }
 
-/// Draws the 1 px line from `from` to `to`, both ends included.
+/// Draws the 1 px line from `from` to `to`, both ends included. A line reaching outside the
+/// canvas's clip is cut to the clip (with a margin) first, so far-away ends cost nothing.
 pub fn line(canvas: &mut Canvas<'_>, height: i32, from: Point, to: Point, colour: Colour) {
     if !colour.visible {
         return;
     }
-    let (mut x, mut y) = pixel_of_point(from, height);
-    let (end_x, end_y) = pixel_of_point(to, height);
+    let from = pixel_of_point(from, height);
+    let to = pixel_of_point(to, height);
+    let Some(((mut x, mut y), (end_x, end_y))) = clipped_line(from, to, canvas.clip()) else {
+        return;
+    };
     let dx = (end_x - x).abs();
     let dy = -(end_y - y).abs();
     let step_x = if x < end_x { 1 } else { -1 };
     let step_y = if y < end_y { 1 } else { -1 };
     let mut error = dx + dy;
     loop {
-        canvas.pixel(x, y, colour.pixel);
+        canvas.pixel(x as i32, y as i32, colour.pixel);
         if x == end_x && y == end_y {
             return;
         }
@@ -70,6 +75,55 @@ pub fn line(canvas: &mut Canvas<'_>, height: i32, from: Point, to: Point, colour
             y += step_y;
         }
     }
+}
+
+/// The part of the line from `from` to `to` inside `clip` grown by [`LINE_CLIP_MARGIN`]: the
+/// line itself when both ends are inside, else its ends cut to that box (Liang and Barsky's
+/// clipping); `None` when it misses the box.
+fn clipped_line(from: (i32, i32), to: (i32, i32), clip: Rect) -> Option<((i64, i64), (i64, i64))> {
+    let left = i64::from(clip.x) - LINE_CLIP_MARGIN;
+    let top = i64::from(clip.y) - LINE_CLIP_MARGIN;
+    let right = i64::from(clip.right()) + LINE_CLIP_MARGIN;
+    let bottom = i64::from(clip.bottom()) + LINE_CLIP_MARGIN;
+    let widen = |(x, y): (i32, i32)| (i64::from(x), i64::from(y));
+    let (from, to) = (widen(from), widen(to));
+    let inside = |(x, y): (i64, i64)| (left..=right).contains(&x) && (top..=bottom).contains(&y);
+    if inside(from) && inside(to) {
+        return Some((from, to));
+    }
+    let (start_x, start_y) = (from.0 as f64, from.1 as f64);
+    let (delta_x, delta_y) = ((to.0 - from.0) as f64, (to.1 - from.1) as f64);
+    let mut enter = 0.0;
+    let mut leave = 1.0;
+    for (direction, room) in [
+        (-delta_x, start_x - left as f64),
+        (delta_x, right as f64 - start_x),
+        (-delta_y, start_y - top as f64),
+        (delta_y, bottom as f64 - start_y),
+    ] {
+        if direction == 0.0 {
+            if room < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let at = room / direction;
+        if direction < 0.0 {
+            enter = f64::max(enter, at);
+        } else {
+            leave = f64::min(leave, at);
+        }
+        if enter > leave {
+            return None;
+        }
+    }
+    let point = |along: f64| {
+        (
+            i64::from(round(start_x + along * delta_x)).clamp(left, right),
+            i64::from(round(start_y + along * delta_y)).clamp(top, bottom),
+        )
+    };
+    Some((point(enter), point(leave)))
 }
 
 fn square_root(value: f64) -> f64 {
@@ -105,7 +159,8 @@ pub fn oval(canvas: &mut Canvas<'_>, height: i32, frame: Frame, colour: Colour, 
     }
     let outer = pixel_rect(frame, height);
     let inner = outer.inset(1);
-    for row in outer.y..outer.bottom() {
+    let clip = canvas.clip();
+    for row in outer.y.max(clip.y)..outer.bottom().min(clip.bottom()) {
         let Some((left, right)) = oval_span(outer, row) else {
             continue;
         };
@@ -282,6 +337,78 @@ mod tests {
         );
         assert_eq!(at(&filled, 50, 37), INK.pixel);
         assert_eq!(at(&filled, 40, 28), 0);
+    }
+
+    #[test]
+    fn far_away_lines_and_ovals_are_cut_to_the_canvas_and_draw_what_shows() {
+        let mut pixels = canvas_pixels();
+        let mut canvas = Canvas::new(&mut pixels, WIDTH, HEIGHT as u32, 1).unwrap();
+        line(
+            &mut canvas,
+            HEIGHT,
+            Point::new(-1.0e12, 10.0),
+            Point::new(1.0e12, 10.0),
+            INK,
+        );
+        line(
+            &mut canvas,
+            HEIGHT,
+            Point::new(1.0e9, 1.0e9),
+            Point::new(2.0e9, 1.0e9),
+            INK,
+        );
+        assert!((0..WIDTH as i32).all(|x| at(&pixels, x, 37) == INK.pixel));
+        assert_eq!(
+            pixels.iter().filter(|&&pixel| pixel == INK.pixel).count(),
+            64
+        );
+        let mut diagonal = canvas_pixels();
+        let mut canvas = Canvas::new(&mut diagonal, WIDTH, HEIGHT as u32, 1).unwrap();
+        line(
+            &mut canvas,
+            HEIGHT,
+            Point::new(-1.0e12, -1.0e12),
+            Point::new(1.0e12, 1.0e12),
+            INK,
+        );
+        assert!(
+            (0..HEIGHT).all(|row| (0..WIDTH as i32).any(|x| at(&diagonal, x, row) == INK.pixel))
+        );
+        let mut covered = canvas_pixels();
+        let mut canvas = Canvas::new(&mut covered, WIDTH, HEIGHT as u32, 1).unwrap();
+        oval(
+            &mut canvas,
+            HEIGHT,
+            Frame::new(-1.0e12, -1.0e12, 2.0e12, 2.0e12),
+            INK,
+            true,
+        );
+        assert!(covered.iter().all(|&pixel| pixel == INK.pixel));
+    }
+
+    #[test]
+    fn a_line_inside_the_canvas_is_not_cut_and_one_missing_it_draws_nothing() {
+        let clip = Rect::new(0, 0, 64, 48);
+        assert_eq!(
+            clipped_line((3, 4), (60, 40), clip),
+            Some(((3, 4), (60, 40)))
+        );
+        assert_eq!(
+            clipped_line((-5, 10), (70, 10), clip),
+            Some(((-2, 10), (66, 10)))
+        );
+        assert_eq!(clipped_line((-100, -100), (-50, -3), clip), None);
+        assert_eq!(clipped_line((100, 0), (100, 47), clip), None);
+        let mut pixels = canvas_pixels();
+        let mut canvas = Canvas::new(&mut pixels, WIDTH, HEIGHT as u32, 1).unwrap();
+        line(
+            &mut canvas,
+            HEIGHT,
+            Point::new(-1.0e9, -10.0),
+            Point::new(1.0e9, -10.0),
+            INK,
+        );
+        assert!(pixels.iter().all(|&pixel| pixel == 0));
     }
 
     #[test]

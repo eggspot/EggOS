@@ -111,7 +111,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
   covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
   alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
-  top bar; scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
+  top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP tools list and choose
+  its items); scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
   `__weak` and exceptions, most of Foundation, signal handlers, other frameworks and riscv64
   do not run yet.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
