@@ -11151,3 +11151,137 @@ the license, by an explicit instruction recorded here.
   the file at `execve`; a vDSO; `/proc/self/maps` naming the mapped files (part 16:
   `FilePages` will need a path); Android's `linker64`, untested; the toolkits' libraries
   (part 20); `MAP_POPULATE` of a file mapping (pages are read on first touch).
+
+## D168 `/proc` and `/dev` for real programs, symbolic links in walks, `readlink`, `access`, `sethostname`, and the official `rustc --version` inside EggOS (the CI track's stage 2, milestone 1, part 2; extends D55, D59, D102, D125, D127, D166, D167) — Decided by the build loop (which `rustc` CI runs and how it finds its C library decided by research)
+- **Why.** Real Linux programs read about themselves through `/proc` and open devices by name:
+  glibc's loader expands `$ORIGIN` by reading `/proc/self/exe` and asks `access` for
+  `/etc/ld.so.preload`; glibc's `pthread_getattr_np`, which Rust's std calls for the main
+  thread's stack guard, reads `/proc/self/maps` and `RLIMIT_STACK`; `std::env::current_exe`
+  reads `/proc/self/exe`; shells and build tools write to `/dev/null` and read `/dev/urandom`.
+  The CI track's first milestone is the official `rustc --version` running inside EggOS (D166).
+- **Symbolic links in walks** (`crate::vfs`). `NodeKind::SymbolicLink` is new, with
+  `FileSystem::link_target(node, caller)`, which makes a link's target for the walking process
+  (`/proc/self` names the caller's directory). `vfs::resolve_as(root, start, path, caller,
+  follow_last)` follows every link it meets but the last unless asked, walking a relative
+  target from the link's directory, at most `MAX_LINKS` (40) per walk and `MAX_NESTED_LINKS`
+  (8) deep, else `Error::TooManyLinks` (`ELOOP`, new `Errno::ELOOP`); `resolve` is the
+  kernel's walk (`KERNEL_CALLER`, following the last). The Linux calls walk as their process:
+  `openat` (`O_NOFOLLOW` on a link: `ELOOP`, or the link itself with `O_PATH`), `newfstatat`
+  and `statx` (`AT_SYMLINK_NOFOLLOW` gives the link's own status, `S_IFLNK`), `execve` and
+  the loader's path, and the directory part of a creation's error; `getdents64` reports
+  `DT_LNK`. tmpfs and EggFS refuse to make a link (`EINVAL`) until EggFS version 2 (part 18).
+  `readlinkat` (and `readlink` on x86_64, new calls: x86_64 89 and 267, generic 78) copies a
+  link's target: `EINVAL` for a size that is not positive or anything but a link, `ENOENT` for
+  a link that names nothing now, an empty path naming `dirfd`'s file.
+- **`/proc` per process** (`linux::proc`). `self` (a link), `version` and
+  `sys/kernel/{hostname,osrelease,ostype}` join the root; after its files, one directory per
+  process in the table (Linux's names: digits, no leading zero). Each holds `cmdline` (the
+  argument strings read from its stack), `exe` (a link to its program's path), `fd/` (a link
+  per open descriptor: a node's path, `/dev/console`, `/dev/window`, `/dev/agent`,
+  `pipe:[inode]`, `socket:[inode]`, `/memfd: (deleted)`), `maps` (Linux's layout: range,
+  access, `s`/`p`, offset, device, inode, then from column 73 the file's path, `[heap]` or
+  `[stack]`), `stat` (52 fields: ids, state, terminal and its foreground group, threads, size,
+  `RLIMIT_RSS`, where the stack started, the exit signal, the break's start, the arguments'
+  and environment's bounds; what EggOS does not count yet is 0) and `status` (`Name`, `Umask`,
+  `State`, `Tgid`, `Ngid`, `Pid`, `PPid`, `TracerPid`, `Uid`, `Gid`, `FDSize`, `Groups`,
+  `VmSize`, `Threads`). A node's number holds the process id, the part and the descriptor
+  (bit 62 marks them), so nothing is stored for them. A zombie keeps its directory with an
+  empty `cmdline` and `maps`. To read them: `execve` records the program's layout in its
+  memory (`process::ImageLayout`: the program's file, the argument and environment bounds,
+  the stack's reserve and starting pointer; `Process::{set_image_layout, image_layout,
+  program_break_range}`), `Process::mappings` cuts the regions where their file, lent frames,
+  heap or stack change (`Mapping`, `MappingLabel`), `regions::FilePages` gains `path_into` and
+  `identity` (device and inode, given by `vfs::Node`), and the process table's `Running` keeps
+  a weak handle on the first thread's descriptor table (`descriptors::WeakDescriptors`),
+  `Table::describe` gives a process's facts with its exit signal (`Listed::exit_signal`).
+- **`/dev`** (`vfs::devfs`). Linux's numbers and modes: `null` (1,3), `zero` (1,5), `full`
+  (1,7), `random` (1,8), `urandom` (1,9) at 0666, `tty` (5,0) 0666, `console` (5,1) 0600, and
+  the links `fd`, `stdin`, `stdout`, `stderr` into `/proc/self/fd`, beside `window` and
+  `agent`. The memory devices (`linux::memory_devices`, new `FileKind::MemoryDevice(device,
+  node)`): `null` reads nothing and takes every write unread; `zero` reads zeros and takes
+  writes, and a mapping of it is anonymous memory, shared or private; `full` reads zeros and
+  refuses writes with `ENOSPC`; `random` and `urandom` read the generator (`random` waits until
+  it is seeded, `EAGAIN` with `O_NONBLOCK`; `urandom` never waits), and what is written to them
+  is hashed into its input uncredited (`random::add_user_input`). All seek to 0, `pread` and
+  `pwrite` ignore the offset, `poll` finds them ready, `fstat` reports their node, and other
+  mappings are `ENODEV`. `/dev/console` opens the console; `/dev/tty` opens it when it is the
+  caller's controlling terminal, else `ENXIO`.
+- **`access`, `faccessat`, `faccessat2`** (new: x86_64 21, 269, 439; generic 48, 439):
+  `EINVAL` for an unknown mode bit or flag (`AT_EACCESS`, `AT_SYMLINK_NOFOLLOW`,
+  `AT_EMPTY_PATH`), the walk's errors, `EACCES` by the owner's, group's (supplementary groups
+  included) or others' bits for the real ids, or the file system ids with `AT_EACCESS` (root may
+  read and write anything and execute what has an execute bit, or a directory), then `EROFS`
+  for writing a regular file, directory or link on a file system that cannot change.
+- **`sethostname`, `setdomainname`** (new: x86_64 170, 171; generic 161, 162): `EPERM` unless
+  privileged, `EINVAL` for a length that is negative or above 64, `EFAULT`; the names are the
+  machine's (one UTS namespace) and `uname` and `/proc/sys/kernel/hostname` report them. The
+  changed names live in a zeroed static, so it stays in `.bss`.
+- **Front-ends.** ABI only: no capability changes. The CLI's utilities and every Linux program
+  see the new files (`cat /proc/self/status`, `ls -l /proc/self/fd`, `echo x > /dev/null`).
+- **The CI job** (`cargo xtask rustc-version --arch <arch>`, ci.yml `rustc-version`, x86_64
+  and aarch64, part of `check`). xtask downloads `rustc-1.99.1-<arch>-unknown-linux-gnu.tar.xz`
+  from static.rust-lang.org's dated folder into `target/rustc-version/downloads` (cached by
+  the job), checks its pinned SHA-256, unpacks it with `tar -xJf`, moves its `rustc` folder
+  into a work folder, copies every shared library the toolchain needs and does not hold
+  (`DT_NEEDED` followed through what it copies) from the host's C library folders into the
+  work folder's `glibc`, packs it into a work disk (D166), puts the loader `rustc` names at its
+  `PT_INTERP` path in the release image, and boots with 2 GiB: the shell runs `export
+  LD_LIBRARY_PATH=/work/glibc` and `/work/rustc/bin/rustc --version` and wants
+  `rustc 1.99.1 (` and status 0 (`xtask/src/rustc_version.rs`,
+  `xtask/src/qemu/rustc_version.rs`; the settings boot helper gained `with_timeout`, 900 s
+  here). The job installs `xz-utils` and the aarch64 cross C library, and for aarch64 the arm64
+  `zlib1g` and `libgcc-s1` through Ubuntu's ports archive (multiarch); the downloads are test
+  data, never committed, shipped or uploaded.
+- **Checks.** Host tests: links followed from their directory, the last one only when asked,
+  `ELOOP` for a loop, a target that names nothing, a caller-only link; `/proc`'s root listing,
+  `self`, `version` and `sys/kernel`; numbers read as Linux reads them and node numbers round
+  trip; a `maps` line's padding, a mapping without a file, `PROT_NONE`; the memory devices'
+  numbers and `/dev`'s listing, modes and links; `may_access`'s classes and root; a changed
+  host name in `struct utsname`; through the system-call layer: `readlinkat`'s errors,
+  `faccessat2`'s answers and errors, `sethostname` and `setdomainname` seen by `uname` with
+  `EINVAL`, `EFAULT` and `EPERM`, and a program started with `execve` described by `/proc`
+  (`self/status`, `cmdline`, `exe`'s target, `maps` with its file and `[stack]`, `stat`'s 52
+  fields, `fd` listing 0 to 2 with `/dev/console`, its directory listed in the root); xtask:
+  `DT_NEEDED` read from a dynamic section, the pinned downloads, SHA-256 of a file, the
+  session and the verdict. QEMU: the program-window session now lists `/dev/window` alone (the
+  directory holds more), and the `rustc-version` job.
+- **Decided by research (which `rustc` and how it finds its C library).** A research subagent
+  read the stable channel's manifest and rustc's start-up; its recommendations, followed: the
+  `rustc` component alone (84 MB `.tar.xz` for x86_64, 69 MB for aarch64, against 210 MB for
+  the full toolchain) of 1.99.1, the release `rust-toolchain.toml` pins, from the dated folder
+  with the manifest's SHA-256 pinned; the glibc build (the one `rustup` installs), whose loader
+  is the one D167 boots; the libraries on the work disk, found through `LD_LIBRARY_PATH` rather
+  than Ubuntu's built-in search folders (uncertain without `ld.so.cache`) or `ld.so
+  --library-path` (which would make `/proc/self/exe` the loader); `rustc --version` neither
+  loads the codegen backend nor reads the sysroot, and needs `/proc/self/exe` for `$ORIGIN`,
+  `access`, `sigaltstack`, `poll` on 0 to 2 and a thread for its Ctrl-C handler (`clone3`'s
+  `ENOSYS` falls back to `clone`). Unverified by the research and left to the job: the exact
+  `DT_NEEDED` lists (xtask reads them), whether `libz.so.1` is needed (copied if so), and the
+  arm64 library paths.
+- **Decided without research.** Links in `/proc` and `/dev` are followed by their text, as
+  any symbolic link (Linux follows `/proc`'s to the object itself: a pipe or a removed file
+  cannot be reopened here); `/proc/self` resolved from the walking process's id, passed into
+  walks, so the kernel's own walks have none; the first thread's descriptor table is the one
+  `fd/` lists (a thread that unshares its table later is not shown); `/proc` files owned by
+  root; counters EggOS does not keep written as 0 in `stat` and left out of `status`; writes to
+  the random devices hashed in uncredited; mappings of `/dev/zero` anonymous and of the other
+  memory devices `ENODEV`; `/dev/tty` `ENXIO` without a controlling terminal; `access` checks
+  the bits before `EROFS`, as Linux; the host and domain names global; 2 GiB of guest memory
+  and a 900 s boot for the job; `xz-utils` installed rather than the larger `.tar.gz`; no
+  riscv64 job (the plan names x86_64 and aarch64). The owner can overrule any of these.
+- **Performance and size (D24).** A walk checks each component's kind once more (one call to
+  its file system) to find links; reads, writes and the fault path are unchanged; `uname`
+  copies its 390 bytes after one leaf lock. `Process` is unchanged (`ImageLayout` is in the
+  shared `Memory`); `Running` grows by a weak pointer. The kernel grows by `/proc`'s
+  per-process files, the memory devices and the new calls; the release image's initramfs does
+  not change. Report-only CI shows any move (D122), the walk-heavy `linux_execve` and
+  `linux_openat`-style benchmarks first.
+- **Not yet.** `/proc/<pid>/task`, `environ`, `cwd`, `root`, `mountinfo`, `/proc/thread-self`
+  and per-thread directories; `stat`'s CPU times, start time, fault counts and resident pages;
+  `status`' signal and memory lines; `/proc/<pid>` owned by its process's user; reopening a pipe
+  or socket through `/proc/<pid>/fd`; `/sys` (`/sys/devices/system/cpu/online`, transparent
+  huge pages) and `/proc/sys/vm/overcommit_memory`, which jemalloc and glibc fall back from;
+  `/dev/shm` (part 17), `/dev/pts`, `/dev/rtc0` (part 42) and block devices; symbolic links on
+  disks and `symlink`, `lstat` of disks' links (part 18); a vDSO; `rustc` on riscv64; the
+  measured gaps of `rustc --version` against Linux once the job has run (recorded in the
+  roadmap as the job reports them).

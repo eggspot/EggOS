@@ -154,10 +154,13 @@ it unlocks them:
 - **`fork` after `MAP_SHARED`.** Rust's `std::process::Command`, `posix_spawn`, `fork`,
   `vfork`, `execve` and `wait4` work (the sockets boot test starts its client with `Command`),
   but a process with shared memory cannot `fork` (D104).
-- **`/proc/self`.** `/proc` has only `cmdline`, `meminfo`, `uptime`, `ps` and `net/` (`unix`,
-  `interfaces`, `route`, `arp`), so
-  `std::env::current_exe` fails: start a copy of the program by its path. Files can be written
-  in `/tmp`, `/run`, `/home` and `/var` (D125, D131).
+- **Parts of `/proc` and `/dev`.** `/proc/self` and `/proc/<pid>` have `cmdline`, `exe`,
+  `fd`, `maps`, `stat` and `status`, so `std::env::current_exe`, glibc's `$ORIGIN` and
+  `pthread_getattr_np` work, and `/dev` has `null`, `zero`, `full`, `random`, `urandom`, `tty`,
+  `console`, `fd` and the standard streams (D168); there is no `/proc/<pid>/task`, `environ`
+  or `cwd`, no `/sys`, and the only symbolic links are those in `/proc` and `/dev` (links on
+  disks come with EggFS version 2). Files can be written in `/tmp`, `/run`, `/home` and `/var`
+  (D125, D131).
 - **The wall clock** is UTC, read from the real-time clock at boot; there are no time zones (D150).
 - **Writable shared file mappings.** `MAP_SHARED` of a regular file is read-only and does not
   see later writes to the file (D167). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed

@@ -216,8 +216,8 @@ Must-have, in order:
     end of file, `EPIPE` and `SIGPIPE`, `poll`); a history of the last lines on the up and down
     arrows, on the serial and graphical terminals; `grep`, `wc`, `head` and `tail`; and `ps`,
     `free` and `uptime` from a minimal `/proc` (`meminfo`, `uptime`, `ps`). Next, as user
-    capabilities: `2>` and `2>&1`; moving the cursor within a line; `/proc/self` and
-    `/proc/<pid>`; the utilities' GUI and MCP front-ends (M14).
+    capabilities: `2>` and `2>&1`; moving the cursor within a line; (`/proc/self` and
+    `/proc/<pid>`: done, D168); the utilities' GUI and MCP front-ends (M14).
 23. **done** — users can now create and change files from `eggsh` (D125, docs/coreutils.md):
     `/tmp` and `/home` are writable file systems in memory (files and directories, at most
     half of the memory together, `ENOSPC` past it), with `cp`, `mv`, `rm` (`-r`, `-f`), `mkdir`
@@ -534,8 +534,21 @@ The release path (the release-path review's issues #141-#145, after the items ab
   part 1 **done** (D167): dynamically linked programs run with glibc's and musl's loaders,
   and files map into memory (`MAP_PRIVATE`, read-only `MAP_SHARED`, `SIGBUS` past the end,
   `MADV_DONTNEED` rereads, `msync`); CI's `dynamic-linking` job builds our dynamic hello
-  against both and boots it. Next: `/proc` and `/dev` for real programs, then `rustc
-  --version`.
+  against both and boots it. Stage 2, milestone 1, part 2 **written, unchecked** (D168):
+  `/proc/self` and `/proc/<pid>` (`exe`, `maps`, `fd`, `status`, `cmdline`, `stat`),
+  `/proc/version` and `/proc/sys/kernel/{osrelease,ostype,hostname}`, the memory devices
+  (`/dev/null`, `zero`, `full`, `random`, `urandom`), `/dev/tty`, `/dev/console`, `/dev/fd`
+  and the standard streams, symbolic links in walks with `readlink`, `access` and
+  `faccessat2`, `sethostname` and `setdomainname`; CI's `rustc-version` job downloads the
+  official toolchain's `rustc` (1.99.1, glibc, test data) and runs `rustc --version` from a
+  work disk on x86_64 and aarch64. Gaps against Linux found so far (D168): `/proc/<pid>/task`,
+  `environ`, `cwd`, `root`, `mountinfo` and `/proc/thread-self`; `/proc/<pid>/stat`'s times,
+  fault counts, resident pages and code bounds are 0; `status` lacks the signal and memory
+  lines but `VmSize`; `/proc/<pid>/fd` links to pipes and sockets cannot be opened; files are
+  owned by root; no `/sys` (jemalloc and glibc read `/sys/devices/system/cpu/online` and the
+  transparent huge page settings, and fall back); no `/proc/sys/vm/overcommit_memory`; no
+  vDSO; `clone3` and `rseq` are `ENOSYS` (glibc falls back).
+  Next: milestone 2, a hello-world crate builds and runs (part 19).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
@@ -616,8 +629,9 @@ trapped FP exceptions, with D54; AArch64's top byte cleared from `si_addr` unles
 `SA_EXPOSE_TAGBITS`, if TBI is turned on for programs; RISC-V misaligned accesses emulated
 as Linux does (QEMU's harts do them in hardware); (`SIGBUS` `BUS_ADRERR` past the end of a
 file mapping: done, D167); `TRAP_TRACE` and `TRAP_HWBKPT` with single-step and debug registers
-(`ptrace`); `/proc/self/maps` and `RLIMIT_STACK` for glibc's `pthread_getattr_np`, so Rust's
-std finds the main thread's guard page and reports an overflow by name. From PR #58's
+(`ptrace`); (`/proc/self/maps` with `[stack]` and `RLIMIT_STACK` for glibc's
+`pthread_getattr_np`, so Rust's std finds the main thread's guard page and reports an
+overflow by name: done, D168). From PR #58's
 independent review: RISC-V's `si_addr` (`sepc` or `stval`) and `si_code` for access faults
 and misaligned accesses checked against a real Linux under QEMU; `TRAP_TRACE` for a single
 step a program set with `popf`; a non-canonical `rip` (only through `rt_sigreturn`) reported
@@ -704,8 +718,9 @@ or copies itself under the signals lock before it reaches `RLIMIT_SIGPENDING`.
 Startup-call follow-ups (D55): process ids reused after `wait4` reaps them (the process table
 exists, D105);
 `set_tid_address`'s word cleared and woken and the robust list released at thread exit, with
-`clone` and futexes; (parents for `getppid` with `fork`: done, D104, reparenting D105); `sethostname` and `setdomainname`; the
-same release in `/proc/sys/kernel/osrelease` and `/proc/version` (procfs); a `writev`
+`clone` and futexes; (parents for `getppid` with `fork`: done, D104, reparenting D105);
+(`sethostname` and `setdomainname`; the same release in `/proc/sys/kernel/osrelease` and
+`/proc/version`: done, D168); a `writev`
 benchmark once a sink faster than the console's UART exists (M7), and `getpid`'s round trip
 as the cheapest real call; (`writev`'s two edge cases from PR #48's review checked against
 Linux: done, D58); (`writev` with a partly unreadable array whose readable entries hold a

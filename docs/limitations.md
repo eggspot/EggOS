@@ -56,8 +56,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   D157). `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
-  `uptime`, `ps`, `net/interfaces`, `net/route`, `net/arp`, `net/unix` and `driver/rtc` (D125,
-  D137, D150, D157). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  `uptime`, `ps`, `version`, `sys/kernel`, `net/interfaces`, `net/route`, `net/arp`, `net/unix`,
+  `driver/rtc`, `self` and a folder per process (D125, D137, D150, D157, D168). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no
   hard or symbolic links, access times or repair tool yet, searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
@@ -122,8 +122,13 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   with glibc's or musl's loader (D167), but EggOS ships no C library: the loader and libraries
   go into the image with the program; no vDSO (`AT_SYSINFO_EHDR`), and `execve` still reads a
   program and its loader whole into memory and copies their segments at once (pages mapped
-  from files are read only when first touched). Only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
-  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`; `mmap` of files is private, or shared and read-only
+  from files are read only when first touched). `/proc/self` and `/proc/<pid>` hold `cmdline`,
+  `exe`, `fd`, `maps`, `stat` and `status` only (no `task`, `environ`, `cwd`, `mountinfo` or
+  `/proc/thread-self`; `stat`'s times and fault counts are 0, `status` has no signal or memory
+  lines but `VmSize`, links in `fd` to pipes and sockets cannot be opened, and every file is
+  root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
+  standard streams' links, `window` and `agent`, but no `/dev/shm`, `/dev/pts` or block devices;
+  the only symbolic links are those in `/proc` and `/dev` (D168); `mmap` of files is private, or shared and read-only
   (a shared mapping does not see later writes to the file, and a writable one is `ENODEV`,
   D167), and a file page is read under the process's memory lock, so its other threads wait
   for a disk read; no copy-on-write `fork`
