@@ -81,7 +81,9 @@ pub enum LookupError {
 impl LookupError {
     pub fn message(self) -> &'static [u8] {
         match self {
-            Self::BadName(QueryError::LabelTooLong) => b"a part of the name is longer than 63 letters",
+            Self::BadName(QueryError::LabelTooLong) => {
+                b"a part of the name is longer than 63 letters"
+            }
             Self::BadName(QueryError::NameTooLong) => b"the name is longer than 253 letters",
             Self::BadName(_) => b"the name is empty or has an empty part",
             Self::TimedOut => b"no DNS server answered",
@@ -200,7 +202,10 @@ impl<const N: usize> Shown<N> {
 impl<const N: usize> core::fmt::Write for Shown<N> {
     fn write_str(&mut self, text: &str) -> core::fmt::Result {
         let end = self.length + text.len();
-        let room = self.bytes.get_mut(self.length..end).ok_or(core::fmt::Error)?;
+        let room = self
+            .bytes
+            .get_mut(self.length..end)
+            .ok_or(core::fmt::Error)?;
         room.copy_from_slice(text.as_bytes());
         self.length = end;
         Ok(())

@@ -1,7 +1,8 @@
 use super::*;
 use crate::fake::Fake;
 
-const LOOPBACK: &str = "lo up 00:00:00:00:00:00 65536 off 127.0.0.1/8 - - - - - 12 1008 0 0 12 1008 0\n";
+const LOOPBACK: &str =
+    "lo up 00:00:00:00:00:00 65536 off 127.0.0.1/8 - - - - - 12 1008 0 0 12 1008 0\n";
 const CONNECTED: &str = "eth0 up 52:54:00:12:34:56 1500 configured 10.0.2.15/24 10.0.2.2 10.0.2.3 \
                          10.0.2.2 86342 86400 2905 3600000 0 4 812 1300000 0\n";
 const UNPLUGGED: &str = "eth0 down 52:54:00:12:34:56 1500 configured 10.0.2.15/24 10.0.2.2 \
@@ -35,7 +36,10 @@ fn addresses_are_shown_in_linux_s_shape_with_the_dhcp_state() {
     assert_eq!(run(&both, &[c"addr", c"show"]).1, expected);
     assert_eq!(run(&both, &[c"a"]).1, expected);
     let eth0 = run(&both, &[c"addr", c"show", c"dev", c"eth0"]).1;
-    assert!(eth0.starts_with("2: eth0:") && !eth0.contains("lo:"), "{eth0}");
+    assert!(
+        eth0.starts_with("2: eth0:") && !eth0.contains("lo:"),
+        "{eth0}"
+    );
 }
 
 #[test]
@@ -52,9 +56,18 @@ fn an_unplugged_cable_shows_no_carrier_and_no_address() {
 #[test]
 fn links_with_statistics_show_the_counters() {
     let shown = run(&format!("{LOOPBACK}{CONNECTED}"), &[c"-s", c"link"]).1;
-    assert!(shown.contains("    RX:  bytes packets errors dropped\n"), "{shown}");
-    assert!(shown.contains("   3600000    2905      0       4\n"), "{shown}");
-    assert!(shown.contains("   1300000     812      0       0\n"), "{shown}");
+    assert!(
+        shown.contains("    RX:  bytes packets errors dropped\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("   3600000    2905      0       4\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("   1300000     812      0       0\n"),
+        "{shown}"
+    );
     assert!(!shown.contains("inet "), "{shown}");
 }
 
@@ -75,7 +88,10 @@ fn routes_and_neighbours_are_shown_as_linux_s_ip_shows_them() {
 #[test]
 fn json_is_the_net_status_tool_s_answer() {
     let shown = run(&format!("{LOOPBACK}{CONNECTED}"), &[c"-j", c"addr"]).1;
-    assert!(shown.starts_with("{\"state\":\"connected\",\"adapters\":[{\"name\":\"lo\""), "{shown}");
+    assert!(
+        shown.starts_with("{\"state\":\"connected\",\"adapters\":[{\"name\":\"lo\""),
+        "{shown}"
+    );
     assert!(
         shown.contains(
             "{\"name\":\"eth0\",\"state\":\"connected\",\"link\":\"up\",\"dhcp\":\"configured\",\
@@ -89,7 +105,10 @@ fn json_is_the_net_status_tool_s_answer() {
     );
     assert!(shown.ends_with("]}\n"));
     let alone = run(LOOPBACK, &[c"-j", c"addr"]).1;
-    assert!(alone.starts_with("{\"state\":\"none\",\"adapters\":[{\"name\":\"lo\""), "{alone}");
+    assert!(
+        alone.starts_with("{\"state\":\"none\",\"adapters\":[{\"name\":\"lo\""),
+        "{alone}"
+    );
     assert!(alone.contains("\"router\":null,\"dns\":[]"), "{alone}");
 }
 
@@ -97,9 +116,15 @@ fn json_is_the_net_status_tool_s_answer() {
 fn unknown_objects_devices_and_options_are_refused() {
     let both = format!("{LOOPBACK}{CONNECTED}");
     let (status, _, errors) = run(&both, &[c"tunnel"]);
-    assert_eq!((status, errors.as_str()), (1, "ip: object \"tunnel\" is unknown, try \"ip help\"\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "ip: object \"tunnel\" is unknown, try \"ip help\"\n")
+    );
     let (status, _, errors) = run(&both, &[c"addr", c"show", c"dev", c"wlan0"]);
-    assert_eq!((status, errors.as_str()), (1, "ip: device \"wlan0\" does not exist\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "ip: device \"wlan0\" does not exist\n")
+    );
     assert_eq!(run(&both, &[c"-x"]).0, 1);
     let (status, _, errors) = run("", &[]);
     assert_eq!((status, errors.as_str()), (0, ""));

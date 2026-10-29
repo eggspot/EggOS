@@ -2,11 +2,20 @@ use super::*;
 use crate::fake::Fake;
 
 fn network() -> Fake {
-    let mut fake = Fake::default().with_file("/etc/resolv.conf", 0o644, b"nameserver 10.0.2.3\n", 0);
-    fake.network.dns_servers.push((Ipv4Address::new(10, 0, 2, 3), 53));
-    fake.network.dns_servers.push((Ipv4Address::new(10, 0, 2, 2), 5353));
-    fake.network.names.push((b"eggos.test".to_vec(), Ipv4Address::new(10, 0, 2, 2)));
-    fake.network.names.push((b"eggos.test".to_vec(), Ipv4Address::new(192, 0, 2, 7)));
+    let mut fake =
+        Fake::default().with_file("/etc/resolv.conf", 0o644, b"nameserver 10.0.2.3\n", 0);
+    fake.network
+        .dns_servers
+        .push((Ipv4Address::new(10, 0, 2, 3), 53));
+    fake.network
+        .dns_servers
+        .push((Ipv4Address::new(10, 0, 2, 2), 5353));
+    fake.network
+        .names
+        .push((b"eggos.test".to_vec(), Ipv4Address::new(10, 0, 2, 2)));
+    fake.network
+        .names
+        .push((b"eggos.test".to_vec(), Ipv4Address::new(192, 0, 2, 7)));
     fake
 }
 
@@ -39,7 +48,10 @@ fn a_name_s_addresses_are_shown_as_bind_s_nslookup_shows_them() {
 fn another_server_and_port_can_be_named() {
     let (status, out, _) = run(network(), &[c"-port=5353", c"eggos.test.", c"10.0.2.2"]);
     assert_eq!(status, 0);
-    assert!(out.starts_with("Server:\t\t10.0.2.2\nAddress:\t10.0.2.2#5353\n\n"), "{out}");
+    assert!(
+        out.starts_with("Server:\t\t10.0.2.2\nAddress:\t10.0.2.2#5353\n\n"),
+        "{out}"
+    );
     assert!(out.contains("Address: 192.0.2.7\n"), "{out}");
 }
 
@@ -47,10 +59,16 @@ fn another_server_and_port_can_be_named() {
 fn a_missing_name_a_silent_server_and_bad_operands_fail() {
     let (status, out, _) = run(network(), &[c"nowhere.test"]);
     assert_eq!(status, 1);
-    assert!(out.ends_with("** server can't find nowhere.test: NXDOMAIN\n"), "{out}");
+    assert!(
+        out.ends_with("** server can't find nowhere.test: NXDOMAIN\n"),
+        "{out}"
+    );
     let (status, out, _) = run(network(), &[c"-timeout=1", c"eggos.test", c"10.0.2.9"]);
     assert_eq!(status, 1);
-    assert!(out.ends_with(";; connection timed out; no servers could be reached\n"), "{out}");
+    assert!(
+        out.ends_with(";; connection timed out; no servers could be reached\n"),
+        "{out}"
+    );
     let (status, _, errors) = run(Fake::default(), &[c"eggos.test"]);
     assert_eq!(
         (status, errors.as_str()),

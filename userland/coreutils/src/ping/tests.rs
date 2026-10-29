@@ -7,7 +7,8 @@ const HOST: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
 const DNS: Ipv4Address = Ipv4Address::new(10, 0, 2, 3);
 
 fn network() -> Fake {
-    let mut fake = Fake::default().with_file("/etc/resolv.conf", 0o644, b"nameserver 10.0.2.3\n", 0);
+    let mut fake =
+        Fake::default().with_file("/etc/resolv.conf", 0o644, b"nameserver 10.0.2.3\n", 0);
     fake.network.reachable.push(HOST);
     fake.network.dns_servers.push((DNS, 53));
     fake.network.names.push((b"eggos.test".to_vec(), HOST));
@@ -42,7 +43,12 @@ fn a_reachable_host_answers_each_request_and_the_summary_counts_them() {
             ""
         )
     );
-    let sent: Vec<&Vec<u8>> = fake.network.sent.iter().map(|(_, _, _, bytes)| bytes).collect();
+    let sent: Vec<&Vec<u8>> = fake
+        .network
+        .sent
+        .iter()
+        .map(|(_, _, _, bytes)| bytes)
+        .collect();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].len(), 64);
     assert_eq!(&sent[1][..8], &[8, 0, 0, 0, 0, 0, 0, 2]);
@@ -58,7 +64,10 @@ fn a_name_is_resolved_through_resolv_conf_s_server() {
         "{out}"
     );
     let (status, _, errors, _) = run(network(), &[c"nowhere.test"]);
-    assert_eq!((status, errors.as_str()), (2, "ping: nowhere.test: no such name\n"));
+    assert_eq!(
+        (status, errors.as_str()),
+        (2, "ping: nowhere.test: no such name\n")
+    );
 }
 
 #[test]
@@ -79,7 +88,10 @@ fn a_silent_host_loses_every_request_and_fails() {
 
 #[test]
 fn bad_options_and_send_errors_are_reported() {
-    assert_eq!(run(network(), &[c"-c", c"0", c"10.0.2.2"]).2, "ping: invalid count: '0'\n");
+    assert_eq!(
+        run(network(), &[c"-c", c"0", c"10.0.2.2"]).2,
+        "ping: invalid count: '0'\n"
+    );
     assert_eq!(
         run(network(), &[c"-i", c"0.1", c"10.0.2.2"]).2,
         "ping: invalid interval (at least 0.2 seconds): '0.1'\n"
@@ -89,8 +101,14 @@ fn bad_options_and_send_errors_are_reported() {
     unreachable.network.send_error = Some(Errno(101));
     let (status, out, errors, _) = run(unreachable, &[c"-c", c"1", c"192.0.2.1"]);
     assert_eq!(status, 1);
-    assert!(errors.starts_with("ping: sending to 192.0.2.1: "), "{errors}");
-    assert!(out.contains("1 packets transmitted, 0 received, +1 errors, 100% packet loss"), "{out}");
+    assert!(
+        errors.starts_with("ping: sending to 192.0.2.1: "),
+        "{errors}"
+    );
+    assert!(
+        out.contains("1 packets transmitted, 0 received, +1 errors, 100% packet loss"),
+        "{out}"
+    );
     assert_eq!(parse_seconds_ms(b"0.25"), Some(250));
     assert_eq!(parse_seconds_ms(b"2"), Some(2000));
     assert_eq!(parse_seconds_ms(b"1."), None);

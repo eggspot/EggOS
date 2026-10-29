@@ -64,7 +64,10 @@ pub fn nslookup<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         }
     };
     if Ipv4Address::parse(name).is_some() {
-        output.error(&[name, b": looking up the name of an address is not supported yet"]);
+        output.error(&[
+            name,
+            b": looking up the name of an address is not supported yet",
+        ]);
         return FAILURE;
     }
     let server = match server {
