@@ -9519,3 +9519,97 @@ the license, by an explicit instruction recorded here.
   indenting a selection; replace; go to line; syntax colouring; reloading a file changed on
   disk; one window per file (opening a file twice gives two windows); a terminal editor; text
   in Egg Mono only (other characters show `?`).
+
+## D150 Real time: real-time clock drivers (CMOS, PL031, Goldfish), the wall clock as the monotonic clock plus an offset, setting the clock, `date`, `hwclock`, `/proc/driver/rtc`, Settings' `Date & time` and `clock_get`/`clock_set` (v0.3.0 item 29; extends D73, D75, D110, D133, D136, D137) — Decided by the build loop (design by Claude Fable, `docs/ux/date-time-v0.3.md`; the points below marked so decided by research)
+- **Why.** Item 29: the wall clock started at 1970 at boot (D73), so `date`, file times, the
+  audit log and the desktop's clock were not real. Every machine EggOS boots on has a
+  real-time clock, and QEMU's follows the host's clock (`-rtc base=utc`, its default).
+- **The drivers** (`drivers/src/rtc/`, host-tested over `RegisterIo`): one `RealTimeClock`
+  trait (`name`, `read` and `write` in nanoseconds since the epoch, `RtcError`) and three
+  drivers. `cmos.rs`, the PC's MC146818-compatible clock on ports 0x70/0x71: a read waits
+  while status A says an update is in progress (bounded) and takes two snapshots in a row
+  until they agree; BCD or binary and 12- or 24-hour as status B says; the century from the
+  register the FADT names (`acpi::cmos_clock`, 0x32 on QEMU), else years 70-99 are 19xx and
+  00-69 20xx, as Linux reads them; a write holds the clock with status B's `SET` and stores
+  every field, the weekday and the century included. `pl031.rs`, Arm's PL031 (AArch64 `virt`):
+  32-bit seconds, set through the load register, started if the firmware left it stopped.
+  `goldfish.rs`, Google's Goldfish clock (RISC-V `virt`): 64-bit nanoseconds, the low half read
+  first (it latches the high one) and written last. The calendar (civil date and days, leap
+  years, the setting parser, the texts) is a new no_std crate, `calendar` (`eggos-calendar`),
+  shared by the drivers, the kernel, `date`, `hwclock`, Settings and xtask.
+- **Discovery, behind the driver model** (decided by the build loop). The PL031 and the
+  Goldfish clock are device-tree devices: `kernel/src/devices/rtc.rs` adds two
+  `DriverDescriptor`s (`arm,pl031`, `google,goldfish-rtc`, behind the default cargo feature
+  `rtc`, D18), whose probe maps the registers and registers the clock. The CMOS clock is no
+  bus's device (ACPI's namespace, where it is `PNP0B00`, is not read yet, M13), so it is the
+  platform's own, like COM1 and the PIT: `Platform::platform_clock` hands the kernel a `Cmos`
+  over `PortIo` unless the FADT's `IAPC_BOOT_ARCH` says "CMOS RTC Not Present"; the default
+  has none. The first clock found is the machine's; there is no UEFI or ACPI time service.
+- **The wall clock** (`kernel/src/wall_clock.rs`) is the monotonic clock plus a signed offset
+  in nanoseconds, one relaxed atomic: a read is one load and one addition over the monotonic
+  read (D73), with no lock and no allocation (benchmark `linux_clock_realtime_read`). Once the
+  drivers probed, the boot reads the clock once (`clock: 2026-10-29 14:05:09 UTC from
+  rtc-pl031` in the log) and sets the offset; it is never polled again. `CLOCK_REALTIME`, its
+  coarse variant and `CLOCK_TAI` (TAI offset 0) read it, as do `gettimeofday`, x86_64's `time`
+  and file times (`file_changes::now`); the monotonic and boot-time clocks do not move. The
+  desktop's clock shows `HH:MM` once the wall clock reads at least a day (Fable's rule), the
+  drawing thread looking once a minute instead of once a second. The Windows layer's
+  `GetSystemTimeAsFileTime` and the macOS layer's `gettimeofday` and `time` already read
+  `CLOCK_REALTIME`, so they are real now; `mach_absolute_time` stays monotonic. The statics
+  are all zero (`.bss`, the lock's value an `Option<Box<_>>`).
+- **Setting the clock.** `clock_settime(CLOCK_REALTIME)` and `settimeofday` keep Linux's
+  checks (D73) and then set the clock for a privileged process (effective user id 0, Linux's
+  `CAP_SYS_TIME`, D75; decided by research), `EPERM` otherwise; `settimeofday`'s time zone is
+  read and dropped. An absolute `CLOCK_REALTIME` sleep or `FUTEX_CLOCK_REALTIME` wait turns its
+  deadline into the monotonic clock's when it starts, so setting the clock later does not move
+  it (Linux wakes it; a limitation).
+- **Every set writes the real-time clock** (decided by research): as Windows and macOS do,
+  unlike Linux's `date -s`. With no network time and no saved-time file it is the only thing
+  that keeps a set time across a restart; a clock that refuses (out of its range) does not
+  fail the set.
+- **UTC only, no time zones** (decided by research): every consumer (the desktop, `date`,
+  Settings, the layers' local time) would have to agree on an offset, and real zones need a
+  database and daylight-saving rules: a subsystem for later. Documented in
+  docs/limitations.md.
+- **The years 2000 to 2099** (Fable, decided by the build loop): what `date -s`, Settings and
+  `clock_set` take (one parser, `eggos_calendar::parse_setting`: `YYYY-MM-DD HH:MM[:SS]`,
+  `HH:MM[:SS]` keeping today's date, `T` for the space, a trailing `Z` or ` UTC`); every clock
+  EggOS writes can hold them, and nothing below 1970-01-02 can be mistaken for "unset".
+- **`hwclock` over `/proc/driver/rtc`** (decided by research): `/proc/driver/rtc` is Linux's
+  text file (`rtc_time`, `rtc_date`, `24hr`), read from the clock when it is opened and listed
+  only on a machine with one; `hwclock -r` prints it as `2026-10-29 14:05:09+00:00`, `-w` sets
+  the clock to the system time (which writes the hardware clock) and `-s` the system time to
+  it. No `/dev/rtc0` and its ioctls: a new device kind for one tool (CLAUDE.md note 8); it
+  comes when a foreign program needs it.
+- **Three front-ends (D22).** CLI: `date` (`+format`, `-r`, `-s`, `-u`) and `hwclock` in
+  coreutils (two more hard links). GUI: Fable's Settings pane `Date & time`, fifth in the
+  sidebar, its container and seven widgets (the tree's 48 are full): `Now` as a sentence
+  (`Thursday 29 October 2026, 14:05:09 UTC`) ticking while shown, `Set to` field and primary
+  `Set` (the default button, disabled while the field is empty), and one status line; the bar's
+  `HH:MM` in `text`, pixel-centred in its 80 px rectangle (which moves the uptime forms of odd
+  length by 4 px: the pinned picture hashes change). Settings tells "saved to the hardware
+  clock" from "no hardware clock" by reading `/proc/driver/rtc` back after the set (decided by
+  the build loop), and says `The clock could not be set.` for an error other than `EPERM` (a
+  case the design has no line for). MCP (decided by research): `clock_get` (no grant, read-only,
+  twin `date -u +%Y-%m-%dT%H:%M:%SZ`) and `clock_set` (`time` as `YYYY-MM-DDTHH:MM:SSZ`, the
+  `run` grant, destructive, always asking the user or `confirm: true`, twin `date -u -s
+  <time>`); the server checks only the form, `date` the moment.
+- **Testing.** Host: the calendar both ways over 800 years, leap years, the parser's forms and
+  refusals, the texts; the CMOS driver over a fake clock (BCD and binary, 12- and 24-hour, the
+  century register or none, an update in progress, a second ticking between snapshots,
+  invalid registers, writes in each format and out of range); the PL031 and Goldfish register
+  orders; the FADT's century and "not present"; the wall clock's registration, start, set and
+  write-back; `clock_settime` and `settimeofday` for root and for uid 1000; `/proc/driver/rtc`;
+  the bar's clock; `date`, `hwclock`; the Settings pane's layout, search words, set flow and
+  refusals; the MCP tools, their arguments, question and audit. QEMU on all three
+  architectures (`xtask/src/qemu/real_time.rs`): the boot log names the expected driver,
+  `date +%s` is within 5 minutes of the host, a file made in `/tmp` has that time (`date -r`),
+  `hwclock -r` agrees, and `date -s '2030-01-02 03:04:05'` reaches `date` and `hwclock -r`.
+  Every desktop frame check accepts the bar's `HH:MM` near the host's time. The MCP check reads
+  `clock_get` against the host's clock and sets the clock a day ahead and back.
+- **Cost (D24).** The kernel grows by three small drivers, the calendar's arithmetic and the
+  wall clock; reading the clock adds one load to `clock_gettime(CLOCK_REALTIME)` and nothing
+  to the monotonic clocks. Nothing runs after boot unless a program reads or sets the clock.
+- **Not yet.** Time zones and a `TZ` setting; network time; `/dev/rtc0`, alarms and wake-ups
+  (`CLOCK_REALTIME_ALARM` stays `EOPNOTSUPP`); waking absolute realtime waits when the clock is
+  set; ACPI's `PNP0B00` and UEFI's `GetTime`; a `settings` key for the time.

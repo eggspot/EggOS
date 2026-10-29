@@ -107,7 +107,7 @@ Must-have, in order:
     capabilities: users can double-click the title bar to maximise the terminal; users see a
     pointer drawn by the GPU's cursor queue and hover highlights on the bar and controls;
     users see a boot screen with the logo and progress before the desktop; users can drag a
-    window partly off screen; users see the wall clock once an RTC driver sets it; users with a display smaller than
+    window partly off screen; users see the wall clock once an RTC driver sets it (done, D150); users with a display smaller than
     658x458 get a full-screen terminal; console output never waits for the desktop's repaint
     (D115's review follow-ups).
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
@@ -411,10 +411,21 @@ D16):
     the host-tested `eggos-editor` crate. A QEMU test opens a file with `edit`, types, finds,
     saves and closes it, every frame compared, and `cat` reads the saved text. Next: word wrap,
     replace, a file picker, a shared clipboard, text beyond Egg Mono's glyphs.
+29. **done** — users can now see the real date and time, and files carry real times (D150,
+    docs/coreutils.md, Claude Fable's docs/ux/date-time-v0.3.md): the kernel reads the
+    machine's real-time clock once at boot (x86_64's CMOS clock, AArch64's PL031 and RISC-V's
+    Goldfish clock, behind the driver model), so `CLOCK_REALTIME`, `gettimeofday`, `time`, file
+    times, the Windows and macOS layers' clocks and the desktop's clock (`HH:MM`) are real.
+    `date` shows and, for root, sets the time (`date -s`), `hwclock` reads and writes the
+    hardware clock, Settings has a `Date & time` pane, and the MCP tools `clock_get` and
+    `clock_set` read and set it; setting the clock writes the hardware clock too. All UTC. A
+    QEMU test checks on all three architectures that `date`, a new file's time and `hwclock`
+    are within minutes of the host's clock and that `date -s` reaches the hardware clock.
+    Next: time zones, network time, `/dev/rtc0`, alarms.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
-Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date`. Moved after
+Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date` (done, D150). Moved after
 the release: networking; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
 
 ## Milestones

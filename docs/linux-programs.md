@@ -121,7 +121,7 @@ it unlocks them:
 - **`/proc/self`.** `/proc` has only `cmdline`, `meminfo`, `uptime`, `ps` and `net/unix`, so
   `std::env::current_exe` fails: start a copy of the program by its path. Files can be written
   in `/tmp`, `/run`, `/home` and `/var` (D125, D131).
-- **The wall clock** reads 1970 without an RTC driver.
+- **The wall clock** is UTC, read from the real-time clock at boot; there are no time zones (D150).
 - **Networking and `mmap` of files** are not implemented (`mmap` takes anonymous memory
   only, and memfds, D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and
   descriptors passed with `SCM_RIGHTS` (D138), and so does memory shared between programs

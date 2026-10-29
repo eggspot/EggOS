@@ -60,11 +60,11 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps | `ls`, `cat`, `ps`, `wm_list`, `app_list` |
+| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get` |
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included | `wm_capture` |
 | `write` | write files below `/home/root` and move them to the Trash | `tee`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
-| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll` |
+| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `clock_set` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -90,9 +90,11 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | `ps` | Lists the processes | `ps` | |
 | `wm_list` | Lists the windows on the desktop | `wm list` | |
 | `app_list` | Lists the installed apps | `app list` | |
+| `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
+| `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`) | `app install -- <path>` | `install` |
 | `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
 | `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
@@ -208,18 +210,17 @@ what the agent did through the tools, not what it could hide.
 ```
 eggsh:/# agentlog
 TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL
-1970-01-01T00:00:04  claude-code  -  initialize  {"requested":"2025-11-25",...}
-1970-01-01T00:00:09  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
-1970-01-01T00:00:12  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...
+2026-10-29T14:05:04  claude-code  -  initialize  {"requested":"2025-11-25",...}
+2026-10-29T14:05:09  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
+2026-10-29T14:05:12  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...
 ```
 
 `agentlog -n 20` shows the last 20, `agentlog --raw` the records as stored. A question and its
 answer are one row; a `started` or `asked` call with no outcome (the machine stopped meanwhile)
 shows as `interrupted`. Anything a client
 chose (its name, paths) is shown escaped: control characters as `\e`, `\t` or `\xHH`, invisible
-and direction-changing characters as `\u{202e}`, so it cannot disguise a line. Times count from
-the boot until EggOS reads a real-time clock (item 29). The log in Settings comes after the
-release.
+and direction-changing characters as `\u{202e}`, so it cannot disguise a line. Times are the wall clock's, in UTC, read from the real-time
+clock at boot (D150). The log in Settings comes after the release.
 
 ## How it works
 

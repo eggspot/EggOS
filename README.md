@@ -61,10 +61,10 @@ claude mcp add eggos -- /path/to/run-eggos.sh --mcp --mcp-allow write,install
 
 `run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine.
 
-The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
+The window shows the desktop: the top bar with the time (UTC) and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
-`grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, pipes such as `ls /bin | grep s | wc -l`,
+`grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, `date`, pipes such as `ls /bin | grep s | wc -l`,
 files in `/tmp` and `/home` (`echo hi > /tmp/x`, `cp`, `mv`, `rm`, `mkdir`, `touch`), the up
 arrow for the last lines, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
 [core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives

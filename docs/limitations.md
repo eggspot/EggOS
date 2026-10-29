@@ -12,8 +12,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **No acceleration.** QEMU emulates the CPU (TCG), so the system runs slower than it will on
   hardware; boot to the prompt still takes about a tenth of a second.
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
-  virtio-blk (polled, for the host folder) and on test kernels virtio-rng. Nothing else is
-  driven: no network, no sound, no USB, no real-time clock (D110-D113, D130).
+  virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
+  RISC-V Goldfish, D150) and on test kernels virtio-rng. Nothing else is driven: no network,
+  no sound, no USB (D110-D113, D130).
 
 ## What the system can do
 - **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
@@ -25,14 +26,13 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   them while EggOS runs; `run` is full control, the audit log included. Agents see windows as
   pixels for now (D143); windows as structured data come after the release (item 48).
   Commands run as root (file permissions are not enforced yet). Reached only through the run
-  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB and shows times since
-  the boot until the RTC (item 29).
+  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB.
 - **One disk, and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
   `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
-  `uptime` and `ps` (D125, D137). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  `uptime`, `ps` and `driver/rtc` (D125, D137, D150). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no
   hard or symbolic links, access times or repair tool yet, searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
@@ -50,12 +50,21 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   on your computer while EggOS runs are not seen. Only one folder can be attached. A Windows or
   macOS program in it runs only on an image that has its layer, which the release images do not
   carry yet (`cargo xtask run --add` adds it with a program; D118, D120).
-- **The clock starts at the epoch.** Without an RTC driver the wall clock reads 1970 and the
-  desktop's clock shows the uptime (D73, D115).
+- **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
+  at boot (QEMU's follows the host's clock) and keeps time from it; there is no network time
+  (NTP), so a clock that drifts stays off until `date -s`, Settings or `clock_set` sets it,
+  which also sets the real-time clock. Local time is UTC everywhere: the desktop's clock,
+  `date`, file times and the Windows and macOS layers' local-time calls; there is no time zone
+  setting or database. Only a privileged process (root) may set the clock. An absolute sleep or
+  wait on `CLOCK_REALTIME` ends at the time the clock pointed to when it started, even if the
+  clock is set meanwhile (Linux wakes it). No `/dev/rtc0` (`hwclock` reads
+  `/proc/driver/rtc`), no alarms or wake-ups (`CLOCK_REALTIME_ALARM`), no UEFI or ACPI time
+  services. Without a real-time clock the wall clock starts at 1970 at boot and the desktop's
+  clock shows the uptime (D73).
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
-  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime` and EggOS's own `ps`, no
+  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
@@ -188,8 +197,7 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   to sort by), hides names starting with `.`, shows at most 512 entries (32 KiB of names) of
   a folder, and shows no free space in its status bar (no `statfs` yet); its clipboard holds
   one item inside the Files process, shared with no other program and lost when Files
-  closes; times follow the wall clock, which counts from the boot until an RTC driver lands
-  (item 29); a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
+  closes; a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
   in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
   most 32 levels deep in a copy, a move across file systems or a delete; the MCP tools for
   files come with the MCP server (item 28, after the release);

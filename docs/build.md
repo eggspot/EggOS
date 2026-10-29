@@ -164,6 +164,13 @@ holds what used to be written in them.
   window drawn by `eggos-editor` over a file system in memory holding the same file, with the
   caret shown or hidden) after typing, Ctrl+F and `egg`, Esc, Ctrl+S and the close control;
   `cat` must then print the saved text (D149).
+- **The real-time clock boot test** (`xtask/src/qemu/real_time.rs`, every architecture) boots
+  the release kernel, whose real-time clock follows the host's (QEMU's `-rtc base=utc`), and
+  checks that the boot log names the expected driver (`rtc-cmos`, `rtc-pl031`, `rtc-goldfish`),
+  that `date +%s` is within 5 minutes of the host's clock, that a file made in `/tmp` has that
+  time (`date -r`), that `hwclock -r` agrees, and that `date -s` reaches both `date` and the
+  hardware clock (D150). Every desktop frame check accepts the bar's clock at the uptime or at
+  the host's time give or take a few minutes.
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is

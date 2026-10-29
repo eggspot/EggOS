@@ -1,9 +1,9 @@
 # The EggOS core utilities
 
 `userland/coreutils` (D108) is one program, `/bin/coreutils`, with the utilities as hard links
-to it in `/bin`: `agentlog`, `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`, `mkdir`,
-`mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`,
-`uptime`, `wc` and `wm` (D108, D125, D128, D135, D136, D137). It runs the utility named by the last component of the name
+to it in `/bin`: `agentlog`, `cat`, `cp`, `date`, `echo`, `false`, `free`, `grep`, `halt`, `head`,
+`hwclock`, `ls`, `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `tee`, `touch`,
+`trash`, `true`, `uname`, `uptime`, `wc` and `wm` (D108, D125, D128, D135, D136, D137, D150). It runs the utility named by the last component of the name
 it was started by, so `ls`, `/bin/ls` and a link called `ls` anywhere are all `ls`. Started as `coreutils`, it runs
 the utility its first argument names (`coreutils ls /`); `coreutils --list` lists them. It is
 our own Rust program on our own runtime, like the shell: no C library, no allocator, about
@@ -44,6 +44,8 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
 | `free [-b\|-k\|-m]` | Writes the memory's total, used, free and available amounts from `/proc/meminfo`, in KiB, or bytes or MiB (`shared` and `buff/cache` are 0: there is no page cache). | 0, or 1 if `/proc` cannot be read |
 | `uptime [-p]` | Writes how long the system has been up (`up 1 hour, 2 minutes`), from `/proc/uptime`, as `uptime -p` does elsewhere; there are no load averages or users to count. | 0, or 1 if `/proc` cannot be read |
 | `agentlog [-n count] [--raw]` | Shows the MCP server's audit log (D136, D137, docs/mcp.md): `/var/log/agent-audit.log.7` down to `.1`, then `/var/log/agent-audit.log`, a `TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL` header and a row per call (a call's `asked` and `started` records and its outcome as one row; an `asked` or `started` with no outcome as `interrupted`), and the server's starts and the clients' sessions; `-n` the last `count` rows, `--raw` the records as stored. Control and invisible characters in what clients sent are shown escaped (`\e`, `\xHH`, `\u{202e}`). Nothing when there is no log. | 0, 1 if a log cannot be read, 2 for a bad usage |
+| `date [-u] [+format]`, `date -r file [+format]`, `date -s time [+format]` | Writes the time (D150), `Thu Oct 29 14:05:09 UTC 2026` by default as in the C locale, or as `+format` says with `strftime`'s conversions (`%a %A %b %B %c %C %d %D %e %F %h %H %I %j %k %l %m %M %n %p %r %R %s %S %t %T %u %w %y %Y %z %Z %%`; others are written as they are). `-r` (`--reference`) shows a file's modification time instead. `-s` (`--set`) sets the clock, and with it the hardware clock, to `YYYY-MM-DD HH:MM[:SS]` or `HH:MM[:SS]` (today's date), a `T` for the space and a trailing `Z` or ` UTC` accepted, in the years 2000 to 2099, then writes it: the same rules as Settings' `Date & time` and the MCP tool `clock_set`, whose twin it is (`clock_get`'s is `date -u +%Y-%m-%dT%H:%M:%SZ`). Only root may set the clock. Everything is UTC: `-u` (`--utc`) is accepted and changes nothing. | 0; 1 for a bad option, time or operand, or when the kernel refuses (`cannot set date: Operation not permitted`) |
+| `hwclock [-r\|-w\|-s] [-u]` | The hardware clock (D150), read from `/proc/driver/rtc`: `-r` (`--show`, the default) writes its time as `2026-10-29 14:05:09+00:00`; `-w` (`--systohc`) sets it to the system clock; `-s` (`--hctosys`) sets the system clock to it. Setting the clock any other way (`date -s`) sets the hardware clock too. | 0; 1 with no hardware clock (`no hardware clock: /proc/driver/rtc is missing`), when it cannot be read, or when the kernel refuses |
 | `poweroff`, `reboot`, `halt` | Power the machine off, reset it or halt it at once with `reboot(2)` (only for root; `-f` and `--force` are accepted and change nothing). | Does not return; 1 with the error when the kernel refuses |
 
 ## Limits and differences from GNU
@@ -67,3 +69,6 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
   service manager to stop first; they `sync` first (and the kernel syncs again).
 - `sync` takes no operands: it puts every file system's changes on the disk (D131).
 - `echo` takes no escapes (`-e`), like the shell's builtin; `sleep` takes no `inf`.
+- `date` knows UTC only (no `TZ`, no time zone database, no `-d` to read a date, no
+  `MMDDhhmm` operand to set one, no `%N` or `%:z`); `hwclock` has no `--adjust`, drift
+  file or local-time hardware clock, and reads `/proc/driver/rtc` rather than `/dev/rtc0`.
