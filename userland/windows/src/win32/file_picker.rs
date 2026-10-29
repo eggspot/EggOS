@@ -246,8 +246,10 @@ fn is_folder(path: &[u8]) -> Option<bool> {
 fn resolve(window: usize, typed: &[u16], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
     let mut eggos = [0u8; PATH_CAPACITY];
     let length = text::eggos_path(text::utf16_chars(typed), &mut eggos)? - 1;
-    let drive = typed.len() >= 2 && typed[1] == u16::from(b':');
-    if drive && !matches!(typed[0], 0x43 | 0x63) {
+    let verbatim: [u16; 4] = [0x5c, 0x5c, 0x3f, 0x5c];
+    let bare = typed.strip_prefix(&verbatim[..]).unwrap_or(typed);
+    let drive = bare.len() >= 2 && bare[1] == u16::from(b':');
+    if drive && !matches!(bare[0], 0x43 | 0x63) {
         return None;
     }
     with_state(window, |state| {
@@ -740,17 +742,38 @@ unsafe fn pick(request: *mut OpenFileName, kind: PickerKind) -> Bool {
         LAST_ERROR.store(CDERR_INITIALIZATION, Ordering::Relaxed);
         return FALSE;
     }
-    // SAFETY: the caller passes an `OPENFILENAMEW` whose size it states.
-    let request = unsafe { &mut *request };
-    if request.size != OPEN_FILE_NAME_SIZE && request.size != OPEN_FILE_NAME_SIZE_400 {
+    // SAFETY: every `OPENFILENAMEW` starts with its size, a readable `u32`.
+    let size = unsafe { request.cast::<u32>().read_unaligned() };
+    if size != OPEN_FILE_NAME_SIZE && size != OPEN_FILE_NAME_SIZE_400 {
         LAST_ERROR.store(CDERR_STRUCTSIZE, Ordering::Relaxed);
         return FALSE;
     }
-    let outcome = show(request, kind).and_then(|chosen| match chosen {
+    let mut copy = core::mem::MaybeUninit::<OpenFileName>::zeroed();
+    // SAFETY: the caller's structure holds `size` readable bytes, at most the local's size, and
+    // a zeroed `OpenFileName` is valid (integers and null pointers) for the bytes not copied.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            request.cast::<u8>(),
+            copy.as_mut_ptr().cast::<u8>(),
+            size as usize,
+        )
+    };
+    // SAFETY: as above: every byte of the local is now a valid field value.
+    let mut local = unsafe { copy.assume_init() };
+    let outcome = show(&local, kind).and_then(|chosen| match chosen {
         // SAFETY: the request's buffers are the caller's, as `OPENFILENAMEW` describes them.
-        Some((length, path)) => unsafe { write_result(request, &path[..length]) }.map(|_| true),
+        Some((length, path)) => unsafe { write_result(&mut local, &path[..length]) }.map(|_| true),
         None => Ok(false),
     });
+    // SAFETY: the caller's structure holds `size` writable bytes; the local's first `size`
+    // bytes are its fields as the call left them.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (&raw const local).cast::<u8>(),
+            request.cast::<u8>(),
+            size as usize,
+        )
+    };
     match outcome {
         Ok(chosen) => Bool::from(chosen),
         Err(code) => {

@@ -628,10 +628,11 @@ fn list_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
             code::LB_ADDSTRING => (index(list.add(text(lparam), sorted)), true),
             code::LB_INSERTSTRING => {
                 let at = match wparam as isize {
-                    -1 => list.count(),
-                    at => at as usize,
+                    -1 => Some(list.count()),
+                    at if (0..=list.count() as isize).contains(&at) => Some(at as usize),
+                    _ => None,
                 };
-                (index(list.insert(at, text(lparam))), true)
+                (index(at.and_then(|at| list.insert(at, text(lparam)))), true)
             }
             code::LB_DELETESTRING => (index(list.delete(wparam)), true),
             code::LB_RESETCONTENT => {

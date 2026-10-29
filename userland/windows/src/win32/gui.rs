@@ -368,7 +368,14 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             with(|gui| gui.active_root = handle);
             Some(to_window(message::SET_FOCUS, 0, 0))
         }
-        Event::FocusOut => Some(to_window(message::KILL_FOCUS, 0, 0)),
+        Event::FocusOut => {
+            with(|gui| {
+                if gui.active_root == handle {
+                    gui.active_root = 0;
+                }
+            });
+            Some(to_window(message::KILL_FOCUS, 0, 0))
+        }
         Event::PointerLeft | Event::Ignored => None,
     }
 }

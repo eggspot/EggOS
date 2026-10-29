@@ -510,7 +510,9 @@ fn child_bounds(x: i32, y: i32, width: i32, height: i32) -> Rect {
 fn insert_child(mut window: Window, text: &[u16]) -> Result<usize, u32> {
     let parent = window.parent;
     try_with(|gui| {
-        gui.window(parent)?;
+        if gui.window(parent)?.destroying {
+            return Err(error::INVALID_WINDOW_HANDLE);
+        }
         let depth = windows::ancestry(&gui.windows, parent)
             .map_or(windows::MAX_DEPTH, |(_, length)| length);
         if depth >= windows::MAX_DEPTH {
