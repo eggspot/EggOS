@@ -21,6 +21,8 @@ pub const MAX_WORDS: usize = 32;
 pub const WORDS_BYTES: usize = 4096;
 /// The longest app name.
 pub const MAX_NAME_BYTES: usize = 64;
+/// The longest path inside a `.zip` `app_install`'s `entry` takes (a `.zip` entry's name).
+pub const MAX_ARCHIVE_ENTRY_BYTES: usize = 255;
 /// `run`'s time limit when the agent gives none.
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 10_000;
 /// `run`'s longest time limit, in seconds.
@@ -67,6 +69,9 @@ pub enum ArgumentProblem {
     BadBase64,
     /// An app name is empty, too long, or holds `/`, NUL, or is `.` or `..`.
     BadName,
+    /// `app_install`'s `entry` is not a string of 1 to [`MAX_ARCHIVE_ENTRY_BYTES`] bytes
+    /// without NUL.
+    BadArchiveEntry,
     /// Too many arguments for `run`, too long, or one holds a NUL.
     BadWords,
     /// `timeout_seconds` is not 1 to 60.
@@ -119,6 +124,9 @@ impl ArgumentProblem {
             ArgumentProblem::BadBase64 => "content_base64 is not base64",
             ArgumentProblem::BadName => {
                 "the name must be 1 to 64 bytes, without / or NUL, and not . or .."
+            }
+            ArgumentProblem::BadArchiveEntry => {
+                "entry must be a path inside the .zip of 1 to 255 bytes, without NUL"
             }
             ArgumentProblem::BadWords => {
                 "at most 32 arguments, 4096 bytes in all, none holding a NUL"
@@ -291,6 +299,8 @@ pub struct Checked {
     pub content: Option<usize>,
     /// The app name.
     pub name: Option<AppName>,
+    /// `app_install`'s entry's length, in the words buffer.
+    pub archive_entry: Option<usize>,
     /// `append`.
     pub append: bool,
     /// `confirm`.
@@ -395,6 +405,9 @@ pub fn check(
             None => return Err(ArgumentProblem::Missing("name")),
         });
     }
+    if tool.kind == Kind::AppInstall {
+        checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
+    }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
         checked.time_limit_ms = match get("timeout_seconds") {
@@ -424,6 +437,27 @@ pub fn check(
         });
     }
     Ok(checked)
+}
+
+fn archive_entry(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadArchiveEntry),
+    };
+    let room = words
+        .get_mut(..MAX_ARCHIVE_ENTRY_BYTES)
+        .ok_or(ArgumentProblem::BadArchiveEntry)?;
+    let entry = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadArchiveEntry)?;
+    match !entry.is_empty() && !entry.contains('\0') {
+        true => Ok(Some(entry.len())),
+        false => Err(ArgumentProblem::BadArchiveEntry),
+    }
 }
 
 fn whole(
@@ -699,6 +733,12 @@ pub fn keys_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.keys?)?).ok()
 }
 
+/// `app_install`'s entry in `buffer`, the words buffer, that [`Checked::archive_entry`]
+/// measures.
+pub fn archive_entry_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.archive_entry?)?).ok()
+}
+
 /// The path or program in `buffer` that [`Checked::path`] measures.
 pub fn path_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     let length = checked.path?;
@@ -916,6 +956,33 @@ mod tests {
                 .path,
             Some(17)
         );
+        let (result, buffers) = checked(
+            "app_install",
+            r#"{"path":"/media/host/tools.zip","entry":"bin/a.exe"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(
+            archive_entry_text(&result, &buffers.words),
+            Some("bin/a.exe")
+        );
+        let (result, _) = checked("app_install", r#"{"path":"/media/host/x.exe"}"#);
+        assert_eq!(result.unwrap().archive_entry, None);
+        let long = format!(
+            r#"{{"path":"/media/host/t.zip","entry":"{}"}}"#,
+            "e".repeat(MAX_ARCHIVE_ENTRY_BYTES + 1)
+        );
+        for arguments in [
+            r#"{"path":"/media/host/t.zip","entry":""}"#,
+            r#"{"path":"/media/host/t.zip","entry":1}"#,
+            r#"{"path":"/media/host/t.zip","entry":"a\u0000b"}"#,
+            long.as_str(),
+        ] {
+            assert_eq!(
+                checked("app_install", arguments).0,
+                Err(ArgumentProblem::BadArchiveEntry),
+                "{arguments}"
+            );
+        }
     }
 
     #[test]

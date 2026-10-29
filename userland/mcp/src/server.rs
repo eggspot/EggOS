@@ -1281,6 +1281,10 @@ impl Server {
         if let Some(time) = prepared.checked.time.as_ref() {
             push_word(&mut words, &mut count, time.as_str());
         }
+        if let Some(entry) = arguments::archive_entry_text(&prepared.checked, buffers.words) {
+            push_word(&mut words, &mut count, "--entry");
+            push_word(&mut words, &mut count, entry);
+        }
         let decimals = Decimals::of_window_call(&prepared.checked);
         if tool.twin.operand == Operand::Window {
             push_window_words(
@@ -1997,6 +2001,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if let Some(name) = checked.name {
         writer.key("name");
         writer.string(name.as_str());
+    }
+    if let Some(entry) = arguments::archive_entry_text(checked, scratch.words) {
+        writer.key("entry");
+        writer.string(entry);
     }
     if tool.kind == Kind::Tee {
         writer.key("append");

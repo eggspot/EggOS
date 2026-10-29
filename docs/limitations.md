@@ -167,11 +167,12 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   <path>` installs any);
 - archives other than `.zip` (`.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`), ZIP64 (archives or
   entries past 4 GiB or 65 535 entries), encrypted entries, methods other than stored and
-  deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); the installer's
-  window shows a `.zip` with several programs as a refusal (`app install --entry <path>`
-  chooses one; the window's chooser and the MCP tool `app_install` have no `--entry` yet);
-  every entry of a `.zip` is extracted in one step of the installer, so `Cancel` waits for the
-  entry being extracted;
+  deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); a `.zip` whose
+  files would take more than 4 GiB once extracted, or holding a file named `app.manifest`,
+  `app.manifest.tmp` or `app.icon` at its top, is refused; the window's chooser for a `.zip`
+  with several programs lists four and leaves out paths longer than 64 bytes (`app install
+  --entry <path>` installs any); every entry of a `.zip` is extracted in one step of the
+  installer, so `Cancel` waits for the entry being extracted;
 - app icons (D148): binary property lists, asset catalogues (`Assets.car`), JPEG 2000 and
   `it32` entries of an `.icns`, interlaced PNGs, 16-bit and compressed bitmap entries of a
   Windows icon, and images larger than 1024 pixels (256 for a bitmap entry) are not read (the
@@ -209,5 +210,7 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   go-to-line, no syntax colouring and no file picker (Open and Save As take a typed path); its
   clipboard is its own, shared with no other program; a file that is not text is refused, not
   shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
-  it and there is no terminal editor;
+  it and there is no terminal editor; a file with mixed line endings is saved all CRLF once it
+  holds one `\r\n`; saving replaces a symbolic link by a regular file and breaks hard links;
+  Alt and Option with a letter type nothing (the keymap has no Option or AltGr layer yet);
 - copy and paste of text, and scaling for high-density displays.

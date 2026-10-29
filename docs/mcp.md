@@ -95,7 +95,7 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
 | `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
-| `app_install` | Installs an app from `/media/host` (`path`) | `app install -- <path>` | `install` |
+| `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148) | `app install [--entry <entry>] -- <path>` | `install` |
 | `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
 | `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
 | `app_uninstall` | Uninstalls an app (`name`, `confirm`) | `app uninstall -- <name>` | `install` |

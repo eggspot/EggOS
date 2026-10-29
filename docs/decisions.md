@@ -9378,11 +9378,17 @@ the license, by an explicit instruction recorded here.
   refused (`it holds a file whose name points outside its folder`), so extraction never leaves
   the app's folder; symbolic links and devices are refused; `__MACOSX/` is skipped. A `.zip` is
   told by its first bytes (`PK\3\4` or an empty archive's end record), as programs are (D134).
-  Its program is its one `.exe`, `X.app/Contents/MacOS/X`, or extensionless ELF outside any
-  bundle's `Contents`; several need `--entry <path>` (`app install --entry`), none is `it holds
-  no program EggOS can run`. The whole archive is extracted into `/Applications/<name>/`, an
-  entry a step, parent folders made as needed, the program `0o755`, other files their Unix
-  mode or `0o644`; the name comes from the program's stem. The `Files` trait gains `read_at`
+  Its program is its one `.exe`, a bundle's program (the file in `X.app/Contents/MacOS/` that
+  `CFBundleExecutable` in the bundle's XML `Info.plist` names, else `X.app/Contents/MacOS/X`),
+  or extensionless ELF outside any bundle's `Contents`; several need `--entry <path>` (`app
+  install --entry`), none is `it holds no program EggOS can run`. An archive with an entry whose
+  first part is `app.manifest`, `app.manifest.tmp` or `app.icon` (any case) is refused, at plan
+  time and again while extracting, so it can never plant the manifest or the icon the installer
+  writes (D133's "a half-installed app has no manifest" holds); one whose files add up to more
+  than 4 GiB once extracted is refused too. The whole archive is extracted into
+  `/Applications/<name>/`, an entry a step, parent folders made as needed, the program
+  `0o755`, other files their Unix mode or `0o644`; the name comes from the program's stem.
+  The `Files` trait gains `read_at`
   (`pread64` on Linux; other implementations say `EOPNOTSUPP`), and `reader.rs` gives one
   random-access `Reader` over files and bytes, so the same code reads archives, programs,
   `.icns` files and test bytes. Files offers `Install...` on a `.zip` (a new `Kind::Archive`).
@@ -9407,9 +9413,13 @@ the license, by an explicit instruction recorded here.
   taskbar, switcher), blended `s + (d * (255 - a) + 127) / 255` over what is beneath, with no
   badge. Everything else about icons is unchanged.
 - **Three front ends (D22).** GUI: the shell's icons, Files' `Install...` on a `.zip`, the
-  installer window's `Inside:` line. CLI: `app install [--entry <path>] <file>.zip`, `app list`'s
-  fifth column (`app.icon` or `-`). MCP: `app_install` takes a `.zip` and `app_list` answers
-  `app list`'s lines, the icon column included.
+  installer window's `Inside:` line, and for a `.zip` holding several programs the window's
+  chooser listing them by their paths inside it (four at most, `and N more not listed`), each
+  giving its prompt; `app install --window --entry <path>` goes straight to that program's
+  prompt. CLI: `app install [--entry <path>] <file>.zip`, `app list`'s fifth column (`app.icon`
+  or `-`). MCP: `app_install` takes a `.zip` and an optional `entry` (its twin `app install
+  --entry <entry> -- <path>`), and `app_list` answers `app list`'s lines, the icon column
+  included.
 - **Points decided by the build loop.** The shell keeps an own icon on the kernel's heap in the
   app's catalogue entry, allocated only for an app that has one, instead of Fable's 416 KiB
   static pool: an unused feature costs nothing (CLAUDE.md notes 3 and 8). The icon is made after
@@ -9424,11 +9434,24 @@ the license, by an explicit instruction recorded here.
   compares the desktop's and the launcher's frames. `win-paint.exe` stays without icon
   resources (no resource compiler in the build); PE icons are host-tested on hand-built
   resource trees.
+- **Review round 1 (build loop).** Reserved names and the 4 GiB limit above; `CFBundleExecutable`
+  for zipped bundles (Firefox's `Contents/MacOS/firefox`, Electron's); the chooser and the MCP
+  `entry` above. A Windows program's icon search reads the section table once, looks at 64 of
+  a group's entries at most and stops once 32 candidates are found, so a crafted `.exe` cannot
+  hold the installer at its uncancellable icon step; an `.icns` `ic04`/`ic05` entry shorter than
+  its `ARGB` mark is skipped. The kernel reads `app.icon` through `vfs::resolve`, which cannot
+  follow a symbolic link: the kernel's VFS has none (`NodeKind`), and EggFS stores none (D131).
 - **Not yet.** `app icon` and `app_icon`; icons in the installer's dialogs, title bars and
   Files; native 2x images; binary property lists, asset catalogues, JPEG 2000 and `it32`;
   interlaced PNGs; 16-bit and compressed bitmap entries; `.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`;
-  ZIP64 and encrypted entries; the installer window's chooser for a `.zip` with several
-  programs and `--entry` in the MCP tool.
+  ZIP64 and encrypted entries; extracting into a temporary folder renamed into place before the
+  manifest (refusing the reserved names keeps the manifest the installer's own); checking a
+  `.zip`'s size against the disk's free space (the `Files` trait has no free-space call; the
+  4 GiB limit stands in) and refusing entries whose data overlap; extracting a large entry over
+  several steps so `Cancel` answers during it (inflate is not resumable yet); decoding a PNG
+  icon once for both sizes (it is decoded once per size) and a table-driven inflate (it decodes
+  bit by bit), for the weekly performance pass; a bundle program found from a binary
+  `Info.plist`.
 
 ## D149 The Text Editor: a native GUI editor that Files opens text in, `edit`, `app open "Text Editor"` and `edit_open` (v0.3.0 item 46; replaces old item 24, the terminal `edit`; extends D133, D135, D137, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/text-editor-v0.3.md`; the command's shape, headless installs, the MCP tool and the built-in name decided by research)
 - **What.** Item 46: "a native GUI editor (open, save, find) that Files uses for text; it
@@ -9531,11 +9554,27 @@ the license, by an explicit instruction recorded here.
   (`1 of 2`), Esc, Ctrl+S and the close control each give the frame the host draws, and `cat`
   prints the saved text; the MCP boot opens the share's text file with `edit_open` and sees its
   window in `wm_list`.
+- **Review round 1 (build loop).** The Open bar asks `Save changes to <name>?` before it
+  replaces a document changed while the bar shows (a click in the text lets one type with the
+  bar up), keeping the path typed for after the answer; a path with nothing at it is a notice
+  there, never a new document. The scroll bars' thumb positions and thumb drags (the editor's
+  and the toolkit's `scroll_bar` and list drags) compute in 64 bits, so a 4 MiB line or
+  hundreds of thousands of lines keep the thumb in its track instead of overflowing. Typing a
+  character with nothing selected widens the known widest line by the caret's line instead of
+  measuring the whole document again.
 - **Not yet.** Word wrap; a file picker; a clipboard shared with other programs; changing the
   line ending or the encoding; a read-only mode for files that are not text; auto-indent and
   indenting a selection; replace; go to line; syntax colouring; reloading a file changed on
   disk; one window per file (opening a file twice gives two windows); a terminal editor; text
-  in Egg Mono only (other characters show `?`).
+  in Egg Mono only (other characters show `?`). From review round 1: a file with mixed line
+  endings is saved all CRLF once it holds one `\r\n` (documented in `document.rs`); saving
+  removes a leftover `.<name>.saving` without asking, replaces a symbolic link by a regular
+  file and breaks hard links (the rename-over save); Backspace, Delete, Enter and pastes still
+  measure the widest line over the whole document (only typing a character is incremental);
+  Option and AltGr characters (the keymap, `drivers/src/input/keymap.rs`, has no Option or
+  AltGr layer: Alt with a letter gives the plain letter, so the editor keeps ignoring Alt
+  combinations rather than typing that letter); the shell tells an editor window by its title
+  (` - Text Editor`), not by the program that owns it.
 
 ## D150 Real time: real-time clock drivers (CMOS, PL031, Goldfish), the wall clock as the monotonic clock plus an offset, setting the clock, `date`, `hwclock`, `/proc/driver/rtc`, Settings' `Date & time` and `clock_get`/`clock_set` (v0.3.0 item 29; extends D73, D75, D110, D133, D136, D137) — Decided by the build loop (design by Claude Fable, `docs/ux/date-time-v0.3.md`; the points below marked so decided by research)
 - **Why.** Item 29: the wall clock started at 1970 at boot (D73), so `date`, file times, the

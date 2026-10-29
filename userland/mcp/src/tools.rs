@@ -437,10 +437,11 @@ pub const TOOLS: [Tool; 19] = [
         title: "Install an app",
         description: "Installs an app from a file in /media/host (the host's shared folder) \
                       into /Applications, as `app install` does: a Windows .exe, a macOS .app, \
-                      a Linux program, or a .zip holding one of them (extracted whole). \
-                      Needs the install grant.",
-        input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"The app's file, bundle or .zip in /media/host."}},"required":["path"],"additionalProperties":false}"#,
-        arguments: &["path"],
+                      a Linux program, or a .zip holding one of them (extracted whole); a .zip \
+                      holding several needs entry, the path of one of them inside it, as the \
+                      refusal lists them. Needs the install grant.",
+        input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"The app's file, bundle or .zip in /media/host."},"entry":{"type":"string","description":"For a .zip holding several programs: the path inside it of the one to install (an .app bundle's own path names its program)."}},"required":["path"],"additionalProperties":false}"#,
+        arguments: &["path", "entry"],
         kind: Kind::AppInstall,
         grant: Some(Grant::Install),
         confirmation: Confirmation::Never,

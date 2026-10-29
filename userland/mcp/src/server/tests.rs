@@ -909,6 +909,25 @@ fn app_tools_run_app_with_the_name_after_two_dashes() {
         harness.system.runs.last().unwrap(),
         &["/bin/app", "install", "--", "/media/host/win-paint.exe"]
     );
+    let answer = harness.call(
+        6,
+        "app_install",
+        r#"{"path":"/media/host/tools.zip","entry":"bin/a.exe"}"#,
+    );
+    assert!(!is_error(&answer));
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/app",
+            "install",
+            "--entry",
+            "bin/a.exe",
+            "--",
+            "/media/host/tools.zip"
+        ]
+    );
+    let (_, _, logged, _) = last_record(&harness);
+    assert!(logged.contains(r#""entry":"bin/a.exe""#), "{logged}");
     let answer = harness.call(2, "app_open", r#"{"name":"win-paint"}"#);
     assert!(!is_error(&answer));
     assert_eq!(
