@@ -9078,3 +9078,83 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** A size option in the scripts; `cargo xtask run` with no screen; showing an
   offscreen desktop on demand; changing the size while EggOS runs; the PowerShell script run on
   CI (D116's follow-up; its text is tested).
+
+## D145 Windows programs on the C runtime: `vcruntime140` and the Universal C Runtime (`ucrtbase`, the `api-ms-win-crt-*` API sets) in the Windows layer, printf shared with the macOS layer, and `eggpad.exe` built by MSVC (v0.3.0 item 43; extends D118, D121, D124, D129) — Decided by the build loop
+- **What.** Programs MSVC builds with `/MD`, the default for C and C++ projects, link the C
+  runtime's startup code into themselves and import the rest from `vcruntime140.dll` and the
+  Universal C Runtime through its API sets (`api-ms-win-crt-runtime-l1-1-0.dll`, `-stdio-`,
+  `-heap-`, `-string-`, `-convert-`, `-utility-`, `-time-`, `-locale-`, `-math-`). The Windows
+  layer now provides both, so such programs, console or GUI, run on x86_64 (x64) and aarch64
+  (ARM64). The startup's own kernel32 imports (`IsDebuggerPresent`,
+  `IsProcessorFeaturePresent`, `InitializeSListHead`, `GetStartupInfoW`, the
+  unhandled-exception filter and `RtlCaptureContext`, `RtlLookupFunctionEntry`,
+  `RtlVirtualUnwind`) are added to kernel32. Lists: docs/windows-programs.md.
+- **Where.** `userland/windows/src/win32/crt/`, one module per area (runtime, startup, heap,
+  string, stdio, utility), in the same export-table style as kernel32 and user32: `library.rs`
+  gains `Library::VcRuntime` (`vcruntime140`, `vcruntime140_1`) and `Library::Ucrt`
+  (`ucrtbase` and every `api-ms-win-crt-*` name, as `api-ms-win-core-*` maps to kernel32).
+  Logic that needs no system is pure with host tests: `stream.rs` (a `FILE`'s buffer, text
+  mode and positions over a `Backing`) and `c_text.rs` (`strtol`'s family). It stays inside the
+  Windows layer, so it costs nothing until a Windows program runs (D18).
+- **printf is shared.** The macOS layer's `printf` engine (D120) moves unchanged into a new
+  `no_std` crate, `userland/c-format` (`eggos-c-format`), used by both layers instead of a
+  second copy. A `Dialect` holds where the two C libraries differ: `Darwin` keeps `%@`, `%C`
+  and a 64-bit `l`; `Windows` has a 32-bit `l` (LLP64), `I64`, `I32` and `I`, wide strings and
+  characters (`%S`, `%C`, `%ls`, `%ws`, `%lc`; `%hs`, `%hc` narrow) read as UTF-16, `%p` as 16
+  upper-case hex digits, and, for the wide functions with Microsoft's own specifiers (the
+  default `_CRT_INTERNAL_PRINTF_LEGACY_WIDE_SPECIFIERS`), `%s` and `%c` wide. `printf` itself
+  is inline in Microsoft's headers; programs import `__stdio_common_vfprintf` and its family,
+  whose `va_list` is a pointer to 8-byte slots on x64 and ARM64 alike. The wide functions
+  format UTF-8 and write UTF-16.
+- **Streams.** A `FILE *` is a stream in a table of 64 (a pointer not from `fopen` is `EBADF`),
+  with a 4 KiB buffer; one lock covers the table and every operation. Text mode, Windows'
+  default without `b` (and `_fmode`), writes `\n` as `\r\n`, reads `\r\n` as `\n` and stops at
+  Ctrl+Z, as Microsoft documents for `fopen`; `ftell` and `fseek` count the file's own bytes in
+  either mode. `stdin`, `stdout` and `stderr` are descriptors 0 to 2, made on first use: a GUI
+  program's are missing where they would be the terminal, as its standard handles are (D129);
+  a terminal's `stdout` is line buffered, `stderr` unbuffered. `exit` runs the `atexit` table,
+  then flushes every stream.
+- **`errno`** lives in each thread's TEB, past the documented part (after the thread object),
+  so threads have their own without a TLS slot. Linux's numbers up to `ERANGE` (34) are
+  Windows' too; others become `EINVAL`.
+- **Invalid parameters.** Microsoft documents both the default handler, which ends the
+  program, and what each function returns when a handler lets it go on. The
+  layer's functions return that documented error (`EINVAL`, `ERANGE`, an emptied destination
+  for the `_s` functions) instead of ending the program, since no handler can be installed yet
+  and a program that checks its results keeps working; `_invalid_parameter_noinfo` itself,
+  which programs and headers call when they decided to stop, ends the program with
+  `STATUS_INVALID_CRUNTIME_PARAMETER`. `abort` and `terminate` end it with status 3, with a line
+  on standard error.
+- **Exceptions.** `__C_specific_handler`, `__current_exception` and the unwinding functions
+  exist because every program's startup imports them; with no exception dispatch yet (D121's
+  "Not yet"), they are never reached: `RtlLookupFunctionEntry` finds no entry, so the startup's
+  failure path ends the process. `IsProcessorFeaturePresent` answers the baseline features
+  only (SSE, SSE2, RDTSC and NX on x86_64; NX, NEON and ARMv8 on aarch64) and not
+  `PF_FASTFAIL_AVAILABLE`, so a failed security check takes the documented path through the
+  filter to `TerminateProcess` rather than a trap.
+- **`rand`** is our own xorshift generator (values in `0..=RAND_MAX`), not Microsoft's sequence;
+  no program may rely on a sequence across C libraries.
+- **The test program is C, and test data** (as D142 decided for Objective-C): item 43's check is "our own C notepad built with MSVC", and only a real MSVC
+  build shows what MSVC's startup imports and how it calls them. `tests/windows-crt/eggpad.c`
+  is our own source, never shipped; the repository's "all Rust" rule covers EggOS, not the
+  foreign programs it runs. `cargo xtask windows-programs` builds it on a Windows host with
+  `cl.exe /MD /O2 /W3 /WX` for x64 and ARM64, found through `vswhere` and set up by
+  `vcvarsall.bat`; CI's new `windows-programs` job (windows-latest, pull requests only, like
+  `macos-programs`) uploads them and the QEMU jobs wait for them through
+  `EGGOS_WINDOWS_PROGRAMS`; without them (a push to `main`, a host that is not Windows) the boot
+  test is skipped and says so, and in CI a missing set fails.
+- **Check.** `WindowsCrt` boot test on x86_64 and aarch64: the shell writes
+  `/tmp/note.txt`, runs `eggpad.exe 'C:\tmp\note.txt'`; the display is compared with the host's
+  render as eggpad shows the file and its size (`swprintf`), three typed letters and Enter
+  appear, Ctrl+S (`WM_CHAR` 0x13) saves through `_wfopen`, `fwrite` and `ftell` and the status
+  line says `Saved 27 bytes` (two line feeds became CRLF), and the close control closes it;
+  then its standard output (`printf`, `%zu`, `%ld`, `%ls`, the `atexit` handler) and `cat` of
+  the saved file. eggpad uses only item 32's window, GDI, key and char messages, so it does not
+  depend on item 42.
+- **Not yet.** `scanf` and its family, `getenv`, `setlocale` and locales other than "C",
+  `signal`, `setjmp`/`longjmp`, the math library, `fgetwc`/`fputwc` and wide streams
+  (`_setmode`), low-level I/O (`_open`, `_read`), `rename`, `tmpfile`, `_set_invalid_parameter_handler`,
+  C++ (`__CxxFrameHandler`, `_CxxThrowException`, `operator new` comes from the program but its
+  exceptions do not), `vcruntime140_1`'s functions, static CRT (`/MT`) programs' extra imports
+  (most are the same kernel32 functions), MinGW's `msvcrt.dll`; per-stream locks (one lock
+  serialises all stdio, so a thread blocked reading `stdin` holds up the others).

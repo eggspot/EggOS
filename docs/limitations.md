@@ -84,9 +84,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
   `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124, D129):
-  threads, waits, locks, directory listing and UTF-16 strings work, and GUI programs open
-  windows, paint them with GDI, get the mouse and keyboard and show message boxes. Programs on
-  a C/C++ runtime or Rust's std, other processes, other DLLs, structured exception handling,
+  threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
+  windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
+  programs built by MSVC on its C runtime (`/MD`) run (D145). Programs on a C++ runtime,
+  MinGW's or Rust's std, `scanf`, locales, the math library, other processes, other DLLs, structured exception handling,
   the system's controls (buttons, edits), menus, dialogs from resources, timers, fonts other
   than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
   riscv64 do not run yet; names are case-sensitive and local time is UTC.

@@ -112,6 +112,19 @@ holds what used to be written in them.
   as the window appears, after a click on its ellipse, a key, Space (the message box), Enter,
   F2 (a second thread's message box), Enter and a click on the close control, then checks `WIN-PAINT status 0` and the program's lines
   in the file; on riscv64, `Exec format error` and 126 (D129).
+- **The Windows C runtime boot test** (x86_64 and aarch64) adds `tests/windows-crt`'s
+  `eggpad.exe`, our own C notepad built by MSVC's `cl.exe` as a `/MD` program (x64's on x86_64,
+  ARM64's on aarch64), as `/bin/eggpad.exe` with the Windows layer, boots with the display,
+  writes `/tmp/note.txt` from the shell and runs `eggpad.exe 'C:\tmp\note.txt'` with its output
+  redirected to `/tmp/eggpad.log`. It compares the display with the host's render (eggpad's
+  lines and status painted by `eggos-windows-gui`'s text) as the file appears, after typing
+  `abc` and Enter, after Ctrl+S (`Saved 27 bytes`) and after a click on the close control, then
+  checks `EGGPAD status 0`, eggpad's lines in the log and the saved file's two lines. The
+  programs come from `EGGOS_WINDOWS_PROGRAMS` (a folder of `<program>-<x64|arm64>.exe` files)
+  or, on a Windows host with Visual Studio's C++ tools, `cargo xtask windows-programs` builds
+  them (`vswhere`, `vcvarsall.bat`, `cl /MD /O2 /W3 /WX`); otherwise the test is skipped with a
+  message, but fails when `CI` is set. CI builds them in its `windows-programs` job, and the
+  `qemu` jobs wait for that artifact before their boot tests (D145).
 - **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
   `no_std` static library defining `main`, for `aarch64-linux-android` or
   `x86_64-linux-android`, links it with the Android NDK's clang (`--target=<triple>29 -static`,
@@ -261,8 +274,8 @@ holds what used to be written in them.
 - **Parallel jobs, a final `check`.** `changes` detects a docs-only change; then, at the same time:
   `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
-  architecture), `macos-programs` (the Mach-O test programs) and, on PRs, `hosts` (macOS and
-  Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
+  architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
+  programs, D145) and, on PRs, `hosts` (macOS and Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other
   job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
@@ -273,8 +286,8 @@ holds what used to be written in them.
 - **Jobs run in the CI image** (below), with QEMU, OpenSBI and the pinned toolchain preinstalled
   (`packages: read` to pull it). CI always runs in `main`'s image, so a change that needs something
   new in the image lands in its own PR first. The `qemu` jobs mount the runner's Android NDKs for
-  the Android programs boot test (D119) and, on PRs, wait for the `macos-programs` artifact before
-  their boot tests (D120).
+  the Android programs boot test (D119) and, on PRs, wait for the `macos-programs` and
+  `windows-programs` artifacts before their boot tests (D120, D145).
 - **Benchmarks are report-only (D122).** Each `bench` job runs `cargo xtask bench --arch <arch>
   --report-only`: every result is compared with `benchmarks/baseline.txt` and written to the job
   summary and to `target/bench/report.json` and `report.md`; the job fails only for a result more
