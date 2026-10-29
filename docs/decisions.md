@@ -10711,3 +10711,83 @@ the license, by an explicit instruction recorded here.
   only after 500 ms); a Windows list box's items as list items (`LB_SETCURSEL` for `select`)
   and a check box's checked state; `focus` and `set-text` on windows of a thread other than
   the one reading the records.
+
+## D163 The Egg command model, slice 2: every command in the registry with examples run as tests, JSON from the commands that return records or an object, coded errors from `settings`, and the MCP tools `settings_list`, `settings_get` and `settings_set` (the owner's approved design of 2026-10-28, slice 2; extends D22, D132, D136, D137, D157, D160) — Decided by the build loop (the settings tools' grant and confirmation decided by research)
+- **Why.** After slice 1 only the commands agents use were in the registry: `help` knew 28 of
+  them, the other utilities had no JSON and their own option parsers, `settings` answered in
+  plain text and agents had no tool for the settings at all (docs/mcp.md "Not yet").
+- **The registry** (`userland/commands`). `CommandDefinition` gains `examples` (`Example {line,
+  output, status}`, `example(line, output)`): command lines with what they print and their exit
+  status. `COMMANDS` holds all 59 commands EggOS ships, sorted by words: the 34 core utilities,
+  `app install|list|open|uninstall`, `edit`, `settings` (the window) and `settings
+  get|list|set`, and `wm`'s 17 verbs. New record and object fields: `WC_FIELDS` (`path`,
+  `null` for standard input, `lines`, `words`, `size_bytes`), `FREE_FIELDS` (`total_bytes`,
+  `used_bytes`, `free_bytes`, `available_bytes`, `reserve_bytes`), `UPTIME_FIELDS`
+  (`uptime_ms`), `UNAME_FIELDS` (`kernel_name`, `node_name`, `kernel_release`,
+  `kernel_version`, `machine`, `operating_system`), `IP_FIELDS` (`ip -j` as shipped) and
+  `SETTING_FIELDS` (`key`, `value`, `settable`); `HELP_FIELDS` gains `examples`. New error
+  codes (44 in all): `no_such_setting` (not_found, fix `settings list`), `setting_read_only`
+  (read_only, fix `settings list`), `invalid_value` (usage), `not_applied` (failed). Tools
+  `settings_list`, `settings_get` (`key`: 1 to 64 lowercase letters, digits, dots and
+  underscores) and `settings_set` (`key`, `value`: 1 to 64 bytes without control characters);
+  TOOLS 39.
+- **The tests.** The registry test now requires a definition for every kept name (so for every
+  command), declares `usage` for every command but `echo`, `true` and `false` (they take any
+  words), checks that each example starts with its command's words and that `--json` appears
+  only in examples of commands with a JSON form, and requires an example for every reading
+  command a fake can show (not the network, the clock, windows, apps or `help`). The core
+  utilities run every example of every utility against their fake system (a home folder
+  holding `notes.txt`, `/proc/ps`, `/proc/meminfo`, `/proc/uptime`) and check every utility has
+  a definition; Settings runs its commands' examples against `Facts::example()`. `help <words>`
+  shows the examples with their output (and an exit status other than 0), `help --json` writes
+  them.
+- **The CLI.** `head`, `tail`, `grep`, `wc`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `ping`,
+  `free`, `uptime` and `uname` read their options from their definitions (`parse_defined`); the
+  old letters-only parser is gone. `wc`, `free`, `uptime` and `uname` take `--json`; `ip -j`
+  now also writes its errors as JSON. Usage errors from these utilities (a missing operand, a
+  bad count, an extra operand, an invalid interval) carry the `usage` code, `cp`/`mv`/`rm`/
+  `mkdir`/`touch`'s file errors the errno's code, `cp`'s target that is not a folder
+  `not_a_folder`. Text output and exit statuses are unchanged. `settings` moved its verbs into
+  the library (`eggos_settings::command`: `run`, the `Machine` trait, `USAGE`), so host tests
+  run them: `settings list [--json]`, `settings get [--json] [--] <key>`, `settings set [--]
+  <key> <value>`; errors are coded (in text the message and `  try: settings list` where it
+  fixes it; with `--json` one `{"error":{...}}` line on standard error), exit statuses as
+  before (1, 2 for a usage error or an invalid value). `settings` now depends on
+  `eggos-commands` and `eggos-mcp` (for `JsonWriter` and `write_error`, as `app` does).
+- **MCP.** `settings_list` (twin `settings list`, no grant), `settings_get` (`settings get --
+  <key>`, no grant) and `settings_set` (`settings set -- <key> <value>`, grant `run`, effect
+  `change`, idempotent, no confirmation); the audit log records `key` and `value`. The MCP
+  boot's first session calls `settings_list` and `settings_get` (`keyboard.layout`) as
+  reading tools and refuses `settings_set` for its grant; the second sets Windows' layout with
+  `settings_set` and reads the profile the macOS card set with `settings_get` (GRANTED_TOOLS
+  28, TWIN_CALLS 10).
+- **Front-ends (D22).** CLI and MCP from one definition; each new command's `surface` names its
+  GUI (Files' Copy, Paste, Rename, New folder and Delete permanently; Settings' About and Date
+  & time; the Text Editor; the desktop's Power off and Restart; Settings' panes) or why it has
+  none (the network commands wait for the designed Network pane; `echo`, `true`, `false`,
+  `sleep`, `sync`, `touch`, `wc` and `halt` are for scripts).
+- **Performance and size (D24).** No kernel path changes. The registry is const data; the
+  core utilities grow by the new definitions and examples (text), `settings` by the registry
+  part it uses and the JSON writer; the build phase measures `coreutils`, `settings` and
+  `eggmcpd` before and after.
+- **Decided by research.** `settings_set` needs the `run` grant, not `write`: the value is saved
+  below `/home/root`, but it changes the desktop live, and the keys to come (network, display,
+  date and time) change how the machine behaves, which is what `run` covers; no confirmation
+  (its effect is `change`, reversible, like `clock_sync`), `idempotentHint` true;
+  `settings_list` and `settings_get` need no grant, like `clock_get` (a key holding a secret,
+  such as a Wi-Fi passphrase, must be redacted or need `view` when one comes).
+- **Decided without research.** The field names above (`size_bytes` for `wc`'s byte count,
+  bytes rather than KiB in `free --json`, `uptime_ms` from whole seconds); `wc --json` writes
+  no total record; `settings set` and `settings` (the window) take no `--json`; `nslookup`'s
+  `-port=` and `-timeout=` and `date`'s `+format` are described in the definitions' text, not
+  as options, since the model's options are `-x` and `--name`; `halt`, `poweroff` and `reboot`
+  are `destroy` (unsaved work is lost); `sync` is `change`; the examples' fixture.
+- **Not yet.** `parse_defined` in `date`, `hwclock`, `ip`, `nslookup`, `fetch`, `sleep`,
+  `echo`, `sync`, the power commands, `cat`, `tee`, `trash`, `agentlog` and `wm`'s verbs (their
+  own parsers take the same options); `eggsh`'s built-ins as definitions (they are only named);
+  coded JSON errors from `app install|open|uninstall`; codes for an MCP twin that fails rather
+  than being refused (twins run in text mode: they would need a way to ask for coded text
+  errors); examples for the network, clock, window and app commands (their fakes need fixed
+  answers first); a done text for `settings_set` (its result is the command's empty output);
+  MCP tools for the file utilities (agents use `run`); slice 3 (`--limit`, `--after`,
+  `--dry-run`, the security review); `outputSchema`.

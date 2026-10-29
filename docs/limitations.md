@@ -192,12 +192,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
   they are command-line only, with no GUI or MCP front-end yet (`wm` is the window
   capability's CLI; its GUI is the desktop's own chrome and keys).
-- **The command model, slice 1 (D160, docs/ux/command-model.md).** Only the commands agents
-  use are in the registry: `ls`, `cat`, `ps`, `wm`, `app`, `agentlog`, `tee`, `trash` and
-  `help`. `--json` exists on `ls`, `ps`, `wm list`, `app list`, `agentlog` and `help`; the
-  other utilities, `settings` and `eggsh`'s built-ins have no JSON form, no coded errors in
-  JSON and no `help` entry yet (slice 2), and there is no paging (`--limit`, `--after`) or
-  `--dry-run` (slice 3). Long options come from the registry only for `ls`, `ps` and `help`.
+- **The command model, slices 1 and 2 (D160, D163, docs/ux/command-model.md).** Every command
+  is in the registry, but `eggsh`'s built-ins are only named there (the shell does not link it).
+  `--json` exists where a command's output is records or an object (`ls`, `ps`, `wm list`, `wm
+  show`, `app list`, `agentlog`, `help`, `wc`, `free`, `uptime`, `uname`, `settings list` and
+  `get`, `ip -j`); `grep`, `head`, `date`, `ping`, `fetch` and the other text or content
+  commands have none, so their errors are coded only in the text's wording. `date`, `hwclock`,
+  `ip`, `nslookup`, `fetch`, `cat`, `tee`, `trash`, `agentlog` and `wm`'s verbs keep their own
+  option parsers; `app install|open|uninstall` write text errors only. Examples exist for the
+  commands a fake can show (not for the network, the clock, windows or apps). There is no
+  paging (`--limit`, `--after`) or `--dry-run` (slice 3).
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
 - The keyboard layout is US only (D113).

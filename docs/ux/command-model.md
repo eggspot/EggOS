@@ -161,7 +161,7 @@ safety; the products' existing checks still enforce it.
 ## Slices
 
 1. JSON and clear errors from the commands agents use (EggOS D160).
-2. JSON, the shared errors, examples and `help --json` from every command.
+2. JSON, the shared errors, examples and `help --json` from every command (EggOS D163).
 3. Previews and pages: `--limit`, `--after`, `confirm` checks, `--dry-run` where exact, a
    security review.
 4. Apps' own actions (M14) and `tools.listChanged`.
@@ -170,12 +170,16 @@ Between slices 1 and 2, EggOS item 48: windows as an element tree (`wm show`, `w
 
 ---
 
-## EggOS's tables (slice 1, D160)
+## EggOS's tables (slices 1 and 2, D160 and D163)
 
 The registry is `userland/commands` (`eggos-commands`, `no_std`, no allocator):
 `COMMANDS`, `TOOLS`, `errors`, `CORE_VERBS`, `NOUN_VERBS`, `KEPT_NAMES`, `SHELL_BUILTINS`. The
-core utilities read their options and `help` from it, `app` its JSON form, and the MCP server
-its tools, schemas, annotations, refusal codes and `instructions`. `eggsh` does not link it.
+core utilities read their options, `help` and examples from it, `app` its JSON form, `settings`
+its verbs' errors, and the MCP server its tools, schemas, annotations, refusal codes and
+`instructions`. `eggsh` does not link it. The registry test fails on a kept name without a
+definition (D163), and each example runs as a test against the fakes of the program that runs
+it (the core utilities' fake system with a home folder holding `notes.txt`; Settings' example
+facts).
 
 **Kept names:** `agentlog`, `app`, `cat`, `cp`, `date`, `echo`, `edit`, `false`, `fetch`,
 `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ls`, `mkdir`, `mv`, `nslookup`,
@@ -187,11 +191,12 @@ its tools, schemas, annotations, refusal codes and `instructions`. `eggsh` does 
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
 item 48; `show` is a core verb), `drag` (D162).
 
-**Commands in the registry:** `agentlog`, `app install`, `app list`, `app open`, `app
-uninstall`, `cat`, `help`, `ls`, `ps`, `tee`, `trash`, `wm act` (D161), `wm capture`, `wm
-click`, `wm close`, `wm drag` (D162), `wm focus`, `wm list`, `wm maximise`, `wm menu`, `wm minimise`, `wm move`,
-`wm press`, `wm restore`, `wm scroll`, `wm show` (D161), `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`, `ping`,
-`nslookup`, `fetch` and `edit`, which tools run already, first).
+**Commands in the registry** (59, D163: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `cp`, `date`, `echo`, `edit`, `false`,
+`fetch`, `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ls`, `mkdir`, `mv`,
+`nslookup`, `ping`, `poweroff`, `ps`, `reboot`, `rm`, `settings` (the window), `settings
+get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
+`wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type`.
+`echo`, `true` and `false` take any words and declare no usage error.
 
 **JSON forms** (errors as one JSON line on standard error):
 
@@ -203,7 +208,13 @@ click`, `wm close`, `wm drag` (D162), `wm focus`, `wm list`, `wm maximise`, `wm 
 | `wm show --json` | `id`, `parent` (`null` for the root), `role`, `x`, `y`, `width`, `height`, `flags` (list), `name`, `value`: one element of the window's tree (D161) |
 | `app list --json` | `name`, `source`, `architecture` (or `null`), `program`, `icon` (or `null`) |
 | `agentlog --json` | `called_at`, `call`, `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log |
-| `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `surface`, one per command |
+| `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
+| `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
+| `free --json` | one object: `total_bytes`, `used_bytes`, `free_bytes`, `available_bytes`, `reserve_bytes` (or `null`) (D163) |
+| `uptime --json` | one object: `uptime_ms` (D163) |
+| `uname --json` | one object: `kernel_name`, `node_name`, `kernel_release`, `kernel_version`, `machine`, `operating_system` (D163) |
+| `settings list --json`, `settings get --json` | `key`, `value`, `settable`: one per setting, or one object (D163) |
+| `ip -j` | one object: `state`, `adapters` (D157, as shipped) |
 
 **Error codes:**
 
@@ -234,12 +245,19 @@ click`, `wm close`, `wm drag` (D162), `wm focus`, `wm list`, `wm maximise`, `wm 
 | `no_such_app`, `app_exists`, `not_an_app` | not_found, exists, usage | `app` | `app list` for the first |
 | `not_in_trash` | not_found | `trash -r` | `trash -l` |
 | `no_such_command` | not_found | `help` | `help` |
+| `no_such_setting` | not_found | `settings get`, `settings set` (exit 1; D163) | `settings list` |
+| `setting_read_only` | read_only | `settings set`: the key reports a fact (exit 1) | `settings list` |
+| `invalid_value` | usage | `settings set`: a value the setting does not take, which the message lists (exit 2) | |
+| `not_applied` | failed | `settings set`: saved, but the desktop did not take it now (exit 1) | |
 | `path_not_allowed`, `needs_grant`, `needs_confirmation`, `declined_by_user`, `confirmation_failed`, `confirmation_timed_out`, `question_pending`, `target_changed`, `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed` | refused, needs_grant, needs_confirmation, declined, failed, timeout, busy, busy, failed, too_large, usage, failed | the MCP server's refusals, in `structuredContent.error` | |
 
 **Tools:** the 26 shipped tools keep their names, arguments, results and annotations (the
 parity test compares each schema byte for byte with the shipped one), and D160 adds `wm_focus`,
 `wm_move` (`x`, `y`), `wm_size` (`width`, `height`), `wm_minimise`, `wm_maximise`,
-`wm_restore` and `wm_close`: effect `change`, grant `run`, idempotent but for `wm_close`. D161
+`wm_restore` and `wm_close`: effect `change`, grant `run`, idempotent but for `wm_close`. D163
+adds `settings_list` and `settings_get` (`key`; effect `read`, no grant) and `settings_set`
+(`key`, `value`; effect `change`, grant `run`, idempotent, no confirmation: decided by
+research). D161
 adds `wm_show` (effect `read`, grant `view`) and `wm_act` (`element`, `action`, `text`;
 effect `control`, grant `run`). D162 adds `wm_drag` (`x`, `y`, `to_x`, `to_y`, `button`;
 effect `control`, grant `run`) and two optional arguments to shipped tools, `wm_click`'s
@@ -254,4 +272,8 @@ Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launch
 the Agent chip for `agentlog`), or why there is none (`ps` waits for a task manager; `wm
 capture` and the input verbs are for agents, people use the window itself; `wm show` and `wm
 act` likewise; `help` describes the
-command line).
+command line). D163's commands name theirs too: Files for `cp`, `mv`, `rm` and `mkdir`, Settings'
+About for `free`, `uptime` and `uname`, Date & time for `date` and `hwclock`, the Text Editor
+for `head`, `tail`, `grep` and `edit`, Settings' panes for `settings`, the desktop's Power off
+and Restart; the network commands wait for the designed Network pane, and `echo`, `true`,
+`false`, `sleep`, `sync`, `touch`, `wc` and `halt` are for scripts.
