@@ -1,6 +1,6 @@
 //! The desktop and its window server's state (D115, D127, D128): the procedural wallpaper, the
-//! top bar with the system item, the clock, the chips of minimised windows and the power button
-//! and its menu, and the windows: the terminal's and those programs open through
+//! top bar with the system item, the focused app's main menu (D146), the clock, the chips of
+//! minimised windows and the power button and its menu, and the windows: the terminal's and those programs open through
 //! `/dev/window` (docs/windows.md), with their stacking, focus, chrome, dragging, resizing,
 //! maximising, minimising, close requests, the switcher, the window menu, the server's
 //! shortcuts and the pointer (docs/ux/desktop-v0.3-gui.md, sections 2 to 5).
@@ -10,8 +10,9 @@
 //! the events its clients get in an [`EventSink`], and [`Desktop::draw`] repaints any
 //! rectangle of a framebuffer from scratch, copying each window's content from its buffer
 //! through [`Contents`]. Every window table is fixed ([`protocol::MAX_WINDOWS`]); after
-//! [`Desktop::new`] only the catalogue of installed apps allocates, when the kernel hands the
-//! desktop a new one ([`Desktop::set_catalogue`]).
+//! [`Desktop::new`] only the catalogue of installed apps and the windows' main menus allocate,
+//! when the kernel hands the desktop a new catalogue ([`Desktop::set_catalogue`]) or a client
+//! sets a menu ([`Desktop::set_menu`]).
 
 mod catalogue;
 mod desktop_icons;
@@ -20,6 +21,7 @@ mod icons;
 mod injection;
 mod launcher;
 pub mod layout;
+mod main_menu;
 mod management;
 mod paint;
 mod pointer;
@@ -31,6 +33,8 @@ mod windows;
 
 #[cfg(test)]
 mod injection_tests;
+#[cfg(test)]
+mod main_menu_tests;
 #[cfg(test)]
 mod management_tests;
 #[cfg(test)]
@@ -73,6 +77,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use desktop_icons::DesktopIcons;
 use launcher::{Launcher, Notice};
+use main_menu::{MainMenu, OpenMainMenu};
 use management::Resize;
 use paint::{Canvas, egg_half_width, isqrt};
 use popups::{Switcher, WindowMenu};
@@ -276,6 +281,8 @@ pub struct Desktop {
     menu_hover: Option<usize>,
     switcher: Option<Switcher>,
     window_menu: Option<WindowMenu>,
+    main_menus: Box<[Option<Box<MainMenu>>]>,
+    open_main_menu: Option<OpenMainMenu>,
     pointer: (u32, u32),
     pointer_visible: bool,
     pointer_drawn: Option<(u32, u32, PointerShape)>,
@@ -355,6 +362,8 @@ impl Desktop {
             menu_hover: None,
             switcher: None,
             window_menu: None,
+            main_menus: (0..MAX_WINDOWS).map(|_| None).collect(),
+            open_main_menu: None,
             pointer: (0, 0),
             pointer_visible: false,
             pointer_drawn: None,
@@ -510,6 +519,7 @@ impl Desktop {
         self.focus == Some(TERMINAL_SLOT)
             && self.is_visible(TERMINAL_SLOT)
             && !self.menu_open
+            && self.open_main_menu.is_none()
             && !self.popup_open()
     }
 
@@ -1081,6 +1091,7 @@ impl Desktop {
                 self.destroy_slot(dialog, damage, events);
             }
         }
+        self.forget_main_menu(slot, damage);
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
         }
@@ -1287,6 +1298,7 @@ impl Desktop {
         if self.focus == focus {
             return;
         }
+        let menu_bar = self.menu_bar();
         if focus.is_some() {
             self.set_desktop_focused(false, damage);
         }
@@ -1319,6 +1331,7 @@ impl Desktop {
                 );
             }
         }
+        self.menu_bar_moved(menu_bar, damage);
     }
 
     fn focus_top(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -1448,6 +1461,7 @@ impl Desktop {
                 damage.add(self.menu());
             }
         }
+        self.main_menu_hover(x, y, damage);
         self.window_menu_hover(x, y, damage);
         self.launcher_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
@@ -1606,6 +1620,9 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
+        if self.main_menu_press(code, x, y, damage, events) {
+            return Action::None;
+        }
         if self.switcher_press(x, y, damage, events) || self.window_menu_press(x, y, damage, events)
         {
             return Action::None;
@@ -1815,6 +1832,10 @@ impl Desktop {
             self.window_menu_key(code, pressed, damage, events);
             return Action::None;
         }
+        if self.open_main_menu.is_some() {
+            self.main_menu_key(code, pressed, damage, events);
+            return Action::None;
+        }
         if !self.menu_open {
             if pressed
                 && let Some(shortcut) = shortcut(
@@ -1920,6 +1941,7 @@ impl Desktop {
             }
         }
         self.draw_panels(&mut canvas);
+        self.draw_main_menu(&mut canvas);
         if self.menu_open {
             canvas.shadow(self.menu());
             self.draw_menu(&mut canvas);

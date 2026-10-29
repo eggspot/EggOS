@@ -16,6 +16,12 @@ pub const QUEUE_CAPACITY: usize = 256;
 pub const TITLE_CAPACITY: usize = 64;
 /// The most rectangles one commit names.
 pub const MAX_COMMIT_RECTS: usize = 8;
+/// The longest pool of labels `SetMenu` carries, in bytes.
+pub const MENU_POOL_CAPACITY: usize = 248;
+/// The most menus one window's main menu holds.
+pub const MAX_MENUS: usize = 6;
+/// The most entries, items and separators, one menu holds.
+pub const MAX_MENU_ENTRIES: usize = 16;
 /// The size of one event record.
 pub const EVENT_SIZE: usize = 32;
 /// The `ioctl` type byte of every request (`_IOC_TYPE`).
@@ -50,6 +56,7 @@ pub mod size {
     pub const START_MOVE_OR_RESIZE: usize = 12;
     pub const CAPTURE_WINDOW: usize = 40;
     pub const SEND_INPUT: usize = 24;
+    pub const SET_MENU: usize = 256;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -79,6 +86,7 @@ pub mod request {
     pub const START_MOVE_OR_RESIZE: u32 = encode(WRITE, 18, size::START_MOVE_OR_RESIZE);
     pub const CAPTURE_WINDOW: u32 = encode(READ | WRITE, 19, size::CAPTURE_WINDOW);
     pub const SEND_INPUT: u32 = encode(WRITE, 20, size::SEND_INPUT);
+    pub const SET_MENU: u32 = encode(WRITE, 21, size::SET_MENU);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -136,6 +144,7 @@ pub mod event {
     pub const STATE_CHANGED: u16 = 11;
     pub const SCALE: u16 = 12;
     pub const OVERFLOW: u16 = 13;
+    pub const MENU_CHOSEN: u16 = 14;
 }
 
 /// The modifier bits of a `Key` record's `c`.
@@ -331,6 +340,11 @@ pub enum Request {
         code: u32,
         value: u32,
     },
+    SetMenu {
+        window: u32,
+        length: u32,
+        pool: [u8; MENU_POOL_CAPACITY],
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -379,6 +393,7 @@ impl Request {
             request::START_MOVE_OR_RESIZE => size::START_MOVE_OR_RESIZE,
             request::CAPTURE_WINDOW => size::CAPTURE_WINDOW,
             request::SEND_INPUT => size::SEND_INPUT,
+            request::SET_MENU => size::SET_MENU,
             _ => return None,
         })
     }
@@ -490,6 +505,15 @@ impl Request {
                 code: at(16),
                 value: at(20),
             },
+            request::SET_MENU => {
+                let mut pool = [0; MENU_POOL_CAPACITY];
+                pool.copy_from_slice(&bytes[8..8 + MENU_POOL_CAPACITY]);
+                Self::SetMenu {
+                    window: at(0),
+                    length: at(4),
+                    pool,
+                }
+            }
             _ => Self::GetWorkArea,
         })
     }

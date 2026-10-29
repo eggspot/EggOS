@@ -140,6 +140,16 @@ pub fn ioctl<P: Platform>(
                 desktop.set_title(client, window, title, damage)
             })?;
         }
+        Request::SetMenu {
+            window,
+            length,
+            pool,
+        } => {
+            let pool = pool.get(..length as usize).ok_or(Errno::EINVAL)?;
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                desktop.set_menu(client, window, pool, damage)
+            })?;
+        }
         Request::SetSize {
             window,
             width,

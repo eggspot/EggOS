@@ -76,6 +76,8 @@ pub(super) enum PanelItem {
     /// The dock's icon of the window in this slot: minimised, or of an app the catalogue
     /// cannot name.
     DockWindow(u8),
+    /// The macOS top bar's title of this menu of the main menu it shows.
+    MenuTitle(u8),
 }
 
 /// The panels' pointer state: the item under the pointer and since when, the one pressed,
@@ -378,6 +380,11 @@ impl Desktop {
         if self.layout.top_bar.is_some() || self.layout.taskbar.is_some() {
             item(PanelItem::Power, self.power_button());
         }
+        if let Some(bar) = self.menu_bar() {
+            self.for_each_menu_title(bar.window, |menu, rect| {
+                item(PanelItem::MenuTitle(menu as u8), rect)
+            });
+        }
         self.for_each_chip(|slot, rect| item(PanelItem::Chip(slot as u8), rect));
         self.for_each_taskbar_item(&mut item);
         self.for_each_dock_item(&mut item);
@@ -603,6 +610,10 @@ impl Desktop {
                 self.activate(usize::from(slot), damage, events);
                 Action::None
             }
+            PanelItem::MenuTitle(menu) => {
+                self.press_menu_title(usize::from(menu), damage, events);
+                Action::None
+            }
         }
     }
 
@@ -700,7 +711,10 @@ impl Desktop {
             return;
         };
         let rested = self.now_ms.wrapping_sub(self.panels.hover_since_ms) >= TOOLTIP_DELAY_MS;
-        let blocked = self.panels.tooltip_spent || self.popup_open() || self.menu_open;
+        let blocked = self.panels.tooltip_spent
+            || self.popup_open()
+            || self.menu_open
+            || self.open_main_menu.is_some();
         if self.panels.tooltip.is_some() || !rested || blocked {
             return;
         }
@@ -873,6 +887,7 @@ impl Desktop {
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             super::draw_chip_text(canvas, chip, self.window_at(slot).title());
         });
+        self.draw_menu_titles(canvas);
         let clock = self.clock_rect();
         canvas.text(clock.x, clock.y, self.clock_text(), colour::TEXT_DIM);
         self.draw_power(canvas, bar);
