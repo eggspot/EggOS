@@ -83,7 +83,7 @@ pub struct Window {
     pub enabled: bool,
     pub modal_disabled: bool,
     pub text: usize,
-    pub sequence: u32,
+    pub creation_sequence: u32,
     pub pending: Rect,
     pub paint_sent: bool,
     pub shown: bool,
@@ -144,7 +144,7 @@ impl Window {
             enabled: true,
             modal_disabled: false,
             text: 0,
-            sequence: 0,
+            creation_sequence: 0,
             pending: Rect::default(),
             paint_sent: false,
             shown: false,
@@ -315,6 +315,15 @@ pub fn root_of(table: &WindowTable, handle: usize) -> Option<usize> {
     Some(chain[length - 1])
 }
 
+/// Whether `handle` and every window above it are enabled.
+pub fn enabled_in_tree(table: &WindowTable, handle: usize) -> bool {
+    ancestry(table, handle).is_some_and(|(chain, length)| {
+        chain[..length]
+            .iter()
+            .all(|&at| table.get(at).is_some_and(|window| window.enabled))
+    })
+}
+
 /// Whether `handle` is `ancestor` or one of its descendants.
 pub fn is_in_tree(table: &WindowTable, ancestor: usize, handle: usize) -> bool {
     ancestry(table, handle).is_some_and(|(chain, length)| chain[..length].contains(&ancestor))
@@ -359,7 +368,7 @@ pub fn children(table: &WindowTable, parent: usize) -> ([usize; MAX_WINDOWS], us
     let mut count = 0;
     for (handle, window) in table.iter() {
         if window.parent == parent && parent != 0 {
-            found[count] = (window.sequence, handle);
+            found[count] = (window.creation_sequence, handle);
             count += 1;
         }
     }
@@ -778,9 +787,9 @@ mod tests {
     fn children_keep_creation_order_when_slots_are_reused() {
         let mut table = new_table();
         let root = table.insert(window()).unwrap();
-        let mut make = |sequence: u32| {
+        let mut make = |creation_sequence: u32| {
             let mut kid = child(root, Rect::sized(0, 0, 10, 10));
-            kid.sequence = sequence;
+            kid.creation_sequence = creation_sequence;
             kid
         };
         let first = table.insert(make(1)).unwrap();
@@ -789,6 +798,10 @@ mod tests {
         let third = table.insert(make(3)).unwrap();
         let (kids, count) = children(&table, root);
         assert_eq!(&kids[..count], &[second, third]);
+        assert!(enabled_in_tree(&table, third));
+        table.get_mut(root).unwrap().enabled = false;
+        assert!(!enabled_in_tree(&table, third));
+        table.get_mut(root).unwrap().enabled = true;
         assert_eq!(child_at(&table, root, 5, 5).0, third);
         assert_eq!(needing_paint(&table, root, 0), None);
         table.get_mut(third).unwrap().invalidate(None, true);

@@ -230,21 +230,28 @@ pub fn input(
         });
     }
     let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) else {
-        if number != message::LEFT_BUTTON_DOWN || point.1 >= menu_height {
+        let pressed = match number {
+            message::LEFT_BUTTON_DOWN => true,
+            message::LEFT_BUTTON_UP => false,
+            _ => return None,
+        };
+        if point.1 >= menu_height {
             return None;
         }
         let Some(entry) = bar_entry_at(gui, root, point) else {
             return Some(Effect::default());
         };
-        if let Some(id) = bar_command(gui, root, entry) {
-            return Some(Effect {
+        return Some(match (bar_command(gui, root, entry), pressed) {
+            (Some(_), true) => Effect::default(),
+            (Some(id), false) => Effect {
                 commit: None,
                 command: Some(id),
-            });
-        }
-        return Some(Effect {
-            commit: open(gui, root, entry),
-            command: None,
+            },
+            (None, true) => Effect {
+                commit: open(gui, root, entry),
+                command: None,
+            },
+            (None, false) => Effect::default(),
         });
     };
     let over_item = drop_down_item_at(gui, &tracking, point);

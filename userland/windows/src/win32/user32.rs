@@ -517,7 +517,8 @@ fn insert_child(mut window: Window, text: &[u16]) -> Result<usize, u32> {
             return Err(error::NOT_SUPPORTED);
         }
         window.thread = thread_environment::thread_id();
-        window.sequence = NEXT_SEQUENCE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        window.creation_sequence =
+            NEXT_SEQUENCE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let handle = gui.windows.insert(window).ok_or(error::NOT_ENOUGH_MEMORY)?;
         if !window_text::store(gui, handle, text) {
             gui.windows.remove(handle);

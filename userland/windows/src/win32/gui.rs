@@ -421,8 +421,7 @@ fn route_input(
             windows::child_at(&gui.windows, root, point.0, point.1 - top.menu_height).0
         }
     };
-    let window = gui.windows.get(target)?;
-    if !window.enabled {
+    if !windows::enabled_in_tree(&gui.windows, target) {
         return None;
     }
     let origin = windows::client_placement(&gui.windows, target)?.origin;

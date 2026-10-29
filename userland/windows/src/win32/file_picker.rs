@@ -602,6 +602,9 @@ fn owner_root(owner: usize) -> Option<(usize, u32)> {
 fn set_modal(root: Option<(usize, u32)>, disabled: bool) {
     if let Some((root, _)) = root {
         with(|gui| {
+            if disabled {
+                super::menu::close(gui, root);
+            }
             if let Some(window) = gui.windows.get_mut(root) {
                 window.modal_disabled = disabled;
             }

@@ -135,11 +135,12 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 - **Menus.** `CreateMenu`, `CreatePopupMenu`, `AppendMenuW` (strings, drop-downs, separators,
   `MF_GRAYED`, `MF_CHECKED`) and `SetMenu` (or `CreateWindowExW`'s menu) put a 24 px bar at the
   top of the window's content; the client area starts below it. A click opens a drop-down
-  over the client area, a click on an item sends `WM_COMMAND` with its id, a click elsewhere or
-  Esc closes it.
+  over the client area, a click on an item sends `WM_COMMAND` with its id (a bar item without
+  a drop-down sends it too), a click elsewhere or Esc closes it; no key reaches the program
+  while it is open.
 - **Timers.** `SetTimer` and `KillTimer`, for a window or the thread, with or without a timer
   procedure; `WM_TIMER` comes after the paints, at most one waiting per timer, every 10 ms at
-  the fastest.
+  the fastest and `0x7fffffff` ms at the slowest.
 - **Opening and saving files.** comdlg32's `GetOpenFileNameW` and `GetSaveFileNameW` show
   EggOS's own picker (a dialog of the owner's window): the folder in Windows' form, its
   folders and the files the selected filter matches, the file name, and Open or Save; they

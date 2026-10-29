@@ -9038,6 +9038,9 @@ the license, by an explicit instruction recorded here.
   shows its controls half painted and the first commit still ends the window's first paint
   (D129). A window whose `WM_PAINT` was handed out (`paint_sent`) never holds the commit back,
   so a program that never validates a child cannot freeze its window.
+- **Focus and enabling.** Disabling a window drops the focus (with `WM_KILLFOCUS`) and the
+  capture held inside it, as Windows does; a window under a disabled one takes no pointer
+  input.
 - **Controls.** Each control's state is a heap block its entry points to, reached only under
   the lock and looked up again by handle after every call into the program, so a control the
   program destroys from its own notification is never touched again. The edit's caret is
@@ -9052,11 +9055,15 @@ the license, by an explicit instruction recorded here.
   is drawn over the client area in the same buffer: opening and moving the highlight commit
   only its own rectangle, a paint while it is open draws it again before the one commit, and
   closing leaves the area under it to the program's `WM_PAINT`. The pointer drives it; a click
-  outside closes it and is not delivered; Esc closes it. A focus-out never closes it (plan
+  outside closes it and is not delivered; Esc closes it; while it is open no key reaches the
+  program; opening one window's drop-down closes another's; a disabled window, or one under a
+  modal picker, closes its drop-down and ignores its bar. A bar item without a drop-down sends
+  its `WM_COMMAND` when the button is released over it. A focus-out never closes it (plan
   review: an agent's injected click would close the menu it just opened). The menu table is a
   heap block made at the first menu.
 - **Timers.** One `WM_TIMER` waiting per timer, after the paints (Windows' order), at least
-  10 ms apart (`USER_TIMER_MINIMUM`); a look (`PM_NOREMOVE`) never restarts one; a thread with a
+  10 ms and at most `0x7fffffff` ms apart (`USER_TIMER_MINIMUM`, `USER_TIMER_MAXIMUM`); a
+  thread waits only for the timers its read accepts; a look (`PM_NOREMOVE`) never restarts one; a thread with a
   timer sleeps in `ppoll` or on the futex only until it is due; `DispatchMessageW` calls a
   `WM_TIMER`'s `lParam` only when it is the timer procedure registered for that window or
   thread and id (plan review: a posted `WM_TIMER` must not make the layer call any address).
@@ -9092,5 +9099,7 @@ the license, by an explicit instruction recorded here.
   `EnableMenuItem`/`CheckMenuItem`, `WM_INITMENUPOPUP` and `WM_PARENTNOTIFY`,
   `IsDialogMessageW`'s mnemonics, the picker's overwrite and not-found questions, changing its
   filter and choosing several files, dialogs from resources, `GetMessageW` with a window
-  filter taking its children's messages, child windows of another thread holding a tree's
-  commit (they never do; a cross-thread child's paint commits on its own).
+  filter taking its children's posted messages and timers (it takes their paints), child
+  windows of another thread holding a tree's commit (they never do; a cross-thread child's
+  paint commits on its own), a picker opened from a thread with a small stack (the picker
+  uses about 40 KiB of it).

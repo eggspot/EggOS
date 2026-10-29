@@ -147,6 +147,7 @@ extern "efiapi" fn get_capture() -> usize {
 
 /// `EnableWindow`: whether the window was disabled before.
 pub fn enable(window: usize, enabled: bool) -> Result<bool, u32> {
+    let mut lost_focus = 0;
     let (was_disabled, changed) = try_with(|gui| {
         let entry = gui.window_mut(window)?;
         let was_disabled = !entry.enabled;
@@ -164,6 +165,7 @@ pub fn enable(window: usize, enabled: bool) -> Result<bool, u32> {
             let (drop_focus, drop_capture) = (inside(focus), inside(capture));
             if let Some(top) = gui.windows.get_mut(root) {
                 if drop_focus {
+                    lost_focus = top.focus;
                     top.focus = 0;
                 }
                 if drop_capture {
@@ -173,6 +175,9 @@ pub fn enable(window: usize, enabled: bool) -> Result<bool, u32> {
         }
         Ok((was_disabled, was_disabled == enabled))
     })?;
+    if lost_focus != 0 {
+        gui::send(lost_focus, message::KILL_FOCUS, 0, 0);
+    }
     if changed {
         gui::send(window, message::ENABLE, usize::from(enabled), 0);
         gui::wake();
