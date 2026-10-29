@@ -498,9 +498,10 @@ The release path (the release-path review's issues #141-#145, after the items ab
   input aimed at a window with a dialog open reaches the dialog (keys) or is refused with
   `dialog_open` (points); `wm drag`, `wm click --double`, `wm scroll <dx>`, MCP `wm_drag` and
   the `double` and `dx` arguments; the MCP boot opens a folder in Files with a double-click
-  found through `wm_show`. Next: the
-  Windows layer's HWND tree with drawn text (win-paint's text in `wm_show`), the macOS
-  layer's NSView tree, then slice 2 (every command, examples as tests) and slice 3 (pages and
+  found through `wm_show`, the Text Editor's text as a text field that a drag and typing
+  replace, Files' path field taking `set-text`, and the Windows layer's HWND tree with the text
+  a program draws (win-paint's text in `wm_show`). Next: the macOS layer's NSView tree, then
+  slice 2 (every command, examples as tests) and slice 3 (pages and
   previews).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43

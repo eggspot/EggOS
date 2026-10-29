@@ -188,7 +188,8 @@ coordinates times 2.
   tree and `wm_act` acts on one element by its id: an agent reads Settings' cards, Files'
   entries or a dialog's buttons as structure, then invokes, focuses, selects or sets the text
   of one, with no coordinates. Toolkit apps (Settings, Files, the installer's dialogs) describe
-  every control; a Wayland app gives its title and app id only; Windows and macOS apps are
+  every control, the Text Editor its text as a text field; a Wayland app gives its title and
+  app id only; a Windows app gives its HWND tree and the text it drew (D162); macOS apps are
   pixels only for now (docs/limitations.md). Ids stay the same while the window keeps its
   controls; after a change, `no_such_element` says to read the tree again. The tree is what
   the app says, so it is data like the pixels: an app can name a button anything.
@@ -334,7 +335,7 @@ clock at boot (D150). The log in Settings comes after the release.
 
 The 2026-07-28 protocol version, resources and prompts; the other commands' tools
 (`settings`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; element trees from Windows and macOS apps (D161); non-ASCII typing; capturing the
+is returned as before); `outputSchema`; element trees from macOS apps (D161, D162); non-ASCII typing; capturing the
 terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
 (after networking); the log in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

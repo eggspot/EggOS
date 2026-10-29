@@ -184,9 +184,18 @@ Who answers: every toolkit app (Settings, Files, the installer's dialogs and eve
 built on `userland/toolkit`: widget `i` is element `(i + 1) * 100`, its option, card or row
 `p` element `(i + 1) * 100 + p + 1`; a view that draws itself describes what it wants, as Files
 describes its places, its path field and each entry as a list item named by its name with
-`folder` or `file` as the value); `eggway`, for each Wayland window, one element named by its
-title with its app id as the value, refusing every action (Wayland gives no controls). Windows
-and macOS programs are pixels only for now.
+`folder` or `file` as the value, and its path field takes `set-text` as typed, Enter going
+there; the Text Editor describes its text view as one text field named by the document,
+whose `set-text` replaces the whole document, one step to undo, D162); `eggway`, for each
+Wayland window, one element named by its title with its app id as the value, refusing every
+action (Wayland gives no controls); the Windows layer (D162), for each top-level window, its
+`HWND` tree in pre-order, each child window an element whose id is its handle (buttons, check
+boxes, radio buttons and group boxes by their style, edit controls as text fields, statics
+as labels, list boxes as lists, other windows as groups), with its text, place, disabled,
+focused and default states, and below each window the text the program drew in it with
+`TextOutW` and `DrawTextW` (role `text`, the last 32 pieces, forgotten when that region is
+painted again); `invoke` sends a button `BM_CLICK`, `focus` is `SetFocus` and `set-text` is
+`WM_SETTEXT` on an edit control. macOS programs are pixels only for now.
 
 ## The shell around the windows
 
@@ -215,6 +224,6 @@ moment later. Injected input never counts as a person's.
 Windows partly off screen, F11, the `Hand` and
 `Busy` pointer shapes, capturing the terminal's window, pointer input to it, non-ASCII typing
 through `SEND_INPUT`, a sideways wheel on real hardware (the virtio tablet's horizontal axis),
-element trees from Windows and macOS programs (an
-HWND tree with drawn text, an NSView tree), key repeat as `Key` records with
+macOS programs' NSView trees, a Windows list box's items and a check box's checked state in
+the HWND tree, key repeat as `Key` records with
 value 2, scales other than 1, buffers over 4 MiB, the server in user space.

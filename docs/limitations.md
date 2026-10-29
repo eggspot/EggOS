@@ -42,8 +42,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   files below `/home/root`, runs programs, clicks and types in windows, and installs, opens and
   uninstalls apps. Grants hold for the whole machine and boot: no per-agent grants, no revoking
   them while EggOS runs; `run` is full control, the audit log included. Agents read toolkit and Wayland
-  windows as element trees and act on their controls by id (D161); Windows and macOS programs
-  are pixels only (D143) until their layers describe their HWND and NSView trees.
+  windows as element trees and act on their controls by id (D161), Windows programs too, with
+  the text they draw (D162); macOS programs are pixels only (D143) until their layer describes
+  its NSView tree, and a Windows list box's items and a check box's state are not in the tree
+  yet.
   Commands run as root (file permissions are not enforced yet). Reached only through the run
   scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB. The desktop shows
   an `Agent` chip while a client is connected and marks what it drives for a second (D156);

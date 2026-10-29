@@ -10674,8 +10674,29 @@ the license, by an explicit instruction recorded here.
   its grant in boot 1; in boot 2 a folder made in the home folder is found as a list item in
   Files' `wm_show` tree and opened by `wm_click` with `double: true`, which the path field's
   value then shows.
+- **D161's leftovers, with this part.** The Text Editor answers the tree with its text view as
+  one text field, named by the document, its text the value (an element's 255 bytes);
+  `set-text` replaces the whole document in one undo step, `focus` gives it the keys
+  (`editor_window/elements.rs`, `Editor::replace_all`; refused as disabled while its save
+  question is open). Files' path field takes `set-text` as if typed (focused, the old text
+  kept for Escape), and Enter, a `wm press`, goes there. The Windows layer answers queries
+  (`win32/elements.rs`): the thread reading the server's records keeps `Query` records apart
+  and answers them after the records' deliveries; the tree is the top-level window as the
+  root and its `HWND`s in pre-order (each id its handle; roles from the control class and the
+  button style; text, place, disabled, focused, default), built in a 64 KiB heap block only
+  while answering; below each window the text the program drew with `TextOutW` and
+  `DrawTextW` (`gui/drawn.rs`: the last 32 pieces of at most 64 bytes, a piece drawn where
+  another started replaces it, `BeginPaint` forgets the pieces in the region it paints, a
+  destroyed window's go). `invoke` sends a button `BM_CLICK` (posted to another thread's
+  window), and `focus` (`SetFocus`) and `set-text` (`WM_SETTEXT`) act on windows of the
+  thread that reads the records only, since they call the program's procedures with that
+  thread's stack. The MCP boot reads win-paint's drawn heading and typed text with `wm_show`,
+  drags across the Text Editor's first word and types over it, and reads the result as the
+  text field's value.
 - **Cost.** No hot path changes: a step's records are counted before any is sent, as before;
-  the drag is 11 records, inside the 256-record queue.
+  the drag is 11 records, inside the 256-record queue. The Windows layer's state grows by the
+  drawn-text store (about 3 KiB in its one heap block, made only for GUI programs) and a
+  `TextOutW` or `DrawTextW` call by one copy of its text under the lock it already takes.
 - **Decided without research.** The drag's 8 moves (enough for apps that act on motion, few
   enough for one atomic step); the end point packed into `value` instead of a larger request
   (the request keeps its size and every caller its buffer); `dy` stays required in
@@ -10683,4 +10704,10 @@ the license, by an explicit instruction recorded here.
   AppKit's 500 ms double-click time against the toolkit's 400 ms.
 - **Not yet.** Win32 `WM_LBUTTONDBLCLK` for classes with `CS_DBLCLKS`; a mouse's own sideways
   wheel (the virtio tablet's horizontal axis in the kernel's input path); dragging between two
-  windows (drag and drop); non-ASCII typing (part 33).
+  windows (drag and drop); non-ASCII typing (part 33); the macOS layer's NSView tree
+  (`appkit/view.rs`: each view's class as its role, `NSButton` titles, `NSTextField` string
+  values, frames flipped to content pixels; `performClick:` and `setStringValue:` for `wm
+  act`; the layer's `dispatch` ignores `Query` records until then, so Mac apps answer pixels
+  only after 500 ms); a Windows list box's items as list items (`LB_SETCURSEL` for `select`)
+  and a check box's checked state; `focus` and `set-text` on windows of a thread other than
+  the one reading the records.
