@@ -82,6 +82,10 @@ commands:
                          hosts with Visual Studio's C++ tools only) into
                          target/windows-crt/programs and print that folder, which
                          EGGOS_WINDOWS_PROGRAMS can name elsewhere
+  windows-crt --arch <arch>
+                         run only the Windows C runtime boot test (eggpad.exe, built by MSVC
+                         here or taken from EGGOS_WINDOWS_PROGRAMS), as `qemu` runs it
+                         (<arch> may be `all`)
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -407,6 +411,12 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{}", programs.directory.display());
             Ok(())
         }
+        Some("windows-crt") => {
+            for arch in arch()? {
+                windows_crt_boot_test(arch)?;
+            }
+            Ok(())
+        }
         Some("release") if args.len() == 1 => release::run(),
         Some("fuzz") => match &args[1..] {
             [target] if target == "mcp" => fuzz_mcp(60),
@@ -651,16 +661,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Attached,
         &[],
     )?;
-    if let Some(kernel) = build_windows_crt_test_kernel(arch)? {
-        qemu::boot_test(
-            arch,
-            &kernel,
-            qemu::Expect::WindowsCrt,
-            qemu::TEST_CPUS,
-            qemu::Display::Attached,
-            &[],
-        )?;
-    }
+    windows_crt_boot_test(arch)?;
     let kernel = build_linux_gui_test_kernel(arch)?;
     qemu::boot_test(
         arch,
@@ -1063,6 +1064,21 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
 }
 
 const EGGPAD: (&str, &str) = ("eggpad", "bin/eggpad.exe");
+
+fn windows_crt_boot_test(arch: &Arch) -> Result<(), String> {
+    let Some(kernel) = build_windows_crt_test_kernel(arch)? else {
+        return Ok(());
+    };
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::WindowsCrt,
+        qemu::TEST_CPUS,
+        qemu::Display::Attached,
+        &[],
+    )
+    .map(drop)
+}
 
 fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
     let Some(target) = windows::msvc_target(arch.name) else {
