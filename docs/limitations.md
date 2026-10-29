@@ -58,8 +58,13 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
   `uptime`, `ps`, `version`, `sys/kernel`, `net/interfaces`, `net/route`, `net/arp`, `net/unix`,
   `driver/rtc`, `self` and a folder per process (D125, D137, D150, D157, D168). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
-  window or a power cut loses the last seconds' changes, never the file system. EggFS has no
-  hard or symbolic links, access times or repair tool yet, searches directories linearly,
+  window or a power cut loses the last seconds' changes, never the file system. EggFS
+  (on-disk version 2, D170) holds symbolic and hard links (at most 65 000 names per file, no
+  hard links to folders), but has no access times or repair tool yet, gives every link's
+  target a block of its own (no inline targets), frees a file removed while open at its last
+  close only at the next commit, and one left open at power-off at the next mount; removing
+  the name in the folder a multiply named file was made in walks the whole tree for another;
+  version 1 disks mount and become version 2 at their first link. It searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
   `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
   FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
@@ -82,8 +87,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   EggOS writes there comes back only when QEMU has ended, into a new folder (`<folder>.out`
   or `--work-out`'s), never into the folder itself, and files removed in EggOS are simply
   absent from it. Changes made on your computer while EggOS runs are not seen. The folder's
-  top-level `.git` and `target` are left out, and so are symbolic links (EggFS has none yet),
-  with a warning for each; names must be valid Unicode and at most 255 bytes. The run scripts
+  top-level `.git` and `target` are left out, with a warning for each; symbolic links and hard
+  links travel both ways (D170), except on a Windows host, where every file is packed as one
+  name and making a symbolic link when unpacking needs Developer Mode or the privilege (it is
+  skipped with a warning otherwise); names must be valid Unicode and at most 255 bytes. The run scripts
   cannot pack or unpack a folder themselves: that needs `cargo xtask` in an EggOS checkout.
   Only one work disk can be attached. The image is sized once, when it is packed (the folder
   plus a thirty-second plus 1 GiB): a build that writes more fills it (`No space left on
@@ -129,7 +136,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
   standard streams' links, `window`, `agent` and `shm` (a memory file system for `shm_open`,
   D169), but no `/dev/pts` or block devices;
-  the only symbolic links are those in `/proc` and `/dev` (D168); `mmap` of files is private
+  symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
+  `/tmp`, `/home` and the work disk (D170), but `O_CREAT` through a link that names nothing
+  is `EEXIST` rather than creating its target; `openat2` answers `RESOLVE_NO_SYMLINKS` and
+  `RESOLVE_NO_MAGICLINKS` only (`RESOLVE_BENEATH`, `RESOLVE_IN_ROOT` and `RESOLVE_NO_XDEV` are
+  `EINVAL`, `RESOLVE_CACHED` `EAGAIN`); a file removed while open stays until its last close,
+  but one removed while only a shared writable mapping holds it is not kept, and a working
+  directory removed is not kept either; `#!` scripts run (one interpreter argument, four
+  scripts deep), and `chmod` sets permissions, though there is no umask per process (022) and
+  permissions change only for root and the owner, with no other checks yet; `mmap` of files is private
   or shared (D167, D169): a writable shared mapping, or any shared mapping of a file another
   one maps so, shares the file's pages, which are all read when it is made and written back
   where they changed by `msync`, `fsync`, `sync` and the last unmap; past the file's end they
@@ -210,7 +225,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   D152). The built-in MCP server is in (D136, docs/mcp.md), but not every capability has its
   three front-ends yet (D22): Settings and the device list have no MCP tools, and Files'
   copy, move and new folder have none either (an agent with `run` uses `cp`, `mv` and
-  `mkdir`). Window focus, move, size, minimise, maximise, restore and close have theirs
+  `mkdir`), and `chmod` has only its CLI until users and permissions come (M10, D170). Window focus, move, size, minimise, maximise, restore and close have theirs
   (D160).
 - **One user, root.** Processes start as root; there are no logins or permissions to manage
   (D75).
@@ -265,13 +280,14 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - removing or installing the Windows or macOS layer on its own (the component manager, D18,
   D152), and `app install --force`: `app install` refuses a program whose layer is not in the
   image, which on the release images happens only on riscv64 (D134, docs/apps.md);
-- `.app` bundles that hold symbolic links (a framework's `Versions/Current`, for example):
-  `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
+- `.app` bundles and `.zip` files whose symbolic links are absolute or climb out of their
+  folder: `app install` refuses them (D170; links that stay inside, such as a framework's
+  `Versions/Current`, install as links); the installer's
   chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
   <path>` installs any);
 - archives other than `.zip` (`.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`), ZIP64 (archives or
   entries past 4 GiB or 65 535 entries), encrypted entries, methods other than stored and
-  deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); a `.zip` whose
+  deflate, and names longer than 255 bytes (D148); a `.zip` whose
   files would take more than 4 GiB once extracted, or holding a file named `app.manifest`,
   `app.manifest.tmp` or `app.icon` at its top, is refused (as is a program of one of those
   names); the window's chooser for a `.zip` with several programs lists four (`app install
@@ -308,7 +324,10 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
   most 32 levels deep in a copy, a move across file systems or a delete; agents read, write
   and trash files through the MCP tools `ls`, `cat`, `tee` and `trash` (docs/mcp.md), and copy,
-  move or make folders only through `run`;
+  move or make folders only through `run`; links (D170, docs/ux/files-links-v0.3.md) show the
+  arrow badge in the list only (not on desktop icons or in the launcher), `Make Link` always
+  stores an absolute target, a broken link cannot be re-pointed, there is no `Paste link`,
+  and hard links look like ordinary files (no count anywhere);
 - the Trash holds only what is on the home folder's file system (`/home`): an item in `/tmp`
   or `/Applications` is deleted for good after a question, and the read-only host share's are
   neither trashed nor changed;

@@ -159,9 +159,13 @@ it unlocks them:
   `fd`, `maps`, `stat` and `status`, so `std::env::current_exe`, glibc's `$ORIGIN` and
   `pthread_getattr_np` work, and `/dev` has `null`, `zero`, `full`, `random`, `urandom`, `tty`,
   `console`, `fd` and the standard streams (D168); there is no `/proc/<pid>/task`, `environ`
-  or `cwd`, no `/sys`, and the only symbolic links are those in `/proc` and `/dev` (links on
-  disks come with EggFS version 2). Files can be written in `/tmp`, `/run`, `/home` and `/var`
+  or `cwd`, and no `/sys`. Files can be written in `/tmp`, `/run`, `/home` and `/var`
   (D125, D131).
+- **Links, scripts and removed files** (D170). `symlink`, `symlinkat`, `link`, `linkat`,
+  `readlink`, `chmod`, `fchmod`, `fchmodat` and `fchmodat2` work on `/tmp`, `/home`, the work
+  disk and (links only, to read) the initramfs; `openat2` with `RESOLVE_NO_SYMLINKS`; a file
+  that starts with `#!` runs its interpreter with one optional argument, as Linux; a file
+  removed while it is open, mapped or running stays until its last close.
 - **The wall clock** is UTC, read from the real-time clock at boot; there are no time zones (D150).
 - **Shared file mappings.** A writable `MAP_SHARED` of a file shares the file's pages with
   every other such mapping and with `read` and `write` (D169), but its pages are all read when

@@ -11431,3 +11431,148 @@ the license, by an explicit instruction recorded here.
   waking one waiter; more than 64 events per `epoll_wait`; signalfd readiness per file rather
   than per looking thread; a wait whose bookkeeping finds no memory looking again every 10 ms
   instead of sleeping until woken; `/dev/shm` budgeted apart from `/tmp`.
+
+## D170 Symbolic and hard links, `#!` scripts and files removed while open: EggFS on-disk version 2, links and holds in tmpfs, symbolic links in the initramfs, `symlinkat`, `linkat`, `openat2`'s `RESOLVE_NO_SYMLINKS`, `chmod`, `ln`, `readlink`, the MCP tool `ln`, `.app` bundles with their links, and Files marking, following and making links (the Real apps track's second step; extends D102, D103, D125, D131, D134, D135, D137, D148, D166, D167, D168, D169) — Decided by the build loop (how the MCP server's path twins avoid links decided by research; the Files design by Claude Fable)
+- **Why.** Real software is full of links: a macOS framework's `Versions/Current`, a library's
+  `libfoo.so.1 -> libfoo.so.1.2.3`, a toolchain's `cc -> gcc`, `/usr/bin/python3 ->
+  python3.12`. Build tools and package managers make links and hard links, run `#!` scripts
+  (`configure`, `cargo`'s build helpers, every shell and Python script), and save files by
+  writing a temporary file, removing or renaming over the old one while readers still have it
+  open. Until now EggFS and tmpfs refused links (D168), a script was `ENOEXEC`, there was no
+  `chmod` to make one executable, a file removed while open vanished under its reader, and
+  `app install` refused a bundle with a link.
+- **EggFS on-disk version 2** (`eggos-eggfs`, docs/eggfs.md). Inode kind 3 is a symbolic
+  link, its target (1 to `MAX_LINK_TARGET` 4095 bytes, no NUL, 0777, never changed) stored as
+  its contents (copy on write, data blocks); bytes 104..108 count a file's or link's names
+  beyond the first (hard links, at most `MAX_LINKS` 65 000 names, never to a directory); byte
+  1's bit 0 marks an orphan and bytes 108..112 chain the orphans from the root inode. Holds
+  (`Volume::hold`, `release`) are counted in memory: a held file or link whose last name goes
+  (`remove`, or replaced by `rename`) becomes an orphan, readable and writable through its
+  node, freed by its last release or, after a crash or a power-off while it was open, by the
+  next mount (`Mounted::freed_orphans`). Node numbers carry the kind in bits 32 (directory)
+  and 33 (link), the generation (30 bits) from bit 34. `format` writes version 2; a version 1
+  volume mounts unchanged and is rewritten as version 2 inside the journal transaction of its
+  first link, second name or orphan (the journal now takes block 0 as a target, and a block 0
+  torn by that write is read as the other version, then replayed). New: `Volume::{version,
+  symlink, link_target, link, hold, release, set_permissions}`, `Kind::SymbolicLink`,
+  `Error::TooManyLinks`, `VERSION`, `MAX_LINK_TARGET`, `MAX_LINKS`; `check` covers kinds,
+  targets, name counts, parents of multiply named files and the orphan chain.
+- **The VFS** (`crate::vfs`). `FileSystem` gains `symlink`, `link`, `set_permissions`, `hold`
+  and `release` (defaults: read-only, nothing to hold); `Refused::{TooManyLinks (EMLINK),
+  NotPermitted (EPERM)}`; `Node::{hold, release}`; `HeldNode` (holds while alive, a
+  `FilePages` for mappings and program images); `resolve_without_links` (any link met is
+  `ELOOP`, a last one returned when it is not followed). An open file description holds its
+  node from `OpenFile::new` to its drop, a private file mapping and a running program's image
+  and loader hold theirs through `HeldNode`. **tmpfs**: names move from the inodes into their
+  directories, so a file or link has several (`links` counted, `parent` one folder holding a
+  name, moved when that name goes); `Contents::Link` keeps a target (charged to the budget);
+  holds keep a nameless file until its last release; `LINK_BIT` (bit 34) and the generation
+  from bit 35. **EggFS in the kernel** forwards all of it; a release may come under a spin lock
+  (a mapping's last reference), so it never takes the volume's sleeping lock: it is queued in
+  64 lock-free slots (`RELEASE_SLOTS`) that the next commit applies first. **The initramfs**
+  serves cpio symbolic-link members (`0o120000`, the data is the target).
+- **System calls** (`linux::file_changes`, `linux::files`; numbers x86_64 / generic):
+  `symlinkat` (266 / 36, `symlink` 88): `EEXIST` for a taken name (a dangling link included),
+  `EROFS`, `EPERM` on a file system that cannot hold links (FAT); `linkat` (265 / 37, `link`
+  86) with `AT_SYMLINK_FOLLOW` and `AT_EMPTY_PATH`: the old path's last link itself unless
+  `AT_SYMLINK_FOLLOW`, `EEXIST`, `EXDEV`, `EPERM` for a directory, `EMLINK` (new `Errno`),
+  `ENOENT` for an orphan; `fchmodat` (268 / 53), `fchmodat2` (452, `AT_SYMLINK_NOFOLLOW` on a
+  link `EOPNOTSUPP`, `AT_EMPTY_PATH`), `fchmod` (91 / 52, `chmod` 90): `EPERM` unless the
+  caller's file system user id is root's or the owner's, `EROFS`; `openat2` (437):
+  `struct open_how` checked as Linux (size 24 up to a page, extra bytes zero else `E2BIG`,
+  flags within 32 bits, a mode only with `O_CREAT`/`O_TMPFILE`), `RESOLVE_NO_SYMLINKS`
+  (walks, creation's directory included, follow no link) and `RESOLVE_NO_MAGICLINKS` (nothing
+  more: EggOS has no magic links); `number::LAST` is `FCHMODAT2`. Every path call now walks as
+  its process (`parent_and_name` takes the caller; `bind` and `connect` of `AF_UNIX` sockets
+  too), so `/proc/self` in a link resolves for it.
+- **`#!` scripts** (`linux::exec`). A file starting with `#!` (read from its first
+  `SCRIPT_LINE_BYTES`, 256) names an interpreter as Linux's `binfmt_script` reads it
+  (`script_line`: after blanks, up to a blank, newline or NUL; the rest of the line, trimmed,
+  is one argument; a line whose interpreter runs past 256 bytes is `ENOEXEC`); the
+  interpreter, found as `open` finds it, must be a regular file the caller may execute
+  (`EACCES`), and runs with `interpreter [argument] script-path arguments-after-the-first`;
+  interpreters may be scripts `MAX_SCRIPT_DEPTH` (4) deep, `ELOOP` past it. The process keeps
+  the script's name (`comm`), `AT_EXECFN` is the script's path.
+- **Front-ends (D22).** CLI: `ln [-s] [-f] [-n] [-T] [-v]` and `readlink [-f] [-n] [-v]
+  [--json]` (GNU semantics; `readlink --json` gives `path` and `target` per record, the new
+  error code `not_a_link`), and `chmod [-R] [-v] mode file...` (octal and GNU symbolic modes,
+  links named followed, links met by `-R` skipped), in the registry with examples run as tests
+  (62 commands). MCP: the tool `ln` (grant `write`, effect `change`, twin `/bin/ln -T [-s]`,
+  arguments `target`, `link` strictly under `/home/root` outside the Trash, `symbolic`
+  default true; a hard link's target must be a writable path too, so a system file cannot be
+  hard-linked into the home and changed with `tee`; never replaces). GUI: Files (Claude Fable's
+  docs/ux/files-links-v0.3.md): a link row shows its target's mark with an arrow badge, a
+  folder link sorts and browses as a folder with the path through the link, `Show Original` /
+  `Open file location` goes to the target, `Make Link` / `Create shortcut` makes `<stem>
+  link<.ext>` (absolute target) and renames it in place, Cut, Copy, Rename and Trash act on
+  the link, a copy keeps the target text, a broken link is dimmed and says where it points,
+  Properties shows `Kind: Link to ...` and `Target:`; agents see `link to folder`, `link to
+  file` and `broken link` in Files' element tree. `chmod` has its CLI only: a Permissions
+  panel and tool come with users and permissions (M10, part 62).
+- **Apps** (`eggos_app`, docs/apps.md). `files::Kind::Link` and `Files::{status_following,
+  read_link, make_link}` in every implementation; `.app` bundles and `.zip` archives install
+  with their links copied as links when they stay inside the app (relative, every `..`
+  first and climbing no higher than the link's folder), else the install is refused
+  (`Problem::UnsafeLink`); an install source named through a link is followed.
+- **Work disks** (D166). `cargo xtask work pack` carries host symbolic links (target bytes;
+  on Windows UTF-8 with `\` as `/`) and hard links (same device and inode, Unix); `unpack`
+  makes them on the host (on Windows `symlink_dir` or `symlink_file`, skipped with a warning
+  without the privilege).
+- **Checks.** Host tests: the VFS walk without links; tmpfs links, hard links counted, names
+  moved, a held file kept until its last release, a held file replaced by rename, `chmod`;
+  EggFS's adapter end to end (links, `EPERM`, permissions, a held file freed at the commit
+  after its release); the initramfs's link member; an open file description keeping a
+  removed tmpfs file; `script_line` as Linux reads lines; `execve` of a script (the
+  interpreter's argument strings exactly), of a script whose interpreter is missing
+  (`ENOENT`), not executable (`EACCES`), absent (`ENOEXEC`) or itself (`ELOOP`); the eggfs
+  crate's link, hard-link, orphan, version-1 upgrade, torn-superblock and permission tests and
+  the crash test cut at every write through an upgrade, a link, a hard link and a held
+  remove; `ln`, `readlink` and `chmod`; the MCP `ln` tool's refusals and the path twins'
+  environment; the installer's bundle links; Files' rows, menus, Make Link, Show Original,
+  broken-link notices and Properties. QEMU: the persistent-disk check makes a symbolic and a
+  hard link and checks them after the reboot and in the image, and runs a `#!/bin/eggsh`
+  script from the host folder; the MCP check makes a link out of the home and expects `cat`
+  through it refused, and calls `ln` ungranted.
+- **Decided by research (how the MCP server's commands avoid links).** A research subagent
+  compared an environment variable, a global option word, handing over an opened descriptor
+  and doing nothing; its recommendation, followed: the server gives `EGGOS_NO_SYMLINKS=1` to
+  the twins of tools whose operand is a checked path (never to `run` or the others), and
+  coreutils then opens with `openat2` `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS` and makes,
+  removes, renames, links and changes modes through the parent folder opened that way and the
+  `*at` call on the last name, so a component swapped for a link after the server's check is
+  refused (`ELOOP`) instead of followed. An option word would have shown in every command's
+  help and the CLI; a descriptor passed as `/dev/fd/N` re-walks its path text here (D168).
+- **Decided without research.** A file's name in `/proc` and the process name are one of its
+  names; hard links never to directories (Linux's rule); a hard link through `AT_EMPTY_PATH`
+  needs no privilege (EggOS has no capabilities yet); `chmod` by root or the owner only, no
+  set-group-id clearing; EggFS releases applied at the next commit (up to 5 s late) rather
+  than at the close; links in tmpfs charged their target's bytes; `RESOLVE_CACHED` `EAGAIN`
+  and the walks EggOS does not do (`BENEATH`, `IN_ROOT`, `NO_XDEV`) `EINVAL`; a script's
+  `#!` line is never stripped of `\r` (Linux's rule); the bundle link rule above; `readlink`
+  quiet on failure unless `-v` or `--json` (GNU); `ln -f` refusing the same file; Files'
+  `go` following links, opening an app or an installer through a link with the real path,
+  and no `Paste` on a broken link's menu (the design dims it; a broken link has no kind to
+  paste into); the `#!` QEMU script written into the host folder, since no shell redirection
+  sets an execute bit. The owner can overrule any of these.
+- **Performance and size (D24).** A walk passes one more flag (no new branch on the path of a
+  component that is not a link); `openat` is the shared open with links allowed, inlined;
+  opening and closing a node calls its file system's `hold` and `release` (nothing for the
+  initramfs, `/proc` and `/dev`; a leaf lock for tmpfs; the volume's lock for an EggFS open
+  and one atomic slot for its close); `execve` reads 256 bytes more only for a script. EggFS
+  inodes and the superblock keep their size. The kernel grows by the new calls and the
+  script reader, coreutils by `ln`, `readlink` and `chmod`. Report-only CI shows any move
+  (D122): `linux_openat`, `linux_execve` and the EggFS benchmarks first.
+- **Lint.** Doc comments on private items that earlier parts of this batch added (process.rs,
+  linux/memory.rs, bench.rs, regions.rs, linux/stat.rs, vfs/devfs.rs, linux/proc.rs,
+  linux/exec.rs, linux/identity.rs, memory_devices.rs, linux/window.rs, net/tcp.rs, random.rs,
+  net/interface.rs, tls/x509.rs, commands/lib.rs, mcp/server.rs, eggway/compositor.rs,
+  xtask's main.rs, dynamic_linking.rs, qemu/rustc_version.rs and qemu/mcp.rs) are removed,
+  so the legacy counts match again; exec.rs's count shrinks to 65.
+- **Not yet.** Inline ("fast") link targets in the inode; freeing an EggFS orphan at the close
+  itself; repairing a disk; `O_CREAT` through a dangling link creating its target; a working
+  directory or a file held only by a shared writable mapping kept after removal; `RESOLVE_BENEATH`,
+  `RESOLVE_IN_ROOT` and `RESOLVE_NO_XDEV`; a umask per process; permission checks beyond
+  `chmod`'s owner rule; `chmod`'s GUI and MCP front-ends (M10); `ls -l` showing `-> target`;
+  Files' link badges on desktop icons and in the launcher, `Paste link`, re-pointing a broken
+  link, hard-link counts; the Text Editor saving through a link (it replaces the link with a
+  file); hard links packed from a Windows host; the QEMU screenshots Fable's design lists.
