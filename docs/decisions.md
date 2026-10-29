@@ -10554,3 +10554,68 @@ the license, by an explicit instruction recorded here.
   being refused (twins run in text mode). Slice 3: `--limit`, `--after`, `next_cursor`,
   `--dry-run`, the security review. `outputSchema`. Slice 4: apps' actions and
   `tools.listChanged`. Item 48 (`wm show`, `wm act`) comes first, on this registry.
+
+## D161 Item 48: agents read a window as an element tree and act on its controls by id (the owner's addition to the approved command-model design, 2026-10-28; extends D21, D127, D141, D143, D147, D160) — Decided by the build loop
+- **Why.** D21 promises agents "structured data, not screenshots", and D141/D143 gave them
+  pixels and input only: an agent had to read a capture and aim clicks. The owner's addition
+  to the command model puts item 48 first after slice 1: `wm show <id>` asks the window's
+  owner for its element tree, `wm act <id> <element> invoke|focus|set-text|select` acts on a
+  control directly, through tools `wm_show` (`read`, `view`) and `wm_act` (`control`, `run`).
+- **The protocol** (docs/windows.md "Element trees", `drivers/src/desktop/protocol.rs`): four
+  requests and one record. `GET_TREE` (24, RW, 32 bytes, root only) and `ACT_ON_ELEMENT` (25,
+  RW, 256 bytes, root only, refused with `EBUSY` while a person uses the machine) record a
+  query in the kernel's table (`kernel/src/window.rs`: `start_query`, `read_query`,
+  `answer_query`, `query_answered`, `finish_query`; 8 at once, `Option<Box<_>>` in `.bss`),
+  send the window's app a `Query` record (15: serial, kind, element, action;
+  `Desktop::owner_of`, `Desktop::ask_owner`, which marks the agent acting) and wait for its
+  answer on the console's input futex, at most 500 ms (`QUERY_ANSWER_MS`); then the tree (at
+  most 64 KiB) is copied to the caller's buffer through 47a's pointer transfer, or the outcome
+  (done, no such element, not supported, disabled) written back. No answer in time is "pixels
+  only" for `GET_TREE` and `ETIMEDOUT` for `ACT_ON_ELEMENT`. The app reads an action's text
+  with `READ_QUERY` (26) and answers once with `ANSWER_QUERY` (27; the tree copied into the
+  kernel heap under `heap::may_grow_for_user`). The Linux `ioctl` call now passes the thread so
+  a window request can wait. The terminal's window answers `EOPNOTSUPP`.
+- **The tree** (new crate `userland/element-tree`, `eggos-element-tree`, `no_std`, no
+  allocator, no dependencies; in the workspace, Cargo.lock and USER_CRATES): elements in
+  pre-order, each a 32-byte header (id, parent, role, flags, x, y, width, height, name and
+  value lengths) and its name and value (UTF-8, at most 255 bytes each, cut at a character);
+  roles window, group, label, button, checkbox, radio group, radio, list, list item, text field,
+  progress, graphic, text; flags focused, focusable, disabled, selected, checked, default;
+  `TreeWriter`, `elements` (every length checked: the tree is the app's, untrusted), `Query`,
+  `Action`, `Outcome`, and the requests' numbers and layouts.
+- **Providers.** The toolkit answers in `application::run_view` for every program built on it:
+  a `WidgetTree` describes each shown widget as element `(i + 1) * 100` and each option, card
+  and shown list row `p` as `(i + 1) * 100 + p + 1` (`tree::element_of`, `tree/elements.rs`),
+  and acts as a person's input does, handing the program the same `Response` (so Settings'
+  macOS card invoked by id sets the profile); a `View` that draws itself implements
+  `View::describe` and `View::act` (Files: its places, path field and every entry as a list
+  item named by its name, `folder` or `file` as the value; invoking an entry opens it as a
+  double-click does). `eggway` answers for each Wayland window with one element, its title
+  and `xdg_toplevel.set_app_id`'s app id, and refuses actions (Wayland gives no controls).
+- **Front-ends.** CLI: `wm show [--json] [--] <id>` (one element a line, indented below its
+  parent: id, role, `x,y`, `widthxheight`, `[flags]`, the name and `= value` quoted with
+  `\"`, `\\` and `\xNN` escapes; `--json` one record an element) and `wm act [--] <id>
+  <element> <action> [<text>]` (`userland/coreutils/src/window_tree.rs`, `System::window_tree`).
+  New error codes `pixels_only` (fix: `wm capture`), `no_such_element` (fix: `wm show`),
+  `element_cannot`, `element_disabled`; `act` joins `wm`'s noun verbs. MCP: `wm_show` (view)
+  and `wm_act` (run; `element`, `action`, `text`), TOOLS 35; the audit log records `element`
+  and `action`. GUI: none, by D22's surface rule (people use the window itself). The QEMU MCP
+  check reads Settings' tree with `wm_show` and invokes its macOS card by id with `wm_act`
+  (in place of D143's click), then `settings get` sees the macOS profile; GRANTED_TOOLS 26.
+- **Cost.** Nothing on any hot path: a query is two record round trips through the queues the
+  windows already use; the table is 8 slots allocated on first use; the app writes its tree
+  only when asked (64 KiB of stack while it does).
+- **Decided without research.** The pull model (the server asks, the app answers in 500 ms)
+  over apps pushing trees on every change, as the design's "pixels only after 500 ms" reads;
+  `pixels_only` as a coded error (exit 1) rather than an empty success, so an agent gets
+  `wm capture` as its fix; element ids from widget indexes (stable while the window keeps its
+  widgets); coordinates in content pixels at scale 1, as `wm click` takes them; the text
+  format of `wm show`; Files' path field takes no `set-text` yet; a Wayland window's element
+  takes no action. The owner can overrule any of these.
+- **Not yet.** The Windows layer's provider (the HWND tree with classes, texts, rectangles and
+  enabled states, and the text a program draws with `TextOut`/`DrawText` recorded per window,
+  so win-paint's drawn text shows in `wm_show`; `BM_CLICK`, `WM_SETTEXT`, `LB_SETCURSEL` for
+  `wm act`); the macOS layer's NSView tree (`userland/macos/src/appkit/view.rs`: buttons, text
+  fields, labels, `performClick:`, `setStringValue:`); the Text Editor's text as a text field;
+  Files' path field taking `set-text`; a QEMU check that Files' entries show as list items and
+  that win-paint's text shows; accessibility (a screen reader) reading the same trees.

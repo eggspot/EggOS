@@ -484,8 +484,16 @@ The release path (the release-path review's issues #141-#145, after the items ab
   refusal's `structuredContent`); `help` and `help --json` describe the registry; the MCP
   server's schemas, annotations and `instructions` are generated from it; new tools
   `wm_focus`, `wm_move`, `wm_size`, `wm_minimise`, `wm_maximise`, `wm_restore`, `wm_close`.
-  Next: item 48 (windows as structure), then slice 2 (every command, examples as tests) and
-  slice 3 (pages and previews).
+  Then item 48 **partly done** — agents read any toolkit or Wayland window as structure and act
+  on its controls by name (D161, docs/windows.md "Element trees"): `GET_TREE`,
+  `ACT_ON_ELEMENT`, `READ_QUERY`, `ANSWER_QUERY` and the `Query` record in the window server
+  (the app answers within 500 ms, else pixels only), `userland/element-tree`, the toolkit's
+  widget trees (Settings, the installer's dialogs) and Files' entries as list items, `eggway`'s
+  title and app id, `wm show [--json]`, `wm act`, and MCP `wm_show` (`view`) and `wm_act`
+  (`run`); the MCP boot reads Settings' tree and invokes its macOS card by id. Next: the
+  Windows layer's HWND tree with drawn text (win-paint's text in `wm_show`), the macOS
+  layer's NSView tree, then slice 2 (every command, examples as tests) and slice 3 (pages and
+  previews).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

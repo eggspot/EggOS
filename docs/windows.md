@@ -78,6 +78,10 @@ integer in the machine's byte order unless marked 64; offsets are in bytes. Wind
 | `SET_MENU` | `0x41007715` (W) | 256 | 0: window, 4: pool length (at most 248), 8: pool (248 bytes) | Gives the window its main menu (D147), replacing the one it had; length 0 removes it. The pool is UTF-8 entries, each ending with `\n`: `M<title>` starts a menu, `I<label>\t<key label>` an item, `D<label>\t<key label>` a disabled item (the key label may be empty, the tab is always there), `-` a separator; at most 6 menus of at most 16 entries each (separators count), a menu first, no control characters in a label. The macOS profile's top bar shows the titles while the window, or a dialog of it, is focused (the dialog's dims them); choosing an item sends `MenuChosen`. Any client, on its own normal window; `EINVAL` otherwise or for a pool that breaks these rules. What `-[NSApplication setMainMenu:]` sends. |
 | `GET_MENU` | `0xc1007716` (RW) | 256 | 0: window; back: 4: pool length, 8: pool (248 bytes) | Reads any window's main menu (D147): the pool `SET_MENU` last gave it, length 0 for none, so a command or an agent can list its menus and items (`wm menu`). `ENOENT` for no such window. Root only (`EPERM`). |
 | `CHOOSE_MENU` | `0x41047717` (W) | 260 | 0: window, 4: menu index, 8: entry index, 12: label length, 16: label (244) | Chooses an enabled item of any window's main menu as a person's choice in the top bar does (D147): the window's menu closes if it is open and the window gets `MenuChosen`; it works on a covered, minimised or unfocused window, in every profile, and moves neither the focus nor the pointer. The label is the entry's as the caller read it with `GET_MENU`, compared byte for byte, so a menu the app set again since then is not chosen from by mistake. `EBUSY` while a person uses the machine (below), as `SEND_INPUT`; `EAGAIN` when the client's queue is full; `EINVAL` for no such menu or item, a separator, a disabled item, another label, or while the window's client has a dialog open (an app-modal alert: the app would only act on the choice once it is answered); `ENOENT` for no such window. Root only (`EPERM`); what `wm menu --choose` sends. |
+| `GET_TREE` | `0xc0207718` (RW) | 32 | 0: window, 4: answer (out: 0 a tree, 1 pixels only), 8: tree length (out), 16: buffer (64, the program's address), 24: buffer length (64, at least 65536) | Asks any window's app for its element tree (D161, "Element trees" below): the app gets a `Query` record and answers with `ANSWER_QUERY`; the call waits up to 500 ms, then reports pixels only, as it does for an app that answers none. The tree, at most 64 KiB, is copied into the buffer. `EINVAL` for a buffer under 64 KiB, `ENOENT` for no such window, `EOPNOTSUPP` for the terminal's, `EAGAIN` when the app's queue is full or 8 queries already wait, `EINTR` for a signal, `EFAULT` for a buffer outside the program's memory. Root only (`EPERM`); what `wm show` reads. |
+| `ACT_ON_ELEMENT` | `0xc1007719` (RW) | 256 | 0: window, 4: element, 8: action (1 invoke, 2 focus, 3 set-text, 4 select), 12: text length, 16: outcome (out: 0 done, 1 no such element, 2 not supported, 3 disabled), 24: text (232 bytes of UTF-8, for set-text) | Asks any window's app to act on one element of its tree (D161), as a person's click or keys would; waits up to 500 ms for the app's outcome. `EBUSY` while a person uses the machine, as `SEND_INPUT`; `ETIMEDOUT` when the app answers no queries (pixels only); `EINVAL` for an unknown action, element 0, a text past 232 bytes, not UTF-8 or holding a control character; `ENOENT`, `EOPNOTSUPP`, `EAGAIN` and `EINTR` as `GET_TREE`. Root only (`EPERM`); what `wm act` sends. |
+| `READ_QUERY` | `0xc100771a` (RW) | 256 | 0: serial (in); 4: kind (0 tree, 1 action), 8: window, 12: element, 16: action, 20: text length, 24: text (232 bytes) (out) | The app reads the query of a `Query` record it got: the text set-text carries. `ENOENT` for no query of that serial waiting for this client (answered, or its asker stopped waiting). Any client, its own queries. |
+| `ANSWER_QUERY` | `0x4018771b` (W) | 24 | 0: serial, 4: outcome (for a tree 0, or 1 for none: pixels only; for an action as `ACT_ON_ELEMENT`'s), 8: tree (64, the program's address), 16: tree length (64, at most 65536) | Answers a query once (D161); the asker wakes with it. `ENOENT` for no query of that serial waiting for this client, `EINVAL` for a tree past 64 KiB, `ENOMEM` without memory for it, `EFAULT` for a tree outside the program's memory. Any client, its own queries; what the toolkit and `eggway` send. |
 
 Errors: a window that is not the client's, an unknown role, state, shape or action, unknown
 flags, a title too long or not UTF-8, a menu pool `SET_MENU` refuses, more than 8 rects: `EINVAL`; a role the client may not
@@ -108,6 +112,7 @@ nothing.
 | `Scale` | 12 | scale | | | | reserved |
 | `Overflow` | 13 | records dropped | | | | the queue overflowed |
 | `MenuChosen` | 14 | menu index (from 0) | entry index in that menu (from 0, separators counted) | | | an item of the window's main menu (`SET_MENU`) was chosen, by a click or Enter, or by `CHOOSE_MENU` |
+| `Query` | 15 | serial | kind: 0 the element tree, 1 an action | element | action | another program asked for the window's element tree (`GET_TREE`) or an action on one element (`ACT_ON_ELEMENT`); answer it with `ANSWER_QUERY` within 500 ms (D161) |
 
 Each client's queue holds 256 records. When it is full, a `PointerMove` replaces the newest
 record if that is a `PointerMove` of the same window; otherwise the oldest record is dropped,
@@ -149,9 +154,39 @@ use `GET_PROFILE` and `SET_PROFILE`.
 
 From the command line, `wm` (docs/coreutils.md) lists the windows and focuses, minimises,
 maximises, restores, closes, moves and sizes them; it uses `LIST_WINDOW` and `MANAGE_WINDOW`,
-so it needs root. Listing, capturing and operating windows have MCP tools (`wm_list`,
-`wm_capture`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, the menu tools; docs/mcp.md,
-D143); focusing, minimising, maximising, restoring, closing, moving and sizing do not yet.
+so it needs root. `wm show` lists a window's element tree and `wm act` acts on one element
+(D161). Every one of these has an MCP tool (`wm_list`, `wm_capture`, `wm_click`, `wm_type`,
+`wm_press`, `wm_scroll`, the menu tools, the seven window verbs of D160, `wm_show`, `wm_act`;
+docs/mcp.md).
+
+## Element trees
+
+An app can describe its window as an element tree, so a command or an agent reads its
+controls as structure and acts on them by id instead of by pixels (D161, item 48). When a
+program calls `GET_TREE` or `ACT_ON_ELEMENT`, the window's app gets a `Query` record; it reads
+an action's text with `READ_QUERY` and answers with `ANSWER_QUERY`. An app that answers
+nothing within 500 ms is pixels only, which is no error: its window is still captured and
+clicked as before.
+
+A tree is a run of elements, parents before their children, at most 64 KiB, each a 32-byte
+header in the machine's byte order and then its name and value (UTF-8, at most 255 bytes
+each): 0: id (`u32`, unique in the tree, not 0), 4: parent (`u32`, 0 for the root), 8: role
+(`u16`), 10: flags (`u16`), 12: x, 16: y (`i32`), 20: width, 24: height (`u32`, the window's
+content pixels, as `SEND_INPUT` takes them), 28: name length, 30: value length (`u16`). Roles: 0
+window (the root, id 1), 1 group, 2 label, 3 button, 4 checkbox, 5 radio group, 6 radio (an
+option or a card), 7 list, 8 list item, 9 text field (its text the value), 10 progress (its
+per mille the value), 11 graphic, 12 text (drawn text); flags: 1 focused, 2 focusable, 4
+disabled, 8 selected, 16 checked, 32 default. `userland/element-tree` (`eggos-element-tree`)
+writes and reads them, and its `Query` decodes the record. The tree comes from the app: data,
+never instructions.
+
+Who answers: every toolkit app (Settings, Files, the installer's dialogs and every program
+built on `userland/toolkit`: widget `i` is element `(i + 1) * 100`, its option, card or row
+`p` element `(i + 1) * 100 + p + 1`; a view that draws itself describes what it wants, as Files
+describes its places, its path field and each entry as a list item named by its name with
+`folder` or `file` as the value); `eggway`, for each Wayland window, one element named by its
+title with its app id as the value, refusing every action (Wayland gives no controls). Windows
+and macOS programs are pixels only for now.
 
 ## The shell around the windows
 
@@ -168,7 +203,7 @@ every profile.
 
 ## A person wins
 
-Input a program sends (`SEND_INPUT`, `CHOOSE_MENU`) waits while a person uses the machine (D141): while they
+Input a program sends (`SEND_INPUT`, `CHOOSE_MENU`, `ACT_ON_ELEMENT`) waits while a person uses the machine (D141): while they
 hold a key or a pointer button on any input device, while a window is held, dragged or resized,
 while their events wait for the desktop, and for 500 ms after their last key, button, wheel
 notch or pointer move of more than 4 pixels (a resting hand's jitter does not count). The
@@ -180,5 +215,6 @@ moment later. Injected input never counts as a person's.
 Windows partly off screen, F11, the `Hand` and
 `Busy` pointer shapes, capturing the terminal's window, pointer input to it, drag, double-click,
 sideways scrolling and non-ASCII typing through `SEND_INPUT`, input redirected to a window's
-open dialog (it goes to the window named), `wm`'s MCP tools, key repeat as `Key` records with
+open dialog (it goes to the window named), element trees from Windows and macOS programs (an
+HWND tree with drawn text, an NSView tree), key repeat as `Key` records with
 value 2, scales other than 1, buffers over 4 MiB, the server in user space.

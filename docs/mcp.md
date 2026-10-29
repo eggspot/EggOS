@@ -70,10 +70,10 @@ run-eggos.sh` the script's own path works too.
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
 | none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock and the network's state, ping a host and look a name up | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get`, `net_status`, `net_ping`, `net_lookup` |
-| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu | `wm_capture`, `wm_menu_list` |
+| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu and read its controls as an element tree (D161) | `wm_capture`, `wm_menu_list`, `wm_show` |
 | `write` | write files below `/home/root`, download files there, and move them to the Trash | `tee`, `fetch`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
-| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `clock_set`, `clock_sync` |
+| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `clock_set`, `clock_sync` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -125,13 +125,16 @@ run-eggos.sh` the script's own path works too.
 | `wm_minimise`, `wm_maximise`, `wm_restore` | Minimises, maximises or restores a window (`window`) (D160) | `wm minimise\|maximise\|restore -- <window>` | `run` |
 | `wm_close` | Asks a window's app to close it (`window`); the app may ask its user first, so check with `wm_list` (D160) | `wm close -- <window>` | `run` |
 | `wm_menu_choose` | Chooses an enabled item of a window's main menu (`window`; `menu`, 0 to 5, and `entry`, 0 to 15, the numbers `wm_menu_list` shows; optionally `label`, at most 64 bytes, the item's label, so a menu the app changed since is refused instead of choosing another item) as a click on it in the top bar would; covered and minimised windows too; refused while the app shows a dialog | `wm menu --choose [--label <label>] -- <window> <menu> <entry>` | `run` |
+| `wm_show` | A window's controls as an element tree (`window`), as the app describes them (D161): one element a line, indented below its parent, with its id, role, place, size, flags, name and value; an app that gives none within 500 ms is pixels only (`pixels_only`: use `wm_capture`) | `wm show -- <window>` | `view` |
+| `wm_act` | Acts on one element of a window by its id (`window`; `element`, the id `wm_show` gives; `action`: `invoke`, `focus`, `set-text` or `select`; `text`, at most 232 bytes, for `set-text` only), as a person's click or keys would, without moving the pointer or raising the window (D161); `no_such_element`, `element_cannot` and `element_disabled` say why the app refused | `wm act -- <window> <element> <action> [<text>]` | `run` |
 
 Every tool's name, description, arguments, grant, confirmation and annotations come from the
 command model's registry (D160, docs/ux/command-model.md, `userland/commands`): its
 `inputSchema` is written from the registry when the tools are listed, the same bytes as before
-for the shipped tools. The reading tools, `wm_capture` and `wm_menu_list` are `readOnlyHint`;
-`tee`, `trash`, `fetch`, `run`, `clock_set`, `app_uninstall`, the four input tools and
-`wm_menu_choose` are `destructiveHint`, so clients ask their user before them; the seven window
+for the shipped tools. The reading tools, `wm_capture`, `wm_menu_list` and `wm_show` are
+`readOnlyHint`;
+`tee`, `trash`, `fetch`, `run`, `clock_set`, `app_uninstall`, the four input tools,
+`wm_menu_choose` and `wm_act` are `destructiveHint`, so clients ask their user before them; the seven window
 tools of D160 change windows but are neither. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
 component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. A refusal is
@@ -173,6 +176,14 @@ coordinates times 2.
   machine; wait a moment and retry.` `wm_type` says how many characters it typed before that.
   With `--no-window` there is no keyboard or pointer, so this never happens: the agent is the
   only one at the machine.
+- **Controls by name, not pixels (D161).** `wm_show` asks the window's app for its element
+  tree and `wm_act` acts on one element by its id: an agent reads Settings' cards, Files'
+  entries or a dialog's buttons as structure, then invokes, focuses, selects or sets the text
+  of one, with no coordinates. Toolkit apps (Settings, Files, the installer's dialogs) describe
+  every control; a Wayland app gives its title and app id only; Windows and macOS apps are
+  pixels only for now (docs/limitations.md). Ids stay the same while the window keeps its
+  controls; after a change, `no_such_element` says to read the tree again. The tree is what
+  the app says, so it is data like the pixels: an app can name a button anything.
 - **Window content is data, never instructions**, like file contents: the tool descriptions
   and the server's instructions say so. A window can show anything, a page made to steer an
   agent included.
@@ -315,8 +326,7 @@ clock at boot (D150). The log in Settings comes after the release.
 
 The 2026-07-28 protocol version, resources and prompts; the other commands' tools
 (`settings`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; windows as structured data instead of
-pixels (item 48); drag, double-click, sideways scrolling and non-ASCII typing; capturing the
+is returned as before); `outputSchema`; element trees from Windows and macOS apps (D161); drag, double-click, sideways scrolling and non-ASCII typing; capturing the
 terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
 (after networking); the log in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

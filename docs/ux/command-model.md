@@ -184,13 +184,13 @@ its tools, schemas, annotations, refusal codes and `instructions`. `eggsh` does 
 `echo`, `exit`, `export`, `false`, `help`, `pwd`, `set`, `true`, `type`, `unset` (CLI only).
 
 **`wm`'s own verbs:** `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`
-(D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147); item 48 adds
-`act` (`show` is a core verb).
+(D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
+item 48; `show` is a core verb).
 
 **Commands in the registry:** `agentlog`, `app install`, `app list`, `app open`, `app
-uninstall`, `cat`, `help`, `ls`, `ps`, `tee`, `trash`, `wm capture`, `wm click`, `wm close`,
-`wm focus`, `wm list`, `wm maximise`, `wm menu`, `wm minimise`, `wm move`, `wm press`, `wm
-restore`, `wm scroll`, `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`, `ping`,
+uninstall`, `cat`, `help`, `ls`, `ps`, `tee`, `trash`, `wm act` (D161), `wm capture`, `wm
+click`, `wm close`, `wm focus`, `wm list`, `wm maximise`, `wm menu`, `wm minimise`, `wm move`,
+`wm press`, `wm restore`, `wm scroll`, `wm show` (D161), `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`, `ping`,
 `nslookup`, `fetch` and `edit`, which tools run already, first).
 
 **JSON forms** (errors as one JSON line on standard error):
@@ -200,6 +200,7 @@ restore`, `wm scroll`, `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`
 | `ls --json` | `name`, `path`, `type` (`file`, `folder`, `link`, `character_device`, `block_device`, `fifo`, `socket`, `unknown`), `permissions` (`rwxr-xr-x`), `links`, `owner`, `group`, `size_bytes`, `modified_at` |
 | `ps --json` | `pid`, `parent_pid`, `group_id`, `session_id`, `state`, `name` |
 | `wm list --json` | `id`, `state`, `x`, `y`, `width`, `height`, `client_pid` (`null` for the kernel's windows), `title` |
+| `wm show --json` | `id`, `parent` (`null` for the root), `role`, `x`, `y`, `width`, `height`, `flags` (list), `name`, `value`: one element of the window's tree (D161) |
 | `app list --json` | `name`, `source`, `architecture` (or `null`), `program`, `icon` (or `null`) |
 | `agentlog --json` | `called_at`, `call`, `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log |
 | `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `surface`, one per command |
@@ -225,6 +226,10 @@ restore`, `wm scroll`, `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`
 | `person_active` | busy | `wm` (exit 75) | |
 | `no_window_server` | not_found | `wm` (exit 1) | |
 | `no_such_menu_item` | not_found | `wm menu` | |
+| `pixels_only` | not_found | `wm show`, `wm act`: the app gives no element tree (D161) | `wm capture` |
+| `no_such_element` | not_found | `wm act`: no element of that id now | `wm show` |
+| `element_cannot` | usage | `wm act`: the element's role does not take the action | |
+| `element_disabled` | refused | `wm act`: the element is disabled | `wm show` |
 | `no_such_app`, `app_exists`, `not_an_app` | not_found, exists, usage | `app` | `app list` for the first |
 | `not_in_trash` | not_found | `trash -r` | `trash -l` |
 | `no_such_command` | not_found | `help` | `help` |
@@ -233,7 +238,9 @@ restore`, `wm scroll`, `wm size`, `wm type`. Slice 2 adds the rest (`date`, `ip`
 **Tools:** the 26 shipped tools keep their names, arguments, results and annotations (the
 parity test compares each schema byte for byte with the shipped one), and D160 adds `wm_focus`,
 `wm_move` (`x`, `y`), `wm_size` (`width`, `height`), `wm_minimise`, `wm_maximise`,
-`wm_restore` and `wm_close`: effect `change`, grant `run`, idempotent but for `wm_close`. Their
+`wm_restore` and `wm_close`: effect `change`, grant `run`, idempotent but for `wm_close`. D161
+adds `wm_show` (effect `read`, grant `view`) and `wm_act` (`element`, `action`, `text`;
+effect `control`, grant `run`). Their
 effects: `read` for the reading tools, `wm_capture` and `wm_menu_list`; `change` for
 `clock_sync`, `app_install`, `app_open`, `edit_open` and the seven new `wm` tools; `destroy` for
 `tee`, `trash`, `fetch`, `clock_set` and `app_uninstall`; `control` for `run`, the input tools
@@ -242,5 +249,6 @@ and `wm_menu_choose`. No tool is `openWorldHint` yet, as shipped.
 **GUI surfaces** (D22): each command's `surface` names its GUI (Files for `ls`, the Text
 Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launcher for `app`,
 the Agent chip for `agentlog`), or why there is none (`ps` waits for a task manager; `wm
-capture` and the input verbs are for agents, people use the window itself; `help` describes the
+capture` and the input verbs are for agents, people use the window itself; `wm show` and `wm
+act` likewise; `help` describes the
 command line).
