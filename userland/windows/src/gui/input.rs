@@ -106,6 +106,11 @@ pub struct InputState {
 }
 
 impl InputState {
+    /// Whether Shift was held at the last record.
+    pub fn shift_held(&self) -> bool {
+        self.modifiers & SHIFT != 0
+    }
+
     fn mouse_keys(&self) -> usize {
         let mut keys = 0;
         for (held, flag) in [

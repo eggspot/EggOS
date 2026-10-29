@@ -259,19 +259,28 @@ pub fn pipe() -> Result<(usize, usize), Errno> {
 
 const POLLIN: u16 = 1;
 
-/// Sleeps until one of `fds` can be read (a negative one is left out), a signal or an error.
-pub fn wait_readable(fds: [i32; 2]) -> Result<usize, Errno> {
+/// Sleeps until one of `fds` can be read (a negative one is left out), a signal, an error or,
+/// with a `timeout` in nanoseconds, the time running out.
+pub fn wait_readable(fds: [i32; 2], timeout: Option<u64>) -> Result<usize, Errno> {
     let mut entries = [0u64; 2];
     for (entry, fd) in entries.iter_mut().zip(fds) {
         *entry = u64::from(fd as u32) | (u64::from(POLLIN) << 32);
     }
+    let time = timeout.map(|nanoseconds| {
+        [
+            (nanoseconds / 1_000_000_000).min(i64::MAX as u64) as i64,
+            (nanoseconds % 1_000_000_000) as i64,
+        ]
+    });
+    let time_pointer = time.as_ref().map_or(0, |time| time.as_ptr() as usize);
     // SAFETY: `ppoll` reads and writes two borrowed `struct pollfd`s (an `int` and two
-    // `short`s each, as each `u64` lays them out in the machine's little-endian order) and takes
-    // no time limit or signal mask.
+    // `short`s each, as each `u64` lays them out in the machine's little-endian order), reads
+    // one `struct timespec` from the borrowed local when there is a time limit, and takes no
+    // signal mask.
     unsafe {
         syscall(
             number::PPOLL,
-            [entries.as_mut_ptr() as usize, 2, 0, 0, 0, 0],
+            [entries.as_mut_ptr() as usize, 2, time_pointer, 0, 0, 0],
         )
     }
 }

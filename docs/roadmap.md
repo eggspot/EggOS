@@ -351,6 +351,15 @@ D16):
     it as data; `wm_click`, `wm_type`, `wm_press` and `wm_scroll` under `run`; each call in the
     audit log (typed text included); the MCP boot check captures Settings, `win-paint` and
     `linux-paint` (covered and minimised) exactly and clicks and types through the tools.
+42. **done** — users can now run Windows programs with buttons, text boxes, labels, lists,
+    menus, timers and Open and Save dialogs (D145, docs/windows-programs.md): child windows in
+    the layer, the system's `BUTTON`, `EDIT`, `STATIC` and `LISTBOX` with `WM_COMMAND`, the
+    keyboard focus and `IsDialogMessageW`, the menu bar and its drop-downs, `SetTimer`, and
+    comdlg32's `GetOpenFileNameW` and `GetSaveFileNameW` on EggOS's own picker, all in Claude
+    Fable's design (docs/ux/windows-controls-v0.3.md). The Windows GUI boot test drives
+    `win-controls.exe` through typing, clicks, the menu and both pickers on x86_64 and aarch64
+    and compares every frame with the host's render. Next: multi-line edits and the clipboard
+    (item 43's notepad), radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet").
 41. macOS GUI apps, part 1.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
@@ -675,7 +684,7 @@ disk (D131); no network or real hardware yet.
 | Kernel | per-CPU scheduler locks, the Linux syscalls (processes run their programs in user mode on every CPU, preempted on return to user mode, and make system calls; user address spaces exist; CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch on yield and, with time slices, at preemption points; they sleep and wait in wait queues, and an idle CPU takes no tick; every CPU starts, has its per-CPU block, takes its own timer and wake-up interrupts and runs threads, and idle CPUs take threads from busy ones) |
 | Hardware | the other architectures; every driver beyond the early UARTs and the polled virtio core with virtio-rng (D111), virtio-gpu 2D (D112), virtio-input (D113) and virtio-blk (D130); device interrupts for drivers |
 | Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write`, `writev`, `exit`, `brk`, `mmap`, `munmap`, `mprotect`, `getpid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`, `getrandom`, `sched_yield`, `arch_prctl`, the resource limits and the signal state's calls, `poll`, `ppoll` and the console's `ioctl`s work, with `AT_RANDOM` from the kernel's generator; pages are mapped on first touch and the stack grows on demand; each thread keeps its own thread pointer; signals are sent and delivered to handlers on Linux's frames, faults included, real-time signals are queued with their `siginfo_t`, and `rt_sigsuspend` and `pause` wait for a handler; the clocks read and programs sleep; the console's status is a character device and it cannot seek; `futex` waits and wakes; `clone` starts threads, Rust's `std::thread` runs, each on its process's one CPU until TLB shootdown; FP state per thread; signals between a process's threads and to the process sent and delivered, interrupted futex waits and sleeps still missing; new processes and files still missing), Android, Windows (console programs, and GUI programs' windows, painting, input and message
-boxes, part 1, D129; controls, menus and the C runtime missing), macOS and iOS layers |
+boxes, part 1, D129; controls, menus, timers and file pickers, part 2, D145; the C runtime missing), macOS and iOS layers |
 | Desktop / UX | compositor, apps, maximise, pointer, boot screen (the minimal desktop works: wallpaper, top bar with clock and power menu, the shell's terminal in a window moved, focused and minimised with the mouse, D115); design in `docs/ux/` |
 | AI-native | built-in MCP server, app capability registry, agent permissions |
 | Editions | component manager; packaging and policy per edition |

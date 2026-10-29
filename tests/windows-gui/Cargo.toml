@@ -12,5 +12,9 @@ path = "src/lib.rs"
 name = "win-paint"
 path = "src/bin/win_paint.rs"
 
+[[bin]]
+name = "win-controls"
+path = "src/bin/win_controls.rs"
+
 [lints]
 workspace = true

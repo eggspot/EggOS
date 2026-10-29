@@ -119,6 +119,41 @@ fn next_match(search: &mut Search, data: &mut [u8; find::FIND_DATA_SIZE]) -> boo
     }
 }
 
+/// Calls `visit` with the name (no NUL) and whether it is a folder of every entry of the
+/// folder `path` (NUL-terminated) but `.` and `..`; whether the folder could be read.
+pub(super) fn for_each_entry(path: &[u8], visit: &mut dyn FnMut(&[u8], bool)) -> bool {
+    let Ok(fd) = linux::open(path, O_RDONLY | O_DIRECTORY) else {
+        return false;
+    };
+    let mut entries = [0u8; ENTRIES_SIZE];
+    while let Ok(filled @ 1..) = linux::directory_entries(fd, &mut entries) {
+        let mut at = 0;
+        while at < filled.min(ENTRIES_SIZE) {
+            let record = &entries[at..filled.min(ENTRIES_SIZE)];
+            let length = match record.get(DIRENT_LENGTH..DIRENT_LENGTH + 2) {
+                Some(bytes) => usize::from(u16::from_ne_bytes([bytes[0], bytes[1]])),
+                None => break,
+            };
+            if length <= DIRENT_NAME || length > record.len() {
+                break;
+            }
+            at += length;
+            let field = &record[DIRENT_NAME..length];
+            let Some(end) = field.iter().position(|byte| *byte == 0) else {
+                continue;
+            };
+            if matches!(&field[..end], b"." | b"..") {
+                continue;
+            }
+            let folder = linux::stat_at(fd, &field[..=end])
+                .is_ok_and(|words| linux::file_mode(&words) & linux::FILE_TYPE == linux::DIRECTORY);
+            visit(&field[..end], folder);
+        }
+    }
+    let _ = linux::close(fd);
+    true
+}
+
 unsafe extern "efiapi" fn find_first_file_w(name: *const u16, data: *mut u8) -> usize {
     if data.is_null() {
         return fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE);
@@ -346,7 +381,9 @@ unsafe extern "efiapi" fn remove_directory_w(name: *const u16) -> Bool {
     unsafe { remove(name, true) }
 }
 
-fn write_windows_path(path: &[u8], out: &mut [u16]) -> Result<usize, usize> {
+/// Writes the EggOS path `path` in Windows' form, NUL-terminated, into `out`: the units
+/// written (no NUL), or the units needed with the NUL when it does not fit.
+pub(super) fn write_windows_path(path: &[u8], out: &mut [u16]) -> Result<usize, usize> {
     let mut units = 0;
     text::windows_path(path, &mut |c| units += c.len_utf16());
     if units >= out.len() {
@@ -358,7 +395,8 @@ fn write_windows_path(path: &[u8], out: &mut [u16]) -> Result<usize, usize> {
     Ok(at)
 }
 
-fn working_directory(out: &mut [u8; text::PATH_CAPACITY]) -> Option<usize> {
+/// The process's working directory (no NUL); its length.
+pub(super) fn working_directory(out: &mut [u8; text::PATH_CAPACITY]) -> Option<usize> {
     let length = linux::working_directory(out).ok()?;
     Some(length.saturating_sub(1))
 }

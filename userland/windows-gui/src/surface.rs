@@ -83,6 +83,16 @@ impl Rect {
         )
     }
 
+    /// The same rectangle moved by (`dx`, `dy`).
+    pub const fn offset(&self, dx: i32, dy: i32) -> Rect {
+        Rect::new(
+            self.left.saturating_add(dx),
+            self.top.saturating_add(dy),
+            self.right.saturating_add(dx),
+            self.bottom.saturating_add(dy),
+        )
+    }
+
     /// Whether the pixel (`x`, `y`) is inside.
     pub const fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.left && x < self.right && y >= self.top && y < self.bottom
@@ -90,7 +100,8 @@ impl Rect {
 }
 
 /// A window's pixels (`0x00RRGGBB`, rows of `width` with no padding), the rectangle drawing may
-/// change and the rectangle it changed.
+/// change and the rectangle it changed, both in the coordinates drawing uses: the buffer's own,
+/// moved by [`Surface::translate`] (a child window draws in its own coordinates).
 #[derive(Debug)]
 pub struct Surface<'a> {
     pixels: &'a mut [u32],
@@ -98,6 +109,7 @@ pub struct Surface<'a> {
     height: u32,
     clip: Rect,
     drawn: Rect,
+    origin: (i32, i32),
 }
 
 impl<'a> Surface<'a> {
@@ -112,6 +124,7 @@ impl<'a> Surface<'a> {
             height,
             clip: Rect::new(0, 0, width as i32, height as i32),
             drawn: Rect::default(),
+            origin: (0, 0),
         })
     }
 
@@ -121,6 +134,29 @@ impl<'a> Surface<'a> {
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Moves the origin to (`dx`, `dy`) of the current coordinates: after it, that point is
+    /// (0, 0), and the clip and the rectangle drawn so far follow.
+    pub fn translate(&mut self, dx: i32, dy: i32) {
+        self.origin = (
+            self.origin.0.saturating_add(dx),
+            self.origin.1.saturating_add(dy),
+        );
+        self.clip = self.clip.offset(-dx, -dy);
+        if !self.drawn.is_empty() {
+            self.drawn = self.drawn.offset(-dx, -dy);
+        }
+    }
+
+    /// Where (0, 0) is in the buffer.
+    pub fn origin(&self) -> (i32, i32) {
+        self.origin
+    }
+
+    fn bounds(&self) -> Rect {
+        Rect::new(0, 0, self.width as i32, self.height as i32)
+            .offset(-self.origin.0, -self.origin.1)
     }
 
     /// Limits drawing to `rect` as well.
@@ -134,7 +170,7 @@ impl<'a> Surface<'a> {
 
     /// Limits drawing to `rect` only, within the surface.
     pub fn set_clip(&mut self, rect: Rect) {
-        self.clip = Rect::new(0, 0, self.width as i32, self.height as i32).intersection(&rect);
+        self.clip = self.bounds().intersection(&rect);
     }
 
     /// The smallest rectangle holding every pixel drawn so far.
@@ -144,6 +180,7 @@ impl<'a> Surface<'a> {
 
     /// The pixel at (`x`, `y`), if it is on the surface.
     pub fn get(&self, x: i32, y: i32) -> Option<u32> {
+        let (x, y) = (x.checked_add(self.origin.0)?, y.checked_add(self.origin.1)?);
         let inside = x >= 0 && y >= 0 && (x as u32) < self.width && (y as u32) < self.height;
         inside.then(|| self.pixels[y as usize * self.width as usize + x as usize])
     }
@@ -158,8 +195,9 @@ impl<'a> Surface<'a> {
         if left >= right {
             return;
         }
-        let start = y as usize * self.width as usize;
-        self.pixels[start + left as usize..start + right as usize].fill(colour);
+        let start = (y + self.origin.1) as usize * self.width as usize;
+        let (from, to) = (left + self.origin.0, right + self.origin.0);
+        self.pixels[start + from as usize..start + to as usize].fill(colour);
         self.drawn = self.drawn.union(&Rect::new(left, y, right, y + 1));
     }
 
@@ -226,6 +264,27 @@ mod tests {
         assert_eq!(surface.get(6, 2), Some(0));
         assert_eq!(surface.get(8, 0), None);
         assert!(Surface::new(&mut [0u32; 3], 2, 2).is_none());
+    }
+
+    #[test]
+    fn a_translated_surface_draws_in_its_own_coordinates_inside_the_buffer() {
+        let mut pixels = [0u32; 8 * 6];
+        let mut surface = Surface::new(&mut pixels, 8, 6).unwrap();
+        surface.clip_to(Rect::new(2, 1, 7, 5));
+        surface.translate(3, 2);
+        assert_eq!(surface.clip(), Rect::new(-1, -1, 4, 3));
+        assert_eq!(surface.origin(), (3, 2));
+        surface.fill(Rect::new(0, 0, 10, 10), 5);
+        assert_eq!(surface.drawn(), Rect::new(0, 0, 4, 3));
+        assert_eq!(surface.get(0, 0), Some(5));
+        assert_eq!(surface.get(-3, -2), Some(0));
+        surface.set_clip(Rect::new(-10, -10, 100, 100));
+        assert_eq!(surface.clip(), Rect::new(-3, -2, 5, 4));
+        surface.translate(-3, -2);
+        assert_eq!(surface.drawn(), Rect::new(3, 2, 7, 5));
+        assert_eq!(surface.get(6, 4), Some(5));
+        assert_eq!(surface.get(7, 4), Some(0));
+        assert_eq!(surface.get(2, 2), Some(0));
     }
 
     #[test]
