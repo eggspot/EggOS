@@ -10461,3 +10461,96 @@ the license, by an explicit instruction recorded here.
   and P-256 key exchange, OCSP and CRLs, name constraints and policy checks; ECDSA P-521 and
   Ed25519 certificates; generating a CCADB root bundle into release images; benchmarks of the
   ciphers.
+
+## D160 The Egg command model, slice 1: JSON and clear errors from the commands agents use, `help --json`, the MCP tools from one registry, and `wm`'s other verbs as tools (the owner's approved design of 2026-10-28; extends D21, D22, D107, D128, D136, D137, D141, D143, D147) — Decided by the build loop (the stream of JSON errors decided by research)
+- **Why.** Agents and scripts used the commands' text, and an MCP refusal was a sentence: they
+  had to guess what a failure meant and what to do. The owner chose a shared command model
+  over a new language (design `~/work/eg/designs/egg-command-model.md`, approved; the shared
+  spec is now docs/ux/command-model.md, its one canonical copy, which EggDB links to).
+- **The registry** (new crate `userland/commands`, `eggos-commands`, `no_std`, no allocator,
+  no dependencies): `CommandDefinition` (words, summary, description, options, operands,
+  outputs per format, `max_effect`, errors with exit statuses, `surface`) and `ToolDefinition`
+  (name, title, description, command words, fixed options, arguments with JSON type,
+  constraints, default and mapping, `max_effect`, grant, `idempotent`, `open_world`,
+  confirmation, result), two `'static` const tables `COMMANDS` (25: `agentlog`, `app
+  install|list|open|uninstall`, `cat`, `help`, `ls`, `ps`, `tee`, `trash`, `wm
+  capture|click|close|focus|list|maximise|menu|minimise|move|press|restore|scroll|size|type`)
+  and `TOOLS` (33), the error codes (`errors`, 35), the core verbs, `wm`'s own verbs (D128,
+  D141, D147: `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`, `capture`,
+  `click`, `type`, `press`, `scroll`, `menu`), the kept names (checked against the code: the
+  34 core utilities, `help` among them, and `app`, `edit` and `settings`) and `eggsh`'s built-ins (described,
+  not linked: the shell stays small, D107). Each command's `surface` records its GUI or why it
+  has none (D22). `restore` keeps one meaning, bring back: a window to its size, the Trash's
+  items, EggDB's dump.
+- **The CLI.** `options.rs` gains `parse_defined`: options come from the definition, long ones
+  too (`--name`, `--name=value`, `--name value`). `ls`, `ps`, `wm list`, `app list`,
+  `agentlog` and `help` take `--json`: JSON lines on standard output (`ls`: `name`, `path`,
+  `type`, `permissions`, `links`, `owner`, `group`, `size_bytes`, `modified_at`; `ps`: `pid`,
+  `parent_pid`, `group_id`, `session_id`, `state`, `name`; `wm list`: `id`, `state`, `x`, `y`,
+  `width`, `height`, `client_pid`, `title`; `app list`: `name`, `source`, `architecture`,
+  `program`, `icon`; `agentlog`: `called_at`, `call`, `client`, `tool`, `result`, `arguments`,
+  `detail`), times RFC 3339 in UTC (new `eggos_calendar::rfc3339`). Errors carry a code and a
+  shared category: in text the message as before plus `  try: <command>` when one command fixes
+  it (`no_such_window` says `try: wm list`, `no_such_command` `try: help`); with `--json` one
+  `{"error":{"code","category","message","fix","fix_command"}}` line on standard error, the
+  exit status unchanged. A file's errors map from errno (`no_such_file`, `permission_denied`,
+  `already_exists`, `is_a_folder`, `not_a_folder`, `read_only`, `no_space`, `busy`,
+  `timed_out`, `io_error`, `out_of_memory`, `failed`). New utility `help` (34 utilities):
+  `help`, `help <words>` (usage, description, options, errors with exit statuses, GUI) and
+  `help --json` (the definitions); in `eggsh`, `help` alone stays the shell's help and `help`
+  with words runs `/bin/help`. `wm`'s verbs accept `--` before the window id, as the MCP server
+  passes it, and `wm focus|...|size` now report a busy machine (75) and a missing window as
+  input does.
+- **MCP.** `userland/mcp/src/tools.rs`'s table becomes the registry's tools: each `Tool` holds
+  its `ToolDefinition` plus how its twin runs; `inputSchema` is written at run time from the
+  arguments with `JsonWriter` (byte for byte the shipped schemas, which a test keeps), the
+  annotations come from `max_effect`, `idempotent` and `open_world` (the shipped ones, which a
+  test keeps; `openWorldHint` is still false everywhere, as shipped). New tools `wm_focus`,
+  `wm_move` (`x`, `y`), `wm_size` (`width`, `height`), `wm_minimise`, `wm_maximise`,
+  `wm_restore`, `wm_close`: effect `change`, grant `run` (the design's), idempotent but
+  `wm_close`; their result says what was done (`Moved window 129.`). Every refusal keeps its
+  text and gains `structuredContent: {"error":{...}}` with a code (`path_not_allowed`,
+  `needs_grant`, `needs_confirmation`, `declined_by_user`, `confirmation_failed`,
+  `confirmation_timed_out`, `question_pending`, `target_changed`, `person_active`,
+  `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed`, `is_a_folder`,
+  `no_such_file`, `no_such_app`). The session's `instructions` are generated: the verbs, what
+  each effect means, the categories, `fix_command`, `/bin/help --json`, then the grants.
+  TOOLS 33.
+- **Front-ends (D22).** CLI and MCP from one definition; the GUI is recorded per command
+  (`surface`) and the new window tools' GUI is the title bar's buttons and dragging.
+- **Checks.** Host tests: the registry (kept names and verbs, unique sorted commands, fields,
+  `snake_case` fields with `_at` times, unique codes whose fix commands exist, tool names, every
+  option a tool passes exists on its command, annotations against grants and confirmation, the
+  new tools' safety, argument types); parity (each twin runs its command's words and fixed
+  options, the 26 shipped schemas byte for byte, the shipped annotations, the shipped titles and
+  descriptions); help (`help --json` lists exactly the registry; usage and errors); `parse_defined`;
+  JSON and errors of `ls`, `ps`, `wm list`, `app list`'s record and `agentlog`; coded output
+  errors; the server's new tools (words, results, audit, refusals of bad sizes and points),
+  coded refusals and the instructions; `eggsh`'s `help ls`. QEMU: the MCP boot's first session
+  calls the seven new tools without grants (refused for `run`) and checks a refusal's
+  `"code":"needs_grant","category":"needs_grant"`; the rest of the session is unchanged.
+- **Performance and size (D24).** No kernel path changes. The registry is const data and the
+  schemas are written at run time; `coreutils`, `app` and `eggmcpd` grow by the definitions
+  they link and `app` by the JSON writer, `eggsh` by a few bytes; the build phase measures
+  `coreutils`, `app`, `settings` (unchanged: it does not link the registry yet) and `eggmcpd`
+  before and after.
+- **Decided by research.** JSON errors go to standard error, one line each, with standard
+  output kept for records: `cmd --json | jq` never meets an error object, and the MCP server
+  already captures the streams apart (as `gh`, `kubectl`, `aws` and `docker` split data and
+  errors; `cargo` and `terraform` put diagnostics on standard output only because their
+  standard output is an event stream).
+- **Decided without research.** The new window tools' idempotency (all but `wm_close`) and
+  their `x`/`y` from 0 (the CLI takes negative places; agents do not need them); `wm_capture`
+  stays `read` although its twin writes a PNG (as shipped); `clock_set` is `destroy` and
+  `clock_sync` `change`, matching their shipped annotations; the field names above; `help`
+  lives in the core utilities and `eggsh` passes it words; a usage error keeps each command's
+  shipped exit status (1 for `cat`, `tee` and `ps`). The owner can overrule any of these.
+- **Not yet.** Slice 2: every other command (`date`, `ip`, `ping`, `nslookup`, `fetch` and
+  `edit`, which tools run already, then `cp`, `mv`, `rm`, `mkdir`, `grep`, `head`, `tail`,
+  `wc`, `free`, `uptime`, `hwclock`, `settings` and the shell's built-ins), `examples` run as
+  tests, the registry test requiring every command, `parse_defined` in every utility (`cat`,
+  `tee`, `trash`, `agentlog` and `wm`'s subcommands keep their own parsers), coded JSON
+  errors from `app install|open|uninstall`, and codes for an MCP twin that fails rather than
+  being refused (twins run in text mode). Slice 3: `--limit`, `--after`, `next_cursor`,
+  `--dry-run`, the security review. `outputSchema`. Slice 4: apps' actions and
+  `tools.listChanged`. Item 48 (`wm show`, `wm act`) comes first, on this registry.

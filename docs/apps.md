@@ -138,7 +138,9 @@ is built on a Mac (Apple's linker builds it).
   desktop. It is the MCP tool `app_open`'s twin.
 - **`app list`** prints one line per installed app, in `/Applications`' order: its name,
   source, architecture, program path and own icon file (`app.icon`, or `-` for the generic
-  tile), separated by tabs; the MCP tool `app_list` answers the same.
+  tile), separated by tabs; the MCP tool `app_list` answers the same. `app list --json`
+  writes a JSON record per app instead (`name`, `source`, `architecture`, `program`, `icon`,
+  `null` for no architecture or icon; D160, docs/ux/command-model.md).
 - Status: 0 done, 1 refused or failed, 2 a usage error. With a desktop running, `install`
   and `uninstall` tell it (`APPS_CHANGED`, [Windows](windows.md)), so its launcher and icons
   follow at once.

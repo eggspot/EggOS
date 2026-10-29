@@ -475,6 +475,17 @@ The release path (the release-path review's issues #141-#145, after the items ab
   `date --sync` and MCP `clock_sync` by SNTP. Next: the Date & time pane's "Set
   automatically" (a Fable addition to date-time-v0.3.md first), syncing at boot, a QEMU check
   of `fetch https://` against a TLS test server.
+- After v0.3.0, first: the Egg command model (owner's approved design, 2026-10-28), slice 1
+  **done** — JSON and clear errors from the commands agents use (D160,
+  docs/ux/command-model.md): the registry `userland/commands` (`eggos-commands`) holds every
+  command the MCP tools run and every tool; `ls`, `ps`, `wm list`, `app list` and `agentlog`
+  take `--json` (JSON lines), long options come from the definitions, errors carry a code and
+  a shared category (`  try: <command>` in text, `{"error":{...}}` in JSON and in every MCP
+  refusal's `structuredContent`); `help` and `help --json` describe the registry; the MCP
+  server's schemas, annotations and `instructions` are generated from it; new tools
+  `wm_focus`, `wm_move`, `wm_size`, `wm_minimise`, `wm_maximise`, `wm_restore`, `wm_close`.
+  Next: item 48 (windows as structure), then slice 2 (every command, examples as tests) and
+  slice 3 (pages and previews).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
@@ -495,7 +506,7 @@ the release: networking (part 1 done after it: D157, below); the MCP server is b
 | M7 | VFS and a first file system | **in progress** — the VFS core (a `FileSystem` trait, nodes, Linux's path walk), a read-only initramfs built by xtask from `initramfs/` as a `newc` cpio archive, embedded in the kernel and mounted as `/`, served in place; `openat`, `read`, `pread64`, `lseek`, `getdents64`, `fstat`/`newfstatat`/`statx` on files, `getcwd`, `chdir`, `fchdir`, a working directory per process (D102); `execve` and `execveat` from a file of the initramfs, loaded into a new process with the caller's id and exit record, with Linux's checks and errors before the point of no return, signal actions reset, close-on-exec descriptors closed, other threads ended, and the test kernels' programs in `usr/libexec/` (D103); next: tmpfs, devfs, `#!` scripts, setuid on exec (issue #94) |
 | M8 | virtio drivers (console, block, net, rng, input) | **in progress** — the polled virtio core: virtio-mmio version 2 and modern virtio-pci behind one `Transport`, the reset, feature and status handshake, the split virtqueue with the spec's barriers, DMA regions freed only after the device's reset reads back 0; virtio-rng returns bytes on aarch64, riscv64 and x86_64 (D111); the doorbell ordered after the ring's writes for devices, virtio-gpu 2D on all three (D112), virtio-input keyboard, tablet and mouse on all three (D113), virtio-blk (polled, read and write) with disks in the driver model on all three (D130); virtio-console's agent channel (D136); virtio-net with an IPv4 stack of our own, DHCP, UDP and ping sockets, `ip`, `ping`, `nslookup` and `net_status` on all three (D157, networking part 1); TCP stream sockets, `fetch` over HTTP and the MCP tools `net_ping`, `net_lookup` and `fetch` (D158, networking part 2); HTTPS with a TLS 1.3 client and cryptography of our own, and the network clock by SNTP (D159, networking part 3); next: interrupts instead of polling, the kernel's generator reseeded from virtio-rng |
 | M9 | More architectures through the HAL | |
-| M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24); the first installer: a compressed base image that downloads and installs in seconds, with download size, install time and first-boot time measured (D69) | **in progress** — init as pid 1, started by the release kernel, with `reboot(2)` (D106); next: the `eggsh` shell and the core utilities |
+| M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24); the first installer: a compressed base image that downloads and installs in seconds, with download size, install time and first-boot time measured (D69) | **in progress** — init as pid 1, started by the release kernel, with `reboot(2)` (D106); next: the `eggsh` shell and the core utilities; the command model's registry, `--json`, coded errors and `help` for the commands agents use (D160) |
 | M11 | Graphics stack (virtio-gpu first) and compositor | **in progress** — the polled virtio-gpu 2D driver and the kernel's display API: a framebuffer on scanout 0, damage, fenced transfers and flushes (D112); the Egg Mono font and the graphical terminal, the console's session on the display (D114); the minimal desktop with the terminal's window (D115); next: the cursor queue, display events, interrupts instead of polling, 3D (virgl, Venus), a userland compositor |
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |

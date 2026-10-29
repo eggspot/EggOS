@@ -170,9 +170,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **No components yet.** The component manager (D18) comes later (M14): for v0.3.0 the
   desktop and the Windows and macOS layers are in the base and cannot be left out (D109,
   D152). The built-in MCP server is in (D136, docs/mcp.md), but not every capability has its
-  three front-ends yet (D22): Settings, the device list and window focus, move, size and
-  close have no MCP tools, and Files' copy, move and new folder have none either (an agent
-  with `run` uses `cp`, `mv` and `mkdir`).
+  three front-ends yet (D22): Settings and the device list have no MCP tools, and Files'
+  copy, move and new folder have none either (an agent with `run` uses `cp`, `mv` and
+  `mkdir`). Window focus, move, size, minimise, maximise, restore and close have theirs
+  (D160).
 - **One user, root.** Processes start as root; there are no logins or permissions to manage
   (D75).
 
@@ -186,6 +187,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
   they are command-line only, with no GUI or MCP front-end yet (`wm` is the window
   capability's CLI; its GUI is the desktop's own chrome and keys).
+- **The command model, slice 1 (D160, docs/ux/command-model.md).** Only the commands agents
+  use are in the registry: `ls`, `cat`, `ps`, `wm`, `app`, `agentlog`, `tee`, `trash` and
+  `help`. `--json` exists on `ls`, `ps`, `wm list`, `app list`, `agentlog` and `help`; the
+  other utilities, `settings` and `eggsh`'s built-ins have no JSON form, no coded errors in
+  JSON and no `help` entry yet (slice 2), and there is no paging (`--limit`, `--after`) or
+  `--dry-run` (slice 3). Long options come from the registry only for `ls`, `ps` and `help`.
+  An MCP tool whose command fails (rather than being refused) still returns that command's
+  text error without a code: the twins run in text mode.
 - The keyboard layout is US only (D113).
 
 ## The desktop

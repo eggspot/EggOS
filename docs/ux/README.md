@@ -32,6 +32,9 @@ behaviour. A UX regression is treated like a performance regression.
   indicator's glyph, tooltip and click (designed; not built yet).
 - `date-time-v0.3.md`: the Settings `Date & time` pane and the bar's clock once the real-time
   clock sets it (item 29, D150).
+- `command-model.md`: the Egg command model shared with EggDB (D160): the words, the JSON
+  answers, the errors and their categories, effects and safety, and EggOS's tables; the
+  canonical copy of the spec (CLI and MCP, not visual).
 - `toolkit-v0.3.md`: the v0.3.0 GUI toolkit's widgets (text, buttons, checkboxes, radios,
   cards, lists, text fields, scroll views, focus and keyboard navigation) and the Settings
   app's first version (item 34).

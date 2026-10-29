@@ -119,13 +119,31 @@ run-eggos.sh` the script's own path works too.
 | `wm_press` | Presses a key with modifiers in a window (`window`, `keys` such as `Enter` or `ctrl+s`) | `wm press -- <window> <keys>` | `run` |
 | `wm_scroll` | Turns the wheel `dy` notches (-16 to 16) in a window, at `x`, `y` or the centre | `wm scroll [--at <x> <y>] -- <window> 0 <dy>` | `run` |
 | `wm_menu_list` | A window's main menu, the one a macOS app shows in the top bar (`window`): each menu's number and title, each entry's number, label, key equivalent and `[disabled]`, separators as `----` (D147) | `wm menu -- <window>` | `view` |
+| `wm_focus` | Brings a window to the front (`window`), restoring it if minimised, and gives it the keyboard (D160) | `wm focus -- <window>` | `run` |
+| `wm_move` | Moves a window's top-left corner to `x`, `y` (screen pixels, 0 to 65535) (D160) | `wm move -- <window> <x> <y>` | `run` |
+| `wm_size` | Gives a window a `width` and `height` (1 to 65535 pixels, its frame included) (D160) | `wm size -- <window> <width> <height>` | `run` |
+| `wm_minimise`, `wm_maximise`, `wm_restore` | Minimises, maximises or restores a window (`window`) (D160) | `wm minimise\|maximise\|restore -- <window>` | `run` |
+| `wm_close` | Asks a window's app to close it (`window`); the app may ask its user first, so check with `wm_list` (D160) | `wm close -- <window>` | `run` |
 | `wm_menu_choose` | Chooses an enabled item of a window's main menu (`window`; `menu`, 0 to 5, and `entry`, 0 to 15, the numbers `wm_menu_list` shows; optionally `label`, at most 64 bytes, the item's label, so a menu the app changed since is refused instead of choosing another item) as a click on it in the top bar would; covered and minimised windows too; refused while the app shows a dialog | `wm menu --choose [--label <label>] -- <window> <menu> <entry>` | `run` |
 
-The reading tools, `wm_capture` and `wm_menu_list` are `readOnlyHint`; `tee`, `trash`, `run`,
-`app_uninstall`, the four input tools and `wm_menu_choose` are `destructiveHint`, so clients ask their user before them. Paths are absolute and resolved
+Every tool's name, description, arguments, grant, confirmation and annotations come from the
+command model's registry (D160, docs/ux/command-model.md, `userland/commands`): its
+`inputSchema` is written from the registry when the tools are listed, the same bytes as before
+for the shipped tools. The reading tools, `wm_capture` and `wm_menu_list` are `readOnlyHint`;
+`tee`, `trash`, `fetch`, `run`, `clock_set`, `app_uninstall`, the four input tools and
+`wm_menu_choose` are `destructiveHint`, so clients ask their user before them; the seven window
+tools of D160 change windows but are neither. Paths are absolute and resolved
 before they are checked: escapes are decoded, `.`, `..` and repeated slashes folded, and any
 component that is a symbolic link refused, so `/home/../etc` is `/etc` and refused. A refusal is
-a tool result with `isError: true` that says why. A command that fails gives its error output and
+a tool result with `isError: true` that says why, and since D160 its `structuredContent` is
+the command model's error, `{"error":{"code","category","message","fix","fix_command"}}`:
+`path_not_allowed` (refused), `needs_grant`, `needs_confirmation`, `declined_by_user`
+(declined), `confirmation_failed` (failed), `confirmation_timed_out` (timeout),
+`question_pending` and `target_changed` (busy), `person_active` (busy, a person is using the
+machine), `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed`,
+`is_a_folder`, `no_such_file` and `no_such_app`; the text is the same as before. Agents rely
+on the category; the session's `instructions` (generated from the registry) teach the verbs,
+the effects, the categories and `fix_command`. A command that fails gives its error output and
 exit status, also as an error result. Every command starts in `/home` with `PATH=/bin`, no input
 but `tee`'s content, and as root; it is stopped, with every process it started, after 10 s
 (`run`: its `timeout_seconds`), or as soon as its output passes 128 KiB (the result says it was
@@ -295,8 +313,9 @@ clock at boot (D150). The log in Settings comes after the release.
 
 ## Not yet
 
-The 2026-07-28 protocol version, resources and prompts; the other commands' tools (the other
-`wm` actions such as `focus` and `minimise`, `settings`); windows as structured data instead of
+The 2026-07-28 protocol version, resources and prompts; the other commands' tools
+(`settings`); coded errors for a command that fails rather than being refused (its text error
+is returned as before); `outputSchema`; windows as structured data instead of
 pixels (item 48); drag, double-click, sideways scrolling and non-ASCII typing; capturing the
 terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
 (after networking); the log in Settings. A window whose program stopped answering keeps input
