@@ -322,6 +322,13 @@ fn click<S: System>(
             output.write(b"\n");
             0
         }
+        Err(Errno::EOPNOTSUPP) => {
+            output.error(&[
+                parsed.positionals[0],
+                b": the terminal's window takes keys, characters and the wheel only",
+            ]);
+            FAILURE
+        }
         Err(errno) => refused(output, parsed.positionals[0], errno),
     }
 }
@@ -705,6 +712,19 @@ mod tests {
         assert_eq!(status, 2);
         let (status, _) = run(&[c"click", c"129", c"-1", c"1"], machine());
         assert_eq!(status, 2);
+    }
+
+    #[test]
+    fn the_terminal_s_window_refuses_pointer_input_by_name() {
+        let (status, fake) = run(&[c"click", c"64", c"1", c"1"], machine());
+        assert_eq!(status, FAILURE);
+        assert_eq!(
+            fake.errors(),
+            "wm: 64: the terminal's window takes keys, characters and the wheel only\n"
+        );
+        let (status, fake) = run(&[c"press", c"64", c"shift"], machine());
+        assert_eq!(status, 0);
+        assert_eq!(fake.sent_input, [[64, KIND_KEY, 0, 0, 42, 0]]);
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub const IDAT_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 32 * 1024;
 
 /// The most bytes of filtered rows one image holds, so every position fits the hash table.
-pub const MAX_IMAGE_BYTES: u64 = 0xffff_0000;
+pub const MAX_FILTERED_BYTES: u64 = 0xffff_0000;
 
 const HISTORY_BYTES: usize = 2 * WINDOW_BYTES;
 const HASH_BITS: u32 = 14;
@@ -70,7 +70,7 @@ pub trait PngSink {
 pub enum EncodeError<E> {
     /// The sink refused a write.
     Sink(E),
-    /// A width or height of 0, or an image past [`MAX_IMAGE_BYTES`].
+    /// A width or height of 0, or an image past [`MAX_FILTERED_BYTES`].
     BadSize,
     /// A row of another width than the image's.
     WrongRow,
@@ -153,7 +153,7 @@ impl<'w, S: PngSink> Encoder<'w, S> {
         mut sink: S,
     ) -> Result<Self, EncodeError<S::Error>> {
         let filtered = (1 + u64::from(width) * BYTES_PER_PIXEL) * u64::from(height);
-        if width == 0 || height == 0 || filtered > MAX_IMAGE_BYTES {
+        if width == 0 || height == 0 || filtered > MAX_FILTERED_BYTES {
             return Err(EncodeError::BadSize);
         }
         work.head.fill(0);

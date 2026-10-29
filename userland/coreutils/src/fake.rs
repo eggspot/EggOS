@@ -492,8 +492,12 @@ impl System for Fake {
             }
             (crate::wm::SEND_INPUT, crate::wm::SEND_INPUT_SIZE) => {
                 let request = [0, 4, 8, 12, 16, 20].map(|at| word(argument, at));
-                if !self.windows.iter().any(|window| window.id == request[0]) {
+                let Some(window) = self.windows.iter().find(|window| window.id == request[0])
+                else {
                     return Err(Errno::ENOENT);
+                };
+                if window.client == crate::wm::KERNEL_CLIENT && request[1] <= 1 {
+                    return Err(Errno::EOPNOTSUPP);
                 }
                 if !self.input_results.is_empty()
                     && let Some(errno) = self.input_results.remove(0)
