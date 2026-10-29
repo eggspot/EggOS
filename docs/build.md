@@ -153,7 +153,8 @@ holds what used to be written in them.
   `mac-paint`, our AppKit test app built from `tests/macos-gui/main.m` with the other macOS
   programs (`-framework AppKit -framework Foundation`), writes `mac-paint.app` (its
   `Info.plist` and this CPU's slice as `Contents/MacOS/mac-paint`) in a host folder, and boots
-  the release kernel with the macOS layer on a blank disk with that folder attached. It installs
+  the release image itself, which carries the macOS layer (D152), on a blank disk with that
+  folder attached. It installs
   the bundle with `app install /media/host/mac-paint.app`, opens it from the launcher, then
   compares the display with the host's render (the desktop, and the window and alert painted by
   `eggos-macos-gui-tests`) after each step: the window with its menu in the top bar, `Hello` and
@@ -177,13 +178,26 @@ holds what used to be written in them.
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
   refused) and writes `target/image/eggos-<arch>.elf`; `cargo xtask run` takes the same options
-  ([Linux programs](linux-programs.md), D117). Adding a Windows program (a file that starts with
-  `MZ`) to an x86_64 image installs the Windows layer at `/usr/lib/eggos/windows` with it
-  ([Windows programs](windows-programs.md), D118). Adding an Android program (an ELF file with
-  the `.note.android.ident` note) adds `/system/bin/sh`, another name for `eggsh`
-  ([Android programs](android-programs.md), D119). Adding a macOS program (a 64-bit Mach-O or
-  fat file) to an aarch64 or x86_64 image installs the macOS layer at `/usr/lib/eggos/macos`
-  ([macOS programs](macos-programs.md), D120).
+  ([Linux programs](linux-programs.md), D117). Every release image, with or without added
+  files, carries the Windows layer at `/usr/lib/eggos/windows` on x86_64 and aarch64
+  ([Windows programs](windows-programs.md), D118) and the macOS layer at `/usr/lib/eggos/macos`
+  on aarch64 and x86_64 ([macOS programs](macos-programs.md), D120), as a v0.3.0 exception to
+  D18 until the component manager (D152); so does every test image built on the release
+  initramfs. Adding an Android program (an ELF file with the `.note.android.ident` note) adds
+  `/system/bin/sh`, another name for `eggsh` ([Android programs](android-programs.md), D119).
+- **The install, Files and MCP boot tests boot the release image itself**, the kernel `cargo
+  xtask release` copies to `target/release-dist/`, with no `--add`: they install
+  `win-paint.exe` (x86_64 and aarch64) or the static Linux program (riscv64) from the host
+  folder and open them, and the MCP test, through `run-eggos.sh --mcp --no-window --apps`,
+  installs and captures `win-paint` (x86_64 and aarch64) and captures `linux-paint`; the macOS
+  GUI boot test does the same with `mac-paint.zip` (D152).
+- **`cargo xtask sample-apps --arch <arch>`** builds our own apps for people to try installing
+  into `target/sample-apps/<arch>/` and prints that folder, for the run scripts' `--apps`:
+  `win-paint.exe` and `win-controls.exe` (x86_64 and aarch64, `tests/windows-gui`),
+  `linux-paint` (`tests/linux-gui`, a static Wayland program) and, where Apple's linker or
+  `EGGOS_MACOS_PROGRAMS` provides the Mach-O programs, `mac-paint.zip` and `mac-paint.app`
+  (aarch64 and x86_64). They are test programs built from our sources, never release assets
+  (D152).
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,

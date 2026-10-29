@@ -1326,9 +1326,9 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
     Ok(())
 }
 
-/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows layer),
-/// the folder `programs` holding the test apps and `linux_gui_program`, `linux-paint` built
-/// for `arch`.
+/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows and
+/// macOS layers where they run, D152), the folder `programs` holding the test apps and
+/// `linux_gui_program`, `linux-paint` built for `arch`.
 pub fn check(
     arch: &Arch,
     kernel: &Path,

@@ -423,6 +423,13 @@ D16):
     are within minutes of the host's clock and that `date -s` reaches the hardware clock.
     Next: time zones, network time, `/dev/rtc0`, alarms.
 
+The release path (the release-path review's issues #141-#145, after the items above):
+- #141 **done** — users who download the release can install and open Windows and macOS apps
+  (D152, docs/apps.md): the x86_64 and aarch64 release images carry the Windows and macOS
+  layers, a v0.3.0 exception to D18 until the component manager; the install, Files, MCP and
+  macOS GUI boot tests boot the release artifact itself, with no `--add`; `cargo xtask
+  sample-apps` builds our own apps to try. Next: the layers as optional components (M14).
+
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
 Editor (done, D149, replacing the terminal's `edit`); 29 an RTC driver for `date` (done, D150). Moved after

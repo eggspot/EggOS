@@ -742,6 +742,24 @@ The window shows the EggOS desktop with the shell in a terminal window; the same
 the terminal the script runs in. Quit with Ctrl-A then X on that terminal, or close the window.
 From a source checkout, `cargo xtask run --arch <arch>` boots the same image.
 
+## Install an app
+
+Pass a folder with `--apps <folder>` (`-Apps` in PowerShell): it appears read-only at
+`/media/host`. Then `app install /media/host/<file>` at the prompt, or `Install from host
+share...` in the launcher, installs a program with its own icon into `/Applications`, where it
+survives a reboot:
+
+- Windows programs (`.exe`, or a `.zip` holding one): x64 programs on x86_64, ARM64 programs on
+  aarch64, console and GUI, on the Windows layer the x86_64 and aarch64 images carry.
+- macOS programs (a Mach-O tool, an `.app`, or a `.zip` holding one, for macOS 13 or later):
+  arm64 on aarch64, x86_64 on x86_64, console programs and AppKit apps built in code, on the
+  macOS layer the same images carry.
+- Linux static programs, console or Wayland GUI, on every architecture.
+
+The release ships no apps of its own. To try some, build ours from a checkout with
+`cargo xtask sample-apps --arch <arch>` and pass the folder it prints: `win-paint.exe`,
+`win-controls.exe`, `linux-paint` and, built on a Mac, `mac-paint.zip`. See docs/apps.md.
+
 ## Connect an AI agent (MCP)
 
 ```
@@ -1026,5 +1044,7 @@ mod tests {
             "| aarch64 | `eggos-{VERSION}-aarch64.elf` | 3 bytes (0 KiB) | 55 ms |"
         )));
         assert!(notes.contains("## What's new"));
+        assert!(notes.contains("## Install an app"));
+        assert!(notes.contains("cargo xtask sample-apps --arch <arch>"));
     }
 }

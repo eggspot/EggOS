@@ -25,21 +25,22 @@ cargo xtask image --arch aarch64 --add path/to/hello
 cargo xtask run --arch x86_64 --add path/to/hello      # build that image and boot it
 ```
 
-`--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello`. Adding
-a macOS program (a 64-bit Mach-O or fat file) to an aarch64 or x86_64 image also installs the
-macOS layer; an image without one does not carry the layer at all (D18). At the prompt, type
+`--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello`. The
+aarch64 and x86_64 release images carry the macOS layer at `/usr/lib/eggos/macos` (D152), with
+or without added files, so a program in the host folder (`--apps`) runs too
+(`/media/host/hello`). At the prompt, type
 `hello` (or its path) and its arguments; the shell reports the exit status in `$?`, and an
 `abort()` as `Aborted` and `134`.
 
 A file without code for the machine's CPU (an x86_64-only program on aarch64, an arm64e
 program) is refused with a message naming the CPUs it has and status 126. On riscv64 (no macOS
-program exists for it), and on images without the layer, a macOS program is refused with
+program exists for it, and its image carries no macOS layer), a macOS program is refused with
 `Exec format error` and status 126. A Java class file, which starts with the same bytes as a fat
 file, is not taken for one.
 
 ## Install a program as an app
 
-On an image with the layer, `app install /media/host/Tool.app` installs an `.app` bundle whole
+On aarch64 and x86_64, `app install /media/host/Tool.app` installs an `.app` bundle whole
 (or `app install /media/host/tool` a Mach-O tool) into `/Applications/Tool/`, with a launcher
 row and a desktop icon that run its `Contents/MacOS` program in the terminal; `app uninstall
 Tool` removes it. See [Apps](apps.md) (D134).

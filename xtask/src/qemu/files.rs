@@ -88,6 +88,9 @@ fn guest_disk(arch: &Arch, folder: &Path) -> Result<MemoryFiles, String> {
     if runs_windows_programs(arch.name) {
         disk.file("/usr/lib/eggos/windows", b"\x7fELF layer", 0);
     }
+    if crate::macos::layer_runs_on(arch.name) {
+        disk.file("/usr/lib/eggos/macos", b"\x7fELF layer", 0);
+    }
     disk.device("/home", 1)
         .device("/Applications", 2)
         .device("/tmp", 3)

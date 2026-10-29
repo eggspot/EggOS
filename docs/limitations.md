@@ -47,9 +47,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   level holds fewer than about 250 names (QEMU refuses to start with "Too many entries in root
   directory" beyond), files of 2 GB or more are refused, names are compared without case for
   ASCII letters only, file times are your computer's local time shown as UTC, and changes made
-  on your computer while EggOS runs are not seen. Only one folder can be attached. A Windows or
-  macOS program in it runs only on an image that has its layer, which the release images do not
-  carry yet (`cargo xtask run --add` adds it with a program; D118, D120).
+  on your computer while EggOS runs are not seen. Only one folder can be attached. The x86_64
+  and aarch64 release images carry the Windows and macOS layers, so Windows and macOS programs
+  in it run and install there; the riscv64 image carries neither, as neither layer runs on
+  riscv64 (D152).
 - **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
   at boot (QEMU's follows the host's clock) and keeps time from it; there is no network time
   (NTP), so a clock that drifts stays off until `date -s`, Settings or `clock_set` sets it,
@@ -92,8 +93,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   opened from it runs.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
-  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
-  `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124, D129):
+  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, from the host
+  folder or installed as apps; the layer is in the base of those images until the component
+  manager makes it optional (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146). Programs on a C++ runtime,
@@ -109,7 +111,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
-  programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
+  programs on x86_64, from the host folder or installed as apps; the layer is in the base of
+  those images until the component manager makes it optional (D152)
+  ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
   covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
   alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
   top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP tools list and choose
@@ -161,8 +165,9 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
 - F11; the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
   blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
-- installing a missing Windows or macOS layer, `app install --force` and the MCP tools
-  `app_install`, `app_uninstall` and `app_list` (with the MCP server): `app install` refuses a program whose layer is not in the image (D134, docs/apps.md);
+- removing or installing the Windows or macOS layer on its own (the component manager, D18,
+  D152), and `app install --force`: `app install` refuses a program whose layer is not in the
+  image, which on the release images happens only on riscv64 (D134, docs/apps.md);
 - `.app` bundles that hold symbolic links (a framework's `Versions/Current`, for example):
   `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
   chooser lists at most four programs and leaves out names longer than 64 bytes (`app install

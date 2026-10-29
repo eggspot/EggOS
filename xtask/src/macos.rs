@@ -1,13 +1,13 @@
 //! macOS console programs (D120): Mach-O executables, thin or fat, that the macOS layer at
-//! `/usr/lib/eggos/macos` runs on aarch64 and x86_64. An image gets the layer only when an added
-//! file is a Mach-O or fat file. The boot test's programs are built from `tests/macos-console`
-//! by Apple's linker, so only on a macOS host; CI builds them on its macOS runner and hands them
-//! to the Linux job through `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here.
-//! The Objective-C program, `tests/macos-objc/main.m`, is test data our own source and Apple's
-//! clang build the same way (D142); it is never shipped. So is the AppKit test app `mac-paint`,
-//! `tests/macos-gui/main.m` (D147), which the macOS GUI boot test installs from
-//! `mac-paint.zip` (D148), the `mac-paint.app` bundle `assemble_app` writes with the icon
-//! `test_icns` draws, archived by `archive_app`.
+//! `/usr/lib/eggos/macos` runs on aarch64 and x86_64, where the release image carries it (D152).
+//! The boot test's programs are built from `tests/macos-console` by Apple's linker, so only on a
+//! macOS host; CI builds them on its macOS runner and hands them to the Linux job through
+//! `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here. The Objective-C program,
+//! `tests/macos-objc/main.m`, is test data our own source and Apple's clang build the same way
+//! (D142); it is never shipped. So is the AppKit test app `mac-paint`, `tests/macos-gui/main.m`
+//! (D147), which the macOS GUI boot test installs from `mac-paint.zip` (D148), the
+//! `mac-paint.app` bundle `assemble_app` writes with the icon `test_icns` draws, archived by
+//! `archive_app`; `cargo xtask sample-apps` writes the same archive for people to try (D152).
 
 use crate::qmp::Picture;
 use std::path::{Path, PathBuf};
@@ -133,8 +133,6 @@ pub fn archive_app(bundle: &Path) -> Result<PathBuf, String> {
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;
-const FAT_MAGIC_64: u32 = 0xcafe_babf;
-const MAX_FAT_ARCHITECTURES: u32 = 32;
 const FAT_ALIGNMENT_SHIFT: u32 = 14;
 
 /// The macOS CPU name (`arm64`, `x86_64`) and Rust target of the architecture named `arch`, if
@@ -161,26 +159,6 @@ pub fn qemu_cpu_args(arch: &str) -> &'static [&'static str] {
 /// Whether the layer runs on the architecture named `arch`.
 pub fn layer_runs_on(arch: &str) -> bool {
     target(arch).is_some()
-}
-
-/// Whether `bytes` start as a 64-bit Mach-O file or a fat file (not a Java class file, whose
-/// second word is a version of at least 45).
-pub fn is_mach_o(bytes: &[u8]) -> bool {
-    let word = |at: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(
-            bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
-        ))
-    };
-    bytes.starts_with(&MH_MAGIC_64)
-        || (matches!(word(0), Some(FAT_MAGIC | FAT_MAGIC_64))
-            && word(4).is_some_and(|count| (1..=MAX_FAT_ARCHITECTURES).contains(&count)))
-}
-
-pub fn is_program(path: &str) -> bool {
-    let mut start = [0u8; 8];
-    std::fs::File::open(path)
-        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut start))
-        .is_ok_and(|()| is_mach_o(&start))
 }
 
 fn cputype(thin: &[u8]) -> Option<u32> {
@@ -397,6 +375,19 @@ mod tests {
 
     const CPU_TYPE_X86_64: u32 = 0x0100_0007;
     const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+    const FAT_MAGIC_64: u32 = 0xcafe_babf;
+    const MAX_FAT_ARCHITECTURES: u32 = 32;
+
+    fn is_mach_o(bytes: &[u8]) -> bool {
+        let word = |at: usize| -> Option<u32> {
+            Some(u32::from_be_bytes(
+                bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+            ))
+        };
+        bytes.starts_with(&MH_MAGIC_64)
+            || (matches!(word(0), Some(FAT_MAGIC | FAT_MAGIC_64))
+                && word(4).is_some_and(|count| (1..=MAX_FAT_ARCHITECTURES).contains(&count)))
+    }
 
     fn thin(cputype: u32, length: usize) -> Vec<u8> {
         let mut bytes = MH_MAGIC_64.to_vec();

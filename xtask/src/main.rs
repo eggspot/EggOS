@@ -69,6 +69,12 @@ commands:
   screenshot --arch <arch>
                          boot the release image headless and save its desktop to
                          docs/images/desktop.png
+  sample-apps --arch <arch>
+                         build our own apps to try installing in EggOS into
+                         target/sample-apps/<arch> and print that folder, for the run
+                         scripts' --apps: win-paint.exe and win-controls.exe (x86_64 and
+                         aarch64), linux-paint, and mac-paint.zip (aarch64 and x86_64,
+                         built on a macOS host) (<arch> may be `all`)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -418,6 +424,12 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("release") if args.len() == 1 => release::run(),
+        Some("sample-apps") => {
+            for arch in arch()? {
+                println!("{}", build_sample_apps(arch)?.display());
+            }
+            Ok(())
+        }
         Some("fuzz") => match &args[1..] {
             [target] if target == "mcp" => fuzz_mcp(60),
             [target, flag, seconds] if target == "mcp" && flag == "--seconds" => {
@@ -697,16 +709,16 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
-    if let Some((kernel, folder)) = build_macos_gui_test(arch)? {
+    if let Some(folder) = build_macos_gui_folder(arch)? {
         qemu::macos_gui::check(arch, &kernel, &folder)?;
     }
-    let (install_kernel, install_folder) = build_install_test(arch)?;
-    qemu::install::check(arch, &install_kernel, &install_folder)?;
-    qemu::files::check(arch, &install_kernel, &install_folder)?;
+    let install_folder = build_install_folder(arch)?;
+    qemu::install::check(arch, &kernel, &install_folder)?;
+    qemu::files::check(arch, &kernel, &install_folder)?;
     let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
     qemu::mcp::check(
         arch,
-        &install_kernel,
+        &kernel,
         &install_folder,
         std::path::Path::new(&linux_gui_program),
     )?;
@@ -793,7 +805,8 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init, the shell and the core utilities; every kernel
+/// feature, the release kernel's, with init, the shell, the core utilities and the Windows and
+/// macOS layers where they run (D152); every kernel
 /// feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
@@ -837,11 +850,7 @@ pub fn build_release_image(
     {
         return Err(format!("`{}` is not a file to add", missing.host));
     }
-    let layer = windows_layer_for(arch, added)?;
-    let macos_layer = macos_layer_for(arch, added)?;
     let mut members = image::members(added);
-    members.extend(layer.iter().map(|layer| layer.member()));
-    members.extend(macos_layer.iter().map(|layer| layer.member()));
     if added.iter().any(|file| android::is_program(&file.host)) {
         members.extend(
             android::system_members(SHELL_PATH)
@@ -897,33 +906,6 @@ const WINDOWS_TOOLS_TEXT_PATH: &str = "usr/share/windows-tools/über.txt";
 
 const WINDOWS_TOOLS_TEXT: &str = "grüße aus EggOS 🥚\nzweite Zeile\n";
 
-struct WindowsLayer {
-    host: String,
-}
-
-impl WindowsLayer {
-    fn member(&self) -> (&str, initramfs::Content<'_>) {
-        (WINDOWS_LAYER_PATH, initramfs::Content::Program(&self.host))
-    }
-}
-
-fn windows_layer_for(
-    arch: &Arch,
-    added: &[image::AddedFile],
-) -> Result<Option<WindowsLayer>, String> {
-    let windows_program = added.iter().any(|file| {
-        let mut magic = [0u8; 2];
-        std::fs::File::open(&file.host)
-            .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
-            .is_ok_and(|()| &magic == b"MZ")
-    });
-    if !windows_program || !WINDOWS_LAYER_ARCHES.contains(&arch.name) {
-        return Ok(None);
-    }
-    let host = build_runtime_program(arch, WINDOWS_LAYER_PACKAGE)?;
-    Ok(Some(WindowsLayer { host }))
-}
-
 fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let mut added = Vec::new();
     for (program, path) in WINDOWS_CONSOLE_PROGRAMS {
@@ -937,7 +919,6 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
         host: build_windows_program(program, other_cpu_windows_target(arch.name))?,
         path: path.to_owned(),
     });
-    let layer = windows_layer_for(arch, &added)?;
     let mut extra = vec![
         (
             "etc/eggos/init.conf",
@@ -949,7 +930,6 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
         ),
     ];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1048,13 +1028,11 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
             path: path.to_owned(),
         });
     }
-    let layer = windows_layer_for(arch, &added)?;
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1117,13 +1095,11 @@ fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBu
             .into_owned(),
         path: path.to_owned(),
     }];
-    let layer = windows_layer_for(arch, &added)?;
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1144,6 +1120,10 @@ fn release_initramfs(
     let app = build_runtime_program(arch, "eggos-app")?;
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
+    let mut layers = Vec::new();
+    for (path, package) in foreign_layers(arch.name) {
+        layers.push((path, build_runtime_program(arch, package)?));
+    }
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
@@ -1177,8 +1157,21 @@ fn release_initramfs(
             .iter()
             .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
     );
+    members.extend(
+        layers
+            .iter()
+            .map(|(path, host)| (*path, initramfs::Content::Program(host.as_str()))),
+    );
     members.extend_from_slice(extra);
     initramfs::build(&members, file_name)
+}
+
+fn foreign_layers(arch: &str) -> Vec<(&'static str, &'static str)> {
+    let windows = WINDOWS_LAYER_ARCHES
+        .contains(&arch)
+        .then_some((WINDOWS_LAYER_PATH, WINDOWS_LAYER_PACKAGE));
+    let macos = macos::layer_runs_on(arch).then_some((macos::LAYER_PATH, macos::LAYER_PACKAGE));
+    windows.into_iter().chain(macos).collect()
 }
 
 fn fuzz_mcp(seconds: u64) -> Result<(), String> {
@@ -1411,7 +1404,7 @@ fn build_host_folder_test(arch: &Arch) -> Result<(std::path::PathBuf, String), S
     Ok((kernel, host_folder(&folder.to_string_lossy())?))
 }
 
-fn build_install_test(arch: &Arch) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+fn build_install_folder(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let folder = target_directory().join(format!("install-folder-{}", arch.name));
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     let (program, _) = WIN_PAINT;
@@ -1421,26 +1414,71 @@ fn build_install_test(arch: &Arch) -> Result<(std::path::PathBuf, std::path::Pat
         (&paint, qemu::install::WINDOWS_PROGRAM),
         (&linux, qemu::install::LINUX_PROGRAM),
     ] {
-        let to = folder.join(name);
-        std::fs::copy(host, &to).map_err(|e| format!("{host} to {}: {e}", to.display()))?;
+        copy_file(host, &folder.join(name))?;
     }
     let (name, text) = qemu::files::HOST_TEXT_FILE;
     let to = folder.join(name);
     std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
-    let detected = [image::AddedFile {
-        host: paint,
-        path: String::new(),
-    }];
-    let layer = windows_layer_for(arch, &detected)?;
-    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
-    let initramfs = release_initramfs(
-        arch,
-        &extra,
-        &format!("initramfs-install-{}.cpio", arch.user_target),
+    Ok(std::path::PathBuf::from(host_folder(
+        &folder.to_string_lossy(),
+    )?))
+}
+
+fn copy_file(host: &str, to: &std::path::Path) -> Result<(), String> {
+    std::fs::copy(host, to)
+        .map(drop)
+        .map_err(|e| format!("{host} to {}: {e}", to.display()))
+}
+
+const SAMPLE_APPS_DIRECTORY: &str = "sample-apps";
+
+const SAMPLE_LINUX_APP: &str = "linux-paint";
+
+fn build_sample_apps(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let folder = target_directory()
+        .join(SAMPLE_APPS_DIRECTORY)
+        .join(arch.name);
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    if WINDOWS_LAYER_ARCHES.contains(&arch.name) {
+        for (program, _) in [WIN_PAINT, WIN_CONTROLS] {
+            let host = build_windows_gui_program(program, windows_target(arch.name))?;
+            copy_file(&host, &folder.join(format!("{program}.exe")))?;
+        }
+    }
+    let linux = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
+    copy_file(&linux, &folder.join(SAMPLE_LINUX_APP))?;
+    if let Some((cpu, _)) = macos::target(arch.name) {
+        match macos::find_or_build_programs(&target_directory())? {
+            Some(programs) => write_mac_paint(&programs, cpu, &folder)?,
+            None => eprintln!(
+                "xtask: {}: no {}.zip: Apple's linker builds it, so build the sample apps on a \
+                 macOS host, or name a folder of the Mach-O programs with {}",
+                arch.name,
+                macos::GUI_APP,
+                macos::PROGRAMS_VARIABLE
+            ),
+        }
+    }
+    Ok(folder)
+}
+
+fn write_mac_paint(
+    programs: &macos::Programs,
+    cpu: &str,
+    folder: &std::path::Path,
+) -> Result<(), String> {
+    let app = macos::objc_program(macos::GUI_APP)
+        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::GUI_APP))?;
+    let program = programs.path(macos::GUI_APP, cpu);
+    let bundle = macos::assemble_app(
+        folder,
+        macos::GUI_APP,
+        &macos::source_folder(&app).join(macos::INFO_PLIST),
+        &program,
     )?;
-    let kernel = build_release_kernel(arch, &initramfs)?;
-    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
-    Ok((kernel, folder))
+    macos::add_test_icon(&bundle)?;
+    macos::archive_app(&bundle)?;
+    Ok(())
 }
 
 fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
@@ -1505,24 +1543,6 @@ fn build_linux_test_program(
     Ok(path.to_string_lossy().into_owned())
 }
 
-struct MacosLayer {
-    host: String,
-}
-
-impl MacosLayer {
-    fn member(&self) -> (&str, initramfs::Content<'_>) {
-        (macos::LAYER_PATH, initramfs::Content::Program(&self.host))
-    }
-}
-
-fn macos_layer_for(arch: &Arch, added: &[image::AddedFile]) -> Result<Option<MacosLayer>, String> {
-    if !macos::layer_runs_on(arch.name) || !added.iter().any(|file| macos::is_program(&file.host)) {
-        return Ok(None);
-    }
-    let host = build_runtime_program(arch, macos::LAYER_PACKAGE)?;
-    Ok(Some(MacosLayer { host }))
-}
-
 const MACOS_FAT_PROGRAM: &str = "macos-fat";
 
 fn macos_test_programs(arch: &Arch, test: &str) -> Result<Option<macos::Programs>, String> {
@@ -1554,42 +1574,19 @@ fn macos_test_programs(arch: &Arch, test: &str) -> Result<Option<macos::Programs
     Ok(Some(programs))
 }
 
-fn build_macos_gui_test(
-    arch: &Arch,
-) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, String> {
+fn build_macos_gui_folder(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
     let Some((cpu, _)) = macos::target(arch.name) else {
         return Ok(None);
     };
     let Some(programs) = macos_test_programs(arch, "macOS GUI boot test")? else {
         return Ok(None);
     };
-    let app = macos::objc_program(macos::GUI_APP)
-        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::GUI_APP))?;
     let folder = target_directory().join(format!("macos-gui-folder-{}", arch.name));
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-    let program = programs.path(macos::GUI_APP, cpu);
-    let bundle = macos::assemble_app(
-        &folder,
-        macos::GUI_APP,
-        &macos::source_folder(&app).join(macos::INFO_PLIST),
-        &program,
-    )?;
-    macos::add_test_icon(&bundle)?;
-    macos::archive_app(&bundle)?;
-    let detected = [image::AddedFile {
-        host: program.to_string_lossy().into_owned(),
-        path: String::new(),
-    }];
-    let layer = macos_layer_for(arch, &detected)?;
-    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
-    let initramfs = release_initramfs(
-        arch,
-        &extra,
-        &format!("initramfs-macos-gui-{}.cpio", arch.user_target),
-    )?;
-    let kernel = build_release_kernel(arch, &initramfs)?;
-    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
-    Ok(Some((kernel, folder)))
+    write_mac_paint(&programs, cpu, &folder)?;
+    Ok(Some(std::path::PathBuf::from(host_folder(
+        &folder.to_string_lossy(),
+    )?)))
 }
 
 fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
@@ -1642,13 +1639,11 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
             path: "bin/macos-objc".to_owned(),
         },
     ];
-    let layer = macos_layer_for(arch, &added)?;
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
         &extra,
@@ -1905,9 +1900,23 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, EDIT_PATH, arch_option, host_folder, json_string_field, with_value,
-        without_flag,
+        APP_PATH, COREUTILS, EDIT_PATH, arch_option, foreign_layers, host_folder,
+        json_string_field, with_value, without_flag,
     };
+
+    #[test]
+    fn the_release_image_carries_each_foreign_layer_where_it_runs() {
+        for arch in ["x86_64", "aarch64"] {
+            assert_eq!(
+                foreign_layers(arch),
+                [
+                    ("usr/lib/eggos/windows", "eggos-windows"),
+                    ("usr/lib/eggos/macos", "eggos-macos"),
+                ]
+            );
+        }
+        assert!(foreign_layers("riscv64").is_empty());
+    }
 
     #[test]
     fn every_mcp_tool_has_a_cli_twin_in_the_release_image() {

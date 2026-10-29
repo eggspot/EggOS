@@ -94,10 +94,12 @@ own title bars, through `eggway`, EggOS's Wayland server (D140); GTK, Qt and oth
 need more first ([docs/linux-programs.md](docs/linux-programs.md#gui-programs-wayland)).
 
 ### Run Windows programs
-On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs and simple GUI
+On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs and GUI
 programs run natively through EggOS's own Windows layer, threads, waits, directory listing,
-windows, GDI painting and message boxes included
-([docs/windows-programs.md](docs/windows-programs.md) lists what they may use):
+windows, GDI painting, the system's controls, menus, dialogs and MSVC's C runtime included
+([docs/windows-programs.md](docs/windows-programs.md) lists what they may use). The release
+images for both carry the layer, so you can install one from the folder you pass with `--apps`
+(`app install /media/host/hello.exe`), or add it to an image from a checkout:
 
 ```
 cargo xtask run --arch x86_64 --add path/to/hello.exe  # boots with /bin/hello.exe
@@ -113,11 +115,13 @@ what works):
 cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello and /system/bin/sh
 ```
 
-### Run macOS console programs
+### Run macOS programs
 On aarch64 (arm64 programs) and x86_64 (x86_64 programs), macOS console programs that link
-libSystem, and Objective-C programs that use the core of Foundation, run natively through
-EggOS's own macOS layer and Objective-C runtime
-([docs/macos-programs.md](docs/macos-programs.md) lists what they may use):
+libSystem, Objective-C programs that use the core of Foundation, and AppKit apps built in code
+run natively through EggOS's own macOS layer and Objective-C runtime
+([docs/macos-programs.md](docs/macos-programs.md) lists what they may use). The release images
+for both carry the layer, so you can install a tool, an `.app` or a `.zip` of one from the
+folder you pass with `--apps` (`app install /media/host/Paint.zip`), or add it from a checkout:
 
 ```
 cargo xtask run --arch aarch64 --add path/to/hello     # a thin or fat Mach-O file

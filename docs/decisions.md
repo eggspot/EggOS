@@ -9874,3 +9874,59 @@ the license, by an explicit instruction recorded here.
   change what Linux programs see (a `SIGILL`, as on Linux).
 - **Running the test alone.** `cargo xtask windows-crt --arch <arch>` runs only the Windows C
   runtime boot test, with the programs from MSVC or `EGGOS_WINDOWS_PROGRAMS`.
+
+## D152 The release images carry the Windows and macOS layers: a v0.3.0 exception to D18 until the component manager, and our own apps to try (issue #141; extends D18, D24, D116, D118, D120, D134, D148) — Decided by the build loop
+- **Why.** The release headline is installing and opening Windows, macOS and Linux apps, but
+  `cargo xtask release` built every image with no extras, and only `--add` of a Windows or
+  Mach-O file pulled a layer into an image. On the images people download, `app install` of a
+  `.exe` or an `.app` was refused (`it needs the Windows layer, which is not installed`), while
+  every QEMU check that installs `win-paint.exe` built its own image with the layer, so CI was
+  green on images nobody downloads.
+- **What changed.** The release initramfs (`release_initramfs` in `xtask/src/main.rs`) always
+  holds the Windows layer at `/usr/lib/eggos/windows` on x86_64 and aarch64 and the macOS layer
+  at `/usr/lib/eggos/macos` on aarch64 and x86_64 (`foreign_layers`); riscv64, where neither
+  runs, carries neither. The detection that added a layer only beside an added `MZ` or Mach-O
+  file is gone (`windows_layer_for`, `macos_layer_for`, `macos::is_program`), so `cargo xtask
+  release`, `run`, `image` and every test image built on the release initramfs carry the same
+  layers. Nothing else changes: the kernel starts a layer for a program by its path as before
+  (D118, D120), and `app install` still checks that the layer is there (D134), so an image
+  without it still refuses cleanly.
+- **The exception to D18.** D18 says an optional component that is not installed costs
+  nothing. There is no component manager yet (M14, the batch's part 69), so for v0.3.0 the
+  layers ship in the base, as D109 did for the desktop: a recorded exception until the
+  component manager makes each layer an installable, removable component. Embedding was the
+  issue's first choice; the alternative it named, each layer as its own release asset that
+  `app install` copies onto the disk on first need, needs that installing path (part 69) and
+  could not land before the release.
+- **What it costs (D24).** The layers' size in the image, measured from the initramfs archives
+  built on 2026-10-29 (the archive with one layer minus the archive without): the Windows layer
+  502 KB on aarch64 and 593 KB on x86_64, the macOS layer 630 KB and 680 KB, so the aarch64
+  image grows by about 1.13 MB and the x86_64 image by about 1.27 MB; riscv64's does not
+  change. The image is loaded whole into memory, so idle memory grows by the same amount; boot
+  time does not measurably, since the initramfs is indexed by its headers and file data is
+  never copied (D102). The pull request states each image's exact size before and after, from
+  `cargo xtask release`, and `benchmarks/baseline.txt`'s `release_image_bytes` lines move with
+  this decision.
+- **The release artifact is what CI tests.** The install, Files and MCP boot tests and the
+  macOS GUI boot test now boot `build_kernel(arch, None)`, the very kernel `cargo xtask
+  release` copies to `target/release-dist/eggos-<version>-<arch>.elf`, with no `--add`: the
+  install test installs `win-paint.exe` from the host folder and opens it on x86_64 and
+  aarch64 (the static Linux program on riscv64), the MCP test boots it through the release's
+  own `run-eggos.sh --mcp --no-window --apps` (`run-eggos.ps1` on Windows hosts) and installs
+  and captures `win-paint` and captures `linux-paint`, and the macOS GUI test installs and
+  opens `mac-paint.zip` on aarch64 and x86_64.
+- **Something to install.** The release ships no apps of its own: test apps are never shipped
+  (D120, D142, D147), and shipping ours as a release asset is the owner's call. Instead
+  `cargo xtask sample-apps --arch <arch>` builds them from our sources into
+  `target/sample-apps/<arch>/` and prints the folder, for `--apps`: `win-paint.exe` and
+  `win-controls.exe` (x86_64 and aarch64), `linux-paint`, and `mac-paint.zip` with
+  `mac-paint.app` where Apple's linker (a macOS host) or `EGGOS_MACOS_PROGRAMS` provides the
+  Mach-O program. docs/apps.md ("What you can install today, and apps to try") and the release
+  notes' `Install an app` section say which kinds of program install on which architecture and
+  how to get these.
+- **Front-ends.** Unchanged: the installer's window, `app install` and the MCP tool
+  `app_install` (D22) now succeed on the release images where they were refused.
+- **Not yet.** Each layer as an optional component, installed and removed by the component
+  manager, costing nothing when absent (part 69, D18); layers on riscv64 (D17's ahead-of-time
+  translation would bring x64 programs there); our sample apps as a release asset (the owner's
+  decision); Android (`.apk`) and iOS apps (D34).

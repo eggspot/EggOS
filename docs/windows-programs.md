@@ -29,8 +29,9 @@ cargo xtask run --arch aarch64 --add path/to/hello-arm64.exe
 ```
 
 `--add` works as for [Linux programs](linux-programs.md): the file goes to `/bin/hello.exe`.
-Adding a Windows program (a file that starts with `MZ`) also installs the Windows layer in an
-x86_64 or aarch64 image; an image without one does not carry the layer at all (D18). At the prompt, type
+The x86_64 and aarch64 release images carry the Windows layer at `/usr/lib/eggos/windows`
+(D152), with or without added files, so a program in the host folder (`--apps`) runs too
+(`/media/host/hello.exe`). At the prompt, type
 `hello.exe` (or its path) and its arguments; the shell reports its exit code's low 8 bits in
 `$?`, as for any program (`ExitProcess(300)` shows `44`).
 
@@ -41,12 +42,12 @@ x86_64 or aarch64 image; an image without one does not carry the layer at all (D
 
 The layer names the reason for the other CPU's program (`windows: /bin/x.exe: an x64 program,
 and this computer runs ARM64 programs (EggOS does not translate x64 programs for Arm yet)`).
-Without the layer, and on riscv64, a Windows program is refused with `Exec format error` and
-status 126.
+On riscv64, whose image carries no Windows layer, a Windows program is refused with `Exec
+format error` and status 126.
 
 ## Install a program as an app
 
-On an image with the layer, `app install /media/host/hello.exe` installs a program from the
+On x86_64 and aarch64, `app install /media/host/hello.exe` installs a program from the
 host share (or anywhere) into `/Applications/hello/`, with a launcher row and a desktop icon;
 a double-click opens it (a GUI program's window appears, a console program runs in the
 terminal) and `app uninstall hello` removes it. `--window` shows the installer's dialogs.

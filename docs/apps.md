@@ -45,6 +45,32 @@ app list
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
 
+### What you can install today, and apps to try
+
+On the release images (D152):
+
+| Kind | Where it installs | What runs |
+|------|-------------------|-----------|
+| Windows `.exe` (PE32+), or a `.zip` holding one | x86_64 (x64 programs) and aarch64 (ARM64 programs) | console programs and GUI programs on kernel32, user32, gdi32, the system's controls and dialogs, and MSVC's C runtime (`/MD`): [Windows programs](windows-programs.md) |
+| macOS Mach-O tool, `.app` bundle, or a `.zip` holding one | aarch64 (arm64) and x86_64 (x86_64), macOS 13 or later | console programs on libSystem and Foundation's core, and AppKit apps built in code: [macOS programs](macos-programs.md) |
+| Linux static ELF program | every architecture | console programs, and GUI programs through Wayland: [Linux programs](linux-programs.md) |
+
+Programs built for another CPU, 32-bit programs, dynamically linked Linux programs, Android
+and iOS apps are refused with the reason. The release does not ship apps of its own; to get
+some to try, build ours from a checkout and pass their folder to the run script:
+
+```
+cargo xtask sample-apps --arch x86_64                          # prints target/sample-apps/x86_64
+sh run-eggos.sh --apps ~/EggOS/target/sample-apps/x86_64       # the downloaded release
+cargo xtask run --arch x86_64 --apps target/sample-apps/x86_64 # or the checkout's own image
+```
+
+then, at the prompt, `app install /media/host/win-paint.exe` (or `win-controls.exe`,
+`linux-paint`, `mac-paint.zip`), or `Install from host share...` in the launcher.
+`win-paint.exe` and `win-controls.exe` (x86_64 and aarch64) are our Windows GUI test programs,
+`linux-paint` our Wayland one, and `mac-paint.zip` our AppKit app, written only when the folder
+is built on a Mac (Apple's linker builds it).
+
 - **`app install <path>`** installs a Windows program (a PE32+ `.exe`, x86_64 or ARM64), a
   macOS program (a 64-bit Mach-O or fat file, or an `.app` folder whose `Contents/MacOS` holds
   its program: the one its XML `Info.plist`'s `CFBundleExecutable` names, else the one named
@@ -96,6 +122,7 @@ app list
   program, a Linux program that needs a dynamic loader. A Windows or macOS program whose
   layer is not installed (`/usr/lib/eggos/windows`, `/usr/lib/eggos/macos`) is refused too
   (`it needs the Windows layer, which is not installed`), since nothing could open it (D18).
+  The x86_64 and aarch64 release images carry both layers (D152); riscv64 runs neither.
 - A failure while copying (`/Applications is read-only because EggOS started without a
   disk`, `not enough space on the disk (ENOSPC)`, an I/O error) removes what was copied. A
   folder of that name without a valid manifest (an install or uninstall that was cut short)
@@ -133,8 +160,7 @@ app list
   prompt (for a `.zip`, an `Inside:` line names the program in it); in the
   `Apps` place (`/Applications`) a double-click on an app opens it as its icon does and Delete
   or `Uninstall...` asks to uninstall it.
-- Not yet: the MCP tools `app_install`, `app_uninstall` and `app_list` come with the MCP
-  server (D21, after the release); installing a missing layer (the component manager, D18);
+- Not yet: removing or installing a layer on its own (the component manager, D18, D152);
   `--force` to replace an installed app (uninstall it first).
 
 ## The Text Editor: `edit`
