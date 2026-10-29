@@ -1,0 +1,12 @@
+[package]
+name = "eggos-macos-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-toolkit = { path = "../toolkit" }
+
+[lints]
+workspace = true
