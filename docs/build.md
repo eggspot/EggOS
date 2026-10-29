@@ -124,7 +124,7 @@ holds what used to be written in them.
   or, on a Windows host with Visual Studio's C++ tools, `cargo xtask windows-programs` builds
   them (`vswhere`, `vcvarsall.bat`, `cl /MD /O2 /W3 /WX`); otherwise the test is skipped with a
   message, but fails when `CI` is set. CI builds them in its `windows-programs` job, and the
-  `qemu` jobs wait for that artifact before their boot tests (D145).
+  `qemu` jobs wait for that artifact before their boot tests (D146).
 - **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
   `no_std` static library defining `main`, for `aarch64-linux-android` or
   `x86_64-linux-android`, links it with the Android NDK's clang (`--target=<triple>29 -static`,
@@ -157,7 +157,7 @@ holds what used to be written in them.
   `eggos-macos-gui-tests`) after each step: the window with its menu in the top bar, `Hello` and
   Enter, clicks in the paint view, `c`, `Clear`, `Info` and Esc, the `File` menu and Esc, and
   Cmd+Q, which must end the app with status 0. It is skipped like the macOS programs boot test
-  (D146).
+  (D147).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
@@ -286,7 +286,7 @@ holds what used to be written in them.
   `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
-  programs, D145) and, on PRs, `hosts` (macOS and Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
+  programs, D146) and, on PRs, `hosts` (macOS and Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other
   job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
@@ -298,7 +298,7 @@ holds what used to be written in them.
   (`packages: read` to pull it). CI always runs in `main`'s image, so a change that needs something
   new in the image lands in its own PR first. The `qemu` jobs mount the runner's Android NDKs for
   the Android programs boot test (D119) and, on PRs, wait for the `macos-programs` and
-  `windows-programs` artifacts before their boot tests (D120, D145).
+  `windows-programs` artifacts before their boot tests (D120, D146).
 - **Benchmarks are report-only (D122).** Each `bench` job runs `cargo xtask bench --arch <arch>
   --report-only`: every result is compared with `benchmarks/baseline.txt` and written to the job
   summary and to `target/bench/report.json` and `report.md`; the job fails only for a result more

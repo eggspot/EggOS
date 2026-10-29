@@ -1,5 +1,5 @@
 //! The desktop and its window server's state (D115, D127, D128): the procedural wallpaper, the
-//! top bar with the system item, the focused app's main menu (D146), the clock, the chips of
+//! top bar with the system item, the focused app's main menu (D147), the clock, the chips of
 //! minimised windows and the power button and its menu, and the windows: the terminal's and those programs open through
 //! `/dev/window` (docs/windows.md), with their stacking, focus, chrome, dragging, resizing,
 //! maximising, minimising, close requests, the switcher, the window menu, the server's

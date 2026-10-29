@@ -76,22 +76,6 @@ impl<T, const N: usize> Slots<T, N> {
                 .map(|value| (self.handle(slot), value))
         })
     }
-
-    /// Every entry with its handle, in slot order, to change.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> + '_ {
-        let (base, generations) = (self.base, self.generations);
-        self.entries
-            .iter_mut()
-            .enumerate()
-            .filter_map(move |(slot, value)| {
-                value.as_mut().map(|value| {
-                    (
-                        base + (usize::from(generations[slot]) + 1) * N + slot,
-                        value,
-                    )
-                })
-            })
-    }
 }
 
 #[cfg(test)]

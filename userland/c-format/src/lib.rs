@@ -1,5 +1,5 @@
 //! `printf`'s formatting, shared by the macOS layer's libSystem and the Windows layer's C
-//! runtime (D145): flags, width, precision and length modifiers and the conversions
+//! runtime (D146): flags, width, precision and length modifiers and the conversions
 //! `d i u o x X c s p f F e E g G %`, reading each argument from an [`Arguments`] source and
 //! writing UTF-8 to an [`Output`]. Where the two C libraries differ, a [`Dialect`] says whose
 //! rules apply: Darwin's adds Foundation's `%@` (an object's description, which the [`Output`]

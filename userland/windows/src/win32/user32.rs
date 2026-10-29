@@ -1,23 +1,30 @@
 //! user32's windows and messages (D129): classes, windows on the desktop through the window
 //! server, the message loop's functions, window procedures and `DefWindowProcW`, the window
-//! values `GetWindowLongPtrW` reads, the system metrics and the cursor and icon handles. Painting
-//! is in `paint.rs`, the message box in `message_box.rs`.
+//! values `GetWindowLongPtrW` reads, the system metrics and the cursor and icon handles; child
+//! windows and the system's control classes (D145), which have no server window of their own.
+//! Painting is in `paint.rs`, the message box in `message_box.rs`, the controls in
+//! `controls.rs`, menus in `menu.rs`.
 
 use super::gui::{self, device, send, try_with, with};
 use super::window_device::{Buffer, FIXED_SIZE, ROLE_NORMAL};
-use super::{Bool, FALSE, TRUE, error, error_for, fail, paint, thread_environment};
+use super::{
+    Bool, FALSE, TRUE, call_program, controls, error, error_for, fail, paint, thread_environment,
+    window_text,
+};
 use crate::gui::classes::{Class, ClassError, ClassName};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects;
 use crate::gui::queue::{Filter, Message};
-use crate::gui::windows::{MAX_EXTRA, Procedure, Window};
+use crate::gui::windows::{self, ControlKind, MAX_EXTRA, Procedure, Window};
 use crate::library::Export;
 use crate::linux;
 use crate::text;
+use eggos_windows_gui::surface::Rect;
 
 const CW_USE_DEFAULT: i32 = i32::MIN;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
+const WS_DISABLED: u32 = 0x0800_0000;
 const WS_MAXIMIZE: u32 = 0x0100_0000;
 const WS_THICK_FRAME: u32 = 0x0004_0000;
 const FRAME: i32 = 1;
@@ -81,8 +88,9 @@ struct CreateStruct {
     ex_style: u32,
 }
 
+/// Win32's `MSG`, as programs pass it.
 #[repr(C)]
-struct Msg {
+pub struct Msg {
     window: usize,
     message: u32,
     wparam: usize,
@@ -218,17 +226,81 @@ unsafe extern "efiapi" fn create_window_ex_w(
     instance: usize,
     parameter: usize,
 ) -> usize {
-    if style & WS_CHILD != 0 {
-        return fail(error::NOT_SUPPORTED, 0);
-    }
     // SAFETY: the caller's duty: an atom or a NUL-terminated class name.
     let name = unsafe { class_name(class) };
-    let Ok((atom, class_of)) = try_with(|gui| {
+    let program_class = try_with(|gui| {
         gui.classes
             .find(name)
             .ok_or(error::CANNOT_FIND_WINDOW_CLASS)
-    }) else {
-        return fail(error::CANNOT_FIND_WINDOW_CLASS, 0);
+    });
+    let system_class = match name {
+        ClassName::Name(name) => controls::system_class(name),
+        ClassName::Atom(_) => None,
+    };
+    let window_text = match window_name.is_null() {
+        true => &[][..],
+        // SAFETY: the window name is the caller's NUL-terminated string.
+        false => unsafe { super::file::wide_string(window_name) },
+    };
+    if style & WS_CHILD != 0 {
+        let created = match (program_class, system_class) {
+            (Ok((atom, class_of)), _) => create_program_child(
+                atom,
+                &class_of,
+                ChildRequest {
+                    parent,
+                    style,
+                    ex_style,
+                    bounds: child_bounds(x, y, width, height),
+                    id: menu,
+                    instance,
+                    text: window_text,
+                },
+            ),
+            (Err(_), Some(kind)) => create_child(
+                parent,
+                kind,
+                style,
+                child_bounds(x, y, width, height),
+                menu,
+                window_text,
+            )
+            .ok_or(error::NOT_ENOUGH_MEMORY),
+            (Err(code), None) => Err(code),
+        };
+        let handle = match created {
+            Ok(handle) => handle,
+            Err(code) => return fail(code, 0),
+        };
+        let create = CreateStruct {
+            create_parameters: parameter,
+            instance,
+            menu,
+            parent,
+            height,
+            width,
+            y,
+            x,
+            style,
+            name: window_name,
+            class_name: class,
+            ex_style,
+        };
+        let create = &raw const create as usize;
+        if send(handle, message::NC_CREATE, 0, create) == 0
+            || send(handle, message::CREATE, 0, create) as isize == -1
+        {
+            destroy_tree(handle);
+            return 0;
+        }
+        return handle;
+    }
+    let Ok((atom, class_of)) = program_class else {
+        let code = match system_class {
+            Some(_) => error::NOT_SUPPORTED,
+            None => error::CANNOT_FIND_WINDOW_CLASS,
+        };
+        return fail(code, 0);
     };
     let device = match device() {
         Ok(device) => device,
@@ -285,12 +357,19 @@ unsafe extern "efiapi" fn create_window_ex_w(
     window.owner = parent;
     window.extra_length = class_of.window_extra as usize;
     window.background = class_of.background;
+    window.class_style = class_of.style;
+    window.enabled = style & WS_DISABLED == 0;
     window.thread = thread_environment::thread_id();
     let Some(Some(handle)) = with(|gui| gui.windows.insert(window)) else {
         // SAFETY: the window never reached the table, so nothing holds its buffer.
         unsafe { device.destroy(&buffer) };
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };
+    with(|gui| window_text::store(gui, handle, window_text));
+    if menu != 0 && try_with(|gui| super::menu::attach(gui, handle, menu)).is_err() {
+        remove_window(handle);
+        return fail(error::INVALID_MENU_HANDLE, 0);
+    }
     let create = CreateStruct {
         create_parameters: parameter,
         instance,
@@ -309,7 +388,7 @@ unsafe extern "efiapi" fn create_window_ex_w(
     if send(handle, message::NC_CREATE, 0, create) == 0
         || send(handle, message::CREATE, 0, create) as isize == -1
     {
-        remove_window(handle);
+        destroy_tree(handle);
         return 0;
     }
     if style & WS_VISIBLE != 0 {
@@ -322,31 +401,199 @@ unsafe extern "efiapi" fn create_window_ex_w(
     handle
 }
 
-/// Takes `handle` out of the program's windows and has the server destroy its window.
+/// Takes `handle` out of the program's windows, with what it holds (its timers, its text, a
+/// control's state, a top-level window's menu), and has the server destroy a top-level one;
+/// a child's area in its parent is left to repaint.
 pub fn remove_window(handle: usize) {
     let removed = with(|gui| {
         gui.queue.forget(handle);
         gui.contexts.retain(|context| context.window != handle);
+        gui.timers.kill_window(handle);
         let window = gui.windows.remove(handle)?;
+        if window.is_child() {
+            let parent = window.parent;
+            if let Some(root) = windows::root_of(&gui.windows, parent)
+                && let Some(top) = gui.windows.get_mut(root)
+            {
+                if top.focus == handle {
+                    top.focus = 0;
+                }
+                if top.capture == handle {
+                    top.capture = 0;
+                }
+            }
+            if gui
+                .windows
+                .get(parent)
+                .is_some_and(|parent| !parent.destroying)
+            {
+                windows::invalidate_tree(&mut gui.windows, parent, Some(window.bounds), true);
+            }
+        } else {
+            super::menu::forget_window(gui, handle, window.menu);
+            if gui.active_root == handle {
+                gui.active_root = 0;
+            }
+        }
         let buffer = Buffer {
             window: window.server,
-            width: window.width,
-            height: window.height,
+            width: window.buffer_width,
+            height: window.buffer_height,
             pixels: window.pixels,
         };
-        Some((gui.device?, buffer))
+        Some((gui.device, window, buffer))
     })
     .flatten();
-    if let Some((device, buffer)) = removed {
+    let Some((device, window, buffer)) = removed else {
+        return;
+    };
+    window_text::free(window.text);
+    if let Procedure::Control(_, state) = window.procedure {
+        controls::free_state(state);
+    }
+    if !window.is_child()
+        && let Some(device) = device
+    {
         // SAFETY: the window is out of the table, so nothing draws on its buffer any more.
         unsafe { device.destroy(&buffer) };
+    }
+    gui::wake();
+}
+
+/// Destroys `handle` and its children as `DestroyWindow` does: `WM_DESTROY` to the window and
+/// then to its children, `WM_NCDESTROY` to the children first, each removed after its
+/// `WM_NCDESTROY`.
+pub fn destroy_tree(handle: usize) {
+    let tree = with(|gui| {
+        let (handles, count) = windows::tree(&gui.windows, handle);
+        for &member in &handles[..count] {
+            if let Some(window) = gui.windows.get_mut(member) {
+                window.destroying = true;
+            }
+        }
+        (handles, count)
+    });
+    let Some((handles, count)) = tree else {
+        return;
+    };
+    for &member in &handles[..count] {
+        send(member, message::DESTROY, 0, 0);
+    }
+    for &member in handles[..count].iter().rev() {
+        send(member, message::NC_DESTROY, 0, 0);
+        remove_window(member);
+    }
+}
+
+struct ChildRequest<'a> {
+    parent: usize,
+    style: u32,
+    ex_style: u32,
+    bounds: Rect,
+    id: usize,
+    instance: usize,
+    text: &'a [u16],
+}
+
+static NEXT_SEQUENCE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+fn child_bounds(x: i32, y: i32, width: i32, height: i32) -> Rect {
+    let or_zero = |value: i32| if value == CW_USE_DEFAULT { 0 } else { value };
+    Rect::sized(
+        or_zero(x),
+        or_zero(y),
+        or_zero(width).max(0),
+        or_zero(height).max(0),
+    )
+}
+
+fn insert_child(mut window: Window, text: &[u16]) -> Result<usize, u32> {
+    let parent = window.parent;
+    try_with(|gui| {
+        if gui.window(parent)?.destroying {
+            return Err(error::INVALID_WINDOW_HANDLE);
+        }
+        let depth = windows::ancestry(&gui.windows, parent)
+            .map_or(windows::MAX_DEPTH, |(_, length)| length);
+        if depth >= windows::MAX_DEPTH {
+            return Err(error::NOT_SUPPORTED);
+        }
+        window.thread = thread_environment::thread_id();
+        window.creation_sequence =
+            NEXT_SEQUENCE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let handle = gui.windows.insert(window).ok_or(error::NOT_ENOUGH_MEMORY)?;
+        if !window_text::store(gui, handle, text) {
+            gui.windows.remove(handle);
+            return Err(error::NOT_ENOUGH_MEMORY);
+        }
+        if window.shown {
+            windows::invalidate_tree(&mut gui.windows, handle, None, true);
+        }
+        Ok(handle)
+    })
+}
+
+fn create_program_child(
+    atom: u16,
+    class_of: &Class,
+    request: ChildRequest<'_>,
+) -> Result<usize, u32> {
+    let mut window = Window::child(
+        Procedure::Program(class_of.procedure),
+        request.parent,
+        request.bounds,
+    );
+    window.class_atom = atom;
+    window.style = request.style;
+    window.ex_style = request.ex_style;
+    window.instance = request.instance;
+    window.id = request.id;
+    window.extra_length = class_of.window_extra as usize;
+    window.background = class_of.background;
+    window.class_style = class_of.style;
+    window.shown = request.style & WS_VISIBLE != 0;
+    window.enabled = request.style & WS_DISABLED == 0;
+    insert_child(window, request.text)
+}
+
+/// Creates a control of `kind` as a child of `parent` at `bounds` with `style`, control id
+/// `id` and the text `text`; `None` when the parent is gone or there is no memory.
+pub fn create_child(
+    parent: usize,
+    kind: ControlKind,
+    style: u32,
+    bounds: Rect,
+    id: usize,
+    text: &[u16],
+) -> Option<usize> {
+    let state = controls::new_state(kind, style)?;
+    let mut window = Window::child(Procedure::Control(kind, state), parent, bounds);
+    window.style = style;
+    window.id = id;
+    window.shown = style & WS_VISIBLE != 0;
+    window.enabled = style & WS_DISABLED == 0;
+    match insert_child(window, text) {
+        Ok(handle) => {
+            if kind == ControlKind::Edit {
+                controls::start_edit_text(handle, text);
+            }
+            gui::wake();
+            Some(handle)
+        }
+        Err(_) => {
+            controls::free_state(state);
+            None
+        }
     }
 }
 
 extern "efiapi" fn destroy_window(handle: usize) -> Bool {
     let started = try_with(|gui| {
         let window = gui.window_mut(handle)?;
-        if matches!(window.procedure, Procedure::MessageBox(_)) {
+        if matches!(
+            window.procedure,
+            Procedure::MessageBox(_) | Procedure::FilePicker(_)
+        ) {
             return Err(error::ACCESS_DENIED);
         }
         if window.destroying {
@@ -358,9 +605,7 @@ extern "efiapi" fn destroy_window(handle: usize) -> Bool {
     if let Err(code) = started {
         return fail(code, FALSE);
     }
-    send(handle, message::DESTROY, 0, 0);
-    send(handle, message::NC_DESTROY, 0, 0);
-    remove_window(handle);
+    destroy_tree(handle);
     TRUE
 }
 
@@ -378,6 +623,10 @@ extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
         9 => Some(0),
         _ => None,
     };
+    if let Ok(Some(result)) = try_with(|gui| Ok(show_child(gui, handle, command))) {
+        gui::wake();
+        return result;
+    }
     let shown = try_with(|gui| {
         let device = gui.device;
         let window = gui.window_mut(handle)?;
@@ -411,6 +660,24 @@ extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
         gui::wake();
     }
     Bool::from(was_shown)
+}
+
+fn show_child(gui: &mut gui::Gui, handle: usize, command: i32) -> Option<Bool> {
+    let window = gui.windows.get_mut(handle)?;
+    if !window.is_child() {
+        return None;
+    }
+    let was_shown = window.shown;
+    let shown = command != SW_HIDE;
+    window.shown = shown;
+    let (parent, bounds) = (window.parent, window.bounds);
+    if shown && !was_shown {
+        windows::invalidate_tree(&mut gui.windows, handle, None, true);
+    }
+    if !shown && was_shown {
+        windows::invalidate_tree(&mut gui.windows, parent, Some(bounds), true);
+    }
+    Some(Bool::from(was_shown))
 }
 
 extern "efiapi" fn update_window(handle: usize) -> Bool {
@@ -448,13 +715,17 @@ unsafe extern "efiapi" fn get_client_rect(handle: usize, rect: *mut Win32Rect) -
 unsafe extern "efiapi" fn adjust_window_rect_ex(
     rect: *mut Win32Rect,
     _style: u32,
-    _menu: Bool,
+    menu: Bool,
     _ex_style: u32,
 ) -> Bool {
     // SAFETY: the caller passes a readable and writable `RECT`.
     let rect = unsafe { &mut *rect };
+    let bar = match menu {
+        0 => 0,
+        _ => eggos_windows_gui::menu::BAR_HEIGHT,
+    };
     rect.left = rect.left.saturating_sub(FRAME);
-    rect.top = rect.top.saturating_sub(CAPTION + FRAME);
+    rect.top = rect.top.saturating_sub(CAPTION + FRAME + bar);
     rect.right = rect.right.saturating_add(FRAME);
     rect.bottom = rect.bottom.saturating_add(FRAME);
     TRUE
@@ -510,14 +781,27 @@ extern "efiapi" fn set_window_long_w(handle: usize, index: i32, value: i32) -> i
 
 /// What `DefWindowProcW` does: `WM_CLOSE` destroys the window, `WM_SYSCOMMAND`'s `SC_CLOSE`
 /// sends `WM_CLOSE`, `WM_PAINT` validates (and shows) what waits to be painted,
-/// `WM_ERASEBKGND` paints the class's background, `WM_NCCREATE` agrees; the rest is 0.
+/// `WM_ERASEBKGND` paints the class's background, `WM_NCCREATE` agrees, the window's text is
+/// kept and read, and a child passes system keys to its parent; the rest is 0.
 pub extern "efiapi" fn def_window_proc_w(
     handle: usize,
     number: u32,
     wparam: usize,
-    _lparam: usize,
+    lparam: usize,
 ) -> usize {
     match number {
+        // SAFETY: `WM_SETTEXT`'s `lParam` is 0 or a NUL-terminated string.
+        message::SET_TEXT => unsafe { window_text::set_default(handle, lparam) },
+        // SAFETY: `WM_GETTEXT`'s contract: `lParam` holds `wParam` writable units.
+        message::GET_TEXT => unsafe { window_text::get_default(handle, wparam, lparam) },
+        message::GET_TEXT_LENGTH => window_text::length_default(handle),
+        message::SYS_KEY_DOWN | message::SYS_KEY_UP | message::SYS_CHAR => {
+            let parent = with(|gui| gui.windows.get(handle).map_or(0, |window| window.parent));
+            match parent {
+                Some(parent) if parent != 0 => send(parent, number, wparam, lparam),
+                _ => 0,
+            }
+        }
         message::NC_CREATE => 1,
         message::CLOSE => {
             destroy_window(handle);
@@ -552,7 +836,11 @@ unsafe fn write_message(out: *mut Msg, message: &Message) {
     };
 }
 
-unsafe fn read_message(message: *const Msg) -> Message {
+/// The message a program's `MSG` holds, for the calling thread.
+///
+/// # Safety
+/// `message` is a readable `MSG`.
+pub unsafe fn read_message(message: *const Msg) -> Message {
     // SAFETY: the caller's duty: `message` is a readable `MSG`.
     let message = unsafe { &*message };
     Message {
@@ -650,15 +938,34 @@ unsafe extern "efiapi" fn translate_message(message: *const Msg) -> Bool {
     Bool::from(translate(&unsafe { read_message(message) }))
 }
 
-unsafe extern "efiapi" fn dispatch_message_w(message: *const Msg) -> usize {
-    // SAFETY: the caller passes a readable `MSG`.
-    let message = unsafe { read_message(message) };
+/// `DispatchMessageW`'s work: a `WM_TIMER` with a registered timer procedure goes to it, any
+/// other message to its window's procedure.
+pub fn dispatch(message: &Message) -> usize {
+    if message.message == message::TIMER
+        && message.lparam != 0
+        && super::timer::is_registered(message.window, message.wparam, message.lparam)
+    {
+        let arguments = [
+            message.window,
+            message::TIMER as usize,
+            message.wparam,
+            now_ms() as usize,
+        ];
+        // SAFETY: the address is the timer procedure the program registered with `SetTimer`
+        // for this timer, which Windows calls with these four arguments.
+        return unsafe { call_program(message.lparam, arguments) };
+    }
     send(
         message.window,
         message.message,
         message.wparam,
         message.lparam,
     )
+}
+
+unsafe extern "efiapi" fn dispatch_message_w(message: *const Msg) -> usize {
+    // SAFETY: the caller passes a readable `MSG`.
+    dispatch(&unsafe { read_message(message) })
 }
 
 extern "efiapi" fn post_message_w(

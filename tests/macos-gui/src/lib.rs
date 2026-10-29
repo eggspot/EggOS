@@ -1,4 +1,4 @@
-//! What `mac-paint.app`, the macOS GUI test app (D146, `tests/macos-gui/main.m`), shows, as
+//! What `mac-paint.app`, the macOS GUI test app (D147, `tests/macos-gui/main.m`), shows, as
 //! data and a model the host shares with the app's source: the frames and texts `main.m` uses,
 //! the main menu the layer sends for it, and the window content the layer draws for each state,
 //! painted with the same `eggos_macos_gui` functions the layer draws with. A change to `main.m`

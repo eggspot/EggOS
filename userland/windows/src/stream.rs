@@ -1,4 +1,4 @@
-//! The C runtime's `FILE` streams (D145), as logic over a [`Backing`] (the descriptor's read,
+//! The C runtime's `FILE` streams (D146), as logic over a [`Backing`] (the descriptor's read,
 //! write and seek): a 4 KiB buffer that holds either bytes read ahead or bytes waiting to be
 //! written, fully, line or not buffered; text mode, Windows' default, where a written `\n`
 //! becomes `\r\n` in the file and a read `\r\n` becomes `\n` and Ctrl+Z ends the input, as

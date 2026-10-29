@@ -306,7 +306,8 @@ impl GuiSteps<'_> {
     }
 }
 
-/// Checks the display through the whole of `win-paint.exe`'s run, driving it through QMP.
+/// Checks the display through the whole of `win-paint.exe`'s run and then
+/// `win-controls.exe`'s, driving them through QMP.
 pub fn check(
     arch: &Arch,
     port: u16,
@@ -334,7 +335,15 @@ pub fn check(
     };
     let client = (scene::CLIENT.0 as u32, scene::CLIENT.1 as u32);
     steps.window = steps.create(ROLE_NORMAL, 0, client)?;
-    steps.run()
+    steps.run()?;
+    super::win_controls::check(
+        arch,
+        &mut steps.qmp,
+        &mut steps.desktop,
+        steps.console,
+        steps.output,
+        steps.screen,
+    )
 }
 
 #[cfg(test)]

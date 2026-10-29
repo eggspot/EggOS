@@ -1,4 +1,4 @@
-//! Windows programs built with Microsoft's C compiler (D145): `tests/windows-crt/eggpad.c`, our
+//! Windows programs built with Microsoft's C compiler (D146): `tests/windows-crt/eggpad.c`, our
 //! own C notepad, is test data that MSVC's `cl.exe` builds as a `/MD` program (on the C
 //! runtime's DLLs) for x64 and ARM64. Only a Windows host with Visual Studio's C++ tools can
 //! build it, found through `vswhere`; CI builds it on its Windows runner and hands it to the

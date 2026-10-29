@@ -1,4 +1,4 @@
-//! The Windows C runtime boot test's checks of the display (D145): `eggpad.exe`, our own C
+//! The Windows C runtime boot test's checks of the display (D146): `eggpad.exe`, our own C
 //! notepad built by MSVC as a `/MD` program, shows the file it opened, takes typed text, saves
 //! it on Ctrl+S and closes by its close control; each step is compared with the desktop the host
 //! renders with the window's content painted as eggpad paints it (`tests/windows-crt/eggpad.c`).

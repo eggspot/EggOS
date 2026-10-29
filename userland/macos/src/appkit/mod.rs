@@ -1,4 +1,4 @@
-//! AppKit (D146, `docs/ux/macos-gui-v0.3.md`): the classes a programmatic Objective-C app uses
+//! AppKit (D147, `docs/ux/macos-gui-v0.3.md`): the classes a programmatic Objective-C app uses
 //! to open windows on the window server and draw and take input in them, as classes of the
 //! layer's own Objective-C runtime, set up only for a program that links AppKit (D18).
 //! `NSApplication` runs the event loop over `/dev/window`'s records, `NSWindow` owns a server

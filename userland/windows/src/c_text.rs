@@ -1,4 +1,4 @@
-//! The C runtime's text-to-number conversions (D145), `strtol` and its family, for narrow and
+//! The C runtime's text-to-number conversions (D146), `strtol` and its family, for narrow and
 //! wide strings alike: blanks, a sign, a base prefix and digits, with C's rules for what a
 //! value out of range becomes.
 

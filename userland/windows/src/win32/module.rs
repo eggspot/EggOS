@@ -12,8 +12,9 @@ static NTDLL_MODULE: u64 = 2;
 static SHELL32_MODULE: u64 = 3;
 static USER32_MODULE: u64 = 4;
 static GDI32_MODULE: u64 = 5;
-static VCRUNTIME_MODULE: u64 = 6;
-static UCRT_MODULE: u64 = 7;
+static COMDLG32_MODULE: u64 = 6;
+static VCRUNTIME_MODULE: u64 = 7;
+static UCRT_MODULE: u64 = 8;
 
 fn module_handle(library: Library) -> usize {
     match library {
@@ -22,6 +23,7 @@ fn module_handle(library: Library) -> usize {
         Library::Shell32 => &raw const SHELL32_MODULE as usize,
         Library::User32 => &raw const USER32_MODULE as usize,
         Library::Gdi32 => &raw const GDI32_MODULE as usize,
+        Library::Comdlg32 => &raw const COMDLG32_MODULE as usize,
         Library::VcRuntime => &raw const VCRUNTIME_MODULE as usize,
         Library::Ucrt => &raw const UCRT_MODULE as usize,
     }
@@ -34,6 +36,7 @@ fn library_of(module: usize) -> Option<Library> {
         Library::Shell32,
         Library::User32,
         Library::Gdi32,
+        Library::Comdlg32,
         Library::VcRuntime,
         Library::Ucrt,
     ]
@@ -128,6 +131,7 @@ unsafe extern "efiapi" fn get_proc_address(module: usize, name: *const u8) -> us
         Library::Shell32 => b"shell32",
         Library::User32 => b"user32",
         Library::Gdi32 => b"gdi32",
+        Library::Comdlg32 => b"comdlg32",
         Library::VcRuntime => b"vcruntime140",
         Library::Ucrt => b"ucrtbase",
     };

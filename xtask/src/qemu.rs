@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod persistent;
 pub mod settings;
 pub mod shell;
+mod win_controls;
 mod windows_crt;
 mod windows_gui;
 
@@ -191,7 +192,7 @@ pub enum Expect {
     /// a file from the shell and runs eggpad on it with its standard output redirected to a
     /// file, checks the display against the host's render as the window shows the file, three
     /// typed letters and Enter appear, Ctrl+S saves (its status line says so) and the close
-    /// control closes it (D145); then the program's lines in the file (its arguments, the bytes
+    /// control closes it (D146); then the program's lines in the file (its arguments, the bytes
     /// it opened and saved, the keys it took and its `atexit` handler), the saved file read
     /// back by `cat`, and its status 0.
     WindowsCrt,
@@ -426,9 +427,12 @@ fn linux_gui_output() -> [Vec<Line>; LINUX_GUI_SESSION.len()] {
     ]
 }
 
-const WINDOWS_GUI_SESSION: [&[u8]; 3] = [
-    b"win-paint.exe > /tmp/win-paint.log; echo WIN-PAINT status $?\r",
+const WINDOWS_GUI_SESSION: [&[u8]; 5] = [
+    b"win-paint.exe > /tmp/win-paint.log; echo WIN-PAINT status $?; sleep 3; \
+      win-controls.exe > /tmp/c.log; echo WIN-CONTROLS status $?\r",
     b"cat /tmp/win-paint.log\r",
+    b"cat /tmp/c.log\r",
+    b"cat /tmp/win-controls/note.txt\r",
     b"exit 7\r",
 ];
 
@@ -479,6 +483,22 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
     ]
 }
 
+const WIN_CONTROLS_LINES: [&str; 13] = [
+    "WIN-CONTROLS folder made 1",
+    "WIN-CONTROLS controls created, thread timer 1",
+    "WIN-CONTROLS window created",
+    "WIN-CONTROLS timer 1 fired",
+    "WIN-CONTROLS timer 2 fired",
+    "WIN-CONTROLS added egg at 1 after 4 edit changes",
+    "WIN-CONTROLS upper case 1",
+    "WIN-CONTROLS selected 1 egg",
+    "WIN-CONTROLS saved C:\\tmp\\win-controls\\note.txt offset 20 extension 25 wrote 4",
+    "WIN-CONTROLS opened C:\\tmp\\win-controls\\note.txt offset 20 read egg",
+    "WIN-CONTROLS exit chosen",
+    "WIN-CONTROLS destroyed",
+    "WIN-CONTROLS quit 0",
+];
+
 fn runs_windows_programs(arch: &str) -> bool {
     matches!(arch, "x86_64" | "aarch64")
 }
@@ -492,12 +512,22 @@ fn windows_gui_output(arch: &str) -> [Vec<Line>; WINDOWS_GUI_SESSION.len()] {
     };
     let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
     match runs_windows_programs(arch) {
-        true => [whole(&["WIN-PAINT status 0"]), whole(&WIN_PAINT_LINES), end],
+        true => [
+            whole(&["WIN-PAINT status 0", "WIN-CONTROLS status 0"]),
+            whole(&WIN_PAINT_LINES),
+            whole(&WIN_CONTROLS_LINES),
+            whole(&["egg"]),
+            end,
+        ],
         false => [
             whole(&[
                 "eggsh: win-paint.exe: Exec format error",
                 "WIN-PAINT status 126",
+                "eggsh: win-controls.exe: Exec format error",
+                "WIN-CONTROLS status 126",
             ]),
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             end,
         ],

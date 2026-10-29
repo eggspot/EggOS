@@ -9079,7 +9079,103 @@ the license, by an explicit instruction recorded here.
   offscreen desktop on demand; changing the size while EggOS runs; the PowerShell script run on
   CI (D116's follow-up; its text is tested).
 
-## D145 Windows programs on the C runtime: `vcruntime140` and the Universal C Runtime (`ucrtbase`, the `api-ms-win-crt-*` API sets) in the Windows layer, printf shared with the macOS layer, and `eggpad.exe` built by MSVC (v0.3.0 item 43; extends D118, D121, D124, D129) — Decided by the build loop
+## D145 The Windows layer, part 4: child windows, the system's controls, menus, timers and the file picker (v0.3.0 item 42) — Decided by EggAgentCode (the design is Claude Fable's, D16; the points below marked so decided by research or by the plan reviews)
+- **What.** Users can now run Windows programs built from the system's controls: child windows
+  (`WS_CHILD`), the `BUTTON` (push, default push, check box), `EDIT` (single line), `STATIC`
+  and `LISTBOX` classes telling their parent through `WM_COMMAND`, the keyboard focus and
+  `IsDialogMessageW`, a menu bar from `CreateMenu`/`AppendMenuW`/`SetMenu` whose items send
+  `WM_COMMAND`, `SetTimer`/`KillTimer`, and comdlg32's `GetOpenFileNameW`/`GetSaveFileNameW`
+  on EggOS's own picker. The look is Claude Fable's (`docs/ux/windows-controls-v0.3.md`):
+  inside a program the controls, the bar and the drop-downs use Windows' light colours, the
+  picker (EggOS's own dialog) the dark tokens.
+- **Placement.** As D129: what is drawn and how each control's state changes are pure models
+  in `eggos-windows-gui` (`controls/`, `menu.rs`, `file_picker.rs`), shared with xtask's host
+  render; the layer's pure tables in `gui/` (`windows.rs` grows child windows, `timers.rs`,
+  `menus.rs`, `picker.rs`); the wiring in `win32/` (`controls.rs`, `dialog.rs`, `menu.rs`,
+  `timer.rs`, `window_text.rs`, `file_picker.rs`). No kernel or window-server change.
+- **Child windows live in the layer only.** A child has no server window: it draws on its
+  top-level window's buffer through `Surface::translate`, clipped to its client area and its
+  ancestors'; the server's pointer records go to the child under the pointer (or the one
+  holding the capture) in its own coordinates, its keys to the top-level window's focused
+  window. `MAX_WINDOWS` goes from 16 to 64 (the server's 16 per client still bounds top-level
+  windows; the window's extra bytes stay inline, about 25 KB more state for a GUI program,
+  none for a console one). Invalidating a window reaches the children it covers (Windows
+  without `WS_CLIPCHILDREN`), a parent paints before its children, `DestroyWindow` sends
+  `WM_DESTROY` top-down and `WM_NCDESTROY` bottom-up, and the program's classes are found
+  before the system's (Microsoft's class search order).
+- **One commit per painted tree (plan reviews).** Every `EndPaint` and `ReleaseDC` in a tree
+  adds its rectangle to the top-level window's region to show, which is committed when no
+  paint of the same thread that was not yet handed out waits in that tree, so a window never
+  shows its controls half painted and the first commit still ends the window's first paint
+  (D129). A window whose `WM_PAINT` was handed out (`paint_sent`) never holds the commit back,
+  so a program that never validates a child cannot freeze its window.
+- **Focus and enabling.** Disabling a window drops the focus (with `WM_KILLFOCUS`) and the
+  capture held inside it, as Windows does; a window under a disabled one takes no pointer
+  input.
+- **Controls.** Each control's state is a heap block its entry points to, reached only under
+  the lock and looked up again by handle after every call into the program, so a control the
+  program destroys from its own notification is never touched again. The edit's caret is
+  steady and stays while the window is inactive: the server's focus events go to the top-level
+  window only and never move the focused control (D141's `SEND_INPUT` wraps each injected
+  input in a focus-out/focus-in pair). The default push button is the focused push button, else
+  the `BS_DEFPUSHBUTTON` one (Windows' rule). `WM_CTLCOLOR*` is not sent: controls draw
+  DefWindowProc's colours (a static is `COLOR_BTNFACE`, as on Windows).
+- **Menus.** The bar is 24 px at the top of the content; `GetClientRect`, `WM_SIZE` and the
+  children's coordinates are below it, `AdjustWindowRect(Ex)` adds it with `bMenu`, and
+  `SetMenu` keeps the outside size. Clients may not open `Popup` windows (D127), so a drop-down
+  is drawn over the client area in the same buffer: opening and moving the highlight commit
+  only its own rectangle, a paint while it is open draws it again before the one commit, and
+  closing leaves the area under it to the program's `WM_PAINT`. The pointer drives it; a click
+  outside closes it and is not delivered; Esc closes it; while it is open no key reaches the
+  program; opening one window's drop-down closes another's; a disabled window, or one under a
+  modal picker, closes its drop-down and ignores its bar. A bar item without a drop-down sends
+  its `WM_COMMAND` when the button is released over it. A focus-out never closes it (plan
+  review: an agent's injected click would close the menu it just opened). The menu table is a
+  heap block made at the first menu.
+- **Timers.** One `WM_TIMER` waiting per timer, after the paints (Windows' order), at least
+  10 ms and at most `0x7fffffff` ms apart (`USER_TIMER_MINIMUM`, `USER_TIMER_MAXIMUM`); a
+  thread waits only for the timers its read accepts; a look (`PM_NOREMOVE`) never restarts one; a thread with a
+  timer sleeps in `ppoll` or on the futex only until it is due; `DispatchMessageW` calls a
+  `WM_TIMER`'s `lParam` only when it is the timer procedure registered for that window or
+  thread and id (plan review: a posted `WM_TIMER` must not make the layer call any address).
+- **The picker.** A window of the layer's (a `Dialog` of the owner's top-level window, or a
+  fixed-size normal window) built from the same controls in the dark palette, run by a modal
+  loop that dispatches the thread's other messages; the owner takes no input meanwhile and keeps
+  its look. Folders are read outside the lock; hidden names are left out, folders come first,
+  then the files the selected filter matches (`;` alternatives), each group sorted ignoring
+  ASCII case. Paths are shown and returned in Windows' form (`C:\` is `/`, decided from the
+  layer's existing rule); a drive other than `C:` is refused; a too-small `lpstrFile` gets the
+  size needed in its first unit and `FNERR_BUFFERTOOSMALL`.
+- **Cost.** Nothing for console programs. A pointer record costs one hit test over at most 64
+  windows; `find` scans 32 timer slots after the queue and the paints; a control's paint is one
+  pass over its rectangle.
+- **Testing.** Host tests: the surface's translation, every control's painting against the
+  design's worked example and its model (typing, caret scrolling in cells, clicks, Space,
+  sorted lists, keys and scrolling), the menu's layout and painting, the picker's layout, filter
+  pairs, patterns, hidden names and offsets, the window table's placement, hit tests, trees,
+  invalidation, paint order, the deferred commit and tab stops, timers (a look, wrapping, ids,
+  the registered procedure), the menu table. QEMU, in the Windows GUI boot test right after
+  `win-paint.exe`: `win-controls.exe` (our own source, both CPUs) shows its window once both
+  timers fired; typing into the edit, `Add`, the check box, a list row, the File menu, the Save
+  As picker (typing a name and Enter makes `C:\tmp\win-controls\note.txt`), the Open picker
+  listing it, a click on its row and Open (the program reads it back) and File > Exit each
+  give a frame compared whole with the host's render; the program's lines and `cat` of the
+  file follow; riscv64 refuses it with `ENOEXEC`.
+- **Not yet.** Multi-line edits, selection and the clipboard in edits (item 43's notepad needs
+  them), `ES_PASSWORD`, `ES_NUMBER`, radio buttons, group boxes, combo boxes, scroll bars and
+  the list's scroll indicator, `WM_MOUSEWHEEL` in lists, double clicks and `LBN_DBLCLK`, hover
+  looks and per-control pointers, `WM_CTLCOLOR*`, owner-drawn controls, subclassing a
+  control, `LB_FIND*`, item data and the top index, `SetWindowPos` and moving top-level
+  windows, menu keys (F10, Alt, mnemonics), submenus, `TrackPopupMenu`, accelerators,
+  `EnableMenuItem`/`CheckMenuItem`, `WM_INITMENUPOPUP` and `WM_PARENTNOTIFY`,
+  `IsDialogMessageW`'s mnemonics, the picker's overwrite and not-found questions, changing its
+  filter and choosing several files, dialogs from resources, `GetMessageW` with a window
+  filter taking its children's posted messages and timers (it takes their paints), child
+  windows of another thread holding a tree's commit (they never do; a cross-thread child's
+  paint commits on its own), a picker opened from a thread with a small stack (the picker
+  uses about 40 KiB of it).
+
+## D146 Windows programs on the C runtime: `vcruntime140` and the Universal C Runtime (`ucrtbase`, the `api-ms-win-crt-*` API sets) in the Windows layer, printf shared with the macOS layer, and `eggpad.exe` built by MSVC (v0.3.0 item 43; extends D118, D121, D124, D129) — Decided by the build loop
 - **What.** Programs MSVC builds with `/MD`, the default for C and C++ projects, link the C
   runtime's startup code into themselves and import the rest from `vcruntime140.dll` and the
   Universal C Runtime through its API sets (`api-ms-win-crt-runtime-l1-1-0.dll`, `-stdio-`,
@@ -9159,7 +9255,7 @@ the license, by an explicit instruction recorded here.
   (most are the same kernel32 functions), MinGW's `msvcrt.dll`; per-stream locks (one lock
   serialises all stdio, so a thread blocked reading `stdin` holds up the others).
 
-## D146 macOS GUI apps: AppKit in the macOS layer on the window server, `.app` bundles, controls, alerts and the main menu in the top bar (v0.3.0 items 41 and 44; extends D120, D127, D133, D134, D142) — Decided by the build loop (design by Claude Fable, `docs/ux/macos-gui-v0.3.md`)
+## D147 macOS GUI apps: AppKit in the macOS layer on the window server, `.app` bundles, controls, alerts and the main menu in the top bar (v0.3.0 items 41 and 44; extends D120, D127, D133, D134, D142) — Decided by the build loop (design by Claude Fable, `docs/ux/macos-gui-v0.3.md`)
 - **What.** Item 41 (macOS GUI apps, part 1, moved after the release on 2026-10-28 and brought
   back into the release batch on 2026-10-29 because item 44 builds on it): "`.app` bundles
   (Info.plist), NSApplication run loop and delegate, NSWindow, NSView `drawRect:`, NSColor,

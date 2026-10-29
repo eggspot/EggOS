@@ -1,5 +1,5 @@
 //! The app's main menu in the macOS profile's top bar (docs/ux/macos-gui-v0.3.md, section 5;
-//! D146): the menus a client sets for its normal window (`SetMenu`), their titles in the bar
+//! D147): the menus a client sets for its normal window (`SetMenu`), their titles in the bar
 //! while that window or a dialog of it is focused, and the open menu under a title, chosen by
 //! pointer or keys, which sends the window `MenuChosen`.
 

@@ -1,4 +1,4 @@
-//! The macOS GUI boot test (D146): one boot of the release kernel with the macOS layer, on a
+//! The macOS GUI boot test (D147): one boot of the release kernel with the macOS layer, on a
 //! blank disk, with a host folder holding `mac-paint.app` (our own AppKit app,
 //! `tests/macos-gui/main.m`), each frame compared with the desktop the host renders from the
 //! same input, the app's window content and alert painted by `eggos-macos-gui-tests`.

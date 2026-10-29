@@ -5,7 +5,7 @@
 //! to the Linux job through `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here.
 //! The Objective-C program, `tests/macos-objc/main.m`, is test data our own source and Apple's
 //! clang build the same way (D142); it is never shipped. So is the AppKit test app `mac-paint`,
-//! `tests/macos-gui/main.m` (D146), which the macOS GUI boot test installs from the
+//! `tests/macos-gui/main.m` (D147), which the macOS GUI boot test installs from the
 //! `mac-paint.app` bundle `assemble_app` writes.
 
 use std::path::{Path, PathBuf};

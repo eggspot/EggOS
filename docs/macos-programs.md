@@ -14,7 +14,7 @@ Part 1 (D120) runs console programs that use the libSystem functions listed belo
 (D123) adds what small real tools and Rust's standard library need: threads, thread-local
 variables, locks, `getopt`, calendar time, `errno` per thread and the C locale. Part 3 (D142)
 runs Objective-C console programs: the layer has its own Objective-C runtime (libobjc) and the
-core of Foundation (see "Objective-C programs"). Part 4 (D146) runs GUI apps built in code on
+core of Foundation (see "Objective-C programs"). Part 4 (D147) runs GUI apps built in code on
 AppKit's core, in an `.app` bundle or not (see "GUI apps"). Swift, C++'s runtime and programs
 that need other libraries do not run yet (see below).
 
@@ -202,7 +202,7 @@ names its library the same way (`unimplemented libobjc function objc_storeWeak`)
 
 ## GUI apps
 
-A program that links AppKit (`-framework AppKit`) gets the layer's own AppKit (D146,
+A program that links AppKit (`-framework AppKit`) gets the layer's own AppKit (D147,
 `userland/macos/src/appkit/`), drawn as `docs/ux/macos-gui-v0.3.md` designs it: a macOS app in
 Dark Mode on the EggOS desktop. Install an `.app` folder with `app install` (docs/apps.md) and
 open it from the launcher, the dock or the desktop; its windows are windows of the window
@@ -276,7 +276,7 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   streams shared between threads (each stream assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
   does, so options after an operand stay operands; `getopt_long_only` is missing.
-- **AppKit beyond its core** (D146's "Not yet"): nibs and storyboards, flipped views, layers,
+- **AppKit beyond its core** (D147's "Not yet"): nibs and storyboards, flipped views, layers,
   Auto Layout, scroll views, tables, images, cursors, timers, sheets and panels, checkboxes and
   other button types, submenus below the top bar's, the menu in the Windows and Linux profiles,
   alpha and anti-aliasing, and fonts other than Egg Sans.

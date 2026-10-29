@@ -17,13 +17,17 @@ macro_rules! exports {
 }
 
 mod console;
+mod controls;
 mod crt;
+mod dialog;
 mod directory;
 mod environment;
 mod file;
+mod file_picker;
 mod gui;
 mod heap;
 mod memory;
+mod menu;
 mod message_box;
 mod module;
 mod paint;
@@ -35,8 +39,10 @@ mod system;
 mod thread;
 pub mod thread_environment;
 mod time;
+mod timer;
 mod user32;
 mod window_device;
+mod window_text;
 
 use crate::library::{self, Export, Library};
 use eggos_runtime::errno::Errno;
@@ -137,7 +143,13 @@ const USER32: &[&[Export]] = &[
     user32::EXPORTS,
     paint::USER32_EXPORTS,
     message_box::EXPORTS,
+    window_text::EXPORTS,
+    dialog::EXPORTS,
+    menu::EXPORTS,
+    timer::EXPORTS,
 ];
+
+const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];
 
 const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS];
 
@@ -148,6 +160,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Shell32 => SHELL32,
         Library::User32 => USER32,
         Library::Gdi32 => GDI32,
+        Library::Comdlg32 => COMDLG32,
         Library::VcRuntime => crt::VCRUNTIME,
         Library::Ucrt => crt::UCRT,
     }

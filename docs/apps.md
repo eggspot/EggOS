@@ -127,7 +127,7 @@ are kept.
 | Terminal | Focuses the terminal's window (restoring it if it is minimised). |
 | Settings, Files | Focuses its window if it has one, else starts `/bin/settings` or `/bin/files` as a process. Without `/bin/files` (D18), Files says `Files is not installed.` |
 | Host share | Starts Files on `/media/host` (`/bin/files /media/host`, D135); without Files it focuses the terminal and runs `ls /media/host` in it. |
-| An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first. The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D146) opens its window, a console program writes in the terminal. |
+| An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first. The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D147) opens its window, a console program writes in the terminal. |
 | `Install from host share...` | Starts the installer's window on `/media/host` (above). |
 
 The kernel reads the catalogue when the desktop starts, each time the launcher opens and when

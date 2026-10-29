@@ -1,4 +1,4 @@
-//! The C runtime of programs MSVC builds with `/MD` (D145): `vcruntime140.dll` and the
+//! The C runtime of programs MSVC builds with `/MD` (D146): `vcruntime140.dll` and the
 //! Universal C Runtime (`ucrtbase.dll`, imported through the `api-ms-win-crt-*` API sets),
 //! implemented natively from Microsoft's public documentation of each function. MSVC links its
 //! startup code (`wWinMainCRTStartup` and the rest) into the program itself; it calls the

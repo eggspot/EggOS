@@ -2,10 +2,10 @@
 //! file, and it runs that macOS program natively, arm64 programs on aarch64 and x86_64
 //! programs on x86_64. The Mach-O format, the fat slice, chained fixups and Darwin's numbers and
 //! layouts are pure logic with host tests, and `printf`'s formatting is the shared
-//! `eggos-c-format` crate's (D145); `start.rs` loads the
+//! `eggos-c-format` crate's (D146); `start.rs` loads the
 //! program, standing in for dyld, `libsystem/` implements the libSystem functions it imports,
 //! `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142), and
-//! `appkit/` AppKit for GUI apps on the window server (D146), drawing through `eggos-macos-gui`.
+//! `appkit/` AppKit for GUI apps on the window server (D147), drawing through `eggos-macos-gui`.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]

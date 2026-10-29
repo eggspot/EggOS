@@ -86,7 +86,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
-  programs built by MSVC on its C runtime (`/MD`) run (D145). Programs on a C++ runtime,
+  programs built by MSVC on its C runtime (`/MD`) run (D146). Programs on a C++ runtime,
   MinGW's or Rust's std, `scanf`, locales, the math library, other processes, other DLLs, structured exception handling,
   the system's controls (buttons, edits), menus, dialogs from resources, timers, fonts other
   than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
@@ -99,7 +99,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
-  programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D146). AppKit
+  programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
   covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
   alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
   top bar; scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
@@ -163,7 +163,7 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
   key repeat and 2x come later; Windows GUI programs (D129), Linux Wayland apps (D140) and
-  macOS AppKit apps (D146) open windows;
+  macOS AppKit apps (D147) open windows;
 - 3D graphics;
 - a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100
   rows): the window does not fit every profile's work area, and the display then shows no
