@@ -258,7 +258,7 @@ impl Desktop {
             return Err(WindowError::Busy);
         }
         let target = *self.window_at(slot);
-        if target.client == KERNEL_CLIENT {
+        if target.id == self.terminal_window() {
             return match input {
                 InjectedInput::Key { code, modifiers } => {
                     Ok(Injected::ForTerminal(TerminalInput::Key {
@@ -276,6 +276,9 @@ impl Desktop {
                     Err(WindowError::Unsupported)
                 }
             };
+        }
+        if target.client == KERNEL_CLIENT {
+            return Err(WindowError::Unsupported);
         }
         let input = match input {
             InjectedInput::Character(byte) => {
