@@ -255,7 +255,7 @@ pub unsafe fn set_thread_local_storage(teb: usize, slots: usize) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn current() -> usize {
+pub(super) fn current() -> usize {
     let teb: usize;
     // SAFETY: the loader sets GS to the TEB before the program runs, and the TEB's `Self` field
     // holds its own address.
@@ -271,7 +271,7 @@ fn current() -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn current() -> usize {
+pub(super) fn current() -> usize {
     let teb: usize;
     // SAFETY: the loader and each thread's start set `tpidr_el0` to the thread's TEB before the
     // program runs; reading it touches no memory.

@@ -1,5 +1,6 @@
 //! The Win32 functions Windows programs import, implemented natively on EggOS's Linux system
-//! calls and, for windows, the window server: each is an `extern "efiapi"` function (Windows'
+//! calls and, for windows, the window server, and the C runtime of MSVC's `/MD` programs
+//! (`crt/`): each is an `extern "efiapi"` function (Windows'
 //! calling convention on x86_64 and aarch64, `abi.rs`) the program calls through its import
 //! address table, directly on x86_64 and through an entry that restores `x18` on aarch64.
 
@@ -16,6 +17,7 @@ macro_rules! exports {
 }
 
 mod console;
+mod crt;
 mod directory;
 mod environment;
 mod file;
@@ -123,6 +125,7 @@ const KERNEL32: &[&[Export]] = &[
     thread::EXPORTS,
     thread_environment::EXPORTS,
     time::EXPORTS,
+    crt::KERNEL32_EXPORTS,
 ];
 
 const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS, system::NTDLL_EXPORTS];
@@ -145,6 +148,8 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Shell32 => SHELL32,
         Library::User32 => USER32,
         Library::Gdi32 => GDI32,
+        Library::VcRuntime => crt::VCRUNTIME,
+        Library::Ucrt => crt::UCRT,
     }
 }
 

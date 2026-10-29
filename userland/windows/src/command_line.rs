@@ -44,6 +44,32 @@ pub fn write<'a>(arguments: impl Iterator<Item = &'a [u8]>, out: &mut impl FnMut
     }
 }
 
+/// Where the arguments start in the command line `units` (no NUL): after the program's name,
+/// which runs to the first blank or between quotes, and the blanks after it; the C runtime
+/// passes the rest to `WinMain` and `wWinMain`.
+pub fn arguments_start<T: Copy + Into<u32>>(units: &[T]) -> usize {
+    let unit = |at: usize| units.get(at).map(|&unit| unit.into());
+    let blank = |unit: u32| unit == u32::from(b' ') || unit == u32::from(b'\t');
+    let mut at = 0;
+    if unit(0) == Some(u32::from(b'"')) {
+        at = 1;
+        while let Some(next) = unit(at) {
+            at += 1;
+            if next == u32::from(b'"') {
+                break;
+            }
+        }
+    } else {
+        while unit(at).is_some_and(|next| !blank(next)) {
+            at += 1;
+        }
+    }
+    while unit(at).is_some_and(blank) {
+        at += 1;
+    }
+    at
+}
+
 /// One step of splitting a command line: a UTF-16 unit of the current argument, or its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Piece {
@@ -131,6 +157,18 @@ pub fn split(units: &[u16], out: &mut impl FnMut(Piece)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn win_main_gets_the_line_after_the_program_s_name() {
+        let start = |line: &str| arguments_start(line.as_bytes());
+        assert_eq!(start("eggpad.exe  C:\\tmp\\a.txt"), 12);
+        assert_eq!(start("\"C:\\My Apps\\pad.exe\" -x"), 21);
+        assert_eq!(start("pad.exe"), 7);
+        assert_eq!(start("\"unterminated"), 13);
+        assert_eq!(start(""), 0);
+        let wide: Vec<u16> = "a\tb".encode_utf16().collect();
+        assert_eq!(arguments_start(&wide), 2);
+    }
 
     fn line(arguments: &[&[u8]]) -> String {
         let mut bytes = Vec::new();

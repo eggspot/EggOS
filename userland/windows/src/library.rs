@@ -2,7 +2,9 @@
 //! compare ignoring ASCII case, with or without `.dll`, and the API sets
 //! (`api-ms-win-core-*`) resolve to kernel32's functions, where Windows forwards them too;
 //! shell32 has only `CommandLineToArgvW`; user32 and gdi32 have what GUI programs' windows,
-//! messages and painting need (D129).
+//! messages and painting need (D129); the C runtime of MSVC's `/MD` programs is
+//! `vcruntime140` and the Universal C Runtime, `ucrtbase`, which programs import through the
+//! API sets `api-ms-win-crt-*` (D145).
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -14,6 +16,8 @@ pub enum Library {
     Shell32,
     User32,
     Gdi32,
+    VcRuntime,
+    Ucrt,
 }
 
 /// One function a library exports: its name and its address in the layer.
@@ -42,6 +46,10 @@ pub fn library(name: &[u8]) -> Option<Library> {
         Some(Library::User32)
     } else if is(b"gdi32") {
         Some(Library::Gdi32)
+    } else if is(b"vcruntime140") || is(b"vcruntime140_1") {
+        Some(Library::VcRuntime)
+    } else if is(b"ucrtbase") || starts_with_ignoring_case(name, b"api-ms-win-crt-") {
+        Some(Library::Ucrt)
     } else {
         None
     }
@@ -84,12 +92,22 @@ mod tests {
         assert_eq!(library(b"SHELL32.dll"), Some(Library::Shell32));
         assert_eq!(library(b"user32.dll"), Some(Library::User32));
         assert_eq!(library(b"GDI32.dll"), Some(Library::Gdi32));
+        assert_eq!(library(b"VCRUNTIME140.dll"), Some(Library::VcRuntime));
+        assert_eq!(library(b"vcruntime140_1.dll"), Some(Library::VcRuntime));
+        assert_eq!(library(b"ucrtbase.dll"), Some(Library::Ucrt));
+        assert_eq!(
+            library(b"api-ms-win-crt-runtime-l1-1-0.dll"),
+            Some(Library::Ucrt)
+        );
+        assert_eq!(library(b"API-MS-WIN-CRT-STDIO-L1-1-0"), Some(Library::Ucrt));
         for name in [
             &b"ws2_32.dll"[..],
             b"kernel32.dll.dll",
             b"",
             b".dll",
-            b"api-ms-win-crt-",
+            b"api-ms-win-crt",
+            b"vcruntime",
+            b"msvcrt.dll",
         ] {
             assert_eq!(library(name), None);
         }
