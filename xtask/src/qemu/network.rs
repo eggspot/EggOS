@@ -6,7 +6,8 @@
 //! musl program using `std::net`: over the loopback network, then with a UDP echo server the
 //! test serves on the host; `fetch` downloads a file from an HTTP server the test serves on the
 //! host, and `linux-tcp`, `std::net`'s TCP over the loopback network and with a TCP echo server
-//! on the host. `exit` then powers the machine off.
+//! on the host; `date --sync` sets the clock from an NTP stand-in on the host (D159). `exit`
+//! then powers the machine off.
 
 use super::*;
 use eggos_net::Ipv4Address;
@@ -44,6 +45,8 @@ pub struct Ports {
     pub tcp_echo: u16,
     /// The HTTP stand-in.
     pub http: u16,
+    /// The NTP stand-in (UDP).
+    pub ntp: u16,
 }
 
 fn commands(ports: &Ports) -> Vec<String> {
@@ -52,19 +55,19 @@ fn commands(ports: &Ports) -> Vec<String> {
         echo,
         tcp_echo,
         http,
+        ntp,
     } = *ports;
     vec![
         "sleep 2; ip addr; echo EGGOS-NET ip $?\r".into(),
         "cat /etc/resolv.conf; ping -c 2 10.0.2.2; echo EGGOS-NET ping $?\r".into(),
-        format!(
-            "nslookup -port={dns} {KNOWN_NAME} 10.0.2.2; echo EGGOS-NET nslookup $?\r"
-        ),
+        format!("nslookup -port={dns} {KNOWN_NAME} 10.0.2.2; echo EGGOS-NET nslookup $?\r"),
         format!("linux-udp; linux-udp 10.0.2.2 {echo}; echo EGGOS-NET udp $?\r"),
         format!(
             "fetch -o /tmp/fetched http://10.0.2.2:{http}{SERVED_PATH}; cat /tmp/fetched; \
              echo EGGOS-NET fetch $?\r"
         ),
         format!("linux-tcp; linux-tcp 10.0.2.2 {tcp_echo}; echo EGGOS-NET tcp $?\r"),
+        format!("date --sync=10.0.2.2:{ntp}; echo EGGOS-NET ntp $?\r"),
         "exit\r".into(),
     ]
 }
@@ -83,12 +86,17 @@ fn wanted() -> Vec<String> {
         "LINUX-UDP localhost 127.0.0.1".into(),
         "LINUX-UDP echo EGGOS-UDP hello".into(),
         "EGGOS-NET udp 0".into(),
-        format!("Saved {} bytes to /tmp/fetched (HTTP 200 OK)", SERVED_TEXT.len()),
+        format!(
+            "Saved {} bytes to /tmp/fetched (HTTP 200 OK)",
+            SERVED_TEXT.len()
+        ),
         SERVED_TEXT.trim_end().into(),
         "EGGOS-NET fetch 0".into(),
         "LINUX-TCP loopback 300000 bytes and back, accept EAGAIN, closed ECONNREFUSED".into(),
         "LINUX-TCP echo EGGOS-TCP hello".into(),
         "EGGOS-NET tcp 0".into(),
+        "Synchronized with 10.0.2.2:".into(),
+        "EGGOS-NET ntp 0".into(),
     ]
 }
 
@@ -99,7 +107,9 @@ fn command_due(console: &str, typed: usize, count: usize) -> bool {
 fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
     for wanted in wanted() {
         if !console.contains(&wanted) {
-            return Err(format!("{arch}: the network boot test's console has no `{wanted}`"));
+            return Err(format!(
+                "{arch}: the network boot test's console has no `{wanted}`"
+            ));
         }
     }
     if !clean_exit {
@@ -135,15 +145,23 @@ pub fn http_answer(request: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The answer the NTP stand-in gives `request`: the host's time, as a stratum 1 server.
+pub fn ntp_answer(request: &[u8]) -> Option<Vec<u8>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let time = eggos_net::sntp::Timestamp::from_unix_nanoseconds(now.as_nanos() as i64);
+    let mut reply = [0u8; eggos_net::sntp::PACKET_BYTES];
+    eggos_net::sntp::write_reply(request, time, time, &mut reply).then(|| reply.to_vec())
+}
+
 fn serve_tcp(
     stop: Arc<AtomicBool>,
     answer: fn(&[u8]) -> Option<Vec<u8>>,
 ) -> Result<(u16, std::thread::JoinHandle<()>), String> {
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|e| format!("a host TCP socket: {e}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| e.to_string())?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let server = std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
@@ -197,6 +215,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (dns_port, dns_server) = serve(Arc::clone(&stop), dns_answer)?;
     let (echo_port, echo_server) = serve(Arc::clone(&stop), |datagram| Some(datagram.to_vec()))?;
+    let (ntp_port, ntp_server) = serve(Arc::clone(&stop), ntp_answer)?;
     let (tcp_echo_port, tcp_echo_server) =
         serve_tcp(Arc::clone(&stop), |received| Some(received.to_vec()))?;
     let (http_port, http_server) = serve_tcp(Arc::clone(&stop), |request| {
@@ -210,10 +229,17 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
         echo: echo_port,
         tcp_echo: tcp_echo_port,
         http: http_port,
+        ntp: ntp_port,
     };
     let result = boot(arch, kernel, &commands(&ports));
     stop.store(true, Ordering::Relaxed);
-    for server in [dns_server, echo_server, tcp_echo_server, http_server] {
+    for server in [
+        dns_server,
+        echo_server,
+        tcp_echo_server,
+        http_server,
+        ntp_server,
+    ] {
         let _ = server.join();
     }
     result?;
@@ -307,8 +333,8 @@ mod tests {
     #[test]
     fn the_dns_stand_in_answers_its_name_and_refuses_others() {
         let mut query = [0u8; dns::MAX_MESSAGE_BYTES];
-        let length = dns::write_query(&mut query, 9, KNOWN_NAME.as_bytes(), dns::record_type::A)
-            .unwrap();
+        let length =
+            dns::write_query(&mut query, 9, KNOWN_NAME.as_bytes(), dns::record_type::A).unwrap();
         let answer = dns_answer(&query[..length]).unwrap();
         assert_eq!(
             dns::parse_response(&answer, 9).unwrap().addresses(),
@@ -325,7 +351,16 @@ mod tests {
             echo: 7,
             tcp_echo: 8,
             http: 8080,
+            ntp: 1123,
         };
+        assert!(commands(&ports)[6].contains("date --sync=10.0.2.2:1123;"));
+        let mut request = [0u8; eggos_net::sntp::PACKET_BYTES];
+        eggos_net::sntp::write_request(&mut request, eggos_net::sntp::Timestamp::default());
+        assert_eq!(
+            ntp_answer(&request).unwrap().len(),
+            eggos_net::sntp::PACKET_BYTES
+        );
+        assert_eq!(ntp_answer(&request[..10]), None);
         assert!(commands(&ports)[2].contains("-port=53 eggos.test 10.0.2.2"));
         assert!(commands(&ports)[4].contains("http://10.0.2.2:8080/eggos.txt"));
         assert!(commands(&ports)[5].contains("linux-tcp 10.0.2.2 8;"));

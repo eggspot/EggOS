@@ -19,6 +19,7 @@ fn urls_parse_with_their_port_and_target_and_bad_ones_are_refused() {
     assert_eq!(
         parse_url(b"http://example.com"),
         Ok(Url {
+            secure: false,
             host: b"example.com",
             port: 80,
             target: b"/"
@@ -27,13 +28,21 @@ fn urls_parse_with_their_port_and_target_and_bad_ones_are_refused() {
     assert_eq!(
         parse_url(b"HTTP://10.0.2.2:8080/files/a.txt?x=1#top"),
         Ok(Url {
+            secure: false,
             host: b"10.0.2.2",
             port: 8080,
             target: b"/files/a.txt?x=1"
         })
     );
     assert_eq!(parse_url(b"http://h:/x").unwrap().port, 80);
-    assert_eq!(parse_url(b"https://example.com/"), Err(UrlError::Https));
+    let secure = parse_url(b"HTTPS://example.com/a").unwrap();
+    assert!(secure.secure);
+    assert_eq!(
+        (secure.host, secure.port, secure.target),
+        (&b"example.com"[..], 443, &b"/a"[..])
+    );
+    assert_eq!(parse_url(b"https://h:8443").unwrap().port, 8443);
+    assert!(!parse_url(b"http://h/").unwrap().secure);
     assert_eq!(parse_url(b"ftp://example.com/"), Err(UrlError::NotHttp));
     assert_eq!(parse_url(b"example.com"), Err(UrlError::NotHttp));
     assert_eq!(parse_url(b"http:///x"), Err(UrlError::BadHost));
@@ -43,7 +52,7 @@ fn urls_parse_with_their_port_and_target_and_bad_ones_are_refused() {
     assert_eq!(parse_url(b"http://h:65536/"), Err(UrlError::BadPort));
     assert_eq!(parse_url(b"http://h:8x/"), Err(UrlError::BadPort));
     assert_eq!(parse_url(b"http://h/a b"), Err(UrlError::BadCharacter));
-    assert!(!UrlError::Https.description().is_empty());
+    assert!(UrlError::NotHttp.description().contains("https://"));
 }
 
 #[test]
@@ -52,6 +61,7 @@ fn a_redirect_is_a_whole_url_or_a_path_on_the_same_host() {
     assert_eq!(
         redirect(b"http://other:81/y"),
         Ok(Redirect::Absolute(Url {
+            secure: false,
             host: b"other",
             port: 81,
             target: b"/y"
@@ -59,7 +69,7 @@ fn a_redirect_is_a_whole_url_or_a_path_on_the_same_host() {
     );
     assert_eq!(redirect(b"//other/y"), Err(UrlError::NotHttp));
     assert_eq!(redirect(b"relative"), Err(UrlError::NotHttp));
-    assert_eq!(redirect(b"https://h/"), Err(UrlError::Https));
+    assert!(matches!(redirect(b"https://h/"), Ok(Redirect::Absolute(url)) if url.secure));
 }
 
 #[test]
@@ -199,4 +209,15 @@ fn a_malformed_or_cut_chunked_body_is_refused() {
     let mut cut = Body::new(Framing::Chunked);
     decode_all(&mut cut, b"5\r\nhel").unwrap();
     assert_eq!(cut.finish(), Err(BodyError::Truncated));
+}
+
+#[test]
+fn an_https_request_names_the_port_only_when_it_is_not_443() {
+    let mut out = [0u8; 256];
+    let url = parse_url(b"https://example.com/x").unwrap();
+    let length = write_request(&mut out, &url, b"a").unwrap();
+    assert!(out[..length].starts_with(b"GET /x HTTP/1.1\r\nHost: example.com\r\n"));
+    let url = parse_url(b"https://example.com:80/x").unwrap();
+    let length = write_request(&mut out, &url, b"a").unwrap();
+    assert!(out[..length].starts_with(b"GET /x HTTP/1.1\r\nHost: example.com:80\r\n"));
 }

@@ -1,4 +1,5 @@
-//! HTTP/1.1 for downloads (RFC 9110, RFC 9112): `http://` URLs, the `GET` request, the head
+//! HTTP/1.1 for downloads (RFC 9110, RFC 9112): `http://` and `https://` URLs (TLS is the
+//! caller's, D159), the `GET` request, the head
 //! of a response (its status, how its body is framed, where a redirect points), and a body
 //! decoded as it arrives, whether framed by its length, in chunks, or by the end of the
 //! connection. Nothing here allocates: the caller keeps the head it read and passes the body's
@@ -6,14 +7,18 @@
 
 /// The port of `http://` URLs that name none.
 pub const DEFAULT_PORT: u16 = 80;
+/// The port of `https://` URLs that name none.
+pub const DEFAULT_SECURE_PORT: u16 = 443;
 /// The longest head of a response the client reads.
 pub const MAX_HEAD_BYTES: usize = 16 * 1024;
 /// The longest host name.
 pub const MAX_HOST_BYTES: usize = 253;
 
-/// A parsed `http://` URL.
+/// A parsed `http://` or `https://` URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Url<'a> {
+    /// Whether it is `https://`: the exchange goes over TLS.
+    pub secure: bool,
     /// The host: a name or an IPv4 address.
     pub host: &'a [u8],
     /// The port.
@@ -25,9 +30,7 @@ pub struct Url<'a> {
 /// Why a URL is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrlError {
-    /// It is an `https://` URL, which needs TLS.
-    Https,
-    /// Its scheme is not `http`.
+    /// Its scheme is neither `http` nor `https`.
     NotHttp,
     /// It names no host, or a host with characters a name cannot have.
     BadHost,
@@ -41,8 +44,7 @@ impl UrlError {
     /// What is wrong, for people.
     pub fn description(self) -> &'static str {
         match self {
-            Self::Https => "https:// needs TLS, which EggOS does not have yet; use http://",
-            Self::NotHttp => "only http:// URLs are fetched",
+            Self::NotHttp => "only http:// and https:// URLs are fetched",
             Self::BadHost => "the URL names no valid host",
             Self::BadPort => "the port is not a number from 1 to 65535",
             Self::BadCharacter => "the URL holds a space or a control character",
@@ -55,18 +57,23 @@ fn starts_with_ignoring_case(text: &[u8], prefix: &[u8]) -> bool {
         .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
 }
 
-/// Parses `http://host[:port][/path][?query][#fragment]`.
+/// Parses `http://host[:port][/path][?query][#fragment]`, or the same with `https://`.
 pub fn parse_url(text: &[u8]) -> Result<Url<'_>, UrlError> {
     if text.iter().any(|&byte| byte <= b' ' || byte == 0x7f) {
         return Err(UrlError::BadCharacter);
     }
-    if starts_with_ignoring_case(text, b"https://") {
-        return Err(UrlError::Https);
-    }
-    if !starts_with_ignoring_case(text, b"http://") {
+    let (secure, rest) = if starts_with_ignoring_case(text, b"https://") {
+        (true, &text[b"https://".len()..])
+    } else if starts_with_ignoring_case(text, b"http://") {
+        (false, &text[b"http://".len()..])
+    } else {
         return Err(UrlError::NotHttp);
-    }
-    let rest = &text[b"http://".len()..];
+    };
+    let default_port = if secure {
+        DEFAULT_SECURE_PORT
+    } else {
+        DEFAULT_PORT
+    };
     let rest = match rest.iter().position(|&byte| byte == b'#') {
         Some(fragment) => &rest[..fragment],
         None => rest,
@@ -80,8 +87,11 @@ pub fn parse_url(text: &[u8]) -> Result<Url<'_>, UrlError> {
         return Err(UrlError::BadHost);
     }
     let (host, port) = match authority.iter().rposition(|&byte| byte == b':') {
-        Some(colon) => (&authority[..colon], parse_port(&authority[colon + 1..])?),
-        None => (authority, DEFAULT_PORT),
+        Some(colon) => (
+            &authority[..colon],
+            parse_port(&authority[colon + 1..], default_port)?,
+        ),
+        None => (authority, default_port),
     };
     if !is_host(host) {
         return Err(UrlError::BadHost);
@@ -90,12 +100,17 @@ pub fn parse_url(text: &[u8]) -> Result<Url<'_>, UrlError> {
         [] => b"/",
         target => target,
     };
-    Ok(Url { host, port, target })
+    Ok(Url {
+        secure,
+        host,
+        port,
+        target,
+    })
 }
 
-fn parse_port(text: &[u8]) -> Result<u16, UrlError> {
+fn parse_port(text: &[u8], default_port: u16) -> Result<u16, UrlError> {
     if text.is_empty() {
-        return Ok(DEFAULT_PORT);
+        return Ok(default_port);
     }
     if text.len() > 5 || !text.iter().all(u8::is_ascii_digit) {
         return Err(UrlError::BadPort);
@@ -129,7 +144,7 @@ pub enum Redirect<'a> {
 }
 
 /// Resolves `location`, a redirect's `Location`, against the URL that answered: an absolute
-/// `http://` URL, or an absolute path on the same host. Other forms are refused.
+/// `http://` or `https://` URL, or an absolute path on the same host. Other forms are refused.
 pub fn redirect(location: &[u8]) -> Result<Redirect<'_>, UrlError> {
     match location.first() {
         Some(b'/') if location.get(1) != Some(&b'/') => {
@@ -154,7 +169,12 @@ pub fn write_request(out: &mut [u8], url: &Url<'_>, user_agent: &[u8]) -> Option
     writer.put(url.target)?;
     writer.put(b" HTTP/1.1\r\nHost: ")?;
     writer.put(url.host)?;
-    if url.port != DEFAULT_PORT {
+    let default_port = if url.secure {
+        DEFAULT_SECURE_PORT
+    } else {
+        DEFAULT_PORT
+    };
+    if url.port != default_port {
         writer.put(b":")?;
         let mut digits = [0u8; 5];
         let mut port = url.port;

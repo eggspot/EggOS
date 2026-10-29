@@ -138,7 +138,7 @@ fn failures_say_what_went_wrong() {
         ),
         (
             &[c"https://files.test/"],
-            "fetch: https://files.test/: https:// needs TLS, which EggOS does not have yet; use http://\n",
+            "fetch: files.test:443: Connection refused\n",
         ),
         (
             &[c"http://files.test/cut"],
@@ -156,4 +156,23 @@ fn failures_say_what_went_wrong() {
         (status, errors.as_str()),
         (1, "fetch: invalid option -- 'x'\n")
     );
+}
+
+#[test]
+fn https_runs_tls_and_says_why_the_server_refused() {
+    let mut fake = network();
+    fake.network
+        .raw_answers
+        .push(((HOST, 443), vec![21, 3, 3, 0, 2, 2, 40]));
+    let (status, _, errors, fake) = run(fake, &[c"https://files.test/"]);
+    assert_eq!(
+        (status, errors.as_str()),
+        (
+            1,
+            "fetch: files.test:443: the server ended the TLS handshake with an alert (40)\n"
+        )
+    );
+    let hello = &fake.network.streams[0].request;
+    assert_eq!(hello[0], 22);
+    assert!(hello.windows(10).any(|window| window == b"files.test"));
 }

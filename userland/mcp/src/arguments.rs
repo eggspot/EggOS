@@ -201,8 +201,7 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadCount => "count must be a whole number from 1 to 5",
             ArgumentProblem::BadUrl => {
-                "url must be an http:// URL of at most 2048 bytes without spaces; https:// is not \
-                 supported yet"
+                "url must be an http:// or https:// URL of at most 2048 bytes without spaces"
             }
         }
     }
@@ -526,8 +525,13 @@ pub fn check(
             |byte| byte > b' ' && byte != 0x7f,
             ArgumentProblem::BadUrl,
         )?;
-        let scheme = decoded.content.get(..b"http://".len());
-        if !scheme.is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"http://")) {
+        let starts = |scheme: &[u8]| {
+            decoded
+                .content
+                .get(..scheme.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+        };
+        if !starts(b"http://") && !starts(b"https://") {
             return Err(ArgumentProblem::BadUrl);
         }
         checked.url = Some(length);

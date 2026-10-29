@@ -4,7 +4,7 @@ use crate::system::{
     UTSNAME_SIZE,
 };
 use core::ffi::CStr;
-use eggos_net::{Ipv4Address, dns, icmp};
+use eggos_net::{Ipv4Address, dns, icmp, sntp};
 use eggos_runtime::errno::Errno;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -51,6 +51,10 @@ pub struct FakeNetwork {
     pub pages: Vec<FakePage>,
     pub streams: Vec<FakeStream>,
     pub requests: Vec<Vec<u8>>,
+    pub raw_answers: Vec<((Ipv4Address, u16), Vec<u8>)>,
+    pub ntp_servers: Vec<(Ipv4Address, u16)>,
+    pub ntp_time_ns: i64,
+    pub random_counter: u8,
 }
 
 impl FakeNetwork {
@@ -93,8 +97,22 @@ impl FakeNetwork {
                 let mut reply = bytes.to_vec();
                 let sequence = u16::from_be_bytes([bytes[6], bytes[7]]);
                 let data = bytes.len() - icmp::HEADER_BYTES;
-                icmp::write_echo_header(&mut reply, icmp::kind::ECHO_REPLY, identifier, sequence, data);
+                icmp::write_echo_header(
+                    &mut reply,
+                    icmp::kind::ECHO_REPLY,
+                    identifier,
+                    sequence,
+                    data,
+                );
                 Some((reply, Sender { address, port: 0 }))
+            }
+            DatagramKind::Udp if self.ntp_servers.contains(&(address, port)) => {
+                let time = sntp::Timestamp::from_unix_nanoseconds(self.ntp_time_ns);
+                let mut reply = [0u8; sntp::PACKET_BYTES];
+                if !sntp::write_reply(bytes, time, time, &mut reply) {
+                    return;
+                }
+                Some((reply.to_vec(), Sender { address, port }))
             }
             DatagramKind::Udp if self.dns_servers.contains(&(address, port)) => {
                 let Some(name) = dns::query_name(bytes) else {
@@ -764,7 +782,9 @@ impl System for Fake {
         if let Some(errno) = self.network.send_error {
             return Err(errno);
         }
-        self.network.sent.push((kind, address, port, bytes.to_vec()));
+        self.network
+            .sent
+            .push((kind, address, port, bytes.to_vec()));
         self.network.answer(descriptor, bytes, address, port);
         Ok(bytes.len())
     }
@@ -809,7 +829,12 @@ impl System for Fake {
             .network
             .pages
             .iter()
-            .any(|page| (page.address, page.port) == (address, port));
+            .any(|page| (page.address, page.port) == (address, port))
+            || self
+                .network
+                .raw_answers
+                .iter()
+                .any(|(at, _)| *at == (address, port));
         let reachable = self.network.reachable.contains(&address);
         let stream = self.network.stream(descriptor)?;
         match (served, reachable) {
@@ -829,6 +854,20 @@ impl System for Fake {
         let stream = self.network.stream(descriptor)?;
         let address = stream.address.ok_or(Errno::EPIPE)?;
         stream.request.extend_from_slice(bytes);
+        let answered = stream.answered;
+        let raw = self
+            .network
+            .raw_answers
+            .iter()
+            .find(|(at, _)| *at == address)
+            .map(|(_, answer)| answer.clone());
+        if let (false, Some(raw)) = (answered, raw) {
+            let stream = self.network.stream(descriptor)?;
+            stream.response.extend(raw);
+            stream.answered = true;
+            return Ok(());
+        }
+        let stream = self.network.stream(descriptor)?;
         if stream.answered || !stream.request.windows(4).any(|end| end == b"\r\n\r\n") {
             return Ok(());
         }
@@ -860,6 +899,14 @@ impl System for Fake {
             *slot = byte;
         }
         Ok(Some(count))
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        for byte in out.iter_mut() {
+            self.network.random_counter = self.network.random_counter.wrapping_add(1);
+            *byte = self.network.random_counter;
+        }
+        Ok(())
     }
 }
 

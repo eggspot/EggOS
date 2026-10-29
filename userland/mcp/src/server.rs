@@ -1342,7 +1342,7 @@ impl Server {
             time_limit_ms: match tool.kind {
                 Kind::Run => prepared.checked.time_limit_ms,
                 Kind::Fetch => FETCH_TIME_LIMIT_MS,
-                Kind::NetPing | Kind::NetLookup => NETWORK_TIME_LIMIT_MS,
+                Kind::NetPing | Kind::NetLookup | Kind::ClockSync => NETWORK_TIME_LIMIT_MS,
                 _ => TWIN_TIME_LIMIT_MS,
             },
         };

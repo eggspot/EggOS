@@ -78,7 +78,11 @@ pub const TWIN_CALLS: [(&str, &str, &str); 8] = [
     ("app_list", "{}", ""),
     ("clock_get", "{}", "Z"),
     ("net_status", "{}", "\"adapters\""),
-    ("net_ping", r#"{"host":"127.0.0.1","count":1}"#, "1 received"),
+    (
+        "net_ping",
+        r#"{"host":"127.0.0.1","count":1}"#,
+        "1 received",
+    ),
 ];
 
 /// Every call of a reading tool whose result depends on the network the machine was started
@@ -100,7 +104,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 16] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 17] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -111,17 +115,14 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 16] = [
         r#"{"path":"/home/root/x","confirm":true}"#,
         "write",
     ),
-    (
-        "fetch",
-        FETCH_ARGUMENTS,
-        "write",
-    ),
+    ("fetch", FETCH_ARGUMENTS, "write"),
     ("run", r#"{"program":"/bin/uname"}"#, "run"),
     (
         "clock_set",
         r#"{"time":"2030-01-02T03:04:05Z","confirm":true}"#,
         "run",
     ),
+    ("clock_sync", "{}", "run"),
     (
         "app_install",
         r#"{"path":"/media/host/win-paint.exe"}"#,
@@ -553,7 +554,10 @@ fn session(client: &mut Client) -> Result<(), String> {
         expect(
             wanted.iter().any(|text| result.all().contains(text)),
             arch,
-            &format!("{tool}'s result lacks every one of {wanted:?}: {}", result.all()),
+            &format!(
+                "{tool}'s result lacks every one of {wanted:?}: {}",
+                result.all()
+            ),
         )?;
     }
     clock_near(client, host_seconds(), "the first boot")?;
@@ -745,6 +749,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     )?;
     client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
     set_clock(client)?;
+    let synced = client.call("clock_sync", "{}")?;
+    expect(
+        synced.all().contains("pool.ntp.org"),
+        arch,
+        &format!("clock_sync does not name its time server: {}", synced.all()),
+    )?;
     let first = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} first\n"}}"#);
     succeeds(client, "tee", &first, "Wrote")?;
     let second = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n"}}"#);

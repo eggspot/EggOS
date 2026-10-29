@@ -419,7 +419,9 @@ impl System for Linux {
             number::CLOCK_GETTIME,
             [CLOCK_MONOTONIC, &raw mut time as usize, 0, 0, 0, 0],
         ) {
-            Ok(_) => (time.seconds.max(0) as u64) * 1_000_000 + (time.nanoseconds.max(0) as u64) / 1000,
+            Ok(_) => {
+                (time.seconds.max(0) as u64) * 1_000_000 + (time.nanoseconds.max(0) as u64) / 1000
+            }
             Err(_) => 0,
         }
     }
@@ -507,6 +509,22 @@ impl System for Linux {
             Err(Errno::EAGAIN) => Ok(None),
             Err(errno) => Err(errno),
         }
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        let mut filled = 0;
+        while filled < out.len() {
+            let rest = &mut out[filled..];
+            match call(
+                number::GETRANDOM,
+                [rest.as_mut_ptr() as usize, rest.len(), 0, 0, 0, 0],
+            ) {
+                Ok(count) => filled += count,
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        Ok(())
     }
 }
 

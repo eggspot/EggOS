@@ -1,7 +1,16 @@
+use crate::network::{Shown as ShownText, resolve};
 use crate::output::{FAILURE, Output};
-use crate::system::{Duration, SymbolicLinks, System};
+use crate::system::{DatagramKind, Duration, SymbolicLinks, System};
 use core::ffi::CStr;
 use eggos_calendar::{DateTime, MONTHS, ParseError, WEEKDAYS, parse_setting};
+use eggos_net::Ipv4Address;
+use eggos_net::sntp::{self, ReplyError, Timestamp};
+use eggos_runtime::errno::Errno;
+
+pub const DEFAULT_TIME_SERVER: &[u8] = b"pool.ntp.org";
+pub const SYNC_TIMEOUT_MS: u32 = 3000;
+pub const SYNC_ATTEMPTS: u32 = 3;
+const NANOSECONDS: i64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shown<'a> {
@@ -11,6 +20,7 @@ enum Shown<'a> {
 
 pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut set: Option<&CStr> = None;
+    let mut sync: Option<&[u8]> = None;
     let mut shown = Shown::Now;
     let mut format: Option<&[u8]> = None;
     let mut options_end = false;
@@ -25,6 +35,8 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         if !options_end && bytes.len() > 1 && bytes[0] == b'-' {
             match bytes {
                 b"-u" | b"--utc" | b"--universal" => {}
+                b"--sync" => sync = Some(DEFAULT_TIME_SERVER),
+                _ if bytes.starts_with(b"--sync=") => sync = Some(&bytes[b"--sync=".len()..]),
                 b"-s" | b"--set" | b"-r" | b"--reference" => {
                     let Some(&value) = arguments.get(index) else {
                         output.error(&[b"option requires an argument -- '", &bytes[1..], b"'"]);
@@ -65,16 +77,20 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             }
         }
     }
-    let seconds = match (set, shown) {
-        (Some(_), Shown::File(_)) => {
+    let seconds = match (sync, set, shown) {
+        (Some(_), Some(_), _) | (Some(_), _, Shown::File(_)) | (None, Some(_), Shown::File(_)) => {
             output.error(&[b"the options to set the time and to show a file's time are exclusive"]);
             return FAILURE;
         }
-        (Some(text), Shown::Now) => match set_clock(output, text) {
+        (Some(server), None, Shown::Now) => match sync_clock(output, server) {
             Ok(seconds) => seconds,
             Err(status) => return status,
         },
-        (None, Shown::File(path)) => {
+        (None, Some(text), Shown::Now) => match set_clock(output, text) {
+            Ok(seconds) => seconds,
+            Err(status) => return status,
+        },
+        (None, None, Shown::File(path)) => {
             match output.system.status(None, path, SymbolicLinks::Follow) {
                 Ok(status) => status.modified,
                 Err(errno) => {
@@ -83,7 +99,7 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
                 }
             }
         }
-        (None, Shown::Now) => output.system.now() as i64,
+        (None, None, Shown::Now) => output.system.now() as i64,
     };
     write_formatted(output, format.unwrap_or(DEFAULT_FORMAT), seconds);
     output.write(b"\n");
@@ -133,6 +149,159 @@ fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32>
             Err(FAILURE)
         }
     }
+}
+
+fn time_server(server: &[u8]) -> Option<(&[u8], u16)> {
+    let (host, port) = match server.iter().rposition(|&byte| byte == b':') {
+        Some(colon) => {
+            let digits = &server[colon + 1..];
+            if digits.is_empty() || digits.len() > 5 || !digits.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            let port = digits
+                .iter()
+                .fold(0u32, |value, digit| value * 10 + u32::from(digit - b'0'));
+            (
+                &server[..colon],
+                u16::try_from(port).ok().filter(|&port| port > 0)?,
+            )
+        }
+        None => (server, sntp::PORT),
+    };
+    match host.is_empty() {
+        true => None,
+        false => Some((host, port)),
+    }
+}
+
+struct Answer {
+    reply: sntp::Reply,
+    round_trip_ns: i64,
+    arrived_us: u64,
+}
+
+fn ask_time<S: System>(
+    output: &mut Output<S>,
+    socket: usize,
+    address: Ipv4Address,
+    port: u16,
+    server: &[u8],
+) -> Result<Answer, i32> {
+    let mut packet = [0u8; sntp::PACKET_BYTES];
+    let mut reply = [0u8; 2 * sntp::PACKET_BYTES];
+    for _ in 0..SYNC_ATTEMPTS {
+        let mut cookie = [0u8; 8];
+        if output.system.random(&mut cookie).is_err() {
+            cookie = output.system.monotonic_us().to_be_bytes();
+        }
+        let sent = Timestamp {
+            seconds: u32::from_be_bytes([cookie[0], cookie[1], cookie[2], cookie[3]]),
+            fraction: u32::from_be_bytes([cookie[4], cookie[5], cookie[6], cookie[7]]),
+        };
+        sntp::write_request(&mut packet, sent);
+        let start = output.system.monotonic_us();
+        if let Err(errno) = output.system.send_to(socket, &packet, address, port) {
+            output.error(&[server, b": ", errno.message()]);
+            return Err(FAILURE);
+        }
+        loop {
+            let waited_ms = (output.system.monotonic_us().saturating_sub(start) / 1000) as u32;
+            if waited_ms >= SYNC_TIMEOUT_MS {
+                break;
+            }
+            match output
+                .system
+                .receive_from(socket, &mut reply, SYNC_TIMEOUT_MS - waited_ms)
+            {
+                Ok(Some((count, sender))) if sender.address == address && sender.port == port => {
+                    let arrived_us = output.system.monotonic_us();
+                    match sntp::parse_reply(&reply[..count], sent) {
+                        Ok(parsed) => {
+                            return Ok(Answer {
+                                reply: parsed,
+                                round_trip_ns: (arrived_us.saturating_sub(start) * 1000) as i64,
+                                arrived_us,
+                            });
+                        }
+                        Err(ReplyError::NotOurs) => {}
+                        Err(error) => {
+                            output.error(&[server, b": ", error.description().as_bytes()]);
+                            return Err(FAILURE);
+                        }
+                    }
+                }
+                Ok(Some(_)) | Err(Errno::EINTR) => {}
+                Ok(None) => break,
+                Err(errno) => {
+                    output.error(&[server, b": ", errno.message()]);
+                    return Err(FAILURE);
+                }
+            }
+        }
+    }
+    output.error(&[server, b": no answer from the time server"]);
+    Err(FAILURE)
+}
+
+fn sync_clock<S: System>(output: &mut Output<S>, server: &[u8]) -> Result<i64, i32> {
+    let Some((host, port)) = time_server(server) else {
+        output.error(&[
+            b"invalid time server '",
+            server,
+            b"': give host or host:port",
+        ]);
+        return Err(FAILURE);
+    };
+    let address = resolve(output, host)?;
+    let socket = match output.system.open_datagram_socket(DatagramKind::Udp) {
+        Ok(socket) => socket,
+        Err(errno) => {
+            output.error(&[b"socket: ", errno.message()]);
+            return Err(FAILURE);
+        }
+    };
+    let answer = ask_time(output, socket, address, port, server);
+    output.system.close(socket);
+    let answer = answer?;
+    let elapsed_ns = (output
+        .system
+        .monotonic_us()
+        .saturating_sub(answer.arrived_us)
+        * 1000) as i64;
+    let time_ns = sntp::arrival_time(&answer.reply, answer.round_trip_ns) + elapsed_ns;
+    let before = output.system.now_with_nanoseconds();
+    let before_ns = before.seconds as i64 * NANOSECONDS + i64::from(before.nanoseconds);
+    let since_epoch = Duration {
+        seconds: time_ns.div_euclid(NANOSECONDS).max(0) as u64,
+        nanoseconds: time_ns.rem_euclid(NANOSECONDS) as u32,
+    };
+    if let Err(errno) = output.system.set_time(since_epoch) {
+        output.error(&[b"cannot set date: ", errno.message()]);
+        return Err(FAILURE);
+    }
+    let moved = time_ns - before_ns;
+    let stratum = ShownText::<4>::of(answer.reply.stratum);
+    output.write(b"Synchronized with ");
+    output.write(server);
+    output.write(b" (stratum ");
+    output.write(stratum.as_bytes());
+    output.write(b"): the clock moved by ");
+    output.write(if moved < 0 { b"-" } else { b"+" });
+    write_padded(
+        output,
+        (moved.unsigned_abs() / 1_000_000_000) as i64,
+        1,
+        b'0',
+    );
+    output.write(b".");
+    write_padded(
+        output,
+        (moved.unsigned_abs() % 1_000_000_000 / 1_000_000) as i64,
+        3,
+        b'0',
+    );
+    output.write(b" s\n");
+    Ok(since_epoch.seconds as i64)
 }
 
 fn write_padded<S: System>(output: &mut Output<S>, value: i64, width: usize, pad: u8) {
@@ -331,5 +500,68 @@ mod tests {
         let (status, _, errors, _) = run(refused, &[c"-s", c"2030-01-02 03:04"]);
         assert_eq!(status, 1);
         assert_eq!(errors, "date: cannot set date: Operation not permitted\n");
+    }
+
+    const TIME_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
+
+    fn with_time_server(port: u16) -> Fake {
+        let mut fake = at_now();
+        fake.now -= 100;
+        fake.network.ntp_servers.push((TIME_SERVER, port));
+        fake.network.ntp_time_ns = NOW * 1_000_000_000 + 500_000_000;
+        fake.network.round_trip_us = 20_000;
+        fake
+    }
+
+    #[test]
+    fn sync_sets_the_clock_from_a_time_server_and_says_how_far_it_moved() {
+        let (status, out, errors, fake) = run(with_time_server(123), &[c"--sync=10.0.2.2"]);
+        assert_eq!((status, errors.as_str()), (0, ""));
+        assert_eq!(
+            out,
+            "Synchronized with 10.0.2.2 (stratum 1): the clock moved by +100.510 s\n\
+             Thu Oct 29 14:05:09 UTC 2026\n"
+        );
+        assert_eq!(
+            fake.set_times,
+            [Duration {
+                seconds: NOW as u64,
+                nanoseconds: 510_000_000
+            }]
+        );
+        let sent = &fake.network.sent[0];
+        assert_eq!((sent.1, sent.2, sent.3[0]), (TIME_SERVER, 123, 0x23));
+        let (status, _, _, fake) = run(with_time_server(1123), &[c"--sync=10.0.2.2:1123", c"+%s"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.set_times.len(), 1);
+    }
+
+    #[test]
+    fn sync_fails_with_the_reason_and_leaves_the_clock() {
+        for (arguments, error) in [
+            (
+                &[c"--sync=10.0.2.9"][..],
+                "date: 10.0.2.9: no answer from the time server\n",
+            ),
+            (
+                &[c"--sync=h:99999"][..],
+                "date: invalid time server 'h:99999': give host or host:port\n",
+            ),
+            (
+                &[c"--sync", c"-s", c"2030-01-02 03:04"][..],
+                "date: the options to set the time and to show a file's time are exclusive\n",
+            ),
+            (
+                &[c"--sync"][..],
+                "date: pool.ntp.org: no DNS server: /etc/resolv.conf names none\n",
+            ),
+        ] {
+            let (status, out, errors, fake) = run(with_time_server(123), arguments);
+            assert_eq!((status, out.as_str()), (1, ""), "{arguments:?}");
+            assert_eq!(errors, error);
+            assert!(fake.set_times.is_empty());
+        }
+        let (_, _, _, fake) = run(with_time_server(123), &[c"--sync=10.0.2.9"]);
+        assert_eq!(fake.network.sent.len(), SYNC_ATTEMPTS as usize);
     }
 }

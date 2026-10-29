@@ -168,6 +168,7 @@ pub trait System {
         buffer: &mut [u8],
         timeout_ms: u32,
     ) -> Result<Option<usize>, Errno>;
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno>;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -328,6 +329,10 @@ impl<T: System + ?Sized> System for &mut T {
         timeout_ms: u32,
     ) -> Result<Option<usize>, Errno> {
         (**self).receive(descriptor, buffer, timeout_ms)
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        (**self).random(out)
     }
 }
 

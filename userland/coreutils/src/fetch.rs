@@ -1,9 +1,17 @@
 use crate::network::{Shown, resolve};
 use crate::output::{FAILURE, Output};
 use crate::system::System;
+use core::cell::RefCell;
 use core::ffi::CStr;
 use eggos_net::http::{self, Body, HeadError, Redirect, Url};
 use eggos_runtime::errno::Errno;
+use eggos_tls::chain::{NoRoots, TrustAnchors};
+use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
+use eggos_tls::pem::Certificates;
+
+pub const ROOTS: [&CStr; 2] = [c"/etc/ssl/roots.pem", c"/media/host/roots.pem"];
+const ROOTS_PIECE: usize = 4096;
+const CERTIFICATE_BYTES: usize = 8192;
 
 const USAGE: &[u8] = b"usage: fetch [-q] [-o <file>] <url> [<file>]";
 const USER_AGENT: &[u8] = b"EggOS-fetch";
@@ -136,6 +144,150 @@ fn authority(url: &Url<'_>) -> Shown<264> {
     ))
 }
 
+struct Socket<'r, 'o, S: System> {
+    output: &'r RefCell<&'o mut Output<S>>,
+    descriptor: usize,
+    shown: &'r Shown<264>,
+}
+
+impl<S: System> Transport for Socket<'_, '_, S> {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Stopped> {
+        let mut output = self.output.borrow_mut();
+        match output.system.send(self.descriptor, bytes) {
+            Ok(()) => Ok(()),
+            Err(errno) => {
+                output.error(&[self.shown.as_bytes(), b": ", errno.message()]);
+                Err(Stopped)
+            }
+        }
+    }
+
+    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Stopped> {
+        let mut output = self.output.borrow_mut();
+        receive(&mut **output, self.descriptor, buffer, self.shown).map_err(|_| Stopped)
+    }
+}
+
+struct RootsFile<'r, 'o, S: System> {
+    output: &'r RefCell<&'o mut Output<S>>,
+}
+
+impl<S: System> TrustAnchors for RootsFile<'_, '_, S> {
+    fn each(&mut self, visit: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, NoRoots> {
+        let mut output = self.output.borrow_mut();
+        let descriptor = ROOTS
+            .iter()
+            .find_map(|path| output.system.open(path).ok())
+            .ok_or(NoRoots)?;
+        let mut der = [0u8; CERTIFICATE_BYTES];
+        let mut decoder = Certificates::new(&mut der);
+        let mut text = [0u8; ROOTS_PIECE];
+        let found = loop {
+            match output.system.read(descriptor, &mut text) {
+                Ok(0) => break decoder.finish(visit),
+                Ok(count) if decoder.feed(&text[..count], visit) => break true,
+                Ok(_) | Err(Errno::EINTR) => {}
+                Err(_) => break false,
+            }
+        };
+        output.system.close(descriptor);
+        Ok(found)
+    }
+}
+
+struct Link<'b> {
+    descriptor: usize,
+    session: Option<Session<'b>>,
+}
+
+fn tls_failure<S: System>(output: &mut Output<S>, shown: &Shown<264>, error: client::Error) -> i32 {
+    match error {
+        client::Error::Transport => {}
+        client::Error::Alert(code) => {
+            let code = Shown::<4>::of(code);
+            output.error(&[
+                shown.as_bytes(),
+                b": ",
+                error.description().as_bytes(),
+                b" (",
+                code.as_bytes(),
+                b")",
+            ]);
+        }
+        _ => output.error(&[shown.as_bytes(), b": ", error.description().as_bytes()]),
+    }
+    FAILURE
+}
+
+fn handshake<'b, S: System>(
+    output: &mut Output<S>,
+    descriptor: usize,
+    url: &Url<'_>,
+    shown: &Shown<264>,
+    buffers: &'b mut Buffers,
+) -> Result<Session<'b>, i32> {
+    let mut randomness = [0u8; RANDOMNESS_BYTES];
+    if let Err(errno) = output.system.random(&mut randomness) {
+        output.error(&[b"getrandom: ", errno.message()]);
+        return Err(FAILURE);
+    }
+    let settings = Settings {
+        host: url.host,
+        now: output.system.now() as i64,
+    };
+    let cell = RefCell::new(output);
+    let mut socket = Socket {
+        output: &cell,
+        descriptor,
+        shown,
+    };
+    let mut roots = RootsFile { output: &cell };
+    let connected = client::connect(&mut socket, buffers, &settings, &randomness, &mut roots);
+    let output = cell.into_inner();
+    connected.map_err(|error| tls_failure(output, shown, error))
+}
+
+fn send_on<S: System>(
+    output: &mut Output<S>,
+    link: &mut Link<'_>,
+    bytes: &[u8],
+    shown: &Shown<264>,
+) -> Result<(), i32> {
+    let Some(session) = link.session.as_mut() else {
+        return output.system.send(link.descriptor, bytes).map_err(|errno| {
+            output.error(&[shown.as_bytes(), b": ", errno.message()]);
+            FAILURE
+        });
+    };
+    let cell = RefCell::new(output);
+    let mut socket = Socket {
+        output: &cell,
+        descriptor: link.descriptor,
+        shown,
+    };
+    let sent = session.write(&mut socket, bytes);
+    sent.map_err(|error| tls_failure(cell.into_inner(), shown, error))
+}
+
+fn receive_on<S: System>(
+    output: &mut Output<S>,
+    link: &mut Link<'_>,
+    buffer: &mut [u8],
+    shown: &Shown<264>,
+) -> Result<usize, i32> {
+    let Some(session) = link.session.as_mut() else {
+        return receive(output, link.descriptor, buffer, shown);
+    };
+    let cell = RefCell::new(output);
+    let mut socket = Socket {
+        output: &cell,
+        descriptor: link.descriptor,
+        shown,
+    };
+    let received = session.read(&mut socket, buffer);
+    received.map_err(|error| tls_failure(cell.into_inner(), shown, error))
+}
+
 fn get<S: System>(
     output: &mut Output<S>,
     url: &Url<'_>,
@@ -149,7 +301,11 @@ fn get<S: System>(
             return Err(FAILURE);
         }
     };
-    let answer = exchange(output, descriptor, address, url, request);
+    let mut buffers = match url.secure {
+        true => Some(Buffers::new()),
+        false => None,
+    };
+    let answer = exchange(output, descriptor, address, url, request, buffers.as_mut());
     output.system.close(descriptor);
     answer
 }
@@ -160,6 +316,7 @@ fn exchange<S: System>(
     address: eggos_net::Ipv4Address,
     url: &Url<'_>,
     request: &Request<'_>,
+    buffers: Option<&mut Buffers>,
 ) -> Result<Answer, i32> {
     let shown = authority(url);
     let connected = output
@@ -169,15 +326,19 @@ fn exchange<S: System>(
         output.error(&[shown.as_bytes(), b": ", errno.message()]);
         return Err(FAILURE);
     }
+    let mut link = Link {
+        descriptor,
+        session: None,
+    };
+    if let Some(buffers) = buffers {
+        link.session = Some(handshake(output, descriptor, url, &shown, buffers)?);
+    }
     let mut text = [0u8; REQUEST_BYTES];
     let Some(length) = http::write_request(&mut text, url, USER_AGENT) else {
         output.error(&[b"the URL is too long for a request"]);
         return Err(FAILURE);
     };
-    if let Err(errno) = output.system.send(descriptor, &text[..length]) {
-        output.error(&[shown.as_bytes(), b": ", errno.message()]);
-        return Err(FAILURE);
-    }
+    send_on(output, &mut link, &text[..length], &shown)?;
     let mut head = [0u8; http::MAX_HEAD_BYTES];
     let mut filled = 0;
     let head_length = loop {
@@ -197,7 +358,7 @@ fn exchange<S: System>(
             ]);
             return Err(FAILURE);
         }
-        match receive(output, descriptor, &mut head[filled..], &shown)? {
+        match receive_on(output, &mut link, &mut head[filled..], &shown)? {
             0 => {
                 output.error(&[
                     shown.as_bytes(),
@@ -219,7 +380,11 @@ fn exchange<S: System>(
             Ok(Redirect::Absolute(_)) => Address::of(&[location]),
             Ok(Redirect::Path(path)) => {
                 let port = Shown::<8>::of(url.port);
-                Address::of(&[b"http://", url.host, b":", port.as_bytes(), path])
+                let scheme: &[u8] = match url.secure {
+                    true => b"https://",
+                    false => b"http://",
+                };
+                Address::of(&[scheme, url.host, b":", port.as_bytes(), path])
             }
             Err(error) => {
                 output.error(&[location, b": ", error.description().as_bytes()]);
@@ -263,7 +428,7 @@ fn exchange<S: System>(
     let leftover_start = head_length;
     let saved = save(
         output,
-        descriptor,
+        &mut link,
         &mut body,
         &head[leftover_start..filled],
         sink,
@@ -367,7 +532,7 @@ fn feed<S: System>(
 
 fn save<S: System>(
     output: &mut Output<S>,
-    descriptor: usize,
+    link: &mut Link<'_>,
     body: &mut Body,
     first: &[u8],
     sink: Option<(usize, &CStr)>,
@@ -376,7 +541,7 @@ fn save<S: System>(
     let mut saved = feed(output, body, first, sink, shown)?;
     let mut piece = [0u8; PIECE];
     while !body.is_done() {
-        let count = receive(output, descriptor, &mut piece, shown)?;
+        let count = receive_on(output, link, &mut piece, shown)?;
         if count == 0 {
             if let Err(error) = body.finish() {
                 output.error(&[shown.as_bytes(), b": ", error.description().as_bytes()]);

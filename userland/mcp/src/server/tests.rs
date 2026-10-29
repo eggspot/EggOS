@@ -184,6 +184,7 @@ fn the_tools_are_listed_once_initialized() {
             "fetch",
             "run",
             "clock_set",
+            "clock_sync",
             "app_install",
             "app_open",
             "edit_open",
@@ -2086,10 +2087,7 @@ fn net_ping_and_net_lookup_run_ping_and_nslookup_with_the_host_last() {
         *harness.system.time_limits.last().unwrap(),
         NETWORK_TIME_LIMIT_MS
     );
-    assert_eq!(
-        last_record(&harness).2,
-        r#"{"host":"10.0.2.2","count":2}"#
-    );
+    assert_eq!(last_record(&harness).2, r#"{"host":"10.0.2.2","count":2}"#);
     harness.call(2, "net_ping", r#"{"host":"example.com"}"#);
     assert_eq!(
         harness.system.runs.last().unwrap(),
@@ -2128,7 +2126,10 @@ fn fetch_needs_the_write_grant_an_http_url_and_confirm_to_replace() {
         r#"{"url":"http://10.0.2.2/a.txt","path":"/home/root/a.txt"}"#,
     );
     assert!(is_error(&answer));
-    assert!(texts(&answer)[0].contains("needs the write grant"), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("needs the write grant"),
+        "{answer}"
+    );
     let mut harness = writer();
     let answer = harness.call(
         2,
@@ -2166,9 +2167,11 @@ fn fetch_needs_the_write_grant_an_http_url_and_confirm_to_replace() {
     assert!(texts(&answer)[0].contains("fetch would replace an existing file"));
     let runs = harness.system.runs.len();
     for (arguments, words) in [
-        (r#"{"url":"https://h/","path":"/home/root/b"}"#, "url must be"),
         (r#"{"url":"ftp://h/","path":"/home/root/b"}"#, "url must be"),
-        (r#"{"url":"http://h/a b","path":"/home/root/b"}"#, "url must be"),
+        (
+            r#"{"url":"http://h/a b","path":"/home/root/b"}"#,
+            "url must be",
+        ),
         (r#"{"path":"/home/root/b"}"#, "url is required"),
     ] {
         let answer = harness.call(4, "fetch", arguments);
@@ -2176,11 +2179,49 @@ fn fetch_needs_the_write_grant_an_http_url_and_confirm_to_replace() {
         let message = error_message(&answer);
         assert!(message.contains(words), "{arguments}: {message}");
     }
-    let answer = harness.call(
-        5,
-        "fetch",
-        r#"{"url":"http://h/","path":"/etc/passwd"}"#,
-    );
+    let answer = harness.call(5, "fetch", r#"{"url":"http://h/","path":"/etc/passwd"}"#);
     assert!(is_error(&answer));
     assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn clock_sync_needs_the_run_grant_and_runs_date_sync() {
+    let mut reader = Harness::initialized();
+    let answer = reader.call(1, "clock_sync", "{}");
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the run grant"),
+        "{answer}"
+    );
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    let answer = harness.call(2, "clock_sync", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/date", "-u", "--sync"]
+    );
+    assert_eq!(
+        *harness.system.time_limits.last().unwrap(),
+        NETWORK_TIME_LIMIT_MS
+    );
+}
+
+#[test]
+fn fetch_takes_https_urls() {
+    let mut harness = writer();
+    let answer = harness.call(
+        1,
+        "fetch",
+        r#"{"url":"https://example.com/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/fetch",
+            "https://example.com/a.txt",
+            "--",
+            "/home/root/a.txt"
+        ]
+    );
 }
