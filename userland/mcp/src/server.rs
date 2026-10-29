@@ -1537,7 +1537,7 @@ impl Server {
                 Outcome::Ok
             }
             false => {
-                text.put("the PNG could not be read whole");
+                text.put("the PNG could not be read whole or did not fit the answer");
                 Outcome::Error
             }
         };
@@ -1552,8 +1552,6 @@ impl Server {
     }
 }
 
-/// What `wm capture` reports on its one line: the window's content size, the image's, the
-/// scale and the PNG's bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CaptureReport {
     width: u64,
@@ -1612,7 +1610,6 @@ impl CaptureReport {
     }
 }
 
-/// How many of its characters `wm type` reports it typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Typed {
     count: u64,
@@ -1688,13 +1685,16 @@ fn write_capture(
         out.key("isError");
         out.bool(false);
         out.end_object();
-        complete = read == file.size;
+        complete = read == file.size && !out.overflowed();
         if !complete {
             out.rewind(start);
             out.begin_object();
             out.key("content");
             out.begin_array();
-            text_item(out, "The capture failed: the PNG could not be read whole.");
+            text_item(
+                out,
+                "The capture failed: the PNG could not be read whole or did not fit the answer.",
+            );
             out.end_array();
             out.key("isError");
             out.bool(true);
@@ -1726,7 +1726,6 @@ fn capture_text(out: &mut JsonWriter<'_>, window: u32, report: &CaptureReport) {
     text_item(out, text_prefix(&text, length));
 }
 
-/// The numbers a window tool's twin takes, each written out once.
 struct Decimals {
     digits: [[u8; 20]; Decimals::COUNT],
     lengths: [usize; Decimals::COUNT],

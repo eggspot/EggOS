@@ -917,7 +917,7 @@ mod tests {
             ),
             (
                 "wm_type",
-                r#"{"window":1,"text":"	"}"#,
+                r#"{"window":1,"text":"\t"}"#,
                 Some(ArgumentProblem::BadText),
             ),
             (

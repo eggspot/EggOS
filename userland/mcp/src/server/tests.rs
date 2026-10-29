@@ -180,7 +180,12 @@ fn the_tools_are_listed_once_initialized() {
             "run",
             "app_install",
             "app_open",
-            "app_uninstall"
+            "app_uninstall",
+            "wm_capture",
+            "wm_click",
+            "wm_type",
+            "wm_press",
+            "wm_scroll"
         ]
     );
 }
@@ -1462,9 +1467,11 @@ fn short_reads_give_the_same_image_and_the_default_width_is_1024() {
     }
 }
 
+type SetUp = fn(&mut Harness);
+
 #[test]
 fn a_capture_that_cannot_be_read_whole_or_is_not_the_png_is_an_error() {
-    let cases: [(&str, fn(&mut Harness)); 5] = [
+    let cases: [(&str, SetUp); 5] = [
         ("could not be read whole", |harness| {
             harness.system.capture_read_at_most = Some(1000);
             harness.system.capture_read_fails_after = Some(5000);
@@ -1504,6 +1511,33 @@ fn a_capture_that_cannot_be_read_whole_or_is_not_the_png_is_an_error() {
         "a stale link is removed first: {answer}"
     );
     assert!(harness.system.links.is_empty());
+}
+
+#[test]
+fn an_answer_that_cannot_hold_the_image_is_an_error_in_the_log_too() {
+    let mut system = FakeSystem::default();
+    let mut server = Server::restarted();
+    server.set_grants(Grants::ALL, Default::default());
+    let png = png_bytes(4000);
+    system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            capture_report(png.len()).into_bytes(),
+            Vec::new(),
+            Ended::Exited(0),
+        ),
+    );
+    system.capture_png = png;
+    let mut buffers = Buffers::new();
+    let (mut scratch, _) = buffers.scratch();
+    let mut small = vec![0u8; 2048 + ERROR_RESERVE];
+    let line = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wm_capture","arguments":{"window":129}}}"#;
+    let length = server.handle_line(line, &mut system, &mut scratch, &mut small);
+    let answer = std::str::from_utf8(&small[..length]).unwrap();
+    assert!(is_error(answer), "{answer}");
+    assert!(texts(answer)[0].contains("could not be read whole"));
+    let record = parse_line(system.audit.last().unwrap().as_bytes()).unwrap();
+    assert_eq!(record.outcome, Outcome::Error);
 }
 
 #[test]
@@ -1865,14 +1899,8 @@ fn the_capture_report_and_the_typed_count_are_read_from_wm_s_lines() {
 }
 
 #[test]
-fn the_tools_list_names_the_window_tools_after_the_others() {
-    let mut harness = Harness::initialized();
-    let answer = harness
-        .send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
-        .unwrap();
-    for tool in ["wm_capture", "wm_click", "wm_type", "wm_press", "wm_scroll"] {
-        assert!(answer.contains(&format!(r#""name":"{tool}""#)), "{tool}");
-    }
+fn the_instructions_frame_window_images_as_data() {
+    let mut harness = Harness::new();
     let instructions = harness
         .send(r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#)
         .unwrap();

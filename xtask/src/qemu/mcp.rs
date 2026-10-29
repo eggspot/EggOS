@@ -13,10 +13,11 @@
 //!    program stopped at its time limit), installing and opening an app; then the windows
 //!    (D143): Settings opened by name and captured at scale 1/2, a click on its macOS card
 //!    through `wm_click` that `settings get` sees, on x86_64 and aarch64 `win-paint` captured,
-//!    minimised, typed into with `wm_type` and captured again with the text, `linux-paint`
-//!    captured, covered by Settings, clicked and captured recoloured, each capture compared
-//!    exactly with the host's drawing, the terminal's window refused, a key pressed in it and
-//!    a scroll; then uninstalling the app; then, with a client that can ask its user, a trash
+//!    minimised, typed into with `wm_type`, captured again with the text and closed (an
+//!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
+//!    captured, covered by Settings, clicked, typed into and captured after each, every
+//!    capture compared exactly with the host's drawing, the terminal's window refused, a key
+//!    pressed in it and a scroll; then uninstalling the app; then, with a client that can ask its user, a trash
 //!    declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
 //!    which must show every call. The disk image read back must hold the audit log, with
 //!    `asked` records and no written content.
@@ -794,7 +795,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         "  wm_type  ok  ".to_owned(),
         "  wm_press  ok  ".to_owned(),
         "  wm_scroll  ok  ".to_owned(),
-        "typed 2 of 2".to_owned(),
+        "typed 1 of 1".to_owned(),
         "the user declined".to_owned(),
         "  cat  ok  {\"path\":\"/media/host/big.txt\"}".to_owned(),
         "server-start".to_owned(),
@@ -813,7 +814,6 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     )
 }
 
-/// The pixels of a window's content or of a captured image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Image {
     width: u32,
@@ -976,7 +976,7 @@ fn capture_until(
                 ))
             })?;
         let first = expected.first().ok_or("nothing to compare")?;
-        if expected.iter().any(|picture| *picture == image) {
+        if expected.contains(&image) {
             return Ok(took);
         }
         if Instant::now() >= deadline {
@@ -1102,6 +1102,19 @@ fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
         &drawn(&scene),
         "win-paint minimised, after typing ab",
     )?;
+    run_program(client, &["/bin/wm", "close", &paint.to_string()])?;
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    while wm_list_rows(client)?
+        .iter()
+        .any(|row| row.first() == Some(&paint.to_string()))
+    {
+        expect(
+            Instant::now() < deadline,
+            client.arch,
+            "win-paint did not end when its window was closed",
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
     Ok(())
 }
 
@@ -1153,6 +1166,20 @@ fn linux_paint_session(client: &mut Client, settings: u32) -> Result<u32, String
         None,
         &[linux_paint_image(&scene)],
         "linux-paint under Settings, after a click on its target",
+    )?;
+    succeeds(
+        client,
+        "wm_type",
+        &format!(r#"{{"window":{paint},"text":"a"}}"#),
+        "typed 1 of 1",
+    )?;
+    scene.typed = 1;
+    capture_until(
+        client,
+        paint,
+        None,
+        &[linux_paint_image(&scene)],
+        "linux-paint under Settings, after typing a",
     )?;
     succeeds(
         client,
