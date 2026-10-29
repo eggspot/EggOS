@@ -104,7 +104,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 17] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 24] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -150,6 +150,17 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 17] = [
         r#"{"window":64,"menu":0,"entry":0}"#,
         "run",
     ),
+    ("wm_focus", r#"{"window":64}"#, "run"),
+    ("wm_move", r#"{"window":64,"x":10,"y":40}"#, "run"),
+    (
+        "wm_size",
+        r#"{"window":64,"width":640,"height":400}"#,
+        "run",
+    ),
+    ("wm_minimise", r#"{"window":64}"#, "run"),
+    ("wm_maximise", r#"{"window":64}"#, "run"),
+    ("wm_restore", r#"{"window":64}"#, "run"),
+    ("wm_close", r#"{"window":64}"#, "run"),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -631,6 +642,15 @@ fn session(client: &mut Client) -> Result<(), String> {
             ),
         )?;
     }
+    let answer = client.request(
+        "tools/call",
+        r#"{"name":"wm_focus","arguments":{"window":64}}"#,
+    )?;
+    expect(
+        answer.contains(r#""code":"needs_grant","category":"needs_grant""#),
+        arch,
+        &format!("a refusal carries no command-model error: {answer}"),
+    )?;
     Ok(())
 }
 

@@ -1,7 +1,10 @@
-use crate::output::{FAILURE, Output};
+use crate::options::{Refused, parse_defined};
+use crate::output::{FAILURE, Output, error_for};
 use crate::system::{DIRECTORY, FILE_TYPE, Status, SymbolicLinks, System};
 use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
+use eggos_mcp::json::JsonWriter;
 
 pub const NAMES_CAPACITY: usize = 32 * 1024;
 pub const MAX_ENTRIES: usize = 1024;
@@ -13,6 +16,8 @@ const RECORD_NAME_OFFSET: usize = 19;
 const SECONDS_PER_DAY: i64 = 86_400;
 const EARLIEST_TIME_SHOWN: i64 = -62_167_219_200;
 const LATEST_TIME_SHOWN: i64 = 253_402_300_799;
+const RECORD_BYTES: usize = 8 * 1024;
+const RECORD_PATH_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Options {
@@ -20,6 +25,7 @@ struct Options {
     almost_all: bool,
     long: bool,
     directories_as_files: bool,
+    json: bool,
 }
 
 impl Options {
@@ -132,48 +138,25 @@ fn digits(value: u64) -> usize {
 
 pub fn ls<S: System>(output: &mut Output<S>, listing: &mut Listing, arguments: &[&CStr]) -> i32 {
     let mut options = Options::default();
-    let mut operands = [None::<&CStr>; MAX_ARGUMENTS];
-    let mut operand_count = 0;
-    let mut options_end = false;
-    for &argument in arguments {
-        let bytes = argument.to_bytes();
-        if options_end || bytes.len() < 2 || bytes[0] != b'-' {
-            if operand_count == MAX_ARGUMENTS {
-                output.error(&[b"too many operands"]);
-                return SERIOUS_TROUBLE;
-            }
-            operands[operand_count] = Some(argument);
-            operand_count += 1;
-            continue;
+    let parsed = parse_defined(output, arguments, &commands::LS, |_, given| {
+        match given.option.short {
+            Some(b'a') => options.all = true,
+            Some(b'A') => options.almost_all = true,
+            Some(b'l') => options.long = true,
+            Some(b'd') => options.directories_as_files = true,
+            _ => options.json |= given.is_long("json"),
         }
-        if bytes == b"--" {
-            options_end = true;
-            continue;
-        }
-        if bytes.starts_with(b"--") {
-            output.invalid_option(bytes);
-            return SERIOUS_TROUBLE;
-        }
-        for &letter in &bytes[1..] {
-            match letter {
-                b'a' => options.all = true,
-                b'A' => options.almost_all = true,
-                b'l' => options.long = true,
-                b'd' => options.directories_as_files = true,
-                b'1' => {}
-                _ => {
-                    output.invalid_option(&[b'-', letter]);
-                    return SERIOUS_TROUBLE;
-                }
-            }
-        }
-    }
-    if operand_count == 0 {
-        operands[0] = Some(c".");
-        operand_count = 1;
-    }
-    let operands = operands[..operand_count].iter().flatten().copied();
-    list_operands(output, listing, options, operands, operand_count > 1)
+        Ok::<(), Refused>(())
+    });
+    let Ok(operands) = parsed else {
+        return SERIOUS_TROUBLE;
+    };
+    let operands = match operands.all() {
+        [] => &[c"."][..],
+        given => given,
+    };
+    let headers = operands.len() > 1 && !options.json;
+    list_operands(output, listing, options, operands.iter().copied(), headers)
 }
 
 fn list_operands<'a, S: System>(
@@ -209,7 +192,10 @@ fn list_operands<'a, S: System>(
                 file_count += 1;
             }
             Err(errno) => {
-                output.error(&[b"cannot access '", path.to_bytes(), b"': ", errno.message()]);
+                output.coded(
+                    error_for(errno),
+                    &[b"cannot access '", path.to_bytes(), b"': ", errno.message()],
+                );
                 status = SERIOUS_TROUBLE;
             }
         }
@@ -218,13 +204,16 @@ fn list_operands<'a, S: System>(
     files.sort_unstable_by(|a, b| a.path.cmp(b.path));
     let widths = Widths::of(files.iter().map(|file| &file.status));
     for file in files.iter() {
-        write_entry(output, options, file.path.to_bytes(), &file.status, widths);
+        let path = file.path.to_bytes();
+        if !write_entry(output, options, None, path, &file.status, widths) {
+            status = status.max(FAILURE);
+        }
     }
     let mut printed = !files.is_empty();
     let directories = &mut directories[..directory_count];
     directories.sort_unstable_by(|a, b| a.path.cmp(b.path));
     for directory in directories.iter() {
-        if printed {
+        if printed && !options.json {
             output.write(b"\n");
         }
         if headers {
@@ -246,19 +235,24 @@ fn list_directory<S: System>(
     let descriptor = match output.system.open(path) {
         Ok(descriptor) => descriptor,
         Err(errno) => {
-            output.error(&[
-                b"cannot open directory '",
-                path.to_bytes(),
-                b"': ",
-                errno.message(),
-            ]);
+            output.coded(
+                error_for(errno),
+                &[
+                    b"cannot open directory '",
+                    path.to_bytes(),
+                    b"': ",
+                    errno.message(),
+                ],
+            );
             return SERIOUS_TROUBLE;
         }
     };
     let mut status = read_directory(output, listing, options, path, descriptor);
     listing.sort();
-    if options.long {
+    if options.long || options.json {
         status = status.max(read_statuses(output, listing, path, descriptor));
+    }
+    if options.long && !options.json {
         let total = listing.entries[..listing.count]
             .iter()
             .fold(0u64, |sum, entry| sum.saturating_add(entry.status.blocks));
@@ -270,7 +264,17 @@ fn list_directory<S: System>(
     let entries = &listing.entries[..listing.count];
     let widths = Widths::of(entries.iter().map(|entry| &entry.status));
     for entry in entries {
-        write_entry(output, options, listing.name(entry), &entry.status, widths);
+        let name = listing.name(entry);
+        if !write_entry(
+            output,
+            options,
+            Some(path.to_bytes()),
+            name,
+            &entry.status,
+            widths,
+        ) {
+            status = status.max(FAILURE);
+        }
     }
     status
 }
@@ -289,22 +293,28 @@ fn read_directory<S: System>(
             Ok(0) => return 0,
             Ok(length) => length,
             Err(errno) => {
-                output.error(&[
-                    b"reading directory '",
-                    path.to_bytes(),
-                    b"': ",
-                    errno.message(),
-                ]);
+                output.coded(
+                    error_for(errno),
+                    &[
+                        b"reading directory '",
+                        path.to_bytes(),
+                        b"': ",
+                        errno.message(),
+                    ],
+                );
                 return SERIOUS_TROUBLE;
             }
         };
         for name in record_names(&chunk[..length]) {
             if options.shows(name) && !listing.push(name) {
-                output.error(&[
-                    b"cannot list all of '",
-                    path.to_bytes(),
-                    b"': too many entries",
-                ]);
+                output.coded(
+                    &errors::TOO_MANY_ENTRIES,
+                    &[
+                        b"cannot list all of '",
+                        path.to_bytes(),
+                        b"': too many entries",
+                    ],
+                );
                 return FAILURE;
             }
         }
@@ -334,14 +344,17 @@ fn read_statuses<S: System>(
                 kept += 1;
             }
             Err(errno) => {
-                output.error(&[
-                    b"cannot access '",
-                    path.to_bytes(),
-                    b"/",
-                    name.to_bytes(),
-                    b"': ",
-                    errno.message(),
-                ]);
+                output.coded(
+                    error_for(errno),
+                    &[
+                        b"cannot access '",
+                        path.to_bytes(),
+                        b"/",
+                        name.to_bytes(),
+                        b"': ",
+                        errno.message(),
+                    ],
+                );
                 status = FAILURE;
             }
         }
@@ -369,10 +382,14 @@ pub fn record_names(records: &[u8]) -> impl Iterator<Item = &[u8]> {
 fn write_entry<S: System>(
     output: &mut Output<S>,
     options: Options,
+    folder: Option<&[u8]>,
     name: &[u8],
     status: &Status,
     widths: Widths,
-) {
+) -> bool {
+    if options.json {
+        return write_record(output, folder, name, status);
+    }
     if options.long {
         output.write(&mode_string(status.mode));
         output.write(b" ");
@@ -389,6 +406,69 @@ fn write_entry<S: System>(
     }
     output.write(name);
     output.write(b"\n");
+    true
+}
+
+fn type_name(mode: u32) -> &'static str {
+    match mode & FILE_TYPE {
+        DIRECTORY => "folder",
+        0o100_000 => "file",
+        0o120_000 => "link",
+        0o020_000 => "character_device",
+        0o060_000 => "block_device",
+        0o010_000 => "fifo",
+        0o140_000 => "socket",
+        _ => "unknown",
+    }
+}
+
+fn write_record<S: System>(
+    output: &mut Output<S>,
+    folder: Option<&[u8]>,
+    name: &[u8],
+    status: &Status,
+) -> bool {
+    let mut buffer = [0u8; RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("name");
+    out.string_lossy(name);
+    out.key("path");
+    out.begin_string();
+    if let Some(folder) = folder {
+        out.string_piece_lossy(folder.get(..RECORD_PATH_BYTES).unwrap_or(folder));
+        if !folder.ends_with(b"/") {
+            out.string_piece("/");
+        }
+    }
+    out.string_piece_lossy(name.get(..RECORD_PATH_BYTES).unwrap_or(name));
+    out.end_string();
+    out.key("type");
+    out.string(type_name(status.mode));
+    out.key("permissions");
+    out.string_lossy(&mode_string(status.mode)[1..]);
+    for (key, value) in [
+        ("links", u64::from(status.links)),
+        ("owner", u64::from(status.owner)),
+        ("group", u64::from(status.group)),
+        ("size_bytes", status.size),
+    ] {
+        out.key(key);
+        out.u64(value);
+    }
+    out.key("modified_at");
+    match eggos_calendar::rfc3339(status.modified) {
+        Some(text) => out.string_lossy(&text),
+        None => out.null(),
+    }
+    out.end_object();
+    out.end_line();
+    if out.overflowed() {
+        output.error(&[b"cannot write '", name, b"' as JSON: its path is too long"]);
+        return false;
+    }
+    output.write(out.as_bytes());
+    true
 }
 
 fn mode_string(mode: u32) -> [u8; 10] {
@@ -645,5 +725,45 @@ mod tests {
         assert_eq!(&time_string(-60), b"1969-12-31 23:59");
         assert_eq!(&time_string(i64::MAX), b"9999-12-31 23:59");
         assert_eq!(&time_string(i64::MIN), b"0000-01-01 00:00");
+    }
+
+    #[test]
+    fn json_writes_a_record_per_entry_with_every_field() {
+        let (status, fake) = run(tree(), &[c"--json", c"/bin", c"/etc/motd"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "{\"name\":\"/etc/motd\",\"path\":\"/etc/motd\",\"type\":\"file\",\
+             \"permissions\":\"rw-r--r--\",\"links\":1,\"owner\":0,\"group\":0,\
+             \"size_bytes\":18,\"modified_at\":\"2023-11-14T22:13:20Z\"}\n\
+             {\"name\":\"ls\",\"path\":\"/bin/ls\",\"type\":\"file\",\
+             \"permissions\":\"rwxr-xr-x\",\"links\":1,\"owner\":0,\"group\":0,\
+             \"size_bytes\":2000,\"modified_at\":\"1971-01-01T00:00:00Z\"}\n"
+        );
+        let (status, fake) = run(tree(), &[c"/", c"--json"]);
+        assert_eq!(status, 0);
+        assert!(
+            fake.output()
+                .starts_with("{\"name\":\"bin\",\"path\":\"/bin\",\"type\":\"folder\"")
+        );
+        assert_eq!(fake.output().lines().count(), 2);
+    }
+
+    #[test]
+    fn json_errors_are_coded_records_on_standard_error() {
+        let (status, fake) = run(tree(), &[c"--json", c"/nope"]);
+        assert_eq!(status, 2);
+        assert_eq!(fake.output(), "");
+        assert!(
+            fake.errors().starts_with(
+                "{\"error\":{\"code\":\"no_such_file\",\"category\":\"not_found\",\
+                 \"message\":\"cannot access '/nope': No such file or directory\""
+            ),
+            "{}",
+            fake.errors()
+        );
+        let (status, fake) = run(tree(), &[c"--jsn"]);
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "ls: unrecognized option '--jsn'\n");
     }
 }

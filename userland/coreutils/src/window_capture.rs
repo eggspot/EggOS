@@ -479,7 +479,7 @@ mod tests {
         );
         let (status, fake) = run(&[c"capture", c"7"], machine(10, 10));
         assert_eq!(status, FAILURE);
-        assert_eq!(fake.errors(), "wm: 7: no such window\n");
+        assert_eq!(fake.errors(), "wm: 7: no such window\n  try: wm list\n");
     }
 
     #[test]

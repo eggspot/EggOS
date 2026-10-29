@@ -692,7 +692,7 @@ mod tests {
     fn refusals_name_the_window_and_bad_commands_are_usage_errors() {
         let (status, fake) = run(&[c"click", c"7", c"1", c"1"], machine());
         assert_eq!(status, FAILURE);
-        assert_eq!(fake.errors(), "wm: 7: no such window\n");
+        assert_eq!(fake.errors(), "wm: 7: no such window\n  try: wm list\n");
         let mut busy = machine();
         busy.input_results = vec![Some(Errno::EBUSY)];
         let (status, _) = run(&[c"press", c"129", c"a"], busy);

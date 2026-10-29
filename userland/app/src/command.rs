@@ -2,9 +2,12 @@
 //! [--window] <path>` (a program, an `.app` or a `.zip`; `--entry` chooses the program inside a
 //! `.zip`, D148), `app uninstall [--window] <name>` (`remove` is the same), `app open <name>`
 //! (D137; the built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app
-//! list` (name, source, architecture, program and icon file, D148). Text only, the same with or
-//! without a display; `--window` shows the installer's dialogs instead. `--` ends the options,
-//! so the next word is the operand even if it starts with `-`.
+//! list` (name, source, architecture, program and icon file, D148; `--json` writes them as JSON
+//! lines, D160). Text, the same with or without a display; `--window` shows the installer's
+//! dialogs instead. `--` ends the options, so the next word is the operand even if it starts
+//! with `-`.
+
+use eggos_mcp::json::JsonWriter;
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +25,9 @@ pub enum Command<'a> {
     Open {
         name: &'a [u8],
     },
-    List,
+    List {
+        json: bool,
+    },
     Help,
 }
 
@@ -30,7 +35,7 @@ pub enum Command<'a> {
 pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] [--window] \
                          [--] <path>\n       \
                          app uninstall [--window] [--] <name>\n       \
-                         app open [--] <name>\n       app list\n";
+                         app open [--] <name>\n       app list [--json]\n";
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
@@ -52,6 +57,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut window = false;
     let mut name = None;
     let mut entry = None;
+    let mut json = false;
     let mut operand = None;
     let mut rest = rest.iter();
     let mut options_end = false;
@@ -61,6 +67,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             _ if options_end => return None,
             b"--" => options_end = true,
             b"--window" => window = true,
+            b"--json" if verb == b"list" => json = true,
             b"--name" if verb == b"install" => name = Some(*rest.next()?),
             b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
@@ -80,10 +87,44 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             window,
         }),
         b"open" if !window => Some(Command::Open { name: operand? }),
-        b"list" if operand.is_none() && !window => Some(Command::List),
+        b"list" if operand.is_none() && !window => Some(Command::List { json }),
         b"--help" | b"help" if operand.is_none() => Some(Command::Help),
         _ => None,
     }
+}
+
+/// The most bytes one app's JSON record takes: its fields are at most a path long each.
+pub const APP_RECORD_BYTES: usize = 6 * 4096 + 256;
+
+/// Writes one app as `app list --json`'s record (D160): `name`, `source`, `architecture`
+/// (`null` for none), `program` and `icon` (`null` for none), then a newline.
+pub fn write_app_record(
+    out: &mut JsonWriter<'_>,
+    name: &str,
+    source: &str,
+    architecture: Option<&str>,
+    program: &[u8],
+    icon: Option<&str>,
+) {
+    out.begin_object();
+    out.key("name");
+    out.string(name);
+    out.key("source");
+    out.string(source);
+    out.key("architecture");
+    match architecture {
+        Some(architecture) => out.string(architecture),
+        None => out.null(),
+    }
+    out.key("program");
+    out.string_lossy(program);
+    out.key("icon");
+    match icon {
+        Some(icon) => out.string(icon),
+        None => out.null(),
+    }
+    out.end_object();
+    out.end_line();
 }
 
 #[cfg(target_env = "musl")]
@@ -95,6 +136,7 @@ mod program {
     use crate::messages::{self, Line};
     use core::ffi::CStr;
     use core::fmt::Write;
+    use eggos_commands::errors;
     use eggos_runtime::startup::Startup;
 
     const COPY_BUFFER: usize = 64 * 1024;
@@ -215,7 +257,7 @@ mod program {
         }
     }
 
-    fn list() -> i32 {
+    fn list(json: bool) -> i32 {
         let mut files = LinuxFiles::new();
         let listed = installer::for_each_installed(&mut files, |app| {
             let mut program = Path::new();
@@ -227,6 +269,22 @@ mod program {
             };
             if let Some(resolved) = resolved {
                 program = resolved;
+            }
+            if json {
+                let mut record = [0u8; APP_RECORD_BYTES];
+                let mut out = JsonWriter::new(&mut record);
+                write_app_record(
+                    &mut out,
+                    app.name,
+                    app.source.key(),
+                    app.architecture,
+                    program.as_bytes(),
+                    app.icon,
+                );
+                if !out.overflowed() {
+                    write_all(STANDARD_OUTPUT, out.as_bytes());
+                }
+                return;
             }
             let mut line = Line::new();
             let _ = write!(
@@ -246,7 +304,15 @@ mod program {
                 let mut line = Line::new();
                 let _ = line.write_str("cannot list /Applications: ");
                 line.push_bytes(error.message());
-                complain(line.as_str());
+                if json {
+                    let mut record = [0u8; 1024];
+                    let mut out = JsonWriter::new(&mut record);
+                    eggos_mcp::server::write_error(&mut out, &errors::FAILED, line.as_str());
+                    out.end_line();
+                    write_all(STANDARD_ERROR, out.as_bytes());
+                } else {
+                    complain(line.as_str());
+                }
                 FAILED
             }
         }
@@ -301,7 +367,7 @@ mod program {
             }) => install(path, name, entry),
             Some(Command::Uninstall { name, .. }) => uninstall(name),
             Some(Command::Open { name }) => open(name),
-            Some(Command::List) => list(),
+            Some(Command::List { json }) => list(json),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());
                 USAGE_ERROR
@@ -373,7 +439,12 @@ mod tests {
         );
         assert_eq!(parse(&[b"uninstall", b"--entry", b"a", b"b"]), None);
         assert_eq!(parse(&[b"install", b"--entry"]), None);
-        assert_eq!(parse(&[b"list"]), Some(Command::List));
+        assert_eq!(parse(&[b"list"]), Some(Command::List { json: false }));
+        assert_eq!(
+            parse(&[b"list", b"--json"]),
+            Some(Command::List { json: true })
+        );
+        assert_eq!(parse(&[b"open", b"--json", b"Files"]), None);
         assert_eq!(parse(&[b"--help"]), Some(Command::Help));
         for wrong in [
             &[][..],
@@ -425,6 +496,25 @@ mod tests {
                 entry: None,
                 window: false
             })
+        );
+    }
+
+    #[test]
+    fn an_app_s_json_record_has_its_fields_with_null_for_none() {
+        let mut buffer = [0u8; APP_RECORD_BYTES];
+        let mut out = JsonWriter::new(&mut buffer);
+        write_app_record(
+            &mut out,
+            "win-paint",
+            "windows",
+            Some("x86_64"),
+            b"/Applications/win-paint/win-paint.exe",
+            None,
+        );
+        assert_eq!(
+            core::str::from_utf8(out.as_bytes()).unwrap(),
+            "{\"name\":\"win-paint\",\"source\":\"windows\",\"architecture\":\"x86_64\",\
+             \"program\":\"/Applications/win-paint/win-paint.exe\",\"icon\":null}\n"
         );
     }
 }

@@ -6,6 +6,7 @@ use crate::fetch::fetch;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
 use crate::grep::grep;
 use crate::head::{head, tail};
+use crate::help::help;
 use crate::hwclock::hwclock;
 use crate::ip::ip;
 use crate::ls::{Listing, ls};
@@ -42,6 +43,7 @@ pub enum Utility {
     Grep,
     Halt,
     Head,
+    Help,
     Hwclock,
     Ip,
     Ls,
@@ -67,7 +69,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Agentlog,
         Self::Cat,
         Self::Cp,
@@ -79,6 +81,7 @@ impl Utility {
         Self::Grep,
         Self::Halt,
         Self::Head,
+        Self::Help,
         Self::Hwclock,
         Self::Ip,
         Self::Ls,
@@ -116,6 +119,7 @@ impl Utility {
             Self::Grep => b"grep",
             Self::Halt => b"halt",
             Self::Head => b"head",
+            Self::Help => b"help",
             Self::Hwclock => b"hwclock",
             Self::Ip => b"ip",
             Self::Ls => b"ls",
@@ -158,6 +162,7 @@ impl Utility {
             Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
+            Self::Help => help(output, arguments),
             Self::Hwclock => hwclock(output, arguments),
             Self::Ip => ip(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),

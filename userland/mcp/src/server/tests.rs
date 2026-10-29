@@ -195,7 +195,14 @@ fn the_tools_are_listed_once_initialized() {
             "wm_press",
             "wm_scroll",
             "wm_menu_list",
-            "wm_menu_choose"
+            "wm_menu_choose",
+            "wm_focus",
+            "wm_move",
+            "wm_size",
+            "wm_minimise",
+            "wm_maximise",
+            "wm_restore",
+            "wm_close"
         ]
     );
 }
@@ -2224,4 +2231,179 @@ fn fetch_takes_https_urls() {
             "/home/root/a.txt"
         ]
     );
+}
+
+#[test]
+fn the_window_management_tools_run_wm_s_verbs_and_say_what_they_did() {
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    for (tool, arguments, command, logged, said) in [
+        (
+            "wm_focus",
+            r#"{"window":129}"#,
+            "focus -- 129",
+            r#"{"window":129}"#,
+            "Brought to the front: window 129.",
+        ),
+        (
+            "wm_move",
+            r#"{"window":129,"x":40,"y":0}"#,
+            "move -- 129 40 0",
+            r#"{"window":129,"x":40,"y":0}"#,
+            "Moved window 129.",
+        ),
+        (
+            "wm_size",
+            r#"{"window":7,"width":640,"height":480}"#,
+            "size -- 7 640 480",
+            r#"{"window":7,"width":640,"height":480}"#,
+            "Resized window 7.",
+        ),
+        (
+            "wm_minimise",
+            r#"{"window":129}"#,
+            "minimise -- 129",
+            r#"{"window":129}"#,
+            "Minimised window 129.",
+        ),
+        (
+            "wm_maximise",
+            r#"{"window":129}"#,
+            "maximise -- 129",
+            r#"{"window":129}"#,
+            "Maximised window 129.",
+        ),
+        (
+            "wm_restore",
+            r#"{"window":129}"#,
+            "restore -- 129",
+            r#"{"window":129}"#,
+            "Restored window 129.",
+        ),
+        (
+            "wm_close",
+            r#"{"window":129}"#,
+            "close -- 129",
+            r#"{"window":129}"#,
+            "Asked to close window 129.",
+        ),
+    ] {
+        let answer = harness.call(1, tool, arguments);
+        assert!(!is_error(&answer), "{tool}: {answer}");
+        assert_eq!(
+            harness.system.runs.last().unwrap().join(" "),
+            format!("/bin/wm {command}"),
+            "{tool}"
+        );
+        assert!(texts(&answer).iter().any(|text| text == said), "{answer}");
+        let (_, outcome, shown, _) = last_record(&harness);
+        assert_eq!(outcome, "ok", "{tool}");
+        assert_eq!(shown, logged, "{tool}");
+    }
+    for (tool, arguments, words) in [
+        ("wm_move", r#"{"window":1,"x":1}"#, "x and y"),
+        ("wm_move", r#"{"window":1}"#, "x and y are required"),
+        (
+            "wm_size",
+            r#"{"window":1,"width":0,"height":5}"#,
+            "width and height",
+        ),
+        ("wm_size", r#"{"window":1,"width":5}"#, "width and height"),
+        (
+            "wm_size",
+            r#"{"window":1}"#,
+            "width and height are required",
+        ),
+        ("wm_close", r#"{"window":1,"x":1}"#, "does not take"),
+    ] {
+        let runs = harness.system.runs.len();
+        let answer = harness.call(2, tool, arguments);
+        assert!(answer.contains(words), "{tool} {arguments}: {answer}");
+        assert_eq!(harness.system.runs.len(), runs, "{tool}");
+    }
+    let mut reader = Harness::initialized();
+    let answer = reader.call(3, "wm_focus", r#"{"window":129}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the run grant"),
+        "{answer}"
+    );
+}
+
+#[test]
+fn refusals_carry_the_command_model_s_error_code_and_category() {
+    let mut reader = Harness::initialized();
+    let answer = reader.call(1, "tee", r#"{"path":"/home/root/a","content":"x"}"#);
+    let error = parsed(&answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+        .unwrap()
+        .get("error")
+        .unwrap();
+    assert!(
+        error
+            .get("code")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("needs_grant")
+    );
+    assert!(
+        error
+            .get("category")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("needs_grant")
+    );
+    let message: String = error
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect();
+    assert_eq!(message, texts(&answer)[0]);
+    assert!(error.get("fix").is_some());
+    let answer = reader.call(2, "ls", r#"{"path":"/etc"}"#);
+    let error = parsed(&answer)
+        .get("result")
+        .unwrap()
+        .get("structuredContent")
+        .unwrap()
+        .get("error")
+        .unwrap();
+    assert!(
+        error
+            .get("code")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("path_not_allowed")
+    );
+    assert!(
+        error
+            .get("category")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("refused")
+    );
+    assert!(error.get("fix_command").is_none());
+}
+
+#[test]
+fn the_instructions_teach_the_verbs_effects_and_error_categories() {
+    let mut harness = Harness::new();
+    let answer = harness
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#)
+        .unwrap();
+    for verb in eggos_commands::CORE_VERBS {
+        assert!(answer.contains(verb), "{verb}");
+    }
+    for category in eggos_commands::Category::ALL {
+        assert!(answer.contains(category.name()), "{}", category.name());
+    }
+    assert!(answer.contains("fix_command"));
+    assert!(answer.contains("destructiveHint"));
 }

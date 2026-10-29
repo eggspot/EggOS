@@ -241,6 +241,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-c-format",
     "eggos-init",
     "eggos-eggsh",
+    "eggos-commands",
     "eggos-coreutils",
     "eggos-hello-window",
     "eggos-toolkit",
@@ -336,10 +337,10 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 33] = [
-    "agentlog", "cat", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt", "head", "hwclock",
-    "ip", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "reboot", "rm", "sleep",
-    "sync", "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
+const COREUTILS: [&str; 34] = [
+    "agentlog", "cat", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt", "head",
+    "help", "hwclock", "ip", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "reboot",
+    "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";

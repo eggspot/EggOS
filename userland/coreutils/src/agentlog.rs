@@ -1,11 +1,14 @@
+use crate::options::wants_json;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_files::clock::deletion_date;
 use eggos_mcp::audit::{self, Outcome, Record};
+use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
-const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--raw]";
+const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--raw | --json]";
 const USAGE_STATUS: i32 = 2;
 const LOGS: [&CStr; 8] = [
     c"/var/log/agent-audit.log.7",
@@ -20,27 +23,33 @@ const LOGS: [&CStr; 8] = [
 const LINE_BYTES: usize = 4096;
 const CHUNK: usize = 4096;
 const HEADER: &[u8] = b"TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
+const JSON_RECORD_BYTES: usize = 4 * 6 * audit::FIELD_BYTES + 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Rows,
     Raw,
+    Json,
 }
 
 pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut mode = Mode::Rows;
     let mut last = None;
     let mut index = 0;
+    if wants_json(&commands::AGENTLOG, arguments) {
+        output.use_json();
+    }
     while let Some(argument) = arguments.get(index) {
         match argument.to_bytes() {
             b"--raw" => mode = Mode::Raw,
+            b"--json" => mode = Mode::Json,
             b"-n" => {
                 index += 1;
                 let Some(count) = arguments
                     .get(index)
                     .and_then(|count| number(count.to_bytes()))
                 else {
-                    output.error(&[USAGE]);
+                    output.coded(&errors::USAGE, &[USAGE]);
                     return USAGE_STATUS;
                 };
                 last = Some(count);
@@ -48,17 +57,17 @@ pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             bytes if bytes.starts_with(b"-n") => match number(&bytes[2..]) {
                 Some(count) => last = Some(count),
                 None => {
-                    output.error(&[USAGE]);
+                    output.coded(&errors::USAGE, &[USAGE]);
                     return USAGE_STATUS;
                 }
             },
             bytes if bytes.starts_with(b"-") => {
                 output.invalid_option(bytes);
-                output.error(&[USAGE]);
+                output.coded(&errors::USAGE, &[USAGE]);
                 return USAGE_STATUS;
             }
             _ => {
-                output.error(&[USAGE]);
+                output.coded(&errors::USAGE, &[USAGE]);
                 return USAGE_STATUS;
             }
         }
@@ -177,6 +186,12 @@ fn take_line<S: System>(
     let Some(record) = audit::parse_line(line) else {
         return 0;
     };
+    if mode == Mode::Json {
+        let mut record_text = [0u8; JSON_RECORD_BYTES];
+        let shown = format_json(&record, &mut record_text);
+        row(output, &record_text[..shown]);
+        return 1;
+    }
     if mode == Mode::Raw {
         let shown = format_raw(line, text);
         row(output, &text[..shown]);
@@ -202,6 +217,34 @@ fn take_line<S: System>(
     let shown = format_row(&record, None, text);
     row(output, &text[..shown]);
     rows + 1
+}
+
+fn format_json(record: &Record<'_>, text: &mut [u8]) -> usize {
+    let mut out = JsonWriter::new(text);
+    out.begin_object();
+    out.key("called_at");
+    match eggos_calendar::rfc3339(i64::try_from(record.time).unwrap_or(i64::MAX)) {
+        Some(stamp) => out.string_lossy(&stamp),
+        None => out.null(),
+    }
+    out.key("call");
+    out.u64(record.call);
+    for (key, value) in [
+        ("client", record.client),
+        ("tool", record.tool),
+        ("result", record.outcome.word().as_bytes()),
+        ("arguments", record.arguments),
+        ("detail", record.detail),
+    ] {
+        out.key(key);
+        out.string_lossy(value);
+    }
+    out.end_object();
+    out.end_line();
+    match out.overflowed() {
+        true => 0,
+        false => out.len(),
+    }
 }
 
 fn format_raw(line: &[u8], text: &mut [u8]) -> usize {
@@ -271,6 +314,31 @@ mod tests {
         ]
         .join("\n")
             + "\n"
+    }
+
+    #[test]
+    fn json_writes_one_record_per_line_of_the_log() {
+        let mut fake = Fake::default().with_file(LOG, 0o640, log().as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[c"--json", c"-n", c"2"]), 0);
+        let output = fake.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "{\"called_at\":\"1970-01-01T00:00:06Z\",\"call\":0,\"client\":\"-\",\
+                 \"tool\":\"-\",\"result\":\"server-restart\",\"arguments\":\"\",\
+                 \"detail\":\"0.2.0\"}",
+                "{\"called_at\":\"1970-01-01T00:00:07Z\",\"call\":1,\
+                 \"client\":\"unknown (restarted)\",\"tool\":\"ls\",\"result\":\"started\",\
+                 \"arguments\":\"{}\",\"detail\":\"/home\"}",
+            ]
+        );
+        assert_eq!(run(&mut fake, &[c"--json", c"--bad"]), 2);
+        assert!(
+            fake.errors().contains("\"code\":\"usage\""),
+            "{}",
+            fake.errors()
+        );
     }
 
     #[test]

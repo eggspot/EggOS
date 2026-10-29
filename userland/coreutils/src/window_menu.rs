@@ -495,7 +495,7 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
                 "wm: 129: entry 'Undo' is disabled\n",
             ),
             (c"130", c"0", c"0", "wm: 130: the window has no main menu\n"),
-            (c"7", c"0", c"0", "wm: 7: no such window\n"),
+            (c"7", c"0", c"0", "wm: 7: no such window\n  try: wm list\n"),
         ] {
             let (status, fake) = run(&[c"menu", c"--choose", window, menu, entry], machine());
             assert_eq!(status, FAILURE, "{error}");

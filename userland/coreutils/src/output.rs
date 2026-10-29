@@ -1,8 +1,13 @@
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use core::ffi::CStr;
+use eggos_commands::{ErrorDefinition, errors};
+use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
 pub const OUTPUT_CAPACITY: usize = 4096;
+
+const ERROR_JSON_BYTES: usize = 4096;
+const MESSAGE_BYTES_IN_JSON: usize = 512;
 
 pub const FAILURE: i32 = 1;
 
@@ -13,6 +18,7 @@ pub struct Output<S: System> {
     buffer: [u8; OUTPUT_CAPACITY],
     length: usize,
     write_error: Option<Errno>,
+    json: bool,
 }
 
 impl<S: System> Output<S> {
@@ -23,7 +29,16 @@ impl<S: System> Output<S> {
             buffer: [0; OUTPUT_CAPACITY],
             length: 0,
             write_error: None,
+            json: false,
         }
+    }
+
+    pub fn use_json(&mut self) {
+        self.json = true;
+    }
+
+    pub fn is_json(&self) -> bool {
+        self.json
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -61,23 +76,72 @@ impl<S: System> Output<S> {
     }
 
     pub fn error(&mut self, parts: &[&[u8]]) {
+        self.coded(&errors::FAILED, parts);
+    }
+
+    pub fn coded(&mut self, error: &ErrorDefinition, parts: &[&[u8]]) {
         self.flush();
+        if self.json {
+            self.json_error(error, parts);
+            return;
+        }
         let _ = self.system.write(STANDARD_ERROR, self.utility);
         let _ = self.system.write(STANDARD_ERROR, b": ");
         for part in parts {
             let _ = self.system.write(STANDARD_ERROR, part);
         }
         let _ = self.system.write(STANDARD_ERROR, b"\n");
+        if let Some(command) = error.fix_command {
+            let _ = self.system.write(STANDARD_ERROR, b"  try: ");
+            let _ = self.system.write(STANDARD_ERROR, command.as_bytes());
+            let _ = self.system.write(STANDARD_ERROR, b"\n");
+        }
+    }
+
+    fn json_error(&mut self, error: &ErrorDefinition, parts: &[&[u8]]) {
+        let mut buffer = [0u8; ERROR_JSON_BYTES];
+        let mut out = JsonWriter::new(&mut buffer);
+        out.begin_object();
+        out.key("error");
+        out.begin_object();
+        out.key("code");
+        out.string(error.code);
+        out.key("category");
+        out.string(error.category.name());
+        out.key("message");
+        out.begin_string();
+        let mut room = MESSAGE_BYTES_IN_JSON;
+        for part in parts {
+            let taken = part.get(..room.min(part.len())).unwrap_or_default();
+            out.string_piece_lossy(taken);
+            room -= taken.len();
+        }
+        out.end_string();
+        out.key("fix");
+        out.string(error.fix);
+        if let Some(command) = error.fix_command {
+            out.key("fix_command");
+            out.string(command);
+        }
+        out.end_object();
+        out.end_object();
+        out.end_line();
+        if !out.overflowed() {
+            let _ = self.system.write(STANDARD_ERROR, out.as_bytes());
+        }
     }
 
     pub fn file_error(&mut self, path: &CStr, errno: Errno) {
-        self.error(&[path.to_bytes(), b": ", errno.message()]);
+        self.coded(error_for(errno), &[path.to_bytes(), b": ", errno.message()]);
     }
 
     pub fn invalid_option(&mut self, option: &[u8]) -> i32 {
         match option.strip_prefix(b"--") {
-            Some(_) => self.error(&[b"unrecognized option '", option, b"'"]),
-            None => self.error(&[b"invalid option -- '", &option[1..2], b"'"]),
+            Some(_) => self.coded(&errors::USAGE, &[b"unrecognized option '", option, b"'"]),
+            None => self.coded(
+                &errors::USAGE,
+                &[b"invalid option -- '", &option[1..2], b"'"],
+            ),
         }
         FAILURE
     }
@@ -101,6 +165,23 @@ fn write_standard_output<S: System>(system: &mut S, write_error: &mut Option<Err
     }
     if let Err(errno) = system.write(STANDARD_OUTPUT, bytes) {
         *write_error = Some(errno);
+    }
+}
+
+pub fn error_for(errno: Errno) -> &'static ErrorDefinition {
+    match errno {
+        Errno::ENOENT => &errors::NO_SUCH_FILE,
+        Errno::EACCES | Errno::EPERM => &errors::PERMISSION_DENIED,
+        Errno::EEXIST | Errno::ENOTEMPTY => &errors::ALREADY_EXISTS,
+        Errno::EISDIR => &errors::IS_A_FOLDER,
+        Errno::ENOTDIR => &errors::NOT_A_FOLDER,
+        Errno::EROFS => &errors::READ_ONLY,
+        Errno::ENOSPC => &errors::NO_SPACE,
+        Errno::EBUSY | Errno::EAGAIN => &errors::BUSY,
+        Errno::ETIMEDOUT => &errors::TIMED_OUT,
+        Errno::EIO => &errors::DAMAGED,
+        Errno::ENOMEM => &errors::OUT_OF_MEMORY,
+        _ => &errors::FAILED,
     }
 }
 
@@ -165,5 +246,26 @@ mod tests {
             output.system.standard_error,
             b"cat: invalid option -- 'x'\ncat: unrecognized option '--long'\n"
         );
+    }
+
+    #[test]
+    fn errors_are_coded_json_lines_once_json_is_asked_and_text_gains_a_fix_command() {
+        let mut output = Output::new(Fake::default(), b"wm");
+        output.coded(&errors::NO_SUCH_WINDOW, &[b"7", b": no such window"]);
+        assert_eq!(
+            output.system.errors(),
+            "wm: 7: no such window\n  try: wm list\n"
+        );
+        let mut output = Output::new(Fake::default(), b"ls");
+        output.use_json();
+        output.file_error(c"/nope", Errno::ENOENT);
+        output.coded(&errors::NO_SUCH_WINDOW, &[b"say \"hi\"\n"]);
+        assert_eq!(
+            output.system.errors(),
+            "{\"error\":{\"code\":\"no_such_file\",\"category\":\"not_found\",\"message\":\"/nope: No such file or directory\",\"fix\":\"Check the path: ls shows what a folder holds.\"}}\n\
+             {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\"message\":\"say \\\"hi\\\"\\n\",\"fix\":\"Use an id that wm list shows.\",\"fix_command\":\"wm list\"}}\n"
+        );
+        assert_eq!(error_for(Errno::EROFS).code, "read_only");
+        assert_eq!(error_for(Errno::EINVAL).code, "failed");
     }
 }

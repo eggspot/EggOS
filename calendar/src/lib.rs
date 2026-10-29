@@ -103,6 +103,41 @@ pub const fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year, month as u32, day)
 }
 
+/// The earliest moment [`rfc3339`] writes: 0000-01-01T00:00:00Z.
+pub const EARLIEST_RFC3339: i64 = -62_167_219_200;
+/// The latest moment [`rfc3339`] writes: 9999-12-31T23:59:59Z.
+pub const LATEST_RFC3339: i64 = 253_402_300_799;
+
+/// The moment as RFC 3339 text in UTC, `YYYY-MM-DDTHH:MM:SSZ`, the command model's time form
+/// (D160); `None` outside the years 0 to 9999.
+pub const fn rfc3339(seconds: i64) -> Option<[u8; 20]> {
+    if seconds < EARLIEST_RFC3339 || seconds > LATEST_RFC3339 {
+        return None;
+    }
+    let moment = DateTime::from_unix(seconds);
+    let mut text = *b"0000-00-00T00:00:00Z";
+    let fields = [
+        (0, moment.year as u32, 4),
+        (5, moment.month, 2),
+        (8, moment.day, 2),
+        (11, moment.hour, 2),
+        (14, moment.minute, 2),
+        (17, moment.second, 2),
+    ];
+    let mut field = 0;
+    while field < fields.len() {
+        let (start, mut value, width) = fields[field];
+        let mut index = start + width;
+        while index > start {
+            index -= 1;
+            text[index] = b'0' + (value % 10) as u8;
+            value /= 10;
+        }
+        field += 1;
+    }
+    Some(text)
+}
+
 /// A moment as a civil date and time in UTC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateTime {
@@ -170,6 +205,16 @@ impl DateTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rfc3339_writes_utc_times_of_the_years_0_to_9999() {
+        assert_eq!(rfc3339(0), Some(*b"1970-01-01T00:00:00Z"));
+        assert_eq!(rfc3339(1_793_196_309), Some(*b"2026-10-28T14:05:09Z"));
+        assert_eq!(rfc3339(EARLIEST_RFC3339), Some(*b"0000-01-01T00:00:00Z"));
+        assert_eq!(rfc3339(LATEST_RFC3339), Some(*b"9999-12-31T23:59:59Z"));
+        assert_eq!(rfc3339(EARLIEST_RFC3339 - 1), None);
+        assert_eq!(rfc3339(LATEST_RFC3339 + 1), None);
+    }
 
     #[test]
     fn known_moments_convert_both_ways() {

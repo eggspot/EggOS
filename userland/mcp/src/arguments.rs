@@ -120,6 +120,9 @@ pub enum ArgumentProblem {
     /// `url` is not an `http://` URL of at most [`MAX_URL_BYTES`] bytes without spaces or
     /// control characters.
     BadUrl,
+    /// `width` or `height` is not a whole number from 1 to [`MAX_COORDINATE`], or only one is
+    /// given (D160).
+    BadSize,
 }
 
 impl ArgumentProblem {
@@ -134,6 +137,7 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("name") => "name is required",
             ArgumentProblem::Missing("window") => "window is required: an id wm_list shows",
             ArgumentProblem::Missing("x") => "x and y are required",
+            ArgumentProblem::Missing("width") => "width and height are required",
             ArgumentProblem::Missing("text") => "text is required",
             ArgumentProblem::Missing("keys") => "keys is required",
             ArgumentProblem::Missing("dy") => "dy is required",
@@ -170,6 +174,9 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadPoint => {
                 "x and y are whole numbers of window pixels from 0 to 65535, given together"
+            }
+            ArgumentProblem::BadSize => {
+                "width and height are whole numbers of pixels from 1 to 65535, given together"
             }
             ArgumentProblem::BadButton => "button is left, right or middle",
             ArgumentProblem::BadText => {
@@ -360,6 +367,8 @@ pub struct Checked {
     pub window: Option<u32>,
     /// A point in the window's content, in window pixels (`x`, `y`).
     pub point: Option<(u32, u32)>,
+    /// `wm_size`'s width and height (D160).
+    pub size: Option<(u32, u32)>,
     /// `wm_click`'s button.
     pub button: Option<Button>,
     /// `wm_press`'s keys' length, in the words buffer.
@@ -411,9 +420,13 @@ pub fn check(
         Some(_) => return Err(ArgumentProblem::NotAnObject),
     };
     if let Some(arguments) = arguments
-        && arguments
-            .members()
-            .any(|(name, _)| !tool.arguments.iter().any(|known| name.equals(known)))
+        && arguments.members().any(|(name, _)| {
+            !tool
+                .definition
+                .arguments
+                .iter()
+                .any(|known| name.equals(known.name))
+        })
     {
         return Err(ArgumentProblem::Unknown);
     }
@@ -690,6 +703,19 @@ fn window_arguments<'a>(
             };
             checked.notches = Some(notches as i32);
             checked.point = point(get("x"), get("y"))?;
+        }
+        Kind::WmMove => {
+            checked.point = Some(point(get("x"), get("y"))?.ok_or(ArgumentProblem::Missing("x"))?);
+        }
+        Kind::WmSize => {
+            let width = whole(get("width"), MAX_COORDINATE, ArgumentProblem::BadSize)?;
+            let height = whole(get("height"), MAX_COORDINATE, ArgumentProblem::BadSize)?;
+            checked.size = match (width, height) {
+                (Some(0), _) | (_, Some(0)) => return Err(ArgumentProblem::BadSize),
+                (Some(width), Some(height)) => Some((width as u32, height as u32)),
+                (None, None) => return Err(ArgumentProblem::Missing("width")),
+                _ => return Err(ArgumentProblem::BadSize),
+            };
         }
         Kind::WmMenuChoose => {
             let menu = whole(get("menu"), MAX_MENU_INDEX, ArgumentProblem::BadMenuItem)?;

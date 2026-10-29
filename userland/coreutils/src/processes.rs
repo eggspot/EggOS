@@ -1,9 +1,11 @@
 use crate::lines::each_line;
-use crate::options::{Item, parse, parse_count};
+use crate::options::{Item, parse, parse_count, parse_defined};
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
 use core::ops::ControlFlow;
+use eggos_commands::{commands, errors};
+use eggos_mcp::json::JsonWriter;
 
 const PROCESSES: &CStr = c"/proc/ps";
 
@@ -12,6 +14,10 @@ const MEMORY: &CStr = c"/proc/meminfo";
 const UPTIME: &CStr = c"/proc/uptime";
 
 const NAME_COLUMN: usize = 5;
+
+const PROCESS_RECORD_BYTES: usize = 1024;
+
+const PROCESS_NUMBERS: [&str; 4] = ["pid", "parent_pid", "group_id", "session_id"];
 
 fn fields(line: &[u8]) -> impl Iterator<Item = &[u8]> {
     line.split(|&byte| byte == b' ' || byte == b'\n' || byte == b'\t')
@@ -41,8 +47,25 @@ fn no_operands<S: System>(
 }
 
 pub fn ps<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    if no_operands(output, arguments, b"Aef").is_none() {
+    let mut json = false;
+    let Ok(operands) = parse_defined(output, arguments, &commands::PS, |_, given| {
+        json |= given.is_long("json");
+        Ok(())
+    }) else {
         return FAILURE;
+    };
+    if let Some(extra) = operands.all().first() {
+        output.coded(
+            &errors::USAGE,
+            &[b"extra operand '", extra.to_bytes(), b"'"],
+        );
+        return FAILURE;
+    }
+    if json {
+        return each_line(output, PROCESSES, |output, line| {
+            write_process(output, line);
+            ControlFlow::Continue(())
+        });
     }
     output.write(b"  PID  PPID  PGID S CMD\n");
     each_line(output, PROCESSES, |output, line| {
@@ -61,6 +84,36 @@ pub fn ps<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.write(b"\n");
         ControlFlow::Continue(())
     })
+}
+
+fn write_process<S: System>(output: &mut Output<S>, line: &[u8]) {
+    let mut buffer = [0u8; PROCESS_RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    let mut parts = fields(line);
+    out.begin_object();
+    for key in PROCESS_NUMBERS {
+        out.key(key);
+        match parts.next().and_then(parse_count) {
+            Some(number) => out.u64(number),
+            None => out.null(),
+        }
+    }
+    out.key("state");
+    out.string_lossy(parts.next().unwrap_or_default());
+    out.key("name");
+    out.begin_string();
+    for (index, part) in parts.enumerate() {
+        if index > 0 {
+            out.string_piece(" ");
+        }
+        out.string_piece_lossy(part);
+    }
+    out.end_string();
+    out.end_object();
+    out.end_line();
+    if !out.overflowed() {
+        output.write(out.as_bytes());
+    }
 }
 
 pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
@@ -206,6 +259,26 @@ mod tests {
         let (status, _, errors) = run(ps, Fake::default(), &[]);
         assert_eq!(status, 1);
         assert_eq!(errors, "t: /proc/ps: No such file or directory\n");
+    }
+
+    #[test]
+    fn ps_json_writes_a_record_per_process() {
+        let (status, output, _) = run(ps, proc(), &[c"--json"]);
+        assert_eq!(status, 0);
+        assert_eq!(
+            output.lines().next(),
+            Some(
+                "{\"pid\":1,\"parent_pid\":0,\"group_id\":1,\"session_id\":1,\
+                 \"state\":\"R\",\"name\":\"init\"}"
+            )
+        );
+        assert_eq!(output.lines().count(), 3);
+        let (status, _, errors) = run(ps, proc(), &[c"--json", c"x"]);
+        assert_eq!(status, 1);
+        assert!(errors.contains("\"code\":\"usage\""), "{errors}");
+        let (status, _, errors) = run(ps, Fake::default(), &[c"--json"]);
+        assert_eq!(status, 1);
+        assert!(errors.contains("\"code\":\"no_such_file\""), "{errors}");
     }
 
     #[test]

@@ -206,6 +206,7 @@ fn system() -> FakeSystem {
             ("/bin", Kind::Directory),
             ("/home", Kind::Directory),
             ("/bin/ls", Kind::Executable),
+            ("/bin/help", Kind::Executable),
             ("/bin/fail", Kind::Executable),
             ("/bin/notes", Kind::NotExecutable),
             ("/usr/bin/tool", Kind::Executable),
@@ -633,6 +634,17 @@ fn a_file_read_in_pieces_runs_each_command_once() {
 fn help_lists_the_builtins() {
     let shell = run("help");
     assert!(output(&shell).contains("Builtins: . (source) : cd echo exit"));
+}
+
+#[test]
+fn help_with_words_runs_the_commands_help() {
+    let shell = run("help ls\nhelp --json");
+    let ran = &shell.system.ran;
+    assert_eq!(ran.len(), 2);
+    assert_eq!(ran[0].program, "/bin/help");
+    assert_eq!(ran[0].arguments, ["help", "ls"]);
+    assert_eq!(ran[1].arguments, ["help", "--json"]);
+    assert!(output(&shell).is_empty());
 }
 
 #[test]

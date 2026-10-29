@@ -1,6 +1,8 @@
-use crate::output::{FAILURE, Output};
+use crate::output::{FAILURE, Output, error_for};
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::errors;
+use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
 pub const DEVICE: &CStr = c"/dev/window";
@@ -21,8 +23,9 @@ pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
 pub const BUSY_STATUS: i32 = 75;
 
-const USAGE: &[u8] = b"usage: wm list | wm focus|minimise|maximise|restore|close <id> | \
-      wm move <id> <x> <y> | wm size <id> <width> <height> | \
+const USAGE: &[u8] =
+    b"usage: wm list [--json] | wm focus|minimise|maximise|restore|close [--] <id> | \
+      wm move [--] <id> <x> <y> | wm size [--] <id> <width> <height> | \
       wm capture [-o <file.png>] [--max-width <n>] [--max-bytes <n>] [--] <id> | \
       wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
       wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | \
@@ -30,6 +33,7 @@ const USAGE: &[u8] = b"usage: wm list | wm focus|minimise|maximise|restore|close
       wm help";
 const TITLE_AT: usize = 32;
 const TITLE_CAPACITY: usize = 64;
+const WINDOW_RECORD_BYTES: usize = 1024;
 
 const ACTIONS: [(&[u8], u32, usize); 7] = [
     (b"focus", 0, 0),
@@ -65,7 +69,7 @@ pub fn number(text: &[u8]) -> Option<i32> {
 }
 
 pub fn usage<S: System>(output: &mut Output<S>) -> i32 {
-    output.error(&[USAGE]);
+    output.coded(&errors::USAGE, &[USAGE]);
     USAGE_STATUS
 }
 
@@ -73,7 +77,10 @@ pub fn open_device<S: System>(output: &mut Output<S>) -> Option<usize> {
     match output.system.open(DEVICE) {
         Ok(device) => Some(device),
         Err(errno) => {
-            output.file_error(DEVICE, errno);
+            output.coded(
+                &errors::NO_WINDOW_SERVER,
+                &[DEVICE.to_bytes(), b": ", errno.message()],
+            );
             None
         }
     }
@@ -82,18 +89,21 @@ pub fn open_device<S: System>(output: &mut Output<S>) -> Option<usize> {
 pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -> i32 {
     match errno {
         Errno::EBUSY => {
-            output.error(&[
-                window,
-                b": a person is using the machine; try again in a moment",
-            ]);
+            output.coded(
+                &errors::PERSON_ACTIVE,
+                &[
+                    window,
+                    b": a person is using the machine; try again in a moment",
+                ],
+            );
             BUSY_STATUS
         }
         Errno::ENOENT => {
-            output.error(&[window, b": no such window"]);
+            output.coded(&errors::NO_SUCH_WINDOW, &[window, b": no such window"]);
             FAILURE
         }
         _ => {
-            output.error(&[window, b": ", errno.message()]);
+            output.coded(error_for(errno), &[window, b": ", errno.message()]);
             FAILURE
         }
     }
@@ -108,7 +118,9 @@ fn state_name(state: u32) -> &'static [u8] {
 }
 
 fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
-    output.write(HEADER);
+    if !output.is_json() {
+        output.write(HEADER);
+    }
     for index in 0.. {
         let mut entry = [0u8; LIST_SIZE];
         entry[..4].copy_from_slice(&(index as u32).to_ne_bytes());
@@ -119,9 +131,16 @@ fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
             Ok(()) => {}
             Err(Errno::ENOENT) => break,
             Err(errno) => {
-                output.error(&[b"cannot list the windows: ", errno.message()]);
+                output.coded(
+                    error_for(errno),
+                    &[b"cannot list the windows: ", errno.message()],
+                );
                 return FAILURE;
             }
+        }
+        if output.is_json() {
+            write_window(output, &entry);
+            continue;
         }
         for (field, offset) in [(0, 0), (1, 8), (2, 12), (3, 16), (4, 20)] {
             if field == 1 {
@@ -143,6 +162,36 @@ fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
     0
 }
 
+fn write_window<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
+    let mut buffer = [0u8; WINDOW_RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("id");
+    out.u64(u64::from(word(entry, 0)));
+    out.key("state");
+    out.string_lossy(state_name(word(entry, 4)));
+    for (key, offset) in [("x", 8), ("y", 12), ("width", 16), ("height", 20)] {
+        out.key(key);
+        match key {
+            "x" | "y" => out.i64(i64::from(word(entry, offset) as i32)),
+            _ => out.u64(u64::from(word(entry, offset))),
+        }
+    }
+    out.key("client_pid");
+    match word(entry, 24) {
+        KERNEL_CLIENT => out.null(),
+        client => out.u64(u64::from(client)),
+    }
+    out.key("title");
+    let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
+    out.string_lossy(&entry[TITLE_AT..TITLE_AT + length]);
+    out.end_object();
+    out.end_line();
+    if !out.overflowed() {
+        output.write(out.as_bytes());
+    }
+}
+
 pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     match arguments.first().map(|verb| verb.to_bytes()) {
         Some(b"capture") => return crate::window_capture::capture(output, &arguments[1..]),
@@ -159,31 +208,42 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         }
         _ => {}
     }
-    let arguments: [&[u8]; 4] = core::array::from_fn(|index| {
-        arguments
-            .get(index)
-            .map_or(&b""[..], |argument| argument.to_bytes())
-    });
-    let given = arguments
-        .iter()
-        .filter(|argument| !argument.is_empty())
-        .count();
-    let command = arguments[0];
-    let action = ACTIONS.iter().find(|(name, _, _)| *name == command);
-    let valid = match action {
-        Some(&(_, _, extra)) => given == 2 + extra,
-        None => command == b"list" && given == 1,
+    let Some((verb, rest)) = arguments.split_first() else {
+        return usage(output);
     };
-    if !valid {
+    let verb = verb.to_bytes();
+    if verb == b"list" {
+        match rest {
+            [] => {}
+            [json] if json.to_bytes() == b"--json" => output.use_json(),
+            _ => return usage(output),
+        }
+        let Some(device) = open_device(output) else {
+            return FAILURE;
+        };
+        let status = list(output, device);
+        output.system.close(device);
+        return status;
+    }
+    let Some(&(_, code, extra)) = ACTIONS.iter().find(|(name, _, _)| *name == verb) else {
+        return usage(output);
+    };
+    let operands = match rest.first() {
+        Some(first) if first.to_bytes() == b"--" => &rest[1..],
+        _ => rest,
+    };
+    if operands.len() != 1 + extra || operands.iter().any(|operand| operand.is_empty()) {
         return usage(output);
     }
+    let operands: [&[u8]; 3] = core::array::from_fn(|index| {
+        operands
+            .get(index)
+            .map_or(&b""[..], |operand| operand.to_bytes())
+    });
     let Some(device) = open_device(output) else {
         return FAILURE;
     };
-    let status = match action {
-        None => list(output, device),
-        Some(&(_, code, _)) => manage(output, device, code, &arguments[1..]),
-    };
+    let status = manage(output, device, code, &operands);
     output.system.close(device);
     status
 }
@@ -200,7 +260,7 @@ fn manage<S: System>(
             continue;
         }
         let Some(parsed) = number(operand) else {
-            output.error(&[b"invalid number '", operand, b"'"]);
+            output.coded(&errors::USAGE, &[b"invalid number '", operand, b"'"]);
             return USAGE_STATUS;
         };
         *value = parsed;
@@ -217,10 +277,7 @@ fn manage<S: System>(
         .device_control(device, MANAGE_WINDOW, &mut request)
     {
         Ok(()) => 0,
-        Err(errno) => {
-            output.error(&[operands[0], b": ", errno.message()]);
-            FAILURE
-        }
+        Err(errno) => refused(output, operands[0], errno),
     }
 }
 
@@ -290,6 +347,40 @@ mod tests {
             assert_eq!(fake.managed.last(), Some(&expected));
         }
         assert_eq!(fake.errors(), "");
+    }
+
+    #[test]
+    fn json_lists_each_window_as_a_record() {
+        let (status, fake) = run(&[c"list", c"--json"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "{\"id\":64,\"state\":\"normal\",\"x\":311,\"y\":192,\"width\":658,\
+             \"height\":458,\"client_pid\":null,\"title\":\"Terminal\"}\n\
+             {\"id\":129,\"state\":\"maximised\",\"x\":0,\"y\":28,\"width\":1280,\
+             \"height\":772,\"client_pid\":67,\"title\":\"first\"}\n"
+        );
+        let mut fake = windows();
+        fake.window_server = false;
+        let (status, fake) = run(&[c"list", c"--json"], fake);
+        assert_eq!(status, 1);
+        assert!(
+            fake.errors().contains("\"code\":\"no_window_server\""),
+            "{}",
+            fake.errors()
+        );
+    }
+
+    #[test]
+    fn the_verbs_take_two_dashes_before_the_window_as_the_mcp_server_passes_them() {
+        let (status, fake) = run(&[c"focus", c"--", c"129"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.managed.last(), Some(&[129, 0, 0, 0]));
+        let (status, fake) = run(&[c"size", c"--", c"129", c"640", c"480"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(fake.managed.last(), Some(&[129, 6, 640, 480]));
+        let (status, _) = run(&[c"focus", c"--"], windows());
+        assert_eq!(status, 2);
     }
 
     #[test]

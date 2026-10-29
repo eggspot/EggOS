@@ -45,6 +45,7 @@ $NAME, ${NAME}, $?, $$, $#, $0-$9 expand; ~ is $HOME; NAME=value sets a variable
 NAME=value command sets it for that command only.\n\
 a | b pipes a's output into b; < file reads a file, > file writes one, >> file adds to one.\n\
 Builtins: . (source) : cd echo exit export false help pwd set true type unset\n\
+help <command> describes an EggOS command, help --json all of them (/bin/help).\n\
 Not supported yet: && || & << ( ) `...` $(...) and wildcards.\n";
 
 /// What a read from a descriptor gave.
@@ -632,7 +633,9 @@ impl<'a, S: System> Shell<'a, S> {
             }
             return Ran::Finished(0);
         }
-        match builtin(words.command(0)) {
+        let chosen = builtin(words.command(0))
+            .filter(|&found| found != Builtin::Help || words.command_length() == 1);
+        match chosen {
             Some(builtin) => {
                 self.output = streams.output;
                 let status = self.builtin(builtin, words);
