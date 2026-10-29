@@ -336,12 +336,15 @@ pub fn ioctl<P: Platform>(
             window,
             menu,
             entry,
+            label_length,
+            label,
         } => {
+            let label = label.get(..label_length as usize).ok_or(Errno::EINVAL)?;
             if crate::input::person_holds_input() || crate::input::has_pending_events() {
                 return Err(Errno::EBUSY);
             }
             on_windows::<P, _>(|desktop, _, damage, events| {
-                desktop.choose_menu(window, menu, entry, damage, events)
+                desktop.choose_menu(window, menu, entry, label, damage, events)
             })?;
         }
     }

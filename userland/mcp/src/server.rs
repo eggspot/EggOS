@@ -1813,6 +1813,12 @@ fn push_window_words<'w>(
             push(decimals.get(Decimals::X));
             push(decimals.get(Decimals::Y));
         }
+        Kind::WmMenuChoose => {
+            if let Some(label) = arguments::menu_label_text(checked, typed) {
+                push("--label");
+                push(label);
+            }
+        }
         _ => {}
     }
     push("--");
@@ -2073,6 +2079,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
         writer.u64(u64::from(menu));
         writer.key("entry");
         writer.u64(u64::from(entry));
+    }
+    if let Some(label) = arguments::menu_label_text(checked, scratch.words) {
+        writer.key("label");
+        writer.string(label);
     }
     if tool.kind == Kind::Run {
         writer.key("arguments");

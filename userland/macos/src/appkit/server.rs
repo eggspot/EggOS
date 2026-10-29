@@ -25,8 +25,6 @@ pub const FIXED_SIZE: u32 = 1;
 /// `SET_POINTER`'s shapes.
 pub const POINTER_ARROW: u32 = 0;
 pub const POINTER_I_BEAM: u32 = 1;
-/// The event kind the menu in the top bar sends: `a` the menu, `b` the entry.
-pub const MENU_CHOSEN: u16 = 14;
 
 static DESCRIPTOR: AtomicUsize = AtomicUsize::new(0);
 

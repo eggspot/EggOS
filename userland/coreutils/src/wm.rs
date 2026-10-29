@@ -9,13 +9,13 @@ pub const MANAGE_WINDOW: u32 = 0x4010_770c;
 pub const CAPTURE_WINDOW: u32 = 0xc028_7713;
 pub const SEND_INPUT: u32 = 0x4018_7714;
 pub const GET_MENU: u32 = 0xc100_7716;
-pub const CHOOSE_MENU: u32 = 0x400c_7717;
+pub const CHOOSE_MENU: u32 = 0x4104_7717;
 pub const LIST_SIZE: usize = 96;
 pub const MANAGE_SIZE: usize = 16;
 pub const CAPTURE_SIZE: usize = 40;
 pub const SEND_INPUT_SIZE: usize = 24;
 pub const GET_MENU_SIZE: usize = 256;
-pub const CHOOSE_MENU_SIZE: usize = 12;
+pub const CHOOSE_MENU_SIZE: usize = 260;
 pub const KERNEL_CLIENT: u32 = 0xffff;
 pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
@@ -26,7 +26,8 @@ const USAGE: &[u8] = b"usage: wm list | wm focus|minimise|maximise|restore|close
       wm capture [-o <file.png>] [--max-width <n>] [--max-bytes <n>] [--] <id> | \
       wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
       wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | \
-      wm menu [--] <id> | wm menu --choose [--] <id> <menu> <entry> | wm help";
+      wm menu [--] <id> | wm menu --choose [--label <label>] [--] <id> <menu> <entry> | \
+      wm help";
 const TITLE_AT: usize = 32;
 const TITLE_CAPACITY: usize = 64;
 

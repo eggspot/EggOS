@@ -12,10 +12,13 @@ pub const HELP: &[u8] = b"wm menu: lists a window's main menu (the menus a macOS
 the top bar): each menu's number and title, then each entry's number, label, key equivalent in \
 parentheses and [disabled]; separators are ---- and count. wm menu --choose chooses an item as a \
 click on it would: <menu> and <entry> are those numbers, or a title and a label (not \
-case-sensitive; a word of digits is always a number).\n";
+case-sensitive; a word of digits is always a number); --label <label> refuses the choice unless \
+the entry is labelled so (for numbers read earlier, when the app may have changed its menu).\n";
 
 const POOL_AT: usize = 8;
 const POOL_CAPACITY: usize = GET_MENU_SIZE - POOL_AT;
+const LABEL_AT: usize = 16;
+const LABEL_CAPACITY: usize = CHOOSE_MENU_SIZE - LABEL_AT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line<'a> {
@@ -159,14 +162,14 @@ fn list<S: System>(output: &mut Output<S>, pool: &[u8]) {
 }
 
 pub fn menu<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let Some(parsed) = parse(arguments, &[b"--choose"]) else {
+    let Some(parsed) = parse(arguments, &[b"--choose", b"--label"]) else {
         return usage(output);
     };
     let wanted = match parsed.choose {
         true => 3,
         false => 1,
     };
-    if parsed.count != wanted {
+    if parsed.count != wanted || (parsed.label.is_some() && !parsed.choose) {
         return usage(output);
     }
     let window_text = parsed.positionals[0];
@@ -195,6 +198,7 @@ pub fn menu<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
                         device,
                         window,
                         window_text,
+                        expected_label: parsed.label,
                     };
                     chooser.choose(output, pool, parsed.positionals[1], parsed.positionals[2])
                 }
@@ -209,6 +213,7 @@ struct Chooser<'a> {
     device: usize,
     window: u32,
     window_text: &'a [u8],
+    expected_label: Option<&'a [u8]>,
 }
 
 impl Chooser<'_> {
@@ -255,13 +260,32 @@ impl Chooser<'_> {
                 return FAILURE;
             }
         };
+        if let Some(expected) = self.expected_label
+            && !expected.eq_ignore_ascii_case(label)
+        {
+            output.error(&[
+                window_text,
+                b": entry '",
+                entry_word,
+                b"' of menu '",
+                menu_word,
+                b"' is '",
+                label,
+                b"', not '",
+                expected,
+                b"' (the menu changed; see wm menu)",
+            ]);
+            return FAILURE;
+        }
         let mut request = [0u8; CHOOSE_MENU_SIZE];
-        for (index, value) in [self.window, menu as u32, entry as u32]
+        let length = label.len().min(LABEL_CAPACITY);
+        for (index, value) in [self.window, menu as u32, entry as u32, length as u32]
             .into_iter()
             .enumerate()
         {
             request[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
         }
+        request[LABEL_AT..LABEL_AT + length].copy_from_slice(&label[..length]);
         match self.send(&mut output.system, &mut request) {
             Ok(()) => {
                 output.write(b"chose ");
@@ -272,6 +296,14 @@ impl Chooser<'_> {
                 output.write(window_text);
                 output.write(b"\n");
                 0
+            }
+            Err(Errno::EINVAL) => {
+                output.error(&[
+                    window_text,
+                    b": the item cannot be chosen now: the app shows a dialog, or its menu \
+                      changed (see wm menu)",
+                ]);
+                FAILURE
             }
             Err(errno) => refused(output, window_text, errno),
         }
@@ -300,7 +332,9 @@ mod tests {
     use super::*;
     use crate::fake::{Fake, FakeWindow};
     use crate::wm::{BUSY_STATUS, wm};
-    use eggos_drivers::desktop::protocol::{get_menu_reply, request, size};
+    use eggos_drivers::desktop::protocol::{
+        MENU_LABEL_CAPACITY, choose_menu_request, get_menu_reply, request, size,
+    };
 
     const MAC_PAINT: &[u8] = b"Mmac-paint\nIAbout mac-paint\t\n-\nIQuit mac-paint\tCmd+Q\n\
 MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
@@ -334,6 +368,9 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
         assert_eq!(GET_MENU_SIZE, size::GET_MENU);
         assert_eq!(CHOOSE_MENU_SIZE, size::CHOOSE_MENU);
         assert_eq!(POOL_AT, get_menu_reply::POOL);
+        assert_eq!(choose_menu_request::LABEL_LENGTH, 12);
+        assert_eq!(LABEL_AT, choose_menu_request::LABEL);
+        assert_eq!(LABEL_CAPACITY, MENU_LABEL_CAPACITY);
         assert_eq!(
             POOL_CAPACITY,
             eggos_drivers::desktop::protocol::MENU_POOL_CAPACITY
@@ -368,6 +405,7 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
                 "{menu:?} {entry:?}"
             );
             assert_eq!(fake.chosen_menus, [[129, 1, 0]]);
+            assert_eq!(fake.chosen_labels, [b"Clear".to_vec()]);
             assert_eq!(fake.output(), "chose File > Clear in window 129\n");
         }
         let (status, fake) = run(
@@ -376,6 +414,61 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
         );
         assert_eq!(status, 0);
         assert_eq!(fake.chosen_menus, [[129, 0, 2]]);
+        assert_eq!(fake.chosen_labels, [b"Quit mac-paint".to_vec()]);
+    }
+
+    #[test]
+    fn a_label_given_with_numbers_must_be_the_entry_s() {
+        let (status, fake) = run(
+            &[
+                c"menu",
+                c"--choose",
+                c"--label",
+                c"clear",
+                c"129",
+                c"1",
+                c"0",
+            ],
+            machine(),
+        );
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        assert_eq!(fake.chosen_menus, [[129, 1, 0]]);
+        assert_eq!(fake.chosen_labels, [b"Clear".to_vec()]);
+        let (status, fake) = run(
+            &[
+                c"menu",
+                c"--choose",
+                c"--label",
+                c"Close",
+                c"129",
+                c"1",
+                c"0",
+            ],
+            machine(),
+        );
+        assert_eq!(status, FAILURE);
+        assert_eq!(
+            fake.errors(),
+            "wm: 129: entry '0' of menu '1' is 'Clear', not 'Close' (the menu changed; see wm \
+             menu)\n"
+        );
+        assert!(fake.chosen_menus.is_empty());
+        let (status, fake) = run(&[c"menu", c"--label", c"Clear", c"129"], machine());
+        assert_eq!(status, 2);
+        assert!(fake.chosen_menus.is_empty());
+    }
+
+    #[test]
+    fn a_refused_choice_says_a_dialog_or_a_changed_menu_may_be_why() {
+        let mut refusing = machine();
+        refusing.input_results = vec![Some(Errno::EINVAL)];
+        let (status, fake) = run(&[c"menu", c"--choose", c"129", c"1", c"0"], refusing);
+        assert_eq!(status, FAILURE);
+        assert_eq!(
+            fake.errors(),
+            "wm: 129: the item cannot be chosen now: the app shows a dialog, or its menu changed \
+             (see wm menu)\n"
+        );
     }
 
     #[test]

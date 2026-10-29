@@ -1,4 +1,7 @@
-use super::protocol::{EventRecord, Request, request, size};
+use super::protocol::{
+    EventRecord, MENU_LABEL_CAPACITY, MENU_POOL_CAPACITY, Request, choose_menu_request, request,
+    size,
+};
 use super::tests::{BlankTerminal, at, painted};
 use super::*;
 use crate::input::keymap::key_for_ascii;
@@ -679,27 +682,53 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen_with_a_menu_open() {
 #[test]
 fn get_and_choose_menu_have_linux_s_encoding_and_parse_their_fields() {
     assert_eq!(request::GET_MENU, 0xc100_7716);
-    assert_eq!(request::CHOOSE_MENU, 0x400c_7717);
-    assert_eq!((size::GET_MENU, size::CHOOSE_MENU), (256, 12));
+    assert_eq!(request::CHOOSE_MENU, 0x4104_7717);
+    assert_eq!((size::GET_MENU, size::CHOOSE_MENU), (256, 260));
+    assert_eq!(
+        (
+            choose_menu_request::LABEL_LENGTH,
+            choose_menu_request::LABEL,
+            MENU_LABEL_CAPACITY
+        ),
+        (12, 16, 244)
+    );
     let mut bytes = [0u8; 256];
     bytes[..4].copy_from_slice(&65u32.to_ne_bytes());
     assert_eq!(
         Request::parse(request::GET_MENU, &bytes),
         Some(Request::GetMenu { window: 65 })
     );
-    let mut choose = [0u8; 12];
-    for (index, word) in [65u32, 1, 2].into_iter().enumerate() {
+    let mut choose = [0u8; 260];
+    for (index, word) in [65u32, 1, 2, 5].into_iter().enumerate() {
         choose[index * 4..index * 4 + 4].copy_from_slice(&word.to_ne_bytes());
     }
-    assert_eq!(
-        Request::parse(request::CHOOSE_MENU, &choose),
+    choose[16..21].copy_from_slice(b"Clear");
+    choose[259] = b'x';
+    match Request::parse(request::CHOOSE_MENU, &choose) {
         Some(Request::ChooseMenu {
             window: 65,
             menu: 1,
-            entry: 2
-        })
-    );
-    assert_eq!(Request::parse(request::CHOOSE_MENU, &choose[..8]), None);
+            entry: 2,
+            label_length: 5,
+            label,
+        }) => {
+            assert_eq!(&label[..5], b"Clear");
+            assert_eq!(label[243], b'x');
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(Request::parse(request::CHOOSE_MENU, &choose[..12]), None);
+}
+
+#[test]
+fn the_longest_label_a_pool_holds_fits_a_choose_menu_request() {
+    let longest = MENU_POOL_CAPACITY - b"M\nI\t\n".len();
+    let mut pool = b"M\nI".to_vec();
+    pool.extend(core::iter::repeat_n(b'x', longest));
+    pool.extend(b"\t\n");
+    assert_eq!(pool.len(), MENU_POOL_CAPACITY);
+    assert!(MainMenu::parse(&pool).is_ok());
+    assert!(longest <= MENU_LABEL_CAPACITY);
 }
 
 #[test]
@@ -721,28 +750,31 @@ fn a_command_chooses_an_enabled_item_of_any_window_s_menu() {
     let edit = with_menu(&mut desktop, OTHER, EDIT);
     desktop.set_time(10_000);
     let mut events = Recorded::default();
-    let mut choose = |desktop: &mut Desktop, window: u32, menu: u32, entry: u32| {
-        desktop.choose_menu(window, menu, entry, &mut Damage::new(), &mut events)
+    let mut choose = |desktop: &mut Desktop, window: u32, menu: u32, entry: u32, label: &[u8]| {
+        desktop.choose_menu(window, menu, entry, label, &mut Damage::new(), &mut events)
     };
-    assert_eq!(choose(&mut desktop, u32::from(paint), 1, 0), Ok(()));
-    assert_eq!(choose(&mut desktop, u32::from(edit), 0, 3), Ok(()));
-    for (window, menu, entry) in [
-        (paint, 0, 1),
-        (paint, 1, 2),
-        (paint, 3, 0),
-        (paint, u32::MAX, 0),
-        (paint, 0, u32::MAX),
-        (edit, 0, 1),
-        (edit, 0, 2),
+    assert_eq!(
+        choose(&mut desktop, u32::from(paint), 1, 0, b"Clear"),
+        Ok(())
+    );
+    assert_eq!(choose(&mut desktop, u32::from(edit), 0, 3, b"Cut"), Ok(()));
+    for (window, menu, entry, label) in [
+        (paint, 0, 1, &b""[..]),
+        (paint, 1, 2, b"mac-paint Help"),
+        (paint, 3, 0, b"Clear"),
+        (paint, u32::MAX, 0, b"Clear"),
+        (paint, 0, u32::MAX, b"Clear"),
+        (edit, 0, 1, b"Redo"),
+        (edit, 0, 2, b""),
     ] {
         assert_eq!(
-            choose(&mut desktop, u32::from(window), menu, entry),
+            choose(&mut desktop, u32::from(window), menu, entry, label),
             Err(WindowError::Invalid),
             "{menu} {entry}"
         );
     }
     assert_eq!(
-        choose(&mut desktop, 9999, 0, 0),
+        choose(&mut desktop, 9999, 0, 0, b"About mac-paint"),
         Err(WindowError::NoSuchWindow)
     );
     assert_eq!(
@@ -761,13 +793,13 @@ fn a_command_s_choice_closes_the_open_menu_and_waits_for_a_person() {
     events.take();
     let id = u32::from(window);
     assert_eq!(
-        desktop.choose_menu(id, 1, 0, &mut Damage::new(), &mut events),
+        desktop.choose_menu(id, 1, 0, b"Clear", &mut Damage::new(), &mut events),
         Err(WindowError::Busy)
     );
     assert!(desktop.main_menu_area().is_some());
     desktop.set_time(1000);
     assert_eq!(
-        desktop.choose_menu(id, 1, 0, &mut Damage::new(), &mut events),
+        desktop.choose_menu(id, 1, 0, b"Clear", &mut Damage::new(), &mut events),
         Ok(())
     );
     assert_eq!(desktop.main_menu_area(), None);
@@ -790,7 +822,98 @@ fn a_command_s_choice_waits_for_room_in_the_client_s_queue() {
     let window = with_menu(&mut desktop, CLIENT, MAC_PAINT);
     desktop.set_time(10_000);
     assert_eq!(
-        desktop.choose_menu(u32::from(window), 1, 0, &mut Damage::new(), &mut Full),
+        desktop.choose_menu(
+            u32::from(window),
+            1,
+            0,
+            b"Clear",
+            &mut Damage::new(),
+            &mut Full
+        ),
         Err(WindowError::QueueFull)
+    );
+}
+
+#[test]
+fn a_command_s_choice_names_the_label_it_read_and_a_changed_menu_refuses_it() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    desktop.set_time(10_000);
+    let mut events = Recorded::default();
+    let id = u32::from(window);
+    set(
+        &mut desktop,
+        window,
+        b"Mmac-paint\nIAbout mac-paint\t\nMFile\nIClose\tCmd+W\n",
+    )
+    .unwrap();
+    for label in [&b"Clear"[..], b"clear", b"Clos", b""] {
+        assert_eq!(
+            desktop.choose_menu(id, 1, 0, label, &mut Damage::new(), &mut events),
+            Err(WindowError::Invalid),
+            "{label:?}"
+        );
+    }
+    assert!(events.chosen().is_empty());
+    assert_eq!(
+        desktop.choose_menu(id, 1, 0, b"Close", &mut Damage::new(), &mut events),
+        Ok(())
+    );
+    assert_eq!(events.chosen(), [(CLIENT, window, 1, 0)]);
+}
+
+#[test]
+fn a_command_s_choice_is_refused_while_the_app_has_a_dialog_open() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let first = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    let second = with_menu(&mut desktop, CLIENT, MAC_PAINT);
+    let other = with_menu(&mut desktop, OTHER, EDIT);
+    desktop.set_time(10_000);
+    let dialog = desktop
+        .create(CLIENT, 1, u32::from(first), 200, 100, 0)
+        .unwrap()
+        .window;
+    for window in [first, second] {
+        assert_eq!(
+            desktop.choose_menu(
+                u32::from(window),
+                1,
+                0,
+                b"Clear",
+                &mut Damage::new(),
+                &mut events
+            ),
+            Err(WindowError::Invalid)
+        );
+    }
+    assert_eq!(
+        desktop.choose_menu(
+            u32::from(other),
+            0,
+            0,
+            b"Undo",
+            &mut Damage::new(),
+            &mut events
+        ),
+        Ok(())
+    );
+    desktop
+        .destroy(CLIENT, u32::from(dialog), &mut Damage::new(), &mut events)
+        .unwrap();
+    assert_eq!(
+        desktop.choose_menu(
+            u32::from(second),
+            1,
+            0,
+            b"Clear",
+            &mut Damage::new(),
+            &mut events
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        events.chosen(),
+        [(OTHER, other, 0, 0), (CLIENT, second, 1, 0)]
     );
 }

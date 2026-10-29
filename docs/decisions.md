@@ -9328,11 +9328,12 @@ the license, by an explicit instruction recorded here.
   pointer and keys were the only way to choose an item, so an agent could not reach "About" or
   "Clear". Two new requests, added as D141 added `CAPTURE_WINDOW` and `SEND_INPUT`: `GET_MENU`
   (`0xc1007716`, 256 bytes, root only) reads any window's pool as `SET_MENU` last set it, and
-  `CHOOSE_MENU` (`0x400c7717`, 12 bytes: window, menu, entry; root only) chooses an enabled
-  item of any window's menu exactly as a person's choice does (the open menu closes, the
-  window gets `MenuChosen`), on a covered, minimised or unfocused window, in every profile,
-  under D141's "a person wins" (`EBUSY`) and queue room (`EAGAIN`) rules; `EINVAL` for no such
-  menu or item, a separator or a disabled item. `wm menu <id>` lists the menus and entries with
+  `CHOOSE_MENU` (`0x41047717`, 260 bytes: window, menu, entry and the entry's label as the
+  caller read it; root only) chooses an enabled item of any window's menu exactly as a person's
+  choice does (the open menu closes, the window gets `MenuChosen`), on a covered, minimised or
+  unfocused window, in every profile, under D141's "a person wins" (`EBUSY`) and queue room
+  (`EAGAIN`) rules; `EINVAL` for no such menu or item, a separator, a disabled item, another
+  label, or while the window's client has a dialog open. `wm menu <id>` lists the menus and entries with
   their numbers, key labels and `[disabled]`; `wm menu --choose <id> <menu> <entry>` takes the
   numbers or a title and a label (a word of digits is always a number). The MCP tools are
   `wm_menu_list` (the `view` grant, read-only: a menu shows what an app offers, as its window
@@ -9389,6 +9390,28 @@ the license, by an explicit instruction recorded here.
   menu edits are sent once per event-loop pass; `NSApplicationMain` with `NSMainNibFile` or
   `NSMainStoryboardFile` in Info.plist says it cannot load the interface and exits 1 instead
   of waiting with nothing on screen.
+- **Review round 2 fixes.** A menu choice acts in the window whose menu it was: `MenuChosen`
+  names the window, and the item's action (nil target) goes along that window's responder
+  chain, not the key window's, so `wm menu --choose <B> File Close` closes B while A has the
+  keyboard (a key equivalent uses the window the key went to). `CHOOSE_MENU` carries the
+  entry's label as `GET_MENU` showed it, compared under the desktop's lock: a menu the app set
+  again in between with another item at those numbers is refused (`EINVAL`) instead of choosing
+  that item; `wm menu --choose` always sends the label it resolved and takes `--label <label>`
+  to check numbers read earlier, and `wm_menu_choose` takes an optional `label` (at most 64
+  bytes) that becomes `--label`. While the window's client has a dialog open the choice is
+  refused (`EINVAL`): an NSAlert is app-modal, and its loop would only act on the choice after
+  the answer, which the command would have reported as done; `EINVAL` rather than `EBUSY`,
+  which the CLI and the tool read as "a person is using the machine, retry". A choice that
+  reaches the app while its alert is open anyway (a person's click on another window's menu, or
+  one sent as the alert opened) is carried out once the alert is answered, as a close is.
+  `setContentView:` takes the new content view out of its old superview or window first, and
+  `addSubview:` a view out of the window whose content view it is: before, the old parent kept
+  it in its subviews and its later `dealloc` cut the view out of its new window.
+  `makeFirstResponder:` and `setInitialFirstResponder:` take only views in that window (or the
+  window itself, or nil); anything else is refused, as a responder outside the window would be
+  walked as a view and never forgotten when freed. `-[NSWindow init]` gives the standard style
+  (titled, closable, miniaturizable, resizable, as GNUstep's), so its window's close button
+  and Cmd+W work, as the server draws them.
 - **Check.** The macOS GUI boot test (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64): `app
   install /media/host/mac-paint.app`, open it from the launcher (Cmd+Space, its name, Enter),
   then compare each frame with the host's render: the window with its field focused and the
@@ -9419,12 +9442,20 @@ the license, by an explicit instruction recorded here.
   request that carries a pointer and a length, as `CAPTURE_WINDOW` does); `dealloc` for
   NSWindow, NSMenu, NSMenuItem and NSAlert (they leak, as before); opening the menu from the
   keyboard (an F10-like key, note 7); the MCP check choosing a menu item (no macOS app runs
-  there; the CLI twin is checked in the macOS GUI test); a menu choice while a dialog of the
-  window is open reaches the window, as D141's input does; selectors apps commonly use that
+  there; the CLI twin is checked in the macOS GUI test); selectors apps commonly use that
   are not there yet: NSWindow `setFrame:display:` and `backingScaleFactor`, NSEvent `deltaX`
   and `scrollingDeltaX`, NSMenu `insertItem:atIndex:` and `removeItem:`, NSMenuItem
   `setHidden:`, NSApplication `nextEventMatchingMask:untilDate:inMode:dequeue:`, NSView
-  `addTrackingArea:`.
+  `addTrackingArea:`. From review round 2: an app whose delegate answers NO to
+  `applicationShouldTerminateAfterLastWindowClosed:` keeps running with no window and so no
+  menu to quit from (a Dock-like way back, or a menu without a window, comes with windowless
+  apps); a window made without `NSWindowStyleMaskClosable` still shows the server's close
+  button and takes Cmd+W, which do nothing (`CREATE` has no not-closable flag yet); the top bar
+  stays live for another window of an app whose alert is open (the choice waits for the
+  answer; dimming it needs the bar redrawn when a dialog comes and goes without a focus
+  change); responders that are not views (`NSWindowController`, an NSResponder subclass) as
+  first responder; choosing an item on a window other than the key window is checked by host
+  tests of the record and the label, not yet by a second window in the macOS GUI test.
 
 ## D148 Real icons and archives: installing from a `.zip`, our own inflate and PNG decoder, and each installed app's own icon (v0.3.0 item 45; extends D133, D134, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/app-icons-v0.3.md`)
 - **What.** Item 45: "PE icon resources, `.icns`, PNG with our own inflate, installing from

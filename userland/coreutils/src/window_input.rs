@@ -116,6 +116,7 @@ pub struct Arguments<'a> {
     pub max_width: Option<&'a [u8]>,
     pub max_bytes: Option<&'a [u8]>,
     pub choose: bool,
+    pub label: Option<&'a [u8]>,
 }
 
 fn is_option(argument: &[u8]) -> bool {
@@ -143,6 +144,7 @@ pub fn parse<'a>(arguments: &[&'a CStr], options: &[&[u8]]) -> Option<Arguments<
                 b"--max-width" => parsed.max_width = Some(value()?),
                 b"--max-bytes" => parsed.max_bytes = Some(value()?),
                 b"--choose" => parsed.choose = true,
+                b"--label" => parsed.label = Some(value()?),
                 b"--at" => {
                     let x = value()?;
                     parsed.at = Some((x, value()?));

@@ -22,6 +22,9 @@ pub const MENU_POOL_CAPACITY: usize = 248;
 pub const MAX_MENUS: usize = 6;
 /// The most entries, items and separators, one menu holds.
 pub const MAX_MENU_ENTRIES: usize = 16;
+/// The longest item label `ChooseMenu` carries, in bytes: room for the longest a pool holds
+/// (the pool less an empty menu's `M\n` and the item's `I`, tab and `\n`), the argument 260.
+pub const MENU_LABEL_CAPACITY: usize = 244;
 /// The size of one event record.
 pub const EVENT_SIZE: usize = 32;
 /// The `ioctl` type byte of every request (`_IOC_TYPE`).
@@ -58,7 +61,7 @@ pub mod size {
     pub const SEND_INPUT: usize = 24;
     pub const SET_MENU: usize = 256;
     pub const GET_MENU: usize = 256;
-    pub const CHOOSE_MENU: usize = 12;
+    pub const CHOOSE_MENU: usize = super::choose_menu_request::LABEL + super::MENU_LABEL_CAPACITY;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -356,6 +359,8 @@ pub enum Request {
         window: u32,
         menu: u32,
         entry: u32,
+        label_length: u32,
+        label: [u8; MENU_LABEL_CAPACITY],
     },
 }
 
@@ -529,11 +534,17 @@ impl Request {
                 }
             }
             request::GET_MENU => Self::GetMenu { window: at(0) },
-            request::CHOOSE_MENU => Self::ChooseMenu {
-                window: at(0),
-                menu: at(4),
-                entry: at(8),
-            },
+            request::CHOOSE_MENU => {
+                let mut label = [0; MENU_LABEL_CAPACITY];
+                label.copy_from_slice(&bytes[choose_menu_request::LABEL..]);
+                Self::ChooseMenu {
+                    window: at(0),
+                    menu: at(4),
+                    entry: at(8),
+                    label_length: at(choose_menu_request::LABEL_LENGTH),
+                    label,
+                }
+            }
             _ => Self::GetWorkArea,
         })
     }
@@ -568,6 +579,13 @@ pub mod capture_reply {
 pub mod get_menu_reply {
     pub const LENGTH: usize = 4;
     pub const POOL: usize = 8;
+}
+
+/// Where `ChooseMenu`'s argument holds, after the window, the menu and the entry, the length of
+/// the label the caller expects the entry to have and the label itself.
+pub mod choose_menu_request {
+    pub const LABEL_LENGTH: usize = 12;
+    pub const LABEL: usize = 16;
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside

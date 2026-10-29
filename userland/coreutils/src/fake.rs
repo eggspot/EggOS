@@ -56,6 +56,7 @@ pub struct Fake {
     pub input_results: Vec<Option<Errno>>,
     pub menus: BTreeMap<u32, Vec<u8>>,
     pub chosen_menus: Vec<[u32; 3]>,
+    pub chosen_labels: Vec<Vec<u8>>,
     pub capture_calls: usize,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
@@ -105,6 +106,7 @@ impl Default for Fake {
             input_results: Vec::new(),
             menus: BTreeMap::new(),
             chosen_menus: Vec::new(),
+            chosen_labels: Vec::new(),
             capture_calls: 0,
             capture_fails_at: None,
             resized_at: None,
@@ -555,6 +557,8 @@ impl System for Fake {
                     return Err(errno);
                 }
                 self.chosen_menus.push(request);
+                let length = word(argument, 12) as usize;
+                self.chosen_labels.push(argument[16..16 + length].to_vec());
                 Ok(())
             }
             _ => Err(Errno::ENOTTY),

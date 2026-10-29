@@ -1,8 +1,8 @@
 //! NSAlert (`docs/ux/macos-gui-v0.3.md` section 4): `runModal` opens a dialog window of its own on
 //! the key window, draws the toolkit's dialog panel in it (`eggos_macos_gui::alert`), and runs
 //! its own event loop until a button is chosen, while the app's other windows still redraw,
-//! follow the focus and take new sizes but no input; a close asked of one of them meanwhile is
-//! carried out once the alert is answered.
+//! follow the focus and take new sizes but no input; a close asked of one of them, or a menu
+//! choice that reached the app as the alert opened, is carried out once the alert is answered.
 
 use super::{
     NSALERT, NSALERT_META, NSBUTTON, application, menu, server, store_copy, string, view, window,
@@ -15,6 +15,7 @@ use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, autorelease, methods, sel, send, send1, send2};
 use eggos_macos_gui::alert::{Alert, FIRST_BUTTON_RETURN, MAX_BUTTONS};
 use eggos_macos_gui::geometry::Frame;
+use eggos_macos_gui::menu::Chosen;
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE, key};
 use eggos_toolkit::text::Text;
@@ -125,11 +126,16 @@ struct Modal {
     focused: bool,
     chosen: Option<usize>,
     closes_asked: Buffer<u32>,
+    menu_choices: Buffer<Chosen>,
 }
 
 impl Modal {
     fn handle(&mut self, record: &[u8; RECORD_SIZE]) {
         if self.chosen.is_some() {
+            return;
+        }
+        if let Some(choice) = Chosen::from_record(record) {
+            self.menu_choices.push(choice);
             return;
         }
         let Some(event) = input::decode(record) else {
@@ -216,6 +222,7 @@ extern "C" fn run_modal(this: Id, _: Sel) -> isize {
         focused: true,
         chosen: None,
         closes_asked: Buffer::new(),
+        menu_choices: Buffer::new(),
     };
     paint(&modal.alert, &modal.buffer, modal.focused);
     let chosen = loop {
@@ -236,6 +243,12 @@ extern "C" fn run_modal(this: Id, _: Sel) -> isize {
         }
     }
     modal.closes_asked.free();
+    for &choice in modal.menu_choices.as_slice() {
+        if let Some(other) = application::window_with_server_id(choice.window) {
+            menu::chosen(other, choice.menu, choice.entry);
+        }
+    }
+    modal.menu_choices.free();
     Alert::answer(chosen)
 }
 

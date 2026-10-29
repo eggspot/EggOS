@@ -1657,6 +1657,12 @@ fn input_tools_run_wm_with_options_then_two_dashes_then_their_words() {
             "menu --choose -- 129 1 0",
             r#"{"window":129,"menu":1,"entry":0}"#,
         ),
+        (
+            "wm_menu_choose",
+            r#"{"label":"Clear All","entry":0,"menu":1,"window":129}"#,
+            "menu --choose --label Clear All -- 129 1 0",
+            r#"{"window":129,"menu":1,"entry":0,"label":"Clear All"}"#,
+        ),
     ] {
         let answer = harness.call(1, tool, arguments);
         assert!(!is_error(&answer), "{tool}: {answer}");
@@ -1750,6 +1756,11 @@ fn hostile_window_arguments_are_refused_before_wm_runs() {
             "wm_menu_choose",
             r#"{"window":1,"menu":0}"#,
             "menu and entry",
+        ),
+        (
+            "wm_menu_choose",
+            r#"{"window":1,"menu":0,"entry":0,"label":"a\u0007"}"#,
+            "label is the item's label",
         ),
         ("wm_menu_list", r#"{"window":1,"menu":0}"#, "does not take"),
         (

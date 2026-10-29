@@ -105,7 +105,7 @@ desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdi
 | `wm_press` | Presses a key with modifiers in a window (`window`, `keys` such as `Enter` or `ctrl+s`) | `wm press -- <window> <keys>` | `run` |
 | `wm_scroll` | Turns the wheel `dy` notches (-16 to 16) in a window, at `x`, `y` or the centre | `wm scroll [--at <x> <y>] -- <window> 0 <dy>` | `run` |
 | `wm_menu_list` | A window's main menu, the one a macOS app shows in the top bar (`window`): each menu's number and title, each entry's number, label, key equivalent and `[disabled]`, separators as `----` (D147) | `wm menu -- <window>` | `view` |
-| `wm_menu_choose` | Chooses an enabled item of a window's main menu (`window`; `menu`, 0 to 5, and `entry`, 0 to 15, the numbers `wm_menu_list` shows) as a click on it in the top bar would; covered and minimised windows too | `wm menu --choose -- <window> <menu> <entry>` | `run` |
+| `wm_menu_choose` | Chooses an enabled item of a window's main menu (`window`; `menu`, 0 to 5, and `entry`, 0 to 15, the numbers `wm_menu_list` shows; optionally `label`, at most 64 bytes, the item's label, so a menu the app changed since is refused instead of choosing another item) as a click on it in the top bar would; covered and minimised windows too; refused while the app shows a dialog | `wm menu --choose [--label <label>] -- <window> <menu> <entry>` | `run` |
 
 The reading tools, `wm_capture` and `wm_menu_list` are `readOnlyHint`; `tee`, `trash`, `run`,
 `app_uninstall`, the four input tools and `wm_menu_choose` are `destructiveHint`, so clients ask their user before them. Paths are absolute and resolved

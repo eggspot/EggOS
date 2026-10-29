@@ -14,6 +14,7 @@ use crate::objc::{Runtime, autorelease, methods, sel, send, send_bool, send1, se
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use eggos_macos_gui::geometry::point_of_pixel;
 use eggos_macos_gui::keys::modifier;
+use eggos_macos_gui::menu::Chosen;
 use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE};
 
 const NS_TERMINATE_CANCEL: usize = 0;
@@ -162,8 +163,7 @@ pub fn terminate() {
     crate::libsystem::exit(0)
 }
 
-fn responder_for(action: Sel) -> Option<Id> {
-    let window = key_window();
+fn responder_for(window: Id, action: Sel) -> Option<Id> {
     if !window.is_null() {
         let mut current = window::first_responder(window);
         while !current.is_null() {
@@ -189,11 +189,17 @@ fn responder_for(action: Sel) -> Option<Id> {
 /// nil: the key window's first responder and its superviews, the window, its delegate, the
 /// application and its delegate. Whether something took it.
 pub fn send_action(action: Sel, target: Id, sender: Id) -> bool {
+    send_action_in(key_window(), action, target, sender)
+}
+
+/// Sends `action` as [`send_action`] does, but along `window`'s responder chain (nil for none):
+/// a menu item chosen in a window's menu acts in that window, key or not.
+pub fn send_action_in(window: Id, action: Sel, target: Id, sender: Id) -> bool {
     if action.is_null() {
         return false;
     }
     let receiver = match target.is_null() {
-        true => responder_for(action),
+        true => responder_for(window, action),
         false => responds(target, action).then_some(target),
     };
     match receiver {
@@ -225,12 +231,10 @@ fn mouse(window: Id, event_kind: usize, x: i32, y: i32, button: isize, delta: f6
 
 /// Handles one of the window server's records outside a modal alert.
 pub fn dispatch(record: &[u8; RECORD_SIZE]) {
-    let kind_of_record = u16::from_ne_bytes([record[0], record[1]]);
-    if kind_of_record == server::MENU_CHOSEN {
-        let word = |at: usize| {
-            u32::from_ne_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]])
-        };
-        menu::chosen(word(8) as usize, word(12) as usize);
+    if let Some(chosen) = Chosen::from_record(record) {
+        if let Some(window) = window_with_server_id(chosen.window) {
+            menu::chosen(window, chosen.menu, chosen.entry);
+        }
         return;
     }
     let Some(decoded) = input::decode(record) else {

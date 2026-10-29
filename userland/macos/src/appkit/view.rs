@@ -106,7 +106,9 @@ pub fn holds(root: Id, view: Id) -> bool {
     false
 }
 
-fn detach(view: Id) {
+/// Takes `view` out of its superview, if it has one: it leaves the superview's window too, and
+/// the superview's reference to it is let go of.
+pub fn detach(view: Id) {
     let parent = fields(view).superview;
     if parent.is_null() {
         return;
@@ -215,7 +217,7 @@ extern "C" fn add_subview(this: Id, _: Sel, view: Id) {
         return;
     }
     objc_retain(view);
-    detach(view);
+    window::take_out(view);
     fields(this).subviews.push(view);
     fields(view).superview = this;
     set_window(view, fields(this).window);

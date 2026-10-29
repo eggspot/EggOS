@@ -43,6 +43,9 @@ pub const MAX_NOTCHES: u64 = 16;
 pub const MAX_MENU_INDEX: u64 = 5;
 /// The largest entry number in one menu (the window server holds 16 entries a menu).
 pub const MAX_ENTRY_INDEX: u64 = 15;
+/// The most bytes of `wm_menu_choose`'s `label`, so the audit record keeps it whole as it keeps
+/// `wm_type`'s text.
+pub const MAX_MENU_LABEL_BYTES: usize = 64;
 
 /// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
 pub const TIME_BYTES: usize = 20;
@@ -99,6 +102,8 @@ pub enum ArgumentProblem {
     BadTime,
     /// `menu` is not 0 to [`MAX_MENU_INDEX`] or `entry` not 0 to [`MAX_ENTRY_INDEX`].
     BadMenuItem,
+    /// `label` is longer than [`MAX_MENU_LABEL_BYTES`] or holds a control character.
+    BadMenuLabel,
 }
 
 impl ArgumentProblem {
@@ -167,6 +172,10 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadMenuItem => {
                 "menu (0 to 5) and entry (0 to 15) are whole numbers as wm_menu_list shows them"
+            }
+            ArgumentProblem::BadMenuLabel => {
+                "label is the item's label as wm_menu_list shows it: at most 64 bytes, without \
+                 control characters"
             }
         }
     }
@@ -339,6 +348,8 @@ pub struct Checked {
     pub time: Option<TimeText>,
     /// `wm_menu_choose`'s menu and entry numbers.
     pub menu_item: Option<(u32, u32)>,
+    /// `wm_menu_choose`'s label's length, in the words buffer.
+    pub menu_label: Option<usize>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -596,10 +607,32 @@ fn window_arguments<'a>(
                 return Err(ArgumentProblem::Missing("menu"));
             };
             checked.menu_item = Some((menu as u32, entry as u32));
+            checked.menu_label = menu_label(get("label"), words)?;
         }
         _ => {}
     }
     Ok(())
+}
+
+fn menu_label(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadMenuLabel),
+    };
+    let room = words
+        .get_mut(..MAX_MENU_LABEL_BYTES)
+        .ok_or(ArgumentProblem::BadMenuLabel)?;
+    let label = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadMenuLabel)?;
+    match label.chars().any(char::is_control) {
+        true => Err(ArgumentProblem::BadMenuLabel),
+        false => Ok(Some(label.len())),
+    }
 }
 
 fn flag(value: Option<Value<'_>>, name: &'static str) -> Result<bool, ArgumentProblem> {
@@ -748,6 +781,12 @@ fn names_of(object: Object<'_>, out: &mut crate::json::JsonWriter<'_>, shown: us
 /// `wm_type`'s text in `buffer`, the words buffer, that [`Checked::text`] measures.
 pub fn typed_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.text?)?).ok()
+}
+
+/// `wm_menu_choose`'s label in `buffer`, the words buffer, that [`Checked::menu_label`]
+/// measures.
+pub fn menu_label_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.menu_label?)?).ok()
 }
 
 /// `wm_press`'s keys in `buffer`, the words buffer, that [`Checked::keys`] measures.
@@ -1101,9 +1140,34 @@ mod tests {
             Some(MAX_TYPED_TEXT_BYTES)
         );
         let (result, _) = checked("wm_menu_choose", r#"{"window":5,"menu":5,"entry":15}"#);
-        assert_eq!(result.unwrap().menu_item, Some((5, 15)));
+        let result = result.unwrap();
+        assert_eq!((result.menu_item, result.menu_label), (Some((5, 15)), None));
+        let (result, buffers) = checked(
+            "wm_menu_choose",
+            r#"{"window":5,"menu":1,"entry":0,"label":"Save\u2026"}"#,
+        );
+        assert_eq!(
+            menu_label_text(&result.unwrap(), &buffers.words),
+            Some("Save\u{2026}")
+        );
         let (result, _) = checked("wm_menu_list", r#"{"window":5}"#);
         assert_eq!(result.unwrap().menu_item, None);
+        let longest = format!(
+            r#"{{"window":1,"menu":0,"entry":0,"label":"{}"}}"#,
+            "x".repeat(MAX_MENU_LABEL_BYTES)
+        );
+        assert_eq!(
+            checked("wm_menu_choose", &longest).0.unwrap().menu_label,
+            Some(MAX_MENU_LABEL_BYTES)
+        );
+        let too_long = format!(
+            r#"{{"window":1,"menu":0,"entry":0,"label":"{}"}}"#,
+            "x".repeat(MAX_MENU_LABEL_BYTES + 1)
+        );
+        assert_eq!(
+            checked("wm_menu_choose", &too_long).0,
+            Err(ArgumentProblem::BadMenuLabel)
+        );
         for (arguments, problem) in [
             (
                 r#"{"window":1,"menu":6,"entry":0}"#,
@@ -1125,6 +1189,14 @@ mod tests {
             (
                 r#"{"window":1,"entry":0}"#,
                 ArgumentProblem::Missing("menu"),
+            ),
+            (
+                r#"{"window":1,"menu":0,"entry":0,"label":"a\tb"}"#,
+                ArgumentProblem::BadMenuLabel,
+            ),
+            (
+                r#"{"window":1,"menu":0,"entry":0,"label":7}"#,
+                ArgumentProblem::BadMenuLabel,
             ),
         ] {
             assert_eq!(

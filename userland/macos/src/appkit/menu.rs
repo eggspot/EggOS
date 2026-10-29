@@ -165,16 +165,17 @@ fn changed(item: Id) {
     }
 }
 
-fn perform(item: Id) {
+fn perform(item: Id, window: Id) {
     let fields = item_fields(item);
     if fields.separator || fields.disabled || fields.action == 0 {
         return;
     }
-    application::send_action(fields.action as Sel, fields.target, item);
+    application::send_action_in(window, fields.action as Sel, fields.target, item);
 }
 
-/// The menu in the top bar chose entry `entry` of menu `shown` (both as sent).
-pub fn chosen(shown: usize, entry: usize) {
+/// The menu in the top bar chose entry `entry` of menu `shown` (both as sent) of `window`'s
+/// server window: the item's action goes along `window`'s responder chain, key or not.
+pub fn chosen(window: Id, shown: usize, entry: usize) {
     if shown >= SHOWN_MENUS.load(Ordering::Relaxed) || main_menu().is_null() {
         return;
     }
@@ -187,7 +188,7 @@ pub fn chosen(shown: usize, entry: usize) {
         return;
     }
     if let Some(&chosen) = menu_fields(submenu).items.as_slice().get(entry) {
-        perform(chosen);
+        perform(chosen, window);
     }
 }
 
@@ -215,17 +216,21 @@ fn find_key_equivalent(menu: Id, typed: u32, flags: u64) -> Option<Id> {
     None
 }
 
-/// Sends the action of the main menu's item whose key equivalent `event` (a key press) is;
-/// whether there was one.
+/// Sends the action of the main menu's item whose key equivalent `event` (a key press) is,
+/// along the responder chain of the window the key went to; whether there was one.
 pub fn perform_key_equivalent(event: Id) -> bool {
     let main = main_menu();
     if main.is_null() {
         return false;
     }
-    let flags = event::fields(event).flags;
-    match find_key_equivalent(main, event::typed(event), flags) {
+    let fields = event::fields(event);
+    let window = match fields.window {
+        none if none.is_null() => application::key_window(),
+        window => window,
+    };
+    match find_key_equivalent(main, event::typed(event), fields.flags) {
         Some(item) => {
-            perform(item);
+            perform(item, window);
             true
         }
         None => false,

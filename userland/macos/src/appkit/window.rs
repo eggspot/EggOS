@@ -18,8 +18,15 @@ use eggos_macos_gui::keys::modifier;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 
+const NS_WINDOW_STYLE_MASK_TITLED: u64 = 1;
 const NS_WINDOW_STYLE_MASK_CLOSABLE: u64 = 1 << 1;
+const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: u64 = 1 << 2;
 const NS_WINDOW_STYLE_MASK_RESIZABLE: u64 = 1 << 3;
+const STANDARD_STYLE: u64 = NS_WINDOW_STYLE_MASK_TITLED
+    | NS_WINDOW_STYLE_MASK_CLOSABLE
+    | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
+    | NS_WINDOW_STYLE_MASK_RESIZABLE;
+const NS_BACKING_STORE_BUFFERED: u64 = 2;
 
 /// A window's fields.
 #[repr(C)]
@@ -88,6 +95,28 @@ pub fn forget_tree(window: Id, root: Id) {
         }
     }
     fields.dirty = true;
+}
+
+fn holds_view(window: Id, responder: Id) -> bool {
+    !responder.is_null()
+        && super::is(responder, &super::NSVIEW)
+        && view::fields(responder).window == window
+}
+
+/// Takes `view` out of its superview's subviews, or out of the window whose content view it
+/// is, so that it can be put somewhere else; the caller holds its own reference to it first.
+pub fn take_out(view: Id) {
+    if !view::fields(view).superview.is_null() {
+        view::detach(view);
+        return;
+    }
+    let owner = view::fields(view).window;
+    if owner.is_null() || fields(owner).content_view != view {
+        return;
+    }
+    forget_tree(owner, view);
+    view::attach_to_window(view, core::ptr::null_mut());
+    store(&mut fields(owner).content_view, core::ptr::null_mut());
 }
 
 /// Makes `responder` (a view of `window`, or nil for the window) the first responder, as
@@ -439,8 +468,8 @@ extern "C" fn init(this: Id, _: Sel) -> Id {
         this,
         sel!("initWithContentRect:styleMask:backing:defer:"),
         Frame::default(),
-        0,
-        2,
+        STANDARD_STYLE,
+        NS_BACKING_STORE_BUFFERED,
         0,
     )
 }
@@ -477,6 +506,7 @@ extern "C" fn set_content_view(this: Id, _: Sel, content: Id) {
     fields(this).tracking = core::ptr::null_mut();
     store(&mut fields(this).content_view, content);
     if !content.is_null() {
+        take_out(content);
         view::attach_to_window(content, this);
         set_content_frame(this);
     }
@@ -540,6 +570,9 @@ extern "C" fn make_first_responder_method(this: Id, _: Sel, responder: Id) -> u8
     } else {
         responder
     };
+    if !responder.is_null() && !holds_view(this, responder) {
+        return 0;
+    }
     u8::from(make_first_responder(this, responder))
 }
 
@@ -548,7 +581,9 @@ extern "C" fn initial_first_responder_method(this: Id, _: Sel) -> Id {
 }
 
 extern "C" fn set_initial_first_responder(this: Id, _: Sel, view: Id) {
-    fields(this).initial_first_responder = view;
+    if view.is_null() || holds_view(this, view) {
+        fields(this).initial_first_responder = view;
+    }
 }
 
 extern "C" fn background_colour(this: Id, _: Sel) -> Id {

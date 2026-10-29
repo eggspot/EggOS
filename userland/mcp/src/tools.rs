@@ -618,12 +618,14 @@ pub const TOOLS: [Tool; 21] = [
         title: "Choose a menu item",
         description: "Chooses an enabled item of a window's main menu, as `wm menu --choose` \
                       does and as a person's click on it in the top bar would: menu and entry \
-                      are the numbers wm_menu_list shows. Works on covered and minimised \
-                      windows without raising them. Refused while a person is using the \
-                      machine: wait a moment and retry. Needs the run grant: a menu item can do \
-                      anything the app can.",
-        input_schema: r#"{"type":"object","properties":{"window":{"type":"integer","minimum":0,"maximum":999999999,"description":"The window's id, as wm_list shows it."},"menu":{"type":"integer","minimum":0,"maximum":5,"description":"The menu's number, as wm_menu_list shows it."},"entry":{"type":"integer","minimum":0,"maximum":15,"description":"The item's number in that menu, as wm_menu_list shows it."}},"required":["window","menu","entry"],"additionalProperties":false}"#,
-        arguments: &["window", "menu", "entry"],
+                      are the numbers wm_menu_list shows; give the item's label too, so that a \
+                      menu the app changed since is refused instead of choosing another item. \
+                      Works on covered and minimised windows without raising them. Refused \
+                      while a person is using the machine (wait a moment and retry) and while \
+                      the app shows a dialog (answer it first). Needs the run grant: a menu item \
+                      can do anything the app can.",
+        input_schema: r#"{"type":"object","properties":{"window":{"type":"integer","minimum":0,"maximum":999999999,"description":"The window's id, as wm_list shows it."},"menu":{"type":"integer","minimum":0,"maximum":5,"description":"The menu's number, as wm_menu_list shows it."},"entry":{"type":"integer","minimum":0,"maximum":15,"description":"The item's number in that menu, as wm_menu_list shows it."},"label":{"type":"string","maxLength":64,"description":"The item's label, as wm_menu_list shows it (not case-sensitive); the choice is refused if the entry has another."}},"required":["window","menu","entry"],"additionalProperties":false}"#,
+        arguments: &["window", "menu", "entry", "label"],
         kind: Kind::WmMenuChoose,
         grant: Some(Grant::Run),
         confirmation: Confirmation::Never,

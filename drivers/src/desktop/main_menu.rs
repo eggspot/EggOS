@@ -388,15 +388,19 @@ impl Desktop {
     /// Chooses entry `entry` of menu `menu` of window `window`'s main menu for a command or an
     /// agent (`CHOOSE_MENU`), as a person's choice in the top bar does: the window's menu closes
     /// if it is open, and the window gets `MenuChosen`. It works on a covered, minimised or
-    /// unfocused window, in every profile, and moves neither focus nor the pointer.
-    /// [`WindowError::NoSuchWindow`] for no such window, [`WindowError::Busy`] while
-    /// [`Self::person_is_active`], [`WindowError::Invalid`] when the window has no such enabled
-    /// item, [`WindowError::QueueFull`] when its client's queue has no room (nothing is sent).
+    /// unfocused window, in every profile, and moves neither focus nor the pointer. `label` is
+    /// the entry's label as the caller read it (`GET_MENU`): a menu set again since then with
+    /// another item there is not chosen by mistake. [`WindowError::NoSuchWindow`] for no such
+    /// window, [`WindowError::Busy`] while [`Self::person_is_active`], [`WindowError::Invalid`]
+    /// when the window has no such enabled item, its label is not `label`, or the window's
+    /// client has a dialog open (as a macOS app's menus are while it shows an alert),
+    /// [`WindowError::QueueFull`] when its client's queue has no room (nothing is sent).
     pub fn choose_menu(
         &mut self,
         window: u32,
         menu: u32,
         entry: u32,
+        label: &[u8],
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Result<(), WindowError> {
@@ -405,10 +409,12 @@ impl Desktop {
             return Err(WindowError::Busy);
         }
         let (menu, entry) = (menu as usize, entry as usize);
-        let enabled = self.main_menus[slot]
-            .as_deref()
-            .is_some_and(|main| menu < main.menu_count() && main.is_enabled(menu, entry));
-        if !enabled {
+        let enabled = self.main_menus[slot].as_deref().is_some_and(|main| {
+            menu < main.menu_count()
+                && main.is_enabled(menu, entry)
+                && main.entry_label(menu, entry).as_bytes() == label
+        });
+        if !enabled || self.has_dialog(self.window_at(slot).client) {
             return Err(WindowError::Invalid);
         }
         if events.room(self.window_at(slot).client) == 0 {
@@ -450,6 +456,13 @@ impl Desktop {
                 menu.entry_kind(open.menu, entry).height(),
             )
         })
+    }
+
+    fn has_dialog(&self, client: u16) -> bool {
+        self.windows
+            .iter()
+            .flatten()
+            .any(|window| window.role == Role::Dialog && window.client == client)
     }
 
     /// Whose main menu the top bar shows now: the focused window's, or its parent's when the

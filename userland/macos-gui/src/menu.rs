@@ -4,7 +4,12 @@
 //! equivalent answers.
 
 use crate::keys::{function, modifier};
+use eggos_toolkit::input::RECORD_SIZE;
 use eggos_toolkit::text::Text;
+
+/// The kind of the event record the server sends when an item of a window's main menu was
+/// chosen (`MenuChosen`).
+pub const MENU_CHOSEN: u16 = 14;
 
 /// The most bytes a pool holds.
 pub const POOL_CAPACITY: usize = 248;
@@ -113,6 +118,32 @@ impl Pool {
     /// Adds a separator to the last menu; false when it does not fit.
     pub fn separator(&mut self) -> bool {
         self.entry(b'-', "", None)
+    }
+}
+
+/// A choice of a main menu as a `MenuChosen` record carries it: the server's id of the window
+/// whose menu it was, the menu, and the entry in that menu (separators counted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chosen {
+    pub window: u32,
+    pub menu: usize,
+    pub entry: usize,
+}
+
+impl Chosen {
+    /// The choice `record` carries; `None` for a record of another kind.
+    pub fn from_record(record: &[u8; RECORD_SIZE]) -> Option<Self> {
+        if u16::from_ne_bytes([record[0], record[1]]) != MENU_CHOSEN {
+            return None;
+        }
+        let word = |at: usize| {
+            u32::from_ne_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]])
+        };
+        Some(Self {
+            window: u32::from(u16::from_ne_bytes([record[2], record[3]])),
+            menu: word(8) as usize,
+            entry: word(12) as usize,
+        })
     }
 }
 
@@ -247,6 +278,26 @@ mod tests {
         let long = "x".repeat(POOL_CAPACITY);
         assert!(!pool.item(&long, "", true));
         assert_eq!(pool.as_bytes(), b"MA\n");
+    }
+
+    #[test]
+    fn a_menu_chosen_record_names_its_window_menu_and_entry() {
+        let mut record = [0u8; RECORD_SIZE];
+        record[0..2].copy_from_slice(&MENU_CHOSEN.to_ne_bytes());
+        record[2..4].copy_from_slice(&130u16.to_ne_bytes());
+        record[4..8].copy_from_slice(&5000u32.to_ne_bytes());
+        record[8..12].copy_from_slice(&1u32.to_ne_bytes());
+        record[12..16].copy_from_slice(&2u32.to_ne_bytes());
+        assert_eq!(
+            Chosen::from_record(&record),
+            Some(Chosen {
+                window: 130,
+                menu: 1,
+                entry: 2
+            })
+        );
+        record[0..2].copy_from_slice(&13u16.to_ne_bytes());
+        assert_eq!(Chosen::from_record(&record), None);
     }
 
     #[test]
