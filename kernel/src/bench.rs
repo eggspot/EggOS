@@ -53,12 +53,15 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 55] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
         ("linux_clock_monotonic_read", |_, n| {
             linux_clock_monotonic_read::<P>(n)
+        }),
+        ("linux_clock_realtime_read", |_, n| {
+            linux_clock_realtime_read::<P>(n)
         }),
         ("breakpoint_round_trip", |_, n| {
             breakpoint_round_trip::<P>(n)
@@ -188,6 +191,12 @@ fn clock_read<P: Platform>(n: u64) {
 fn linux_clock_monotonic_read<P: Platform>(n: u64) {
     for _ in 0..n {
         black_box(linux::time::monotonic_nanoseconds::<P>());
+    }
+}
+
+fn linux_clock_realtime_read<P: Platform>(n: u64) {
+    for _ in 0..n {
+        black_box(crate::wall_clock::nanoseconds::<P>());
     }
 }
 

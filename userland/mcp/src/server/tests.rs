@@ -6,7 +6,7 @@
 )]
 
 use super::*;
-use crate::arguments::{MAX_KEYS_BYTES, MAX_TYPED_TEXT_BYTES};
+use crate::arguments::{Checked, MAX_KEYS_BYTES, MAX_TYPED_TEXT_BYTES, TimeText};
 use crate::audit::parse_line;
 use crate::fake::{Buffers, FakeSystem, Harness};
 use crate::grants::Grants;
@@ -175,9 +175,11 @@ fn the_tools_are_listed_once_initialized() {
             "ps",
             "wm_list",
             "app_list",
+            "clock_get",
             "tee",
             "trash",
             "run",
+            "clock_set",
             "app_install",
             "app_open",
             "edit_open",
@@ -638,6 +640,12 @@ fn without_grants_every_changing_tool_is_refused_naming_its_grant_before_its_pat
             "edit_open",
             r#"{"path":"/home/root/notes.txt"}"#.to_owned(),
             "install",
+        ),
+        (
+            8,
+            "clock_set",
+            r#"{"time":"2030-01-02T03:04:05Z","confirm":true}"#.to_owned(),
+            "run",
         ),
     ] {
         let answer = harness.call(id, tool, &arguments);
@@ -1927,4 +1935,65 @@ fn the_instructions_frame_window_images_as_data() {
         .unwrap();
     assert!(instructions.contains("wm_capture's images"));
     assert!(instructions.ends_with("Grants on this machine: read.\"}}"));
+}
+
+#[test]
+fn clock_get_reads_the_clock_through_date_with_no_grant() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "clock_get", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/date", "-u", "+%Y-%m-%dT%H:%M:%SZ"]
+    );
+}
+
+#[test]
+fn clock_set_needs_the_form_a_yes_and_runs_date_s() {
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    for (id, arguments) in [
+        (1, r#"{"time":"2030-01-02 03:04:05","confirm":true}"#),
+        (2, r#"{"time":"2030-01-02T03:04:05+01:00","confirm":true}"#),
+        (3, r#"{"time":20300102,"confirm":true}"#),
+        (4, r#"{"confirm":true}"#),
+    ] {
+        let answer = harness.call(id, "clock_set", arguments);
+        assert_eq!(error_code(&answer), -32602, "{arguments}");
+    }
+    let answer = harness.call(5, "clock_set", r#"{"time":"2030-01-02T03:04:05Z"}"#);
+    assert!(texts(&answer)[0].contains("confirm: true"), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    let answer = harness.call(
+        6,
+        "clock_set",
+        r#"{"time":"2030-01-02T03:04:05Z","confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/date", "-u", "-s", "2030-01-02T03:04:05Z"]
+    );
+    let (tool, outcome, logged, _) = last_record(&harness);
+    assert_eq!(tool, "clock_set");
+    assert_ne!(outcome, "refused");
+    assert!(
+        logged.contains(r#""time":"2030-01-02T03:04:05Z""#),
+        "{logged}"
+    );
+}
+
+#[test]
+fn a_clock_set_question_names_the_time() {
+    let tool = crate::tools::find("clock_set").unwrap();
+    let checked = Checked {
+        time: Some(TimeText::of(b"2030-01-02T03:04:05Z").unwrap()),
+        ..Checked::default()
+    };
+    let mut out = [0u8; 256];
+    let length = question_text(tool, &checked, FileState::Missing, "", &mut out);
+    assert_eq!(
+        core::str::from_utf8(&out[..length]).unwrap(),
+        "An agent asks to set the machine's clock to 2030-01-02T03:04:05Z (UTC). Allow it? \
+         (EggOS, tool clock_set)"
+    );
 }

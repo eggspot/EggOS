@@ -201,6 +201,7 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-hal",
     "eggos-drivers",
     "eggos-font",
+    "eggos-calendar",
     "eggos-settings-file",
     "eggos-app-manifest",
     "eggos-wayland",
@@ -304,10 +305,10 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 27] = [
-    "agentlog", "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv",
-    "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true",
-    "uname", "uptime", "wc", "wm",
+const COREUTILS: [&str; 29] = [
+    "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock", "ls",
+    "mkdir", "mv", "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch",
+    "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -692,6 +693,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::persistent::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
+    qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;

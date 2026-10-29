@@ -1,6 +1,6 @@
-//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime`, `ps` and `net/unix` (D138),
-//! read-only regular files made when they are opened, mounted on `/proc` at boot when the root
-//! file system has that directory.
+//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138) and
+//! `driver/rtc` (D150), read-only regular files made when they are opened, mounted on `/proc` at
+//! boot when the root file system has that directory.
 //!
 //! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
 //!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
@@ -14,6 +14,9 @@
 //!   waited for) and its name, separated by single spaces. `ps` reads it.
 //! - `net/unix`: the bound `AF_UNIX` sockets, in Linux's format (D138,
 //!   [`super::unix_socket::proc_net_unix`]).
+//! - `driver/rtc`: the real-time clock's date and time, read from the clock when the file is
+//!   opened, in Linux's layout (`rtc_time`, `rtc_date`, `24hr`), only on a machine with one;
+//!   `hwclock` reads it.
 
 use super::process_table::{NAME_LENGTH, TABLE};
 use crate::memory;
@@ -26,8 +29,9 @@ use eggos_hal::memory::FRAME_SIZE;
 
 const ROOT: u64 = 1;
 
-const FILES: [(&[u8], u64); 5] = [
+const FILES: [(&[u8], u64); 6] = [
     (b"cmdline", 5),
+    (b"driver", 8),
     (b"meminfo", 2),
     (b"net", 6),
     (b"ps", 3),
@@ -40,14 +44,21 @@ const NET_FILES: [(&[u8], u64); 1] = [(b"unix", 7)];
 
 const NET_UNIX: u64 = 7;
 
+const DRIVER: u64 = 8;
+
+const DRIVER_FILES: [(&[u8], u64); 1] = [(b"rtc", 9)];
+
+const DRIVER_RTC: u64 = 9;
+
 fn is_directory(node: u64) -> bool {
-    matches!(node, ROOT | NET)
+    matches!(node, ROOT | NET | DRIVER)
 }
 
 fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
     match directory {
         ROOT => &FILES,
         NET => &NET_FILES,
+        DRIVER if crate::wall_clock::has_clock() => &DRIVER_FILES,
         _ => &[],
     }
 }
@@ -137,6 +148,13 @@ pub fn cmdline_text(line: &[u8]) -> Option<Vec<u8>> {
     Some(text)
 }
 
+/// `/proc/driver/rtc`'s text for a real-time clock reading `seconds` since the epoch (D150).
+pub fn driver_rtc(seconds: u64) -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    eggos_calendar::format::proc_driver_rtc(&mut text, seconds as i64).ok()?;
+    Some(text.0)
+}
+
 fn cmdline<P: Platform>() -> Option<Vec<u8>> {
     let mut text = None;
     P::command_line(&mut |line| text = cmdline_text(line));
@@ -204,8 +222,11 @@ impl<P: Platform> FileSystem for Proc<P> {
     }
 
     fn parent(&self, node: u64) -> u64 {
-        match NET_FILES.iter().any(|&(_, file)| file == node) {
-            true => NET,
+        if NET_FILES.iter().any(|&(_, file)| file == node) {
+            return NET;
+        }
+        match DRIVER_FILES.iter().any(|&(_, file)| file == node) {
+            true => DRIVER,
             false => ROOT,
         }
     }
@@ -215,6 +236,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             FILES
                 .iter()
                 .chain(NET_FILES.iter())
+                .chain(DRIVER_FILES.iter())
                 .find(|&&(_, file)| file == node)
                 .map_or(&[][..], |(name, _)| name),
         )
@@ -237,6 +259,10 @@ impl<P: Platform> FileSystem for Proc<P> {
             PS => ps(),
             CMDLINE => cmdline::<P>(),
             NET_UNIX => super::unix_socket::proc_net_unix(),
+            DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
+                Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -283,6 +309,14 @@ mod tests {
     }
 
     #[test]
+    fn driver_rtc_is_linux_s_layout() {
+        assert_eq!(
+            driver_rtc(1_793_282_709).unwrap(),
+            b"rtc_time\t: 14:05:09\nrtc_date\t: 2026-10-29\n24hr\t\t: yes\n"
+        );
+    }
+
+    #[test]
     fn the_root_lists_and_finds_its_files_and_net() {
         let proc = Proc::<crate::tests::TestPlatform>::new();
         let names: Vec<Vec<u8>> = (0..)
@@ -291,10 +325,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [&b"cmdline"[..], b"meminfo", b"net", b"ps", b"uptime"]
+            [&b"cmdline"[..], b"driver", b"meminfo", b"net", b"ps", b"uptime"]
         );
         assert_eq!(proc.kind(NET), NodeKind::Directory);
-        assert_eq!(proc.entry(ROOT, 2).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.entry(ROOT, 3).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.kind(DRIVER), NodeKind::Directory);
+        assert_eq!(proc.parent(DRIVER_RTC), DRIVER);
+        assert_eq!(proc.parent(DRIVER), ROOT);
+        assert_eq!(proc.name(DRIVER_RTC).as_bytes(), b"rtc");
         assert_eq!(proc.lookup(NET, b"unix"), Some(NET_UNIX));
         assert_eq!(proc.lookup(ROOT, b"unix"), None);
         assert_eq!(proc.parent(NET_UNIX), NET);

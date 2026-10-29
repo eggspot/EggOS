@@ -29,6 +29,7 @@ pub mod number {
     pub const GETTID: usize = 186;
     pub const FUTEX: usize = 202;
     pub const SET_TID_ADDRESS: usize = 218;
+    pub const CLOCK_SETTIME: usize = 227;
     pub const CLOCK_GETTIME: usize = 228;
     pub const CLOCK_NANOSLEEP: usize = 230;
     pub const EXIT_GROUP: usize = 231;
@@ -83,6 +84,7 @@ pub mod number {
     pub const SET_TID_ADDRESS: usize = 96;
     pub const FUTEX: usize = 98;
     pub const SET_ROBUST_LIST: usize = 99;
+    pub const CLOCK_SETTIME: usize = 112;
     pub const CLOCK_GETTIME: usize = 113;
     pub const CLOCK_NANOSLEEP: usize = 115;
     pub const SIGALTSTACK: usize = 132;

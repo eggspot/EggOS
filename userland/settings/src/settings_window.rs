@@ -1,11 +1,13 @@
 //! The Settings window (docs/ux/desktop-v0.3-gui.md section 10, docs/ux/toolkit-v0.3.md
 //! section 11): the sidebar with its search and its panes, and the panes: Appearance with the
-//! profile picker, Display, Keyboard, Mouse, Components and About. It holds only widgets and
-//! answers what the user does with what the program must do; the program talks to the system.
+//! profile picker, Display, Keyboard, Mouse, Date & time (D150, docs/ux/date-time-v0.3.md),
+//! Components and About. It holds only widgets and answers what the user does with what the
+//! program must do; the program talks to the system.
 
 use crate::art;
 use crate::facts::Facts;
 use core::fmt::Write;
+use eggos_calendar::{ParseError, parse_setting};
 use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
@@ -41,12 +43,17 @@ const ABOUT_LINES: i32 = 104;
 const ABOUT_LINE_PITCH: i32 = 20;
 const EGG_HEIGHT: i32 = 48;
 
+const SET_FIELD: (i32, i32, i32, i32) = (144, 110, 200, 28);
+const SET_BUTTON: (i32, i32, i32, i32) = (352, 110, 96, 28);
+const STATUS_LINE: i32 = 156;
+
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 6] = [
+pub const PANES: [&str; 7] = [
     "Appearance",
     "Display",
     "Keyboard",
     "Mouse",
+    "Date & time",
     "Components",
     "About",
 ];
@@ -55,13 +62,16 @@ const APPEARANCE: usize = 0;
 const DISPLAY: usize = 1;
 const KEYBOARD: usize = 2;
 const MOUSE: usize = 3;
-const COMPONENTS: usize = 4;
-const ABOUT: usize = 5;
+/// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
+pub const DATE_AND_TIME: usize = 4;
+const COMPONENTS: usize = 5;
+/// The `About` pane's place in [`PANES`].
+pub const ABOUT: usize = 6;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 6] = [
+const PANE_WORDS: [&[&str]; 7] = [
     &[
         "theme",
         "layout",
@@ -85,6 +95,20 @@ const PANE_WORDS: [&[&str]; 6] = [
     ],
     &["Layout", "Key repeat", "shortcuts"],
     &["Primary button", "Wheel", "trackpad", "pointer"],
+    &[
+        "clock",
+        "time",
+        "date",
+        "time zone",
+        "timezone",
+        "UTC",
+        "RTC",
+        "hwclock",
+        "hardware clock",
+        "calendar",
+        "Now",
+        "Set to",
+    ],
     &["layers", "apps", "Remove"],
     &[
         "version", "system", "licence", "license", "memory", "CPU", "uptime",
@@ -102,7 +126,26 @@ pub enum Request {
     /// Make the profile at this index of the settings file's `PROFILES` the desktop's and
     /// save it.
     SetProfile(usize),
+    /// Set the clock to these seconds since the epoch, then say how it went
+    /// ([`SettingsWindow::show_set_outcome`]).
+    SetTime(u64),
 }
+
+/// How setting the clock went, as the `Date & time` pane's status line says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOutcome {
+    /// The clock is set, and the hardware clock holds the new time.
+    Saved,
+    /// The clock is set, but there is no hardware clock (or it did not take the time).
+    NoHardwareClock,
+    /// The system refused: this user may not set the clock.
+    NotAllowed,
+    /// The system could not set the clock for another reason.
+    Failed,
+}
+
+const SHOWN_WITH_HARDWARE_CLOCK: &str = "From the hardware clock, read at boot.";
+const SHOWN_WITHOUT_HARDWARE_CLOCK: &str = "No hardware clock: the time started at 1970 at boot.";
 
 /// The primary modifier of each profile, in `PROFILES` order.
 pub const PRIMARY_MODIFIERS: [&str; 3] = ["Ctrl", "Cmd (Super key)", "Ctrl"];
@@ -113,12 +156,16 @@ pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 struct Widgets {
     search: WidgetId,
     list: WidgetId,
-    panes: [WidgetId; 6],
+    panes: [WidgetId; 7],
     cards: WidgetId,
     modifier: WidgetId,
     controls: WidgetId,
     resolution: WidgetId,
     uptime: WidgetId,
+    now: WidgetId,
+    set_field: WidgetId,
+    set_button: WidgetId,
+    status: WidgetId,
 }
 
 /// The Settings window's widgets and what they show.
@@ -163,6 +210,19 @@ fn uptime_text(seconds: u64) -> Text<64> {
         seconds % 60
     );
     text
+}
+
+fn time_text(seconds: u64) -> Text<64> {
+    let mut text = Text::new();
+    let _ = eggos_calendar::format::sentence(&mut text, seconds as i64);
+    text
+}
+
+fn shown_status(facts: &Facts) -> &'static str {
+    match facts.hardware_clock {
+        true => SHOWN_WITH_HARDWARE_CLOCK,
+        false => SHOWN_WITHOUT_HARDWARE_CLOCK,
+    }
 }
 
 struct Builder<'a> {
@@ -259,7 +319,7 @@ impl SettingsWindow {
                 content_height: 0,
             },
         );
-        let panes = [(); 6].map(|()| build.pane(scroll));
+        let panes = [(); 7].map(|()| build.pane(scroll));
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
 
         let appearance = panes[APPEARANCE];
@@ -352,6 +412,44 @@ impl SettingsWindow {
             );
         }
 
+        let date_and_time = panes[DATE_AND_TIME];
+        build.heading(date_and_time, PANES[DATE_AND_TIME]);
+        let now = build.row(date_and_time, 0, "Now", time_text(facts.now_s).as_str());
+        build.label(
+            date_and_time,
+            PADDING,
+            FIRST_ROW + SETTING_ROW + TEXT_IN_ROW,
+            "Set to",
+            colour::TEXT,
+        );
+        let set_field = build.add(
+            Some(date_and_time),
+            Place::at(
+                SET_FIELD.0,
+                SET_FIELD.1,
+                Length::Px(SET_FIELD.2),
+                Length::Px(SET_FIELD.3),
+            ),
+            Kind::text_field("YYYY-MM-DD HH:MM", Escape::Clear),
+        );
+        let set_button = build.add(
+            Some(date_and_time),
+            Place::at(
+                SET_BUTTON.0,
+                SET_BUTTON.1,
+                Length::Px(SET_BUTTON.2),
+                Length::Px(SET_BUTTON.3),
+            ),
+            Kind::button("Set", true),
+        );
+        let status = build.label(
+            date_and_time,
+            PADDING,
+            STATUS_LINE,
+            shown_status(&facts),
+            colour::TEXT_DIM,
+        );
+
         let about = panes[ABOUT];
         build.add(
             Some(about),
@@ -404,6 +502,8 @@ impl SettingsWindow {
         );
 
         tree.set_enabled(radios, false);
+        tree.set_enabled(set_button, false);
+        tree.set_default_button(set_button);
         tree.set_shown(no_disk, !facts.on_disk);
         for (index, pane) in panes.iter().enumerate() {
             tree.set_shown(*pane, index == APPEARANCE);
@@ -422,6 +522,10 @@ impl SettingsWindow {
                 controls,
                 resolution,
                 uptime,
+                now,
+                set_field,
+                set_button,
+                status,
             },
             facts,
             pane: APPEARANCE,
@@ -462,6 +566,9 @@ impl SettingsWindow {
         self.tree.set_shown(self.widgets.panes[self.pane], false);
         self.tree.set_shown(self.widgets.panes[pane], true);
         self.pane = pane;
+        if pane == DATE_AND_TIME {
+            self.reset_date_and_time();
+        }
     }
 
     /// Shows profile `index` as the chosen one: its card selected, its modifier and control
@@ -481,6 +588,67 @@ impl SettingsWindow {
         self.facts.uptime_s = seconds;
         self.tree
             .set_text(self.widgets.uptime, uptime_text(seconds).as_str());
+    }
+
+    /// Shows `seconds` since the epoch as the time in the `Date & time` pane.
+    pub fn show_time(&mut self, seconds: u64) {
+        self.facts.now_s = seconds;
+        self.tree
+            .set_text(self.widgets.now, time_text(seconds).as_str());
+    }
+
+    /// Says on the `Date & time` pane's status line how setting the clock went, at `now_ms`.
+    /// After a set the field is emptied and `Set` disabled, the focus staying in the field; after
+    /// a refusal the typed text stays for correction.
+    pub fn show_set_outcome(&mut self, outcome: SetOutcome, now_ms: u32) {
+        let text = match outcome {
+            SetOutcome::Saved => "Set, and saved to the hardware clock.",
+            SetOutcome::NoHardwareClock => {
+                "Set. No hardware clock: this time lasts until power-off."
+            }
+            SetOutcome::NotAllowed => "Not allowed: this user may not set the clock.",
+            SetOutcome::Failed => "The clock could not be set.",
+        };
+        if matches!(outcome, SetOutcome::Saved | SetOutcome::NoHardwareClock) {
+            self.tree.set_text(self.widgets.set_field, "");
+            self.tree.set_enabled(self.widgets.set_button, false);
+            self.tree.set_focus(Some(self.widgets.set_field), now_ms);
+        }
+        self.set_status(text, colour::TEXT);
+    }
+
+    /// The `Date & time` pane's status line.
+    pub fn status_shown(&self) -> Option<&str> {
+        self.tree.text_of(self.widgets.status)
+    }
+
+    fn set_status(&mut self, text: &str, ink: u32) {
+        self.tree.set_text(self.widgets.status, text);
+        self.tree.change(self.widgets.status, |kind| {
+            if let Kind::Label { colour, .. } = kind {
+                *colour = ink;
+            }
+        });
+    }
+
+    fn reset_date_and_time(&mut self) {
+        self.tree.set_text(self.widgets.set_field, "");
+        self.tree.set_enabled(self.widgets.set_button, false);
+        self.set_status(shown_status(&self.facts), colour::TEXT_DIM);
+    }
+
+    fn ask_to_set(&mut self) -> Option<Request> {
+        let typed = Text::<255>::from(self.tree.text_of(self.widgets.set_field).unwrap_or(""));
+        let refusal = match parse_setting(typed.as_str(), self.facts.now_s as i64) {
+            Ok(seconds) => return Some(Request::SetTime(seconds as u64)),
+            Err(ParseError::NotADateAndTime) => {
+                "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM."
+            }
+            Err(ParseError::NeedsTheDate) => "Type the date too: YYYY-MM-DD HH:MM.",
+            Err(ParseError::YearOutOfRange) => "The year must be 2000 to 2099.",
+        };
+        self.set_status(refusal, colour::TEXT);
+        None
     }
 
     /// The facts shown.
@@ -520,6 +688,15 @@ impl SettingsWindow {
                 self.filter();
                 None
             }
+            Response::Edited(id) if id == widgets.set_field => {
+                let typed = self
+                    .tree
+                    .text_of(widgets.set_field)
+                    .is_some_and(|text| !text.is_empty());
+                self.tree.set_enabled(widgets.set_button, typed);
+                None
+            }
+            Response::Activated(id) if id == widgets.set_button => self.ask_to_set(),
             Response::Unused {
                 code: key::DOWN, ..
             } if self.tree.focus() == Some(widgets.search) => {
@@ -623,7 +800,7 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, 44 + 5 * 32 + 10);
+        click(&mut window, 40, 44 + 6 * 32 + 10);
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
@@ -672,5 +849,156 @@ mod tests {
     fn the_uptime_is_hours_minutes_and_seconds() {
         assert_eq!(uptime_text(3725).as_str(), "Up 1:02:05");
         assert_eq!(uptime_text(59).as_str(), "Up 0:00:59");
+    }
+
+    const DATE_AND_TIME_ROW: i32 = 44 + 4 * 32 + 10;
+
+    fn press(window: &mut SettingsWindow, code: u16, character: u32) -> Option<Request> {
+        let response = window.tree().handle(
+            Input::Key {
+                code,
+                pressed: true,
+                modifiers: Modifiers::default(),
+                character,
+            },
+            0,
+        );
+        window.respond(response, 0)
+    }
+
+    fn field_text(window: &SettingsWindow) -> Option<&str> {
+        window.widgets().text_of(window.widgets.set_field)
+    }
+
+    #[test]
+    fn the_date_and_time_pane_is_laid_out_and_found_as_the_design_says() {
+        use eggos_toolkit::geometry::Rect;
+        let mut window = SettingsWindow::new(Facts::example());
+        assert_eq!(PANES[DATE_AND_TIME], "Date & time");
+        click(&mut window, 40, DATE_AND_TIME_ROW);
+        assert_eq!(window.pane(), DATE_AND_TIME);
+        let tree = window.widgets();
+        let rect = |id: WidgetId| tree.rect(id).unwrap();
+        assert_eq!(
+            rect(window.widgets.set_field),
+            Rect::new(176 + 144, 110, 200, 28)
+        );
+        assert_eq!(
+            rect(window.widgets.set_button),
+            Rect::new(176 + 352, 110, 96, 28)
+        );
+        let now = rect(window.widgets.now);
+        assert_eq!((now.right(), now.y), (640 - 16, 76));
+        let status = rect(window.widgets.status);
+        assert_eq!((status.x, status.y), (176 + 16, 156));
+        assert_eq!(
+            tree.text_of(window.widgets.now),
+            Some("Thursday 29 October 2026, 14:05:09 UTC")
+        );
+        assert_eq!(
+            window.status_shown(),
+            Some("From the hardware clock, read at boot.")
+        );
+        for word in ["clock", "UTC", "rtc", "hwclock", "time zone", "set to"] {
+            for pane in 0..PANES.len() {
+                assert_eq!(
+                    pane_matches(pane, word),
+                    pane == DATE_AND_TIME,
+                    "{word} {pane}"
+                );
+            }
+        }
+        assert!(pane_matches(ABOUT, "time") && pane_matches(DATE_AND_TIME, "time"));
+        window.show_time(1_793_282_710);
+        assert_eq!(
+            window.widgets().text_of(window.widgets.now),
+            Some("Thursday 29 October 2026, 14:05:10 UTC")
+        );
+    }
+
+    #[test]
+    fn typing_a_moment_and_enter_asks_to_set_the_clock_and_errors_keep_the_text() {
+        let mut window = SettingsWindow::new(Facts::example());
+        click(&mut window, 40, DATE_AND_TIME_ROW);
+        let field = window.widgets().rect(window.widgets.set_field).unwrap();
+        click(&mut window, field.x + 10, field.y + 10);
+        assert_eq!(press(&mut window, key::ENTER, 13), None);
+        type_text(&mut window, "2026-10-29 14:05");
+        assert_eq!(
+            press(&mut window, key::ENTER, 13),
+            Some(Request::SetTime(1_793_282_700))
+        );
+        window.show_set_outcome(SetOutcome::Saved, 0);
+        assert_eq!(
+            window.status_shown(),
+            Some("Set, and saved to the hardware clock.")
+        );
+        assert_eq!(field_text(&window), Some(""));
+        assert_eq!(window.widgets().focus(), Some(window.widgets.set_field));
+        assert_eq!(press(&mut window, key::ENTER, 13), None);
+        for (typed, line) in [
+            (
+                "2026-02-30 10:00",
+                "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM.",
+            ),
+            ("29/10/2026", "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM."),
+            ("1999-12-31 23:59", "The year must be 2000 to 2099."),
+        ] {
+            type_text(&mut window, typed);
+            assert_eq!(press(&mut window, key::ENTER, 13), None, "{typed}");
+            assert_eq!(window.status_shown(), Some(line));
+            assert_eq!(field_text(&window), Some(typed));
+            press(&mut window, key::ESC, 27);
+            assert_eq!(field_text(&window), Some(""));
+        }
+        type_text(&mut window, "14:05:30");
+        assert_eq!(
+            press(&mut window, key::ENTER, 13),
+            Some(Request::SetTime(1_793_282_730))
+        );
+        window.show_set_outcome(SetOutcome::NotAllowed, 0);
+        assert_eq!(
+            window.status_shown(),
+            Some("Not allowed: this user may not set the clock.")
+        );
+        assert_eq!(field_text(&window), Some("14:05:30"));
+        click(&mut window, 40, 44 + 10);
+        click(&mut window, 40, DATE_AND_TIME_ROW);
+        assert_eq!(
+            window.status_shown(),
+            Some("From the hardware clock, read at boot.")
+        );
+        assert_eq!(field_text(&window), Some(""));
+    }
+
+    #[test]
+    fn without_a_hardware_clock_the_pane_says_so_and_wants_the_date() {
+        let mut window = SettingsWindow::new(Facts {
+            now_s: 12,
+            hardware_clock: false,
+            ..Facts::example()
+        });
+        click(&mut window, 40, DATE_AND_TIME_ROW);
+        assert_eq!(
+            window.widgets().text_of(window.widgets.now),
+            Some("Thursday 1 January 1970, 00:00:12 UTC")
+        );
+        assert_eq!(
+            window.status_shown(),
+            Some("No hardware clock: the time started at 1970 at boot.")
+        );
+        let field = window.widgets().rect(window.widgets.set_field).unwrap();
+        click(&mut window, field.x + 10, field.y + 10);
+        type_text(&mut window, "14:05");
+        assert_eq!(press(&mut window, key::ENTER, 13), None);
+        assert_eq!(
+            window.status_shown(),
+            Some("Type the date too: YYYY-MM-DD HH:MM.")
+        );
+        window.show_set_outcome(SetOutcome::NoHardwareClock, 0);
+        assert_eq!(
+            window.status_shown(),
+            Some("Set. No hardware clock: this time lasts until power-off.")
+        );
     }
 }

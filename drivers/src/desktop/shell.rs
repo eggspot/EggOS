@@ -902,9 +902,24 @@ impl Desktop {
             super::draw_chip_text(canvas, chip, self.window_at(slot).title());
         });
         self.draw_menu_titles(canvas);
-        let clock = self.clock_rect();
-        canvas.text(clock.x, clock.y, self.clock_text(), colour::TEXT_DIM);
+        self.draw_clock(canvas);
         self.draw_power(canvas, bar);
+    }
+
+    fn draw_clock(&self, canvas: &mut Canvas<'_>) {
+        let clock = self.clock_rect();
+        let text = self.clock_text();
+        let width = text.len() as u32 * GLYPH_WIDTH as u32;
+        let ink = match self.clock_shows_time_of_day() {
+            true => colour::TEXT,
+            false => colour::TEXT_DIM,
+        };
+        canvas.text(
+            clock.x + clock.width.saturating_sub(width) / 2,
+            clock.y,
+            text,
+            ink,
+        );
     }
 
     fn draw_taskbar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
@@ -962,8 +977,7 @@ impl Desktop {
                 _ => {}
             }
         });
-        let clock = self.clock_rect();
-        canvas.text(clock.x, clock.y, self.clock_text(), colour::TEXT_DIM);
+        self.draw_clock(canvas);
         self.draw_power(canvas, bar);
     }
 

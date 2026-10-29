@@ -173,6 +173,12 @@ pub trait Platform: 'static {
         None
     }
 
+    /// Calls `clock` with the platform's own real-time clock, one no bus describes, if it has
+    /// one (D150): the PC's CMOS clock on x86_64, unless the ACPI FADT says there is none. The
+    /// device-tree clocks of AArch64 and RISC-V are drivers of the driver model instead. The
+    /// default: none.
+    fn platform_clock(_clock: &mut dyn FnMut(&dyn eggos_drivers::rtc::RealTimeClock)) {}
+
     /// Whether a device-tree device that says neither `dma-coherent` nor `dma-noncoherent` has
     /// coherent DMA: the architecture's convention (Linux's), true on RISC-V and false on Arm.
     const DEVICE_TREE_DMA_COHERENT_BY_DEFAULT: bool = true;

@@ -38,6 +38,11 @@ pub const MAX_COORDINATE: u64 = 65_535;
 /// The most wheel notches one scroll turns, either way (the window server's own limit).
 pub const MAX_NOTCHES: u64 = 16;
 
+/// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
+pub const TIME_BYTES: usize = 20;
+
+const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
+
 /// Why a call's arguments are refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentProblem {
@@ -81,6 +86,8 @@ pub enum ArgumentProblem {
     BadNotches,
     /// `max_width` is outside [`MIN_IMAGE_WIDTH`] to [`MAX_IMAGE_WIDTH`].
     BadImageWidth,
+    /// `time` is not `YYYY-MM-DDTHH:MM:SSZ`.
+    BadTime,
 }
 
 impl ArgumentProblem {
@@ -98,6 +105,7 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("text") => "text is required",
             ArgumentProblem::Missing("keys") => "keys is required",
             ArgumentProblem::Missing("dy") => "dy is required",
+            ArgumentProblem::Missing("time") => "time is required: YYYY-MM-DDTHH:MM:SSZ, in UTC",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
@@ -136,7 +144,40 @@ impl ArgumentProblem {
                 "dy must be a whole number of notches from -16 to 16, not 0"
             }
             ArgumentProblem::BadImageWidth => "max_width must be a whole number from 16 to 1568",
+            ArgumentProblem::BadTime => {
+                "time must be a date and time in UTC as YYYY-MM-DDTHH:MM:SSZ, such as \
+                 2026-10-29T14:05:09Z"
+            }
         }
+    }
+}
+
+/// `clock_set`'s `time`, kept whole: checked to have the form `YYYY-MM-DDTHH:MM:SSZ`, digits
+/// where it has them; whether it is a real moment in range is for `date -s`, its twin, to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TimeText([u8; TIME_BYTES]);
+
+impl TimeText {
+    /// `text` as a time, if it has the form.
+    pub fn of(text: &[u8]) -> Result<Self, ArgumentProblem> {
+        let shaped = text.len() == TIME_BYTES
+            && text.iter().zip(TIME_FORM).all(|(&byte, &form)| match form {
+                b'0' => byte.is_ascii_digit(),
+                _ => byte == form,
+            });
+        let mut bytes = [0u8; TIME_BYTES];
+        match shaped {
+            true => {
+                bytes.copy_from_slice(text);
+                Ok(Self(bytes))
+            }
+            false => Err(ArgumentProblem::BadTime),
+        }
+    }
+
+    /// The time's text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.0).unwrap_or("")
     }
 }
 
@@ -272,6 +313,8 @@ pub struct Checked {
     pub notches: Option<i32>,
     /// `wm_capture`'s widest image, in pixels.
     pub max_width: Option<u32>,
+    /// `clock_set`'s time.
+    pub time: Option<TimeText>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -366,6 +409,17 @@ pub fn check(
     }
     if tool.twin.operand == Operand::Window {
         window_arguments(tool.kind, &get, decoded.words, &mut checked)?;
+    }
+    if tool.kind == Kind::ClockSet {
+        checked.time = Some(match get("time") {
+            Some(Value::Str(text)) => {
+                let mut bytes = [0u8; TIME_BYTES];
+                let decoded = text.decode_into(&mut bytes).ok_or(ArgumentProblem::BadTime)?;
+                TimeText::of(decoded.as_bytes())?
+            }
+            Some(_) => return Err(ArgumentProblem::BadTime),
+            None => return Err(ArgumentProblem::Missing("time")),
+        });
     }
     Ok(checked)
 }

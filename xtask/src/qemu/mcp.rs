@@ -8,9 +8,11 @@
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
 //!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
-//!    paths outside the roots, hostile lines, and every tool that needs a grant refused with
-//!    its grant named (`wm_capture` with `view`).
-//! 2. `--mcp-allow view,write,run,install`: writing, replacing with `confirm`, reading back,
+//!    `clock_get` within five minutes of the host's clock (D150), paths outside the roots,
+//!    hostile lines, and every tool that needs a grant refused with its grant named
+//!    (`wm_capture` with `view`).
+//! 2. `--mcp-allow view,write,run,install`: `clock_set` refused without `confirm`, then a day
+//!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
 //!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
 //!    program stopped at its time limit), installing and opening an app; then the windows
 //!    (D143): Settings opened by name and captured at scale 1/2, a click on its macOS card
@@ -64,7 +66,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 6] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -74,11 +76,12 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
     ("ps", "{}", "eggmcpd"),
     ("wm_list", "{}", WM_LIST_HEADER),
     ("app_list", "{}", ""),
+    ("clock_get", "{}", "Z"),
 ];
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 12] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 13] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -90,6 +93,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 12] = [
         "write",
     ),
     ("run", r#"{"program":"/bin/uname"}"#, "run"),
+    (
+        "clock_set",
+        r#"{"time":"2030-01-02T03:04:05Z","confirm":true}"#,
+        "run",
+    ),
     (
         "app_install",
         r#"{"path":"/media/host/win-paint.exe"}"#,
@@ -511,6 +519,7 @@ fn session(client: &mut Client) -> Result<(), String> {
             &format!("{tool}'s output lacks `{wanted}`: {}", result.all()),
         )?;
     }
+    clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
     client.next_id += 1;
@@ -629,6 +638,58 @@ fn refused(client: &mut Client, tool: &str, arguments: &str, wanted: &str) -> Re
     )
 }
 
+const CLOCK_TOLERANCE_SECONDS: u64 = 5 * 60;
+const CLOCK_AHEAD_SECONDS: u64 = 86_400;
+
+fn iso_utc(seconds: u64) -> String {
+    let mut text = String::new();
+    let _ = eggos_calendar::format::iso(&mut text, seconds as i64);
+    format!("{}Z", text.replace(' ', "T"))
+}
+
+fn clock_seconds(text: &str) -> Option<u64> {
+    text.split_whitespace()
+        .find_map(|word| eggos_calendar::parse_setting(word, 0).ok())
+        .and_then(|seconds| u64::try_from(seconds).ok())
+}
+
+fn clock_near(client: &mut Client, expected: u64, at: &str) -> Result<(), String> {
+    let result = client.call("clock_get", "{}")?;
+    let read = clock_seconds(&result.all());
+    expect(
+        !result.is_error
+            && read.is_some_and(|read| read.abs_diff(expected) <= CLOCK_TOLERANCE_SECONDS),
+        client.arch,
+        &format!("at {at}, clock_get is not near {expected}: {}", result.all()),
+    )
+}
+
+fn set_clock(client: &mut Client) -> Result<(), String> {
+    let ahead = host_seconds() + CLOCK_AHEAD_SECONDS;
+    let time = iso_utc(ahead);
+    refused(
+        client,
+        "clock_set",
+        &format!(r#"{{"time":"{time}"}}"#),
+        "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "clock_set",
+        &format!(r#"{{"time":"{time}","confirm":true}}"#),
+        "UTC",
+    )?;
+    clock_near(client, ahead, "clock_set a day ahead")?;
+    let now = iso_utc(host_seconds());
+    succeeds(
+        client,
+        "clock_set",
+        &format!(r#"{{"time":"{now}","confirm":true}}"#),
+        "UTC",
+    )?;
+    clock_near(client, host_seconds(), "clock_set back")
+}
+
 fn granted_session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     let answer = client.request(
@@ -643,6 +704,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         &format!("initialize does not name the grants: {answer}"),
     )?;
     client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
+    set_clock(client)?;
     let first = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} first\n"}}"#);
     succeeds(client, "tee", &first, "Wrote")?;
     let second = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n"}}"#);

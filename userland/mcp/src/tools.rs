@@ -54,6 +54,10 @@ pub enum Kind {
     WmList,
     /// `app_list`.
     AppList,
+    /// `clock_get`: the machine's date and time (D150).
+    ClockGet,
+    /// `clock_set`: sets the machine's clock (D150).
+    ClockSet,
     /// `tee`: writes a file.
     Tee,
     /// `trash`: moves a file or folder to the Trash.
@@ -246,7 +250,7 @@ const OPERATING: Hints = Hints {
 };
 
 /// Every tool, in `tools/list`'s order.
-pub const TOOLS: [Tool; 17] = [
+pub const TOOLS: [Tool; 19] = [
     Tool {
         name: "ls",
         title: "List a folder",
@@ -324,6 +328,20 @@ pub const TOOLS: [Tool; 17] = [
         twin: twin("/bin/app", &["list"], Operand::None),
     },
     Tool {
+        name: "clock_get",
+        title: "Read the clock",
+        description: "Reads the machine's date and time, as `date -u` shows it: \
+                      YYYY-MM-DDTHH:MM:SSZ, in UTC (EggOS has no time zones yet). The clock \
+                      comes from the machine's hardware clock at boot.",
+        input_schema: NO_ARGUMENTS,
+        arguments: &[],
+        kind: Kind::ClockGet,
+        grant: None,
+        confirmation: Confirmation::Never,
+        hints: READING,
+        twin: twin("/bin/date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"], Operand::None),
+    },
+    Tool {
         name: "tee",
         title: "Write a file",
         description: "Writes a file below /home/root, as `tee` does with the content on its \
@@ -393,6 +411,26 @@ pub const TOOLS: [Tool; 17] = [
             stdin: Stdin::Empty,
             output: Output::Captured,
         },
+    },
+    Tool {
+        name: "clock_set",
+        title: "Set the clock",
+        description: "Sets the machine's date and time, as `date -u -s` does, and its hardware \
+                      clock, so the time lasts across a restart. The time is UTC, as \
+                      YYYY-MM-DDTHH:MM:SSZ, in the years 2000 to 2099. Every program and file \
+                      time on the machine follows it. Needs the run grant. Asks the user \
+                      first, or needs confirm: true when the client cannot ask.",
+        input_schema: r#"{"type":"object","properties":{"time":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","description":"The new date and time in UTC, as YYYY-MM-DDTHH:MM:SSZ."},"confirm":{"type":"boolean","description":"Set to true when the client cannot ask the user: a guard against accidents, not the user's approval.","default":false}},"required":["time"],"additionalProperties":false}"#,
+        arguments: &["time", "confirm"],
+        kind: Kind::ClockSet,
+        grant: Some(Grant::Run),
+        confirmation: Confirmation::Always,
+        hints: Hints {
+            read_only: false,
+            destructive: true,
+            idempotent: true,
+        },
+        twin: twin("/bin/date", &["-u", "-s"], Operand::None),
     },
     Tool {
         name: "app_install",

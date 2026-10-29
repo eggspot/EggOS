@@ -49,7 +49,8 @@ pub const FRAME_INTERVAL_MS: u64 = 16;
 /// Who the desktop serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Session {
-    /// The user: the desktop takes the pointer and key events and the clock shows the uptime.
+    /// The user: the desktop takes the pointer and key events and the clock shows the time of
+    /// day once the wall clock is set (D150), else the uptime.
     Interactive,
     /// A self-test: no input is taken and the clock stays at `up 0:00`, so the picture is the
     /// same on every boot.
@@ -120,7 +121,10 @@ static RENDER_PENDING: AtomicBool = AtomicBool::new(false);
 static APPLICATION_CURSOR_KEYS: AtomicBool = AtomicBool::new(false);
 static DRAWER: AtomicPtr<WaitQueue> = AtomicPtr::new(core::ptr::null_mut());
 static KEYS_TO_TERMINAL: AtomicBool = AtomicBool::new(true);
-static SHOWN_SECOND: AtomicU64 = AtomicU64::new(0);
+static SHOWN_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+const WALL_CLOCK_KEY: u64 = 1 << 63;
+const SECONDS_PER_MINUTE: u64 = 60;
 
 fn drawer() -> Option<&'static WaitQueue> {
     let drawer = DRAWER.load(Ordering::Acquire);
@@ -253,7 +257,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         );
     })?;
     KEYS_TO_TERMINAL.store(true, Ordering::Relaxed);
-    SHOWN_SECOND.store(0, Ordering::Relaxed);
+    SHOWN_CLOCK.store(0, Ordering::Relaxed);
     if session == Session::Interactive {
         input::subscribe();
     }
@@ -354,16 +358,24 @@ pub fn move_view<P: Platform>(change: ViewMove) {
 }
 
 /// Has the drawing thread look at the desktop when `input_queued` says input events wait for
-/// it, or when the clock's second changed since it last looked; called by the input poller, or
-/// without one by the thread [`start_clock`] starts.
+/// it, or when what the bar's clock shows changed since it last looked (the wall clock's minute
+/// once it is set, else the uptime's second, D150); called by the input poller, or without one
+/// by the thread [`start_clock`] starts.
 pub fn tick<P: Platform>(input_queued: bool) {
     if !is_active() {
         return;
     }
-    let second = P::clock_ticks() / P::clock_frequency().max(1);
-    let new_second = SHOWN_SECOND.load(Ordering::Relaxed) != second;
-    if input_queued || new_second {
+    let new_clock = SHOWN_CLOCK.load(Ordering::Relaxed) != clock_key::<P>();
+    if input_queued || new_clock {
         request_render::<P>();
+    }
+}
+
+fn clock_key<P: Platform>() -> u64 {
+    let wall = crate::wall_clock::seconds::<P>();
+    match eggos_calendar::is_set(wall as i64) {
+        true => WALL_CLOCK_KEY | wall / SECONDS_PER_MINUTE,
+        false => P::clock_ticks() / P::clock_frequency().max(1),
     }
 }
 
@@ -428,9 +440,12 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
         buffers.release_unused(desktop);
     }
     let sent = queues.sent();
-    let second = P::clock_ticks() / P::clock_frequency().max(1);
-    SHOWN_SECOND.store(second, Ordering::Relaxed);
-    desktop.set_uptime(second, damage);
+    let clock = clock_key::<P>();
+    SHOWN_CLOCK.store(clock, Ordering::Relaxed);
+    match clock & WALL_CLOCK_KEY != 0 {
+        true => desktop.set_wall_clock(crate::wall_clock::seconds::<P>(), damage),
+        false => desktop.set_uptime(clock, damage),
+    };
     KEYS_TO_TERMINAL.store(desktop.keys_go_to_terminal(), Ordering::Relaxed);
     Asked {
         action,

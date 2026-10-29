@@ -1,14 +1,16 @@
-//! Clocks and sleeping (M6, D73): `clock_gettime`, `clock_getres`, `gettimeofday`, x86_64's
-//! `time`, `nanosleep` and `clock_nanosleep`, and `clock_settime` and `settimeofday`, which no
-//! process may use yet. Rust's std reads `CLOCK_MONOTONIC` for `Instant` and `CLOCK_REALTIME`
-//! for `SystemTime`, and sleeps with `nanosleep`; the C libraries' `time`, `gettimeofday` and
-//! `sleep` reach the same calls when there is no vDSO.
+//! Clocks and sleeping (M6, D73, D150): `clock_gettime`, `clock_getres`, `gettimeofday`,
+//! x86_64's `time`, `nanosleep` and `clock_nanosleep`, and `clock_settime` and `settimeofday`.
+//! Rust's std reads `CLOCK_MONOTONIC` for `Instant` and `CLOCK_REALTIME` for `SystemTime`, and
+//! sleeps with `nanosleep`; the C libraries' `time`, `gettimeofday` and `sleep` reach the same
+//! calls when there is no vDSO.
 //!
-//! Every clock is the monotonic clock ([`Platform::clock_ticks`]) in nanoseconds. The wall
-//! clock starts at the Unix epoch with it, as Linux's does on a machine with no real-time
-//! clock, until a real-time clock driver sets it (after M5). The CPU-time clocks wait for
-//! per-thread CPU time; until then they are invalid, as Linux's are for a process that does
-//! not exist, and `clock()` reports that it cannot tell.
+//! The monotonic and boot-time clocks are the monotonic clock ([`Platform::clock_ticks`]) in
+//! nanoseconds; the realtime and TAI clocks, `gettimeofday` and `time` are the wall clock
+//! ([`crate::wall_clock`]), the monotonic clock plus the offset the real-time clock set at boot,
+//! or the epoch at boot on a machine without one, as on Linux. A privileged process (effective
+//! user id 0, D75) may set the wall clock, which also sets the real-time clock. The CPU-time
+//! clocks wait for per-thread CPU time; until then they are invalid, as Linux's are for a
+//! process that does not exist, and `clock()` reports that it cannot tell.
 
 use super::signals::{self, Interrupted};
 use super::thread::{self, LinuxThread};
@@ -50,28 +52,37 @@ const UNSETTABLE_SECONDS_FROM: i64 = i64::MAX / NANOSECONDS_PER_SECOND as i64 - 
 /// The size of a `struct timezone`: two `int`s.
 const TIMEZONE_SIZE: usize = 8;
 
-/// A clock the calls answer for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Clock {
-    /// Whether `clock_nanosleep` sleeps on it (Linux's high-resolution clocks); the others
-    /// are `EOPNOTSUPP` there.
     can_sleep: bool,
+    wall: bool,
 }
 
-/// The clock `id` (a `clockid_t`, an `int`) names, if the calls answer for it: the realtime,
-/// monotonic, boot-time and TAI clocks, with their raw and coarse variants. Not the CPU-time
-/// clocks (no per-thread CPU time yet), the alarm clocks (Linux's need a real-time clock
-/// device), or the clocks of a descriptor.
-fn clock(id: u64) -> Option<Clock> {
-    match id as u32 as i32 {
-        clock::REALTIME | clock::MONOTONIC | clock::BOOTTIME | clock::TAI => {
-            Some(Clock { can_sleep: true })
+impl Clock {
+    fn now<P: Platform>(self) -> u64 {
+        match self.wall {
+            true => crate::wall_clock::nanoseconds::<P>(),
+            false => monotonic_nanoseconds::<P>(),
         }
-        clock::MONOTONIC_RAW | clock::REALTIME_COARSE | clock::MONOTONIC_COARSE => {
-            Some(Clock { can_sleep: false })
-        }
-        _ => None,
     }
+
+    fn monotonic_at(self, time: u64) -> u64 {
+        match self.wall {
+            true => crate::wall_clock::monotonic_at(time),
+            false => time,
+        }
+    }
+}
+
+fn clock(id: u64) -> Option<Clock> {
+    let (can_sleep, wall) = match id as u32 as i32 {
+        clock::REALTIME | clock::TAI => (true, true),
+        clock::MONOTONIC | clock::BOOTTIME => (true, false),
+        clock::REALTIME_COARSE => (false, true),
+        clock::MONOTONIC_RAW | clock::MONOTONIC_COARSE => (false, false),
+        _ => return None,
+    };
+    Some(Clock { can_sleep, wall })
 }
 
 /// Nanoseconds per clock tick as a 32.32 fixed-point factor, rounded up, computed on first
@@ -120,12 +131,21 @@ pub fn deadline_after<P: Platform>(process: &Process<P>, address: u64) -> Result
     })
 }
 
-/// The clock tick a wait until the `struct timespec` at `address` ends at, a time on the
-/// monotonic clock or the realtime clock, which reads the same until it can be set: `u64::MAX`
-/// for one too late to count. Errors as [`poll::read_timeout`]'s.
-pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u64, Errno> {
+/// The clock tick a wait until the `struct timespec` at `address` ends at, a time on the wall
+/// clock if `wall` (as the wall clock is set now: setting it later does not move the deadline),
+/// else on the monotonic clock: `u64::MAX` for one too late to count. Errors as
+/// [`poll::read_timeout`]'s.
+pub fn deadline_at<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    wall: bool,
+) -> Result<u64, Errno> {
+    let clock = Clock {
+        can_sleep: true,
+        wall,
+    };
     Ok(match poll::read_timeout(process, address)? {
-        Some(time) => first_tick_at(time, nanoseconds_per_tick::<P>()),
+        Some(time) => first_tick_at(clock.monotonic_at(time), nanoseconds_per_tick::<P>()),
         None => u64::MAX,
     })
 }
@@ -189,8 +209,8 @@ pub fn clock_gettime<P: Platform>(
     clock_id: u64,
     tp: u64,
 ) -> Result<u64, Errno> {
-    clock(clock_id).ok_or(Errno::EINVAL)?;
-    write(process, tp, &timespec(monotonic_nanoseconds::<P>()))?;
+    let clock = clock(clock_id).ok_or(Errno::EINVAL)?;
+    write(process, tp, &timespec(clock.now::<P>()))?;
     Ok(0)
 }
 
@@ -215,7 +235,7 @@ pub fn clock_getres<P: Platform>(
 /// one that is not the program's writable memory.
 pub fn gettimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Result<u64, Errno> {
     if tv != 0 {
-        let now = monotonic_nanoseconds::<P>();
+        let now = crate::wall_clock::nanoseconds::<P>();
         let mut bytes = [0; TIMESPEC_SIZE];
         bytes[..8].copy_from_slice(&(now / NANOSECONDS_PER_SECOND).to_ne_bytes());
         bytes[8..].copy_from_slice(&(now % NANOSECONDS_PER_SECOND / 1000).to_ne_bytes());
@@ -232,20 +252,19 @@ pub fn gettimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
 /// `time`, and its C libraries call `clock_gettime`.
 #[cfg(target_arch = "x86_64")]
 pub fn time<P: Platform>(process: &Process<P>, tloc: u64) -> Result<u64, Errno> {
-    let seconds = monotonic_nanoseconds::<P>() / NANOSECONDS_PER_SECOND;
+    let seconds = crate::wall_clock::seconds::<P>();
     if tloc != 0 {
         write(process, tloc, &seconds.to_ne_bytes())?;
     }
     Ok(seconds)
 }
 
-/// `clock_settime(clock, tp)`: as Linux, `EINVAL` for any clock but `CLOCK_REALTIME`, the only
-/// one that can be set, then `EFAULT` if `tp` is not the program's memory, then `EINVAL` for
-/// negative seconds, seconds past Linux's latest settable second or nanoseconds outside 0 to
-/// 999999999, then `EPERM`: no process may set the wall clock yet, not even a privileged one,
-/// which Linux allows (`CAP_SYS_TIME`); that waits for a settable clock and its own decision
-/// (D75). The clock is shared by every process, and an agent confined to its own permissions
-/// (D21) must not move it.
+/// `clock_settime(clock, tp)`: sets the wall clock, and with it the real-time clock (D150), to
+/// the `struct timespec` at `tp`. As Linux: `EINVAL` for any clock but `CLOCK_REALTIME`, the
+/// only one that can be set, then `EFAULT` if `tp` is not the program's memory, then `EINVAL`
+/// for negative seconds, seconds past Linux's latest settable second or nanoseconds outside 0
+/// to 999999999, then `EPERM` unless the process is privileged (Linux's `CAP_SYS_TIME`: an
+/// effective user id of 0, D75), as the clock is the whole machine's.
 pub fn clock_settime<P: Platform>(
     process: &Process<P>,
     clock_id: u64,
@@ -254,19 +273,33 @@ pub fn clock_settime<P: Platform>(
     if clock_id as u32 as i32 != clock::REALTIME {
         return Err(Errno::EINVAL);
     }
-    let nanoseconds = poll::read_timeout(process, tp)?;
-    if nanoseconds.is_none_or(|nanoseconds| {
-        nanoseconds / NANOSECONDS_PER_SECOND >= UNSETTABLE_SECONDS_FROM as u64
-    }) {
-        return Err(Errno::EINVAL);
-    }
-    Err(Errno::EPERM)
+    let nanoseconds = poll::read_timeout(process, tp)?
+        .filter(|nanoseconds| nanoseconds / NANOSECONDS_PER_SECOND < UNSETTABLE_SECONDS_FROM as u64)
+        .ok_or(Errno::EINVAL)?;
+    may_set_the_clock(process)?;
+    crate::wall_clock::set::<P>(nanoseconds);
+    Ok(0)
 }
 
-/// `settimeofday(tv, tz)`: as Linux, each unless null: `EFAULT` if `tv` is not the program's
+fn may_set_the_clock<P: Platform>(process: &Process<P>) -> Result<(), Errno> {
+    let privileged = process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .is_privileged();
+    match privileged {
+        true => Ok(()),
+        false => Err(Errno::EPERM),
+    }
+}
+
+/// `settimeofday(tv, tz)`: sets the wall clock to the `struct timeval` at `tv` as
+/// [`clock_settime`] does, unless `tv` is null; the time zone at `tz` is read and dropped, as
+/// EggOS keeps UTC (D150). As Linux, each unless null: `EFAULT` if `tv` is not the program's
 /// memory, `EINVAL` for microseconds outside 0 to 1000000, `EFAULT` if `tz` is not the
 /// program's memory, `EINVAL` for negative seconds, seconds past Linux's latest settable
-/// second or a whole second of microseconds, then `EPERM`, as for [`clock_settime`].
+/// second or a whole second of microseconds, then `EPERM` unless the process is privileged,
+/// with both null too.
 pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Result<u64, Errno> {
     let mut seconds_and_microseconds = None;
     if tv != 0 {
@@ -292,7 +325,12 @@ pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
     {
         return Err(Errno::EINVAL);
     }
-    Err(Errno::EPERM)
+    may_set_the_clock(process)?;
+    if let Some((seconds, microseconds)) = seconds_and_microseconds {
+        let nanoseconds = seconds as u64 * NANOSECONDS_PER_SECOND + microseconds as u64 * 1000;
+        crate::wall_clock::set::<P>(nanoseconds);
+    }
+    Ok(0)
 }
 
 /// `nanosleep(req, rem)`, with the program's registers `context`: sleeps for the `struct
@@ -312,8 +350,10 @@ pub fn nanosleep<P: Platform>(
 
 /// `clock_nanosleep(clock, flags, req, rem)`, with the program's registers `context`: sleeps
 /// on clock `clock` for the `struct timespec` at `req`, or, with [`TIMER_ABSTIME`] in
-/// `flags`, until the clock reads it (at once if it has); its other bits are ignored, as on
-/// Linux. It never wakes early, and a sleep too long to count lasts for good. As Linux:
+/// `flags`, until the clock reads it (at once if it has; on the realtime and TAI clocks, as the
+/// wall clock is set when the sleep starts: setting it later does not move the wake-up); its
+/// other bits are ignored, as on Linux. It never wakes early, and a sleep too long to count
+/// lasts for good. As Linux:
 /// `EINVAL` for a clock it does not answer for, `EOPNOTSUPP` for one it cannot sleep on (the
 /// raw, coarse and thread CPU-time ones), then `EFAULT` if `req` is not the program's memory,
 /// then `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999; the alarm clocks,
@@ -330,9 +370,10 @@ pub fn clock_nanosleep<P: Platform>(
 ) -> ControlFlow<()> {
     let [clock_id, flags, req, rem, ..] = context.syscall_arguments();
     let relative = flags & TIMER_ABSTIME == 0;
-    let deadline = clock_for_sleep(process, clock_id, req).and_then(|()| match relative {
+    let deadline = clock_for_sleep(process, clock_id, req).and_then(|clock| match relative {
         true => deadline_after_request::<P>(process, req),
-        false => Ok(poll::read_timeout(process, req)?.unwrap_or(u64::MAX)),
+        false => Ok(poll::read_timeout(process, req)?
+            .map_or(u64::MAX, |time| clock.monotonic_at(time))),
     });
     match deadline {
         Ok(deadline) => {
@@ -343,13 +384,11 @@ pub fn clock_nanosleep<P: Platform>(
     }
 }
 
-/// Checks that `clock_nanosleep` can sleep on clock `clock_id`, reading the request at `req`
-/// first for the alarm clocks, as Linux does.
 fn clock_for_sleep<P: Platform>(
     process: &Process<P>,
     clock_id: u64,
     req: u64,
-) -> Result<(), Errno> {
+) -> Result<Clock, Errno> {
     let clock = match clock_id as u32 as i32 {
         clock::THREAD_CPUTIME_ID => return Err(Errno::EOPNOTSUPP),
         clock::REALTIME_ALARM | clock::BOOTTIME_ALARM => {
@@ -359,7 +398,7 @@ fn clock_for_sleep<P: Platform>(
         _ => clock(clock_id).ok_or(Errno::EINVAL)?,
     };
     match clock.can_sleep {
-        true => Ok(()),
+        true => Ok(clock),
         false => Err(Errno::EOPNOTSUPP),
     }
 }

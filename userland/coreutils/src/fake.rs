@@ -46,6 +46,8 @@ pub struct Fake {
     pub reboot_error: Option<Errno>,
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
+    pub set_times: Vec<u64>,
+    pub set_time_error: Option<Errno>,
     pub windows: Vec<FakeWindow>,
     pub managed: Vec<[u32; 4]>,
     pub window_pixels: BTreeMap<u32, (u32, u32, Vec<u32>)>,
@@ -90,6 +92,8 @@ impl Default for Fake {
             reboot_error: Some(Errno::EPERM),
             cross_device: Vec::new(),
             now: 1_700_000_000,
+            set_times: Vec::new(),
+            set_time_error: None,
             windows: Vec::new(),
             managed: Vec::new(),
             window_pixels: BTreeMap::new(),
@@ -438,6 +442,15 @@ impl System for Fake {
 
     fn now(&mut self) -> u64 {
         self.now.max(0) as u64
+    }
+
+    fn set_time(&mut self, seconds: u64) -> Result<(), Errno> {
+        if let Some(errno) = self.set_time_error {
+            return Err(errno);
+        }
+        self.set_times.push(seconds);
+        self.now = seconds as i64;
+        Ok(())
     }
 
     fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {

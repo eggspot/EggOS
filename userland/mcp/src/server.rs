@@ -1278,6 +1278,9 @@ impl Server {
                 push_word(&mut words, &mut count, word);
             }
         }
+        if let Some(time) = prepared.checked.time.as_ref() {
+            push_word(&mut words, &mut count, time.as_str());
+        }
         let decimals = Decimals::of_window_call(&prepared.checked);
         if tool.twin.operand == Operand::Window {
             push_window_words(
@@ -1916,6 +1919,7 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
     text.put(match tool.kind {
         Kind::Tee => "tee would replace an existing file",
         Kind::Trash => "trash moves the file to the Trash",
+        Kind::ClockSet => "clock_set sets the machine's clock",
         _ => "app_uninstall removes the app",
     });
     text.put(
@@ -1958,6 +1962,11 @@ fn question_text(
                 text.put(" bytes)");
             }
             text.put(" to the Trash. Allow it?");
+        }
+        Kind::ClockSet => {
+            text.put("An agent asks to set the machine's clock to ");
+            text.put(checked.time.as_ref().map_or("", |time| time.as_str()));
+            text.put(" (UTC). Allow it?");
         }
         _ => {
             let mut name = [0u8; arguments::MAX_NAME_BYTES * 4];
@@ -2002,6 +2011,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
         writer.string_piece(text_prefix(&digits, length));
         writer.string_piece(" bytes>");
         writer.end_string();
+    }
+    if let Some(time) = checked.time {
+        writer.key("time");
+        writer.string(time.as_str());
     }
     if tool.arguments.contains(&"confirm") {
         writer.key("confirm");

@@ -108,6 +108,7 @@ pub trait System {
     fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno>;
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno>;
     fn now(&mut self) -> u64;
+    fn set_time(&mut self, seconds: u64) -> Result<(), Errno>;
     fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno>;
     fn device_control(
         &mut self,
@@ -197,6 +198,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn now(&mut self) -> u64 {
         (**self).now()
+    }
+
+    fn set_time(&mut self, seconds: u64) -> Result<(), Errno> {
+        (**self).set_time(seconds)
     }
 
     fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {

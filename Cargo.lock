@@ -25,10 +25,15 @@ name = "eggos-c-format"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-calendar"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-coreutils"
 version = "0.2.0"
 dependencies = [
  "eggos-app",
+ "eggos-calendar",
  "eggos-drivers",
  "eggos-files",
  "eggos-mcp",
@@ -41,6 +46,7 @@ name = "eggos-drivers"
 version = "0.2.0"
 dependencies = [
  "eggos-app-manifest",
+ "eggos-calendar",
  "eggos-font",
 ]
 
@@ -114,6 +120,7 @@ name = "eggos-kernel"
 version = "0.2.0"
 dependencies = [
  "eggos-app-manifest",
+ "eggos-calendar",
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-hal",
@@ -175,6 +182,7 @@ name = "eggos-settings"
 version = "0.2.0"
 dependencies = [
  "eggos-app",
+ "eggos-calendar",
  "eggos-editor",
  "eggos-files",
  "eggos-runtime",
@@ -232,6 +240,7 @@ version = "0.2.0"
 dependencies = [
  "eggos-app",
  "eggos-app-manifest",
+ "eggos-calendar",
  "eggos-drivers",
  "eggos-editor",
  "eggos-eggfs",

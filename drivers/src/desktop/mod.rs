@@ -306,6 +306,8 @@ pub struct Desktop {
     focus_serial: u32,
     dialogs: usize,
     clock: [u8; CLOCK_GLYPHS],
+    clock_length: u8,
+    clock_shows_time_of_day: bool,
 }
 
 impl Desktop {
@@ -387,6 +389,8 @@ impl Desktop {
             focus_serial: 0,
             dialogs: 0,
             clock: [b' '; CLOCK_GLYPHS],
+            clock_length: 0,
+            clock_shows_time_of_day: false,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -677,9 +681,16 @@ impl Desktop {
             .expect("the terminal's window is a normal one")
     }
 
-    /// The clock's text ([`Self::set_uptime`]), centred in [`CLOCK_GLYPHS`] cells.
+    /// The clock's text: the time of day ([`Self::set_wall_clock`]) or the uptime
+    /// ([`Self::set_uptime`]), drawn pixel-centred in its rectangle of [`CLOCK_GLYPHS`] cells.
     pub fn clock_text(&self) -> &str {
-        core::str::from_utf8(&self.clock).unwrap_or("")
+        core::str::from_utf8(&self.clock[..usize::from(self.clock_length)]).unwrap_or("")
+    }
+
+    /// Whether the clock shows the time of day, drawn in `text`; the uptime is drawn in
+    /// `text.dim` (docs/ux/date-time-v0.3.md section 6).
+    pub fn clock_shows_time_of_day(&self) -> bool {
+        self.clock_shows_time_of_day
     }
 
     /// The terminal's chip in the bar, where it shows when the terminal is the only window
@@ -769,13 +780,36 @@ impl Desktop {
             written.push_str(unit);
         }
         let length = written.length;
-        let shift = (CLOCK_GLYPHS - length) / 2;
-        let mut centred = [b' '; CLOCK_GLYPHS];
-        centred[shift..shift + length].copy_from_slice(&text[..length]);
-        if centred == self.clock {
+        self.show_clock(text, length, false, damage)
+    }
+
+    /// Shows the time of day of the wall clock reading `seconds` since the epoch on the clock,
+    /// `HH:MM` (24-hour, UTC), once the wall clock is set (D150, docs/ux/date-time-v0.3.md
+    /// section 6). Returns whether its text changed, adding its rectangle to `damage` if so.
+    pub fn set_wall_clock(&mut self, seconds: u64, damage: &mut Damage) -> bool {
+        let of_day = seconds % (SECONDS_PER_HOUR * HOURS_PER_DAY);
+        let mut text = [b' '; CLOCK_GLYPHS];
+        let mut written = Writer::new(&mut text);
+        written.push_number(of_day / SECONDS_PER_HOUR, 2);
+        written.push_str(":");
+        written.push_number(of_day % SECONDS_PER_HOUR / SECONDS_PER_MINUTE, 2);
+        let length = written.length;
+        self.show_clock(text, length, true, damage)
+    }
+
+    fn show_clock(
+        &mut self,
+        text: [u8; CLOCK_GLYPHS],
+        length: usize,
+        time_of_day: bool,
+        damage: &mut Damage,
+    ) -> bool {
+        if text == self.clock && time_of_day == self.clock_shows_time_of_day {
             return false;
         }
-        self.clock = centred;
+        self.clock = text;
+        self.clock_length = length as u8;
+        self.clock_shows_time_of_day = time_of_day;
         damage.add(self.clock_rect());
         true
     }

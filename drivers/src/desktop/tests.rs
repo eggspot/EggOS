@@ -295,6 +295,39 @@ fn the_clock_shows_uptime_and_damages_only_its_rect_when_it_changes() {
 }
 
 #[test]
+fn the_clock_shows_the_wall_clock_s_minute_pixel_centred_in_text() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut damage = Damage::new();
+    desktop.set_uptime(5, &mut damage);
+    let pixels = painted(&desktop);
+    let ink_in = |pixels: &[u32], from: u32, to: u32, ink: u32| {
+        (6..22).any(|y| (from..to).any(|x| at(pixels, x, y) == ink))
+    };
+    assert_eq!(desktop.clock_text(), "up 0:05");
+    assert!(!desktop.clock_shows_time_of_day());
+    assert!(!ink_in(&pixels, 600, 612, colour::TEXT_DIM));
+    assert!(ink_in(&pixels, 612, 620, colour::TEXT_DIM));
+    let mut damage = Damage::new();
+    assert!(desktop.set_wall_clock(1_793_282_709, &mut damage));
+    assert_eq!(damage.rects(), &[desktop.clock_rect()]);
+    assert_eq!(desktop.clock_text(), "14:05");
+    assert!(desktop.clock_shows_time_of_day());
+    let pixels = painted(&desktop);
+    assert!(!ink_in(&pixels, 600, 620, colour::TEXT));
+    assert!(ink_in(&pixels, 620, 628, colour::TEXT));
+    assert!(!ink_in(&pixels, 600, 680, colour::TEXT_DIM));
+    let mut damage = Damage::new();
+    assert!(!desktop.set_wall_clock(1_793_282_709 + 50, &mut damage));
+    assert!(damage.is_empty());
+    assert!(desktop.set_wall_clock(1_793_282_709 + 51, &mut damage));
+    assert_eq!(desktop.clock_text(), "14:06");
+    assert!(desktop.set_uptime(5, &mut damage));
+    assert!(!desktop.clock_shows_time_of_day());
+    desktop.set_wall_clock(86_400 + 59, &mut damage);
+    assert_eq!(desktop.clock_text(), "00:00");
+}
+
+#[test]
 fn the_egg_is_taller_above_its_equator_and_square_roots_are_exact() {
     assert_eq!(isqrt(0), 0);
     assert_eq!(isqrt(65_536), 256);

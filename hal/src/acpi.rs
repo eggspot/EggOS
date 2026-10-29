@@ -146,6 +146,35 @@ pub fn parse_fadt(fadt: &[u8]) -> Option<Fadt> {
     })
 }
 
+const FADT_CENTURY: usize = 108;
+const FADT_IAPC_BOOT_ARCH: usize = 109;
+const IAPC_BOOT_ARCH_CMOS_RTC_NOT_PRESENT: u16 = 1 << 5;
+
+/// What the FADT says about the PC's CMOS real-time clock (D150).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmosClock {
+    /// Its IA-PC boot architecture flags say "CMOS RTC Not Present".
+    Absent,
+    /// The clock is there, with its century kept in this register, if the FADT names one.
+    Present { century_register: Option<u8> },
+}
+
+/// What a validated FADT (signature "FACP") says about the CMOS clock: its `CENTURY` field (0
+/// for none) and the "CMOS RTC Not Present" flag of its `IAPC_BOOT_ARCH` (ACPI 6.5, tables 5.9
+/// and 5.10). A FADT too short to hold them, as ACPI 1.0's may be, names no century register
+/// and does not say the clock is absent.
+pub fn cmos_clock(fadt: &[u8]) -> CmosClock {
+    let flags = fadt
+        .get(FADT_IAPC_BOOT_ARCH..FADT_IAPC_BOOT_ARCH + 2)
+        .map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+    if flags & IAPC_BOOT_ARCH_CMOS_RTC_NOT_PRESENT != 0 {
+        return CmosClock::Absent;
+    }
+    CmosClock::Present {
+        century_register: fadt.get(FADT_CENTURY).copied().filter(|&register| register != 0),
+    }
+}
+
 /// Calls `cpu` with the local APIC id of every usable processor a validated MADT (signature
 /// "APIC") lists, in its order: each Processor Local APIC structure whose Enabled flag is set.
 /// Processors that are only online capable (hot-pluggable, not usable until enabled) are
@@ -559,6 +588,33 @@ mod tests {
         let mut with_x_dsdt = fadt.clone();
         with_x_dsdt[FADT_X_DSDT..FADT_X_DSDT + 8].copy_from_slice(&0x9_0000u64.to_le_bytes());
         assert_eq!(parse_fadt(&with_x_dsdt).unwrap().dsdt, 0x9_0000);
+    }
+
+    #[test]
+    fn the_fadt_names_the_cmos_clock_s_century_register_or_says_there_is_no_clock() {
+        let mut body = vec![0u8; 244 - TABLE_HEADER_LENGTH];
+        assert_eq!(
+            cmos_clock(&table(b"FACP", &body)),
+            CmosClock::Present {
+                century_register: None
+            }
+        );
+        body[FADT_CENTURY - TABLE_HEADER_LENGTH] = 0x32;
+        assert_eq!(
+            cmos_clock(&table(b"FACP", &body)),
+            CmosClock::Present {
+                century_register: Some(0x32)
+            }
+        );
+        body[FADT_IAPC_BOOT_ARCH - TABLE_HEADER_LENGTH] = 0x20;
+        assert_eq!(cmos_clock(&table(b"FACP", &body)), CmosClock::Absent);
+        let short = table(b"FACP", &[0u8; FADT_CENTURY - TABLE_HEADER_LENGTH]);
+        assert_eq!(
+            cmos_clock(&short),
+            CmosClock::Present {
+                century_register: None
+            }
+        );
     }
 
     #[test]

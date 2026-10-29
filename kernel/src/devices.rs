@@ -21,6 +21,8 @@
 pub mod dma;
 mod fdt_bus;
 mod pci_bus;
+#[cfg(any(test, feature = "rtc"))]
+pub mod rtc;
 pub(crate) mod selftest;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
@@ -192,6 +194,10 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::BLOCK_DRIVER,
     #[cfg(any(test, feature = "virtio-console"))]
     &virtio::CONSOLE_DRIVER,
+    #[cfg(any(test, feature = "rtc"))]
+    &rtc::PL031_DRIVER,
+    #[cfg(any(test, feature = "rtc"))]
+    &rtc::GOLDFISH_DRIVER,
 ];
 
 /// What a device is, as the bus that found it says.

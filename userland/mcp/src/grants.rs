@@ -31,8 +31,8 @@ pub enum Grant {
     /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), and open
     /// a text file in the Text Editor (`edit_open`).
     Install,
-    /// Run any program (`run`) and operate any window (`wm_click`, `wm_type`, `wm_press`,
-    /// `wm_scroll`): full control of the machine.
+    /// Run any program (`run`), operate any window (`wm_click`, `wm_type`, `wm_press`,
+    /// `wm_scroll`) and set the clock (`clock_set`, D150): full control of the machine.
     Run,
 }
 

@@ -198,6 +198,18 @@ impl System for Linux {
         }
     }
 
+    fn set_time(&mut self, seconds: u64) -> Result<(), Errno> {
+        let time = Timespec {
+            seconds: i64::try_from(seconds).map_err(|_| Errno::EINVAL)?,
+            nanoseconds: 0,
+        };
+        call(
+            number::CLOCK_SETTIME,
+            [CLOCK_REALTIME, &raw const time as usize, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
     fn device_control(
         &mut self,
         descriptor: usize,

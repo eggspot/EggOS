@@ -536,8 +536,8 @@ impl Errno {
     /// hard resource limit raised or an id changed by a process that is not privileged
     /// (`setrlimit`, `prlimit64`, `setuid`, `setgroups`, ...), the alternate signal stack
     /// changed while the thread runs on it (`sigaltstack`), or a `si_code` only the kernel and
-    /// `kill` may send queued to another process (`rt_sigqueueinfo`), or the wall clock set
-    /// (`clock_settime`, `settimeofday`).
+    /// `kill` may send queued to another process (`rt_sigqueueinfo`), or the wall clock set by
+    /// a process that is not privileged (`clock_settime`, `settimeofday`).
     pub const EPERM: Self = Self(1);
     /// No such file: here, a program's interpreter (`execve`), or any file a path names,
     /// as there are none yet (`newfstatat`, `statx`).
@@ -5182,26 +5182,35 @@ mod tests {
     }
 
     #[test]
-    fn no_process_may_set_the_wall_clock_and_the_checks_come_first_as_on_linux() {
+    fn only_a_privileged_process_sets_the_wall_clock_and_the_checks_come_first_as_on_linux() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
-        let (time, zone) = (SCRATCH + 0x100, SCRATCH + 0x110);
+        let (time, zone, tp) = (SCRATCH + 0x100, SCRATCH + 0x110, SCRATCH + 0x120);
         process.write_user_memory(zone, &[0; 8]).unwrap();
-        write_timespec(&process, time, 1, 0);
         let settime =
             |clock: u64, tp: u64| call(&process, number::CLOCK_SETTIME, [clock, tp, 0, 0, 0, 0]);
-        assert_eq!(settime(1, UNMAPPED), Errno::EINVAL.result());
+        let settimeofday =
+            |tv: u64, tz: u64| call(&process, number::SETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]);
+        let wall = || {
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [0, tp, 0, 0, 0, 0]),
+                0
+            );
+            nanoseconds(read_timespec(&process, tp))
+        };
+        write_timespec(&process, time, 1, 0);
+        assert_eq!(settime(1, time), Errno::EINVAL.result());
         assert_eq!(settime(0, UNMAPPED), Errno::EFAULT.result());
-        assert_eq!(settime(0, time), Errno::EPERM.result());
         for seconds in [-1, 8_277_292_036, i64::MAX] {
             write_timespec(&process, time, seconds, 0);
             assert_eq!(settime(0, time), Errno::EINVAL.result());
         }
-        write_timespec(&process, time, 8_277_292_035, 999_999_999);
-        assert_eq!(settime(0, time), Errno::EPERM.result());
-        let settimeofday =
-            |tv: u64, tz: u64| call(&process, number::SETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]);
+        write_timespec(&process, time, 1_793_282_709, 5);
+        assert_eq!(settime(0, time), 0);
+        let set = 1_793_282_709_000_000_005;
+        let read = wall();
+        assert!(read >= set && read - set < 1_000_000_000, "{read}");
         assert_eq!(settimeofday(UNMAPPED, UNMAPPED), Errno::EFAULT.result());
         write_timespec(&process, time, 1, 1_000_001);
         assert_eq!(settimeofday(time, UNMAPPED), Errno::EINVAL.result());
@@ -5212,11 +5221,22 @@ mod tests {
             write_timespec(&process, time, seconds, 0);
             assert_eq!(settimeofday(time, 0), Errno::EINVAL.result());
         }
-        write_timespec(&process, time, 8_277_292_035, 0);
+        write_timespec(&process, time, 1_893_456_000, 250_000);
+        assert_eq!(settimeofday(time, zone), 0);
+        let set = 1_893_456_000_250_000_000;
+        let read = wall();
+        assert!(read >= set && read - set < 1_000_000_000, "{read}");
+        assert_eq!(settimeofday(0, 0), 0);
+        assert_eq!(call(&process, number::SETUID, [1000, 0, 0, 0, 0, 0]), 0);
+        write_timespec(&process, time, 1, 0);
+        assert_eq!(settime(0, time), Errno::EPERM.result());
         assert_eq!(settimeofday(time, 0), Errno::EPERM.result());
-        write_timespec(&process, time, 1, 999_999);
-        assert_eq!(settimeofday(time, zone), Errno::EPERM.result());
+        assert_eq!(settimeofday(0, zone), Errno::EPERM.result());
         assert_eq!(settimeofday(0, 0), Errno::EPERM.result());
+        write_timespec(&process, time, -1, 0);
+        assert_eq!(settime(0, time), Errno::EINVAL.result());
+        assert!(wall() >= set);
+        crate::wall_clock::host::reset();
     }
 
     #[test]

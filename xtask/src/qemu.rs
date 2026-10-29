@@ -8,9 +8,10 @@ mod linux_gui;
 pub mod macos_gui;
 pub mod mcp;
 pub mod persistent;
+pub mod real_time;
 pub mod settings;
 pub mod shell;
-mod text_editor;
+pub mod text_editor;
 mod win_controls;
 mod windows_crt;
 mod windows_gui;
@@ -1154,7 +1155,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "var",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 28 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 30 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -1179,7 +1180,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
         whole(&[
-            "cmdline", "meminfo", "net", "ps", "uptime", "/proc", "/", "3",
+            "cmdline", "driver", "meminfo", "net", "ps", "uptime", "/proc", "/", "3",
         ]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
@@ -2215,10 +2216,36 @@ pub fn desktop_picture(
     })
 }
 
-fn with_uptime(desktop: &Desktop, picture: &mut Picture, seconds: u64) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockFace {
+    Uptime(u64),
+    WallClock(u64),
+}
+
+const WALL_CLOCK_MINUTES_ACCEPTED: std::ops::RangeInclusive<i64> = -5..=1;
+
+/// The seconds since the epoch on the host's clock, which QEMU's real-time clocks follow
+/// (`-rtc base=utc`, D150).
+pub fn host_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+fn clock_faces(host: u64) -> impl Iterator<Item = ClockFace> {
+    (0..CLOCK_SECONDS_ACCEPTED).map(ClockFace::Uptime).chain(
+        WALL_CLOCK_MINUTES_ACCEPTED
+            .map(move |minutes| ClockFace::WallClock(host.saturating_add_signed(minutes * 60))),
+    )
+}
+
+fn with_clock(desktop: &Desktop, picture: &mut Picture, face: ClockFace) {
     let mut desktop_then = Desktop::new(picture.width, picture.height).expect("the desktop fits");
     desktop_then.set_profile(desktop.profile(), &mut Damage::new(), &mut DiscardEvents);
-    desktop_then.set_uptime(seconds, &mut Damage::new());
+    match face {
+        ClockFace::Uptime(seconds) => desktop_then.set_uptime(seconds, &mut Damage::new()),
+        ClockFace::WallClock(seconds) => desktop_then.set_wall_clock(seconds, &mut Damage::new()),
+    };
     let clock = desktop.clock_rect();
     let contents = HostContents {
         terminal: desktop_then.terminal_window(),
@@ -2906,10 +2933,11 @@ fn check_desktop_frame_masked(
                     .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
             );
         }
+        let host = host_seconds();
         let matched = candidates.iter_mut().any(|expected| {
             copy_masked(&picture, expected, masks);
-            (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
-                with_uptime(desktop, expected, seconds);
+            clock_faces(host).any(|face| {
+                with_clock(desktop, expected, face);
                 picture == *expected
             })
         });
@@ -2927,13 +2955,13 @@ fn check_desktop_frame_masked(
             let Some(expected) = candidates.first_mut() else {
                 return Err(format!("{}: no expected picture at {at}", arch.name));
             };
-            with_uptime(desktop, expected, 0);
+            with_clock(desktop, expected, ClockFace::WallClock(host_seconds()));
             let expected_path = screendump_path(arch, "-expected")?;
             std::fs::write(&expected_path, expected.to_ppm())
                 .map_err(|e| format!("{}: {e}", expected_path.display()))?;
             return Err(format!(
                 "{}: at {at} the display shows a picture with hash {:#x}, not the desktop the \
-                 host renders ({:#x} with the clock at up 0:00); compare {} with {}",
+                 host renders ({:#x} with the clock at the host's time); compare {} with {}",
                 arch.name,
                 picture.hash(),
                 expected.hash(),
@@ -3823,7 +3851,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 28 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 30 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

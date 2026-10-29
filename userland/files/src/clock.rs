@@ -1,7 +1,7 @@
 //! Times as Files and the Trash write them: seconds since the Unix epoch as a civil date in
 //! UTC, `YYYY-MM-DD HH:MM` in the list and `YYYY-MM-DDThh:mm:ss` in a `.trashinfo` file (the
-//! freedesktop.org Trash specification), read back too. EggOS has no clock of the date yet, so
-//! times count from the boot until one comes (docs/limitations.md).
+//! freedesktop.org Trash specification), read back too. The wall clock is read from the real-time
+//! clock at boot (D150).
 
 use core::fmt::Write;
 

@@ -16,6 +16,7 @@ pub mod input;
 pub mod interrupt;
 pub mod io;
 pub mod pci;
+pub mod rtc;
 pub mod serial;
 pub mod terminal;
 pub mod timer;
