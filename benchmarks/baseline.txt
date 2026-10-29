@@ -33,6 +33,7 @@ aarch64 heap_allocate_free_small 50.00
 aarch64 input_event_queue_push_pop 68.00
 aarch64 input_key_to_bytes 313.01
 aarch64 linux_clock_monotonic_read 12.00
+aarch64 linux_clock_realtime_read 21.00
 aarch64 linux_descriptor_lookup 36.03
 aarch64 linux_dup3_close 184.52
 aarch64 linux_exec_load 36511.47
@@ -84,6 +85,7 @@ riscv64 heap_allocate_free_small 57.00
 riscv64 input_event_queue_push_pop 69.01
 riscv64 input_key_to_bytes 385.01
 riscv64 linux_clock_monotonic_read 15.00
+riscv64 linux_clock_realtime_read 21.00
 riscv64 linux_descriptor_lookup 28.03
 riscv64 linux_dup3_close 201.11
 riscv64 linux_exec_load 31638.49
@@ -135,6 +137,7 @@ x86_64 heap_allocate_free_small 48.00
 x86_64 input_event_queue_push_pop 66.00
 x86_64 input_key_to_bytes 334.00
 x86_64 linux_clock_monotonic_read 19.00
+x86_64 linux_clock_realtime_read 29.00
 x86_64 linux_descriptor_lookup 27.02
 x86_64 linux_dup3_close 189.09
 x86_64 linux_exec_load 28334.01
