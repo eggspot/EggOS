@@ -530,8 +530,12 @@ The release path (the release-path review's issues #141-#145, after the items ab
   EggOS mounts it writable at `/work` (told from the `/home` disk by a marker in its root),
   and when QEMU ends xtask unpacks `/work` into `<folder>.out`; `cargo xtask work pack|unpack`
   and the run scripts' `--work <image>`; Files' `Work disk` place, `ls /work`, and MCP `ls`
-  and `cat` reach `/work`; a QEMU check on all three architectures. Next: stage 2's first
-  milestone (Linux dynamic linking, `/proc` and `/dev` for real programs, `rustc --version`).
+  and `cat` reach `/work`; a QEMU check on all three architectures. Stage 2, milestone 1,
+  part 1 **done** (D167): dynamically linked programs run with glibc's and musl's loaders,
+  and files map into memory (`MAP_PRIVATE`, read-only `MAP_SHARED`, `SIGBUS` past the end,
+  `MADV_DONTNEED` rereads, `msync`); CI's `dynamic-linking` job builds our dynamic hello
+  against both and boots it. Next: `/proc` and `/dev` for real programs, then `rustc
+  --version`.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
@@ -610,8 +614,8 @@ Fault follow-ups (D65): `AT_MINSIGSTKSZ` in the auxiliary vector (Rust's std siz
 alternate stacks from it); `#MF` and `#XM` with their `FPE_*` codes and `trapno`, and AArch64's
 trapped FP exceptions, with D54; AArch64's top byte cleared from `si_addr` unless
 `SA_EXPOSE_TAGBITS`, if TBI is turned on for programs; RISC-V misaligned accesses emulated
-as Linux does (QEMU's harts do them in hardware); `SIGBUS` `BUS_ADRERR` past the end of a
-file mapping (M7); `TRAP_TRACE` and `TRAP_HWBKPT` with single-step and debug registers
+as Linux does (QEMU's harts do them in hardware); (`SIGBUS` `BUS_ADRERR` past the end of a
+file mapping: done, D167); `TRAP_TRACE` and `TRAP_HWBKPT` with single-step and debug registers
 (`ptrace`); `/proc/self/maps` and `RLIMIT_STACK` for glibc's `pthread_getattr_np`, so Rust's
 std finds the main thread's guard page and reports an overflow by name. From PR #58's
 independent review: RISC-V's `si_addr` (`sepc` or `stval`) and `si_code` for access faults
@@ -643,8 +647,10 @@ Exec follow-ups (D51): (a kernel random number generator for `AT_RANDOM`, and `g
 done, D56); layout randomization
 of the PIE base, stack and `mmap` area; (demand paging, so the stack grows into its 8 MiB
 reserve and its pages cost frames only when touched: done, D52); `execve` itself, with the image read from
-a file (M7) and the process's old address space replaced; dynamically linked programs, with
-the interpreter loaded at its own base and `AT_BASE` set (M7); `AT_SYSINFO_EHDR` with a vDSO
+a file (M7) and the process's old address space replaced; (dynamically linked programs, with
+the interpreter loaded at its own base and `AT_BASE` set: done, D167); segments mapped lazily
+from the file instead of read whole and copied (D167 records them as file ranges already);
+`AT_SYSINFO_EHDR` with a vDSO
 (fast clock reads), `AT_MINSIGSTKSZ` with signal frames; `AT_HWCAP` recomputed when FP/SIMD
 state is saved per thread; RWX segments or a JIT path only if a real binary needs one; a
 (faster zeroing of frames and page tables: done, D56); pre-zeroed frames; before `execve`
@@ -669,7 +675,10 @@ Memory-call follow-ups (D53, D77): a "shared" mark on `MAP_SHARED` anonymous reg
 to yet); a shared zero frame for `MADV_POPULATE_READ` and read faults; (`madvise` and
 `mremap`: done, D77); a `mremap` benchmark once `realloc` of large blocks shows in a real
 workload; `MAP_POPULATE` and `MAP_GROWSDOWN` when a program needs them;
-`PROT_BTI` enforced (the `GP` bit) once BTI is reported in `AT_HWCAP2`; file mappings (M7);
+`PROT_BTI` enforced (the `GP` bit) once BTI is reported in `AT_HWCAP2`; (private file
+mappings and read-only shared ones: done, D167); writable `MAP_SHARED` of tmpfs and EggFS
+files, with the file's pages shared and written back (part 17 brings tmpfs pages as frames);
+file pages read without holding the process's regions lock;
 `RLIMIT_DATA` and `RLIMIT_AS` for `brk` and `mmap`; randomized `mmap` base and break with the
 random number generator; from PR #45's independent review: (`munmap` and a shrinking `brk`
 free their frames after the translations are dropped, taking the frame allocator's lock once:
@@ -677,7 +686,8 @@ done, PR #46), and anonymous `MAP_SHARED_VALIDATE` and `MAP_SHARED | MAP_GROWSDO
 checked against Linux's observed behaviour (`EINVAL` there, possibly, where we accept or say
 `EOPNOTSUPP`). From the D83 review: regions that know what backs them (M7), so
 `MADV_DONTNEED` on a program's ELF segments reads the file's contents again, `MADV_FREE` there
-is `EINVAL`, and moving the signal trampoline's page moves its recorded address too.
+is `EINVAL` (both done, D167), and moving the signal trampoline's page moves its recorded
+address too.
 
 Clock follow-ups (D73): real-time clock drivers (PL031, Goldfish, CMOS) setting the wall
 clock at boot, after M5; a vDSO for clock reads without a system call, with the counter

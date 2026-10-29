@@ -115,12 +115,18 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   writer wait for the reader; an empty one that cannot grow is `ENOMEM`). Disks are read
   defensively: a damaged EggFS disk or a FAT volume whose cluster chain loops gives I/O errors
   instead of hanging or crashing EggOS.
-- **Linux programs: static ones only.** The kernel runs static Linux programs through its own
-  Linux system-call layer, from the host folder (`--apps`), installed as apps (`app install`),
-  or built into an image by `cargo xtask image --add` ([Linux programs](linux-programs.md),
-  D117, D130, D134). No
-  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
-  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
+- **Linux programs: static ones, and dynamic ones with their own libraries.** The kernel runs
+  Linux programs through its own Linux system-call layer, from the host folder (`--apps`),
+  installed as apps (`app install`), or built into an image by `cargo xtask image --add`
+  ([Linux programs](linux-programs.md), D117, D130, D134). Dynamically linked programs run
+  with glibc's or musl's loader (D167), but EggOS ships no C library: the loader and libraries
+  go into the image with the program; no vDSO (`AT_SYSINFO_EHDR`), and `execve` still reads a
+  program and its loader whole into memory and copies their segments at once (pages mapped
+  from files are read only when first touched). Only a minimal `/proc` (`cmdline`, `meminfo`, `uptime`, `driver/rtc` and EggOS's own `ps`, no
+  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`; `mmap` of files is private, or shared and read-only
+  (a shared mapping does not see later writes to the file, and a writable one is `ENODEV`,
+  D167), and a file page is read under the process's memory lock, so its other threads wait
+  for a disk read; no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
   sockets only (no datagrams or sequenced packets); `AF_INET` datagram sockets work for UDP
@@ -129,15 +135,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
   itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or
   `signalfd` yet, which most graphical Linux toolkits need. Shared memory works through
-  `memfd_create` (D139): `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; not of other
-  files (`ENODEV`), no `shm_open` or `/dev/shm`, no writable private mapping of a memfd, no
+  `memfd_create` (D139): `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; no
+  writable `MAP_SHARED` of other files (`ENODEV`), no `shm_open` or `/dev/shm`, no writable private mapping of a memfd, no
   executable or `PROT_NONE` mapping of one (`EPERM`), no `F_SEAL_WRITE` or
   `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
   with mode 0 only, a write, `fallocate` or mapping at a gigabyte-scale offset fails
   (`ENOSPC`, `ENOMEM`), and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
   work).
 - **Linux GUI programs: static Wayland clients only.** `eggway` (D140) shows a static program's
-  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need dynamic linking, `epoll`,
+  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need their libraries, `epoll`,
   `eventfd` and `timerfd` and protocols eggway does not serve yet ([Linux
   programs](linux-programs.md) lists them). It serves one seat and one output (whose mode is the
   work area's size, at scale 1), shows surfaces opaque and ignores buffer scale and transform,

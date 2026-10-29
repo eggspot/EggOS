@@ -1,10 +1,10 @@
 # Running Linux programs
 
-EggOS runs unmodified static Linux programs: its own kernel implements the Linux system calls
-and process start-up those programs expect (D84, D103, D117). A program you built for Linux,
-linked statically, runs from the `eggsh` prompt by its name once you add it to the image.
-Programs linked with musl are what CI tests; static glibc programs use the same start-up but
-are not tested yet.
+EggOS runs unmodified Linux programs: its own kernel implements the Linux system calls and
+process start-up those programs expect (D84, D103, D117). A program you built for Linux runs
+from the `eggsh` prompt by its name once you add it to the image: linked statically, or
+dynamically with its dynamic loader and libraries beside it (D167, below). Static programs
+linked with musl and dynamically linked ones against glibc and musl are what CI tests.
 
 ## Add a program to the image
 
@@ -63,6 +63,42 @@ monotonic and realtime clocks, a `HashMap` with random keys, threads spawned and
 number of CPUs it may use (`std::thread::available_parallelism`), its exit status, and a panic
 that aborts it.
 
+## Dynamically linked programs
+
+A dynamically linked program names its dynamic loader (`PT_INTERP`: glibc's
+`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1` or
+`/lib/ld-linux-riscv64-lp64d.so.1`, musl's `/lib/ld-musl-<arch>.so.1`). EggOS loads that
+loader beside the program, at a base of its own below the stack, and starts it with
+`AT_BASE`, `AT_ENTRY` and `AT_PHDR` set as Linux sets them (D167); the loader then maps the
+libraries itself with `mmap` of their files. Put the loader at the path the program names and
+the libraries where the loader looks (glibc: the program's run path, `/lib/<triplet>`, `/lib`
+or `/usr/lib`; musl: `/lib`, `/usr/local/lib` or `/usr/lib`), for example:
+
+```
+cargo xtask run --arch aarch64 --add hello --add /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 \
+    --as /lib/ld-linux-aarch64.so.1 --add /usr/aarch64-linux-gnu/lib/libc.so.6 --as /lib/libc.so.6
+```
+
+There is no vDSO (`AT_SYSINFO_EHDR`), so the C libraries make their clock calls as system
+calls. A missing loader is `No such file or directory`, as on Linux; one EggOS cannot run (not
+an ELF program for this machine) is `ELIBBAD`.
+
+What CI checks on all three architectures (`cargo xtask dynamic-linking`, its own job):
+`tests/linux-dynamic`, our own program that uses the C library alone, built against glibc
+(with the Ubuntu cross compilers' libraries) and against musl (with Alpine's), runs with its
+loader and `libc` in the image, prints through `printf` and exits with 0.
+
+## Files mapped into memory
+
+`mmap` of a regular file works (D167). A private mapping (`MAP_PRIVATE`) reads each page from
+the file when the program first touches it, into memory of its own: writes stay the
+program's, `MADV_DONTNEED` reads the file again, and a page wholly past the file's end raises
+`SIGBUS` (`BUS_ADRERR`), as on Linux; code can be mapped executable, which is how a loader maps
+a library. A shared mapping (`MAP_SHARED`) of a regular file is read-only here: its pages are
+the file as it was read, it can never be made writable (`mprotect` is `EACCES`), and a
+writable one is `ENODEV`. `msync` succeeds on mapped ranges (nothing waits to be written back).
+`tests/linux-mappings` checks all of this in CI.
+
 ## GUI programs (Wayland)
 
 A Linux program that opens its windows through Wayland shows them on the EggOS desktop
@@ -92,10 +128,10 @@ it unlocks them:
 
 | Need | Who needs it |
 |------|--------------|
-| Dynamic linking (`ld.so`, `libwayland-client.so`, `libxkbcommon.so`, glibc) | every distribution's binaries |
+| The toolkits' libraries in the image (`libwayland-client.so`, `libxkbcommon.so`) beside glibc or musl; dynamic linking itself works (D167) | every distribution's binaries |
 | `epoll`, `eventfd`, `timerfd`, `signalfd` | GLib and GTK, Qt, SDL3, winit/calloop, Chromium and Electron, EFL |
 | `fork` of a process with shared memory | foot, weston-terminal |
-| `MAP_SHARED` of tmpfs files, `shm_open` and `/dev/shm` | older clients |
+| writable `MAP_SHARED` of tmpfs files, `shm_open` and `/dev/shm` | older clients |
 | `wl_subcompositor` | GTK, Qt, libdecor (SDL) |
 | `xdg-decoration` (server-side decorations) | apps that would draw their own title bars |
 | `xdg_popup` placement | menus and tooltips |
@@ -112,9 +148,9 @@ it unlocks them:
 
 ## What does not work yet
 
-- **Dynamically linked programs.** One that names an interpreter (`/lib/ld-linux-*.so`,
-  `/lib/ld-musl-*.so`) fails with `No such file or directory`, as on Linux when the loader is
-  missing. Link statically.
+- **Libraries for dynamically linked programs** come only with the program: EggOS ships no
+  C library, so add the loader and the libraries a program needs to the image at the paths
+  the loader looks in (D167).
 - **`fork` after `MAP_SHARED`.** Rust's `std::process::Command`, `posix_spawn`, `fork`,
   `vfork`, `execve` and `wait4` work (the sockets boot test starts its client with `Command`),
   but a process with shared memory cannot `fork` (D104).
@@ -123,8 +159,8 @@ it unlocks them:
   `std::env::current_exe` fails: start a copy of the program by its path. Files can be written
   in `/tmp`, `/run`, `/home` and `/var` (D125, D131).
 - **The wall clock** is UTC, read from the real-time clock at boot; there are no time zones (D150).
-- **`mmap` of files** is not implemented (`mmap` takes anonymous memory only, and memfds,
-  D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
+- **Writable shared file mappings.** `MAP_SHARED` of a regular file is read-only and does not
+  see later writes to the file (D167). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
   with `SCM_RIGHTS` (D138), and so does memory shared between programs with `memfd_create`
   and `mmap(MAP_SHARED)` (D139). The network works (D157, D158,
   [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`), ping sockets and

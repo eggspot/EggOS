@@ -11024,3 +11024,130 @@ the license, by an explicit instruction recorded here.
   image that fills; unpacking what can be saved from a damaged image; the run scripts packing a
   folder themselves (a release of xtask's packer for the host); `df` and Files' free space for
   `/work` (with `statfs`, part 19); the CI job itself (stages 2 to 4).
+
+## D167 Linux dynamic linking and file mappings: the interpreter loaded at its own base with `AT_BASE`, private and read-only shared `mmap` of files with `SIGBUS` past the end, regions that know their file, and a CI job that boots our dynamically linked hello against glibc and musl (the CI track's stage 2, milestone 1, part 1; extends D51, D52, D53, D65, D77, D139, D166) — Decided by the build loop (how CI gets the loaders and libraries decided by research)
+- **Why.** Every Linux distribution's programs, and the toolchain the CI track runs inside
+  EggOS (`rustc`, `cargo`, the linker), are dynamically linked: their dynamic loader maps the
+  C library and the program's other libraries with `mmap` of their files. Until now `execve`
+  refused a program that names an interpreter with `ENOENT` (D51) and `mmap` of a regular
+  file was `ENODEV` (D139).
+- **The interpreter.** `kernel::elf::Elf::interpreter` reads `PT_INTERP` as Linux does (the
+  first such header, 2 to 4096 bytes within the image, ending with a NUL; the path ends at its
+  first NUL; otherwise `ENOEXEC`). `execve` finds that path as `open` does from the working
+  directory (its walk errors, so `ENOENT` for a missing loader), needs a regular file the
+  caller may execute (`EACCES`), reads it whole, and `linux::exec::load_program(process,
+  program, interpreter, ...)` checks both images in full before mapping anything. The
+  interpreter (every `ld.so` is position-independent) goes top-down below the stack's guard
+  gap, aligned to its largest segment alignment, where Linux's `mmap` would place it, or below
+  the program if the program is there; an executable interpreter stays where it was linked.
+  `AT_BASE` is its bias, `AT_ENTRY`, `AT_PHDR`, `AT_PHNUM` the program's, and the thread starts
+  at the interpreter's entry; the break still starts after the program. An interpreter that is
+  not an ELF program for this machine, names an interpreter itself, overlaps the program, or
+  breaks the program rules (W^X, an executable stack, shared pages) is `ELIBBAD`
+  (`ExecError::BadInterpreter`, new `Errno::ELIBBAD`). `exec::load` keeps its signature for
+  static programs (init, apps, the self-tests and benchmarks) and still refuses an interpreter
+  with `ENOENT`. `AT_SYSINFO_EHDR` stays absent: glibc and musl make their clock calls as
+  system calls without a vDSO.
+- **Regions know their file.** New `regions::{FilePages, FileRange, FileRanges, WHOLE_FILE}`:
+  a `FileRange` is user addresses whose pages hold a file from a page-aligned offset, up to
+  where its bytes stop counting (`file_bytes_end`: a segment's file bytes, then zeros; the
+  whole file for an `mmap`), and whether the program may make it writable. A process keeps
+  them in its memory beside the regions (`Memory::files`, a leaf lock taken under the regions'
+  lock, and `has_files`), so anonymous memory pays one relaxed load in the page fault, and
+  `munmap` one more branch to a cold function. `vfs::Node` is a `FilePages` (`read_at` loops
+  over `FileSystem::read_into`). `Process::map_file_region` adds a file mapping,
+  `Process::add_file_range` records a program's segment while it is built, and
+  `Process::maps_file_in` tells `madvise` and tests where files are. The fault path
+  (`Process::populate`, so faults, kernel copies and `MADV_POPULATE_WRITE` alike) maps a page
+  of a file range that is not mapped yet with a frame of its own, filled from the file and
+  zeroed past its bytes (`populate_from_file`, cold and out of line). A page wholly past the
+  file's end, or one whose file could not be read, is the new `UnresolvedFault::BusError`: the
+  program gets `SIGBUS` with `BUS_ADRERR` at the address (`linux::fault::bus_error`, the trap
+  details as for `SIGSEGV`), a kernel copy `EFAULT`, `MADV_POPULATE_*` `EFAULT`
+  (`PopulateError::BusError`). `munmap` and `MAP_FIXED` cut the file ranges as the regions;
+  `mremap` moves them with the pages and grows the one that reached the old end into the file
+  (`FileRanges::moved_parts`, which takes its memory first, then `finish_move`, which cannot
+  run out); `fork` copies them, so a child reads an untouched page from the file. `mprotect`
+  to writable of a range that may not be is `EACCES` (`RegionError::NotWritable`).
+- **`mmap` of a regular file** (`linux::memory`, `map_regular`). As Linux, in this order:
+  `EACCES` for a file not open for reading, or a writable shared mapping of a file not open for
+  writing; `EOVERFLOW` for a range past the largest offset; then `MAP_PRIVATE` with any
+  protection (executable too: that is how a loader maps a library's code; writable and
+  executable at once stays `EACCES`, D52), and `MAP_SHARED` read-only. A shared mapping here
+  reads the file as it was when each page was first touched and can never be made writable;
+  a writable one is `ENODEV`. Files made when they are opened (`/proc`) stay `ENODEV`.
+  `MADV_DONTNEED` on a file page reads the file again (a program's segments too, which
+  `execve` records as file ranges), `MADV_FREE` on a file mapping is `EINVAL`, as on Linux.
+- **`msync`** (new call: x86_64 26, generic 227): `EINVAL` for an unknown flag, `MS_ASYNC`
+  with `MS_SYNC` or an unaligned address; `ENOMEM` for a length that wraps or a range not all
+  mapped; otherwise 0, as there is nothing to write back.
+- **Front-ends.** ABI only: no GUI, CLI or MCP capability changes. The CLI's programs and
+  every Linux program a user adds can now be dynamically linked.
+- **Checks.** Host tests: `PT_INTERP` parsing and its refusals; a dynamically linked program
+  started in its interpreter at the expected base with `AT_BASE`, `AT_ENTRY` and `AT_PHDR`,
+  both images mapped and every frame freed; `ELIBBAD` for a broken interpreter, one for
+  another machine and one that names an interpreter, with nothing mapped, and `ENOENT`
+  without one; a segment page discarded and read back from the program's file, its `.bss`
+  zeros; `FileRanges` cutting, offsets, moves and copies; file pages read when touched, the
+  partial last page zeroed, `BusError` past the end for faults, copies and populate, a private
+  write staying private, `MADV_DONTNEED` rereading, an anonymous mapping where a file was
+  reading zeros; `mremap` moving and growing a file mapping, `fork` reading an untouched page
+  from the file, a shared range refusing to become writable; the `mmap` errors, an executable
+  file mapping, `MADV_FREE`'s `EINVAL` and `msync`'s answers through the system-call layer
+  on a tmpfs file. QEMU, every architecture: the Linux programs boot test runs the new static
+  `tests/linux-mappings` (`LINUX-MAPPINGS` lines: a private read with zeros after the end, a
+  child killed by `SIGBUS` past it, private writes and `DONTNEED`, a shared read-only mapping
+  and its `EACCES`, its own program file, `fork`, `mremap` and `msync`). CI: the new
+  `dynamic-linking` job (one per architecture, in the CI image, part of `check`) runs `cargo
+  xtask dynamic-linking --arch <arch>`, which builds `tests/linux-dynamic` (our own `no_std`
+  program: the C library's start file calls its `main`, which prints a line with `printf`)
+  against glibc and against musl, adds each loader at the path its `PT_INTERP` names and
+  glibc's `libc.so.6` at its run path `/usr/lib/eggos-tests/glibc`, boots the release image
+  and wants both lines and status 0.
+- **Decided by research (how CI gets `ld.so` and the C libraries).** A research subagent
+  compared Rust's std against a `no_std` program on the C library alone, Ubuntu's packages
+  against downloads, and where the steps belong; its recommendations, followed: the test
+  program is `no_std` with a C `main` (no `libgcc_s` or unwinder to ship, a much smaller
+  start-up surface to debug blind, and it still exercises `PT_INTERP`, `AT_BASE`, the loader's
+  file mappings, relocations, thread-pointer set-up and `__libc_start_main`); glibc comes from
+  the CI image's own x86_64 C library and the `gcc-aarch64-linux-gnu` and
+  `gcc-riscv64-linux-gnu` packages (their sysroots hold each target's loader and `libc.so.6`,
+  and the cross compilers link the glibc builds, `rustup target add <arch>-unknown-linux-gnu`
+  in the job); musl comes from Alpine's `musl` and `musl-dev` packages of the pinned branch
+  `v3.24` (the index read for the current file names, as Alpine keeps only the latest
+  revision), unpacked with `tar`, and our `rust-lld` links the musl build against the loader
+  (musl's loader is its `libc.so`; `usr/lib/libc.so`, a link to `/lib` in the package, is
+  replaced by a copy so the linker finds it) with `Scrt1.o` and `--dynamic-linker`; the CI
+  steps only install tools, and xtask does the rest (it runs `curl` and `tar`), so it works
+  the same on a developer's Linux host; glibc's library goes to a run path the build names, as
+  the cross packages' default search folders were uncertain. Licensing: glibc (LGPL-2.1+) and
+  musl (MIT) binaries used only as test input in CI are never committed, shipped or uploaded
+  as artifacts; no source of either is read or copied (clean room).
+- **Decided without research.** The interpreter's placement below the program when they would
+  overlap; `ELIBBAD` for every way an interpreter is broken (Linux mixes `ELIBBAD`, `ENOEXEC`
+  and `EINVAL` there); shared file mappings as read-only snapshots rather than `ENODEV`
+  (rustc reads its metadata through `MAP_SHARED`, `PROT_READ` mappings, and nothing writes
+  through them), at the cost of not seeing later writes to the file; `mprotect` to writable
+  of a shared mapping of a file open read-write is `EACCES` here (Linux allows it); a
+  `mremap` that grows a file mapping maps more of the file; file pages read with the regions'
+  lock held (file systems poll their disks and never sleep, so this is safe, only slower for
+  the process's other threads during a disk read); `execve` still reads a program and its
+  interpreter whole and copies their segments (lazy segments come with a later item); the
+  benchmark's file is the runtime's self-test program in the initramfs. The owner can overrule
+  any of these.
+- **Performance and size (D24).** New benchmark `linux_file_map_read_unmap`: a private
+  16-page file mapping, each page read once by a kernel copy (a file page's fault without the
+  trap), then `munmap`; its baseline lines come with the build phase. The anonymous paths
+  gain one relaxed load and a never-taken branch in the fault and `munmap`
+  (`linux_page_fault`, `linux_mmap_munmap`), and `execve`'s path checks one more header kind
+  (`linux_exec_load`, `linux_execve`); report-only CI shows any move against the baseline
+  (D122). `Process` is unchanged (the file ranges are in the shared `Memory`); `Memory` grows
+  by a lock, a `Vec` and a flag. Two new test programs (`linux-mappings` in the Linux programs
+  image only, `linux-dynamic` only in the dynamic linking job's image); the release image does
+  not change.
+- **Not yet.** Writable `MAP_SHARED` of tmpfs and EggFS files with their pages shared and
+  written back, and shared mappings that see later writes (part 17 brings tmpfs pages as
+  frames); reading file pages without holding the regions' lock; segments mapped lazily from
+  the file at `execve`; a vDSO; `/proc/self/maps` naming the mapped files (part 16:
+  `FilePages` will need a path); Android's `linker64`, untested; the toolkits' libraries
+  (part 20); `MAP_POPULATE` of a file mapping (pages are read on first touch).

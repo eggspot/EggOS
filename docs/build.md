@@ -211,6 +211,14 @@ holds what used to be written in them.
   `EGGOS_MACOS_PROGRAMS` provides the Mach-O programs, `mac-paint.zip` and `mac-paint.app`
   (aarch64 and x86_64). They are test programs built from our sources, never release assets
   (D152).
+- **`cargo xtask dynamic-linking --arch <arch>`** (D167, Linux hosts) builds
+  `tests/linux-dynamic`, our own `no_std` program on the C library alone, against glibc (the
+  host's x86_64 library, or the `gcc-aarch64-linux-gnu` and `gcc-riscv64-linux-gnu` cross
+  compilers' sysroots, which also link it; `rustup target add <arch>-unknown-linux-gnu`) and
+  against musl (Alpine `v3.24`'s `musl` and `musl-dev`, which xtask downloads with `curl` and
+  unpacks with `tar` into `target/dynamic-linking/`, linked by `rust-lld`), adds both with
+  their loaders (at the paths their `PT_INTERP` names) and glibc's `libc.so.6` to the release
+  image, boots it and wants both programs' lines. The libraries are test data, never shipped.
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
@@ -350,7 +358,9 @@ holds what used to be written in them.
   `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
-  programs, D146) and, on PRs, `hosts` (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
+  programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
+  installing the glibc cross compilers and target in the CI image, D167) and, on PRs, `hosts`
+  (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other
   job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
