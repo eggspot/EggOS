@@ -10,6 +10,7 @@ name = "macos"
 path = "src/main.rs"
 
 [dependencies]
+eggos-c-format = { path = "../c-format" }
 eggos-runtime = { path = "../runtime" }
 
 [lints]

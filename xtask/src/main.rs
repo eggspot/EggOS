@@ -203,6 +203,7 @@ const KERNEL_CRATES: &[&str] = &[
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
     "eggos-png",
+    "eggos-c-format",
     "eggos-init",
     "eggos-eggsh",
     "eggos-coreutils",
