@@ -267,8 +267,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   tools list and choose its items, except while the app shows an alert); Objective-C has
   blocks, `__weak` and exceptions (frames only DWARF describes, and exceptions passing through
   the layer's own code, end the program as uncaught). Nibs and storyboards, scroll views,
-  tables, images, Auto Layout, Swift, most of Foundation beyond its core (no NSFileManager or
-  NSNotification), signal handlers, other frameworks and riscv64 do not run yet.
+  tables, images, Auto Layout, Swift apps, most of Foundation beyond its core (no NSFileManager
+  or NSNotification), signal handlers, other frameworks and riscv64 do not run yet. Swift
+  console programs run on the layer's own Swift runtime (D180) without Foundation's Swift
+  overlay, the other overlays, dynamic casts, the program's conformances to the standard
+  library's protocols, weak references, `String`'s indices and printing beyond strings, `Bool`
+  and numbers; strings compare and hash by their UTF-8 bytes (no Unicode normalization); the
+  stack probe `___chkstk_darwin` touches nothing, so a single frame over 1 MiB could pass the
+  stack's guard gap unnoticed.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
   app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input or sideways scrolling, and

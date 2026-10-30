@@ -393,8 +393,9 @@ D16):
     controls, NSAlert's `runModal` in a dialog, and the main menu in the macOS profile's top bar
     (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
     same test types into a field, presses buttons, answers an alert, opens the `File` menu and
-    quits with Cmd+Q. Next: nibs, Swift, scroll views, images (D147's and D175's "Not yet";
-    timers, blocks, weak references and exceptions came with D175).
+    quits with Cmd+Q. Next: nibs, Swift apps, scroll views, images (D147's and D175's "Not
+    yet"; timers, blocks, weak references and exceptions came with D175; Swift console programs
+    with D180).
 45. **done** — users can now install an app from a `.zip` and see its own icon (D148,
     docs/apps.md, Claude Fable's docs/ux/app-icons-v0.3.md): `app install <file>.zip` (and
     Files and the installer's window, and the MCP tool `app_install`) extracts the archive's
@@ -668,7 +669,17 @@ The release path (the release-path review's issues #141-#145, after the items ab
   `FIONREAD`; the linux-events program checks it); `/etc/passwd` and `/etc/group` in the base;
   CI's `qt-app` job types, copies and pastes, saves as through Qt's file dialog and quits, and
   reads the saved file back. Next: Qt Quick and OpenGL widgets (a GPU stack, part 67), D-Bus,
-  icon themes, scales other than 1 (part 43), a folder's watch told of its files' writes.
+  icon themes, scales other than 1 (part 43), a folder's watch told of its files' writes. Its
+  ninth step, a real Swift app, **written in part, unchecked** (D180): Swift's runtime,
+  `libswiftCore`, in the macOS layer (native objects and their counts, metadata and value
+  witnesses, `Optional`, existentials, `String`, `Hasher`, `Array` and `Dictionary` storage,
+  mangled type names, `print`, exclusivity checks), checked by `macos-swift`, our own Swift
+  program built by `swiftc` in CI, in the macOS programs test on aarch64 and x86_64; the app,
+  Minesweeper 1.0.0 (chosen by research; universal, Swift on AppKit built in code), is listed in
+  docs/compatibility.md as chosen. Next: Foundation's Swift overlay and the other overlays,
+  witness tables for the program's conformances, dynamic casts, weak references, Swift
+  subclasses of AppKit's classes, CoreGraphics drawing, then `cargo xtask swift-app` and its CI
+  job (D180's "Not yet").
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

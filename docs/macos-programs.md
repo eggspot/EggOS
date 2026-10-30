@@ -15,8 +15,9 @@ Part 1 (D120) runs console programs that use the libSystem functions listed belo
 variables, locks, `getopt`, calendar time, `errno` per thread and the C locale. Part 3 (D142)
 runs Objective-C console programs: the layer has its own Objective-C runtime (libobjc) and the
 core of Foundation (see "Objective-C programs"). Part 4 (D147) runs GUI apps built in code on
-AppKit's core, in an `.app` bundle or not (see "GUI apps"). Swift, C++'s runtime and programs
-that need other libraries do not run yet (see below).
+AppKit's core, in an `.app` bundle or not (see "GUI apps"). Part 5 (D180) runs Swift console
+programs on the layer's own Swift runtime (see "Swift programs"). Swift GUI apps, C++'s runtime
+and programs that need other libraries do not run yet (see below).
 
 ## Add a program to the image
 
@@ -218,6 +219,40 @@ A Foundation class the layer lacks stops the program only when it is first used:
 `eggos-macos: unimplemented Foundation class NSUUID`, status 127; a missing function
 names its library the same way (`unimplemented Foundation function NSHomeDirectory`).
 
+## Swift programs
+
+A Swift program built for macOS 13 or later runs from `eggsh` like any other: `swiftc -O
+-target arm64-apple-macos13.0 hello.swift -o hello` on a Mac, then add `hello` to the image.
+Such a program links `/usr/lib/swift/libswiftCore.dylib`, the system's Swift runtime, which the
+layer provides itself, in Rust (D180). The boot test's `macos-swift`
+(`tests/macos-swift/main.swift`, built by `cargo xtask macos-programs`) prints the same lines as
+on a Mac, and `macos-swift conflict` stops at an exclusivity violation as a Mac does.
+
+What works:
+
+- **Classes, structs, protocols and generics** of the program: objects counted the Swift way
+  and freed with their `deinit` at their last release; Swift classes are Objective-C classes
+  under `_SwiftObject`, and Objective-C's `retain` and `release` reach their count.
+- **Values of any type through their value witnesses**: generic functions, `Optional`,
+  existentials (`Any`, `any P`), the builtin types the compiler names.
+- **`String`**: literals, small strings, appending and growing, interpolation, comparison and
+  hashing (by UTF-8 bytes); **`Array`** and **`Dictionary`** with any element, key and value
+  types the program's own code specializes; `Hasher` with a random seed per run
+  (`SWIFT_DETERMINISTIC_HASHING` turns it off).
+- **`print`** of strings, `Bool` and the numbers (`Double` as Swift writes it: `0.1`, `2.0`,
+  `1e-05`, `1.5e+300`), interleaved in order with the C library's `printf`;
+  `CommandLine.argc`.
+- **Exclusivity checks**: two overlapping accesses to the same variable, one of them a
+  modification, end the program with Swift's message.
+
+What does not yet: Foundation's Swift overlay (`Data`, bridging to NSString, NSArray and
+NSDictionary), the other overlays (`Dispatch`, `CoreGraphics`, `ObjectiveC`), dynamic casts
+(`as?` to a protocol or class), conformances to the standard library's protocols in the
+program (`Hashable`, `Equatable`, `CustomStringConvertible` of its own types), weak references,
+`String`'s indices and characters, printing other types, and Swift GUI apps (D180's "Not
+yet"). A program that uses one of these ends with `eggos-macos: unimplemented ...` and status
+127 when it reaches it.
+
 ## GUI apps
 
 A program that links AppKit (`-framework AppKit`, or the Cocoa umbrella, D175) gets the
@@ -296,7 +331,8 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   supported. ARC's return-value handoff is not used yet, so returned objects always go
   through the autorelease pool: correct, a little slower than on a Mac. Manual
   retain/release programs use the same messages but are not covered by a test yet.
-- **Swift or C++'s runtime**, and **unwinding** beyond Objective-C's (`_Unwind_RaiseException`
+- **Most of Swift's standard library and its overlays** (see "Swift programs"), **C++'s
+  runtime**, and **unwinding** beyond Objective-C's (`_Unwind_RaiseException`
   and the rest of `_Unwind_*`): a Rust panic with `panic = "unwind"` stops at the first
   unwinder call with status 127.
 - **Signal handlers**: `sigaction` and `signal` record handlers and pass ignoring or the default

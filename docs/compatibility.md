@@ -280,3 +280,24 @@ works.
   notifications go nowhere and Qt's accessibility bridge stays off; icons are blank (no icon
   theme is carried); no OpenGL, so Qt Quick and OpenGL widgets do not run. What EggOS still
   lacks for Qt is in D179's "Not yet".
+
+## Chosen, not running yet: Minesweeper (macOS, Swift on AppKit)
+
+- **What it is.** [Minesweeper](https://github.com/codemaki/Minesweeper) by codemaki, a Swift
+  port of the classic game, MIT. Version 1.0.0, the release asset
+  <https://github.com/codemaki/Minesweeper/releases/download/v1.0.0/Minesweeper-1.0.0.zip>
+  (170 998 bytes, SHA-256 `53bbd3cc0f3158adf70f5a843d995438f9f1b2c62aaf0f57fdd09d16fa041858`;
+  1.0.1 ships only as a `.dmg`), holding `Minesweeper.app` with
+  `Contents/MacOS/Minesweeper` (a universal binary, arm64 and x86_64, for macOS 13) and
+  `Contents/Resources/AppIcon.icns`, plus AppleDouble `._*` members.
+- **Why it.** Research chose it as the first real Swift app (D180): Swift on AppKit with its
+  window, menu and board built in code (no nib, storyboard or SwiftUI), no updater or other
+  framework, the system's Swift runtime rather than a copy in the app, and the smallest list of
+  imports among the candidates (112 from `libswiftCore`, a few from the Dispatch,
+  CoreGraphics, ObjectiveC and CoreFoundation overlays, and Foundation's Swift overlay).
+  Runner-up: Mine2000 1.0.1 (arm64 only; its bitmaps are not under its code's licence).
+- **Where it stands.** The Swift runtime's first slice runs Swift console programs (D180); the
+  overlays, the witness tables of the app's own conformances, dynamic casts, weak references,
+  Swift subclasses of NSView and the CoreGraphics drawing it uses come next, with
+  `cargo xtask swift-app` and CI's `swift-app` job, which will install it, open a cell, flag one
+  and start a new game. D180's "Not yet" lists what remains.

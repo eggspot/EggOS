@@ -13007,3 +13007,163 @@ the license, by an explicit instruction recorded here.
   the failure); users other than `root` (part 62); riscv64 (Alpine `v3.24` has no riscv64
   build pinned); whatever the first CI run finds missing for Qt and CorePad, to be recorded in
   the roadmap.
+
+## D180 Swift's runtime, first slice: `libswiftCore` in the macOS layer for Swift console programs — native objects and their reference counts, type metadata and value witness tables, `Optional`, existentials, `String` and `Hasher`, `Array` and `Dictionary` storage, mangled type names, the standard library's `description`s, `print` and exclusivity checks; the `macos-swift` program built by Apple's `swiftc` in CI; the real Swift app chosen (batch part 28, its first slice; the Real apps track's ninth step; extends D17, D120, D142, D147, D175) — Decided by the build loop (the app and how the console program is built decided by research)
+
+- **Context.** A Swift program built for macOS 13 or later links the system's Swift runtime,
+  `/usr/lib/swift/libswiftCore.dylib`, and the overlays beside it; nothing of it is in the
+  app. Swift's code inlines much of its standard library, so the runtime must honour the
+  layouts that inlined code reads and writes: a `String`'s two words, an array buffer's and a
+  native dictionary's header and bitmap, an object's header, value witness tables, class
+  metadata. The runtime is ours, in Rust, written from Swift's public ABI documents (the
+  calling convention, type metadata, mangling, the value witness table, single-payload enum
+  layout) and from observed behaviour (layouts and outputs read from programs `swiftc` built
+  on a Mac, and the symbol names `libswiftCore.tbd` publishes); no Swift source is copied.
+- **Decision.** A new `swift` module in the macOS layer (`userland/macos/src/swift/`), set up
+  only for a program that links `libswiftCore` (`start.rs`'s `Library::SwiftCore`), after the
+  Objective-C runtime. Its pure parts, each with host tests: `string_object` (small strings of
+  up to 15 bytes in the two words, immortal literals and native storage 32 bytes past their
+  object, the count and flag bits), `hasher` (SipHash-1-3 in a 72-byte state the size of
+  Swift's `Hasher`), `enum_tag` (single-payload enum layout: payload extra inhabitants first,
+  then tag bytes; heap pointers' extra inhabitants below 4 GiB), `mangling` (a stack machine
+  over the postfix grammar: symbolic references, `S` substitutions, `s<len><name><kind>`,
+  `y ... G` generic arguments, `Sg`, protocol lists with `p`, `yp`, `yt`, `x`/`q_`, `Xp`),
+  `number_text` (integers, and `Double` as the shortest digits that read back, by Burger and
+  Dybvig's free-format algorithm on exact big integers, in Swift's notation: `2.0`, `0.001`,
+  `1e-05`, `1e+16`), `refcount` (Swift's inline count: strong references beyond the first in
+  bits 33-62, deinitializing in bit 32, immortal when the low 32 bits are all set) and
+  `hash_table` (a dictionary's scale for a capacity at 3/4 load, the bits past the last bucket
+  set). Its runtime parts (`target_env = "musl"`):
+  - `entry`: the Swift calling convention's context register (x20, r13) and indirect-result
+    register (x8, rax) moved into C argument registers for each runtime function that takes
+    them; `call_with_context` for calling a program's destructor or witness; the dispatch
+    thunks of `CustomStringConvertible` and `TextOutputStream`.
+  - `heap_object`: `swift_allocObject` (a heap block, so `malloc_size` is the object's size as
+    array buffers expect), `swift_retain`/`_release` and their `_n` forms (the last release
+    calls the class's destructor two words before its metadata, which frees through
+    `swift_deallocClassInstance`), bridge objects and unknown objects (tagged pointers left
+    alone, Objective-C objects through `objc_retain`/`objc_release`, native ones by their
+    class's Swift bit and `UsesSwiftRefcounting` flag), `swift_isUniquelyReferenced_*`, static
+    objects (immortal, once per token) and stack objects, `swift_setDeallocating`,
+    `swift_once` (Darwin's `dispatch_once` states) and `swift_beginAccess`/`swift_endAccess`
+    (each thread's list of tracked accesses in its record; a read and a modification, or two
+    modifications, of the same address end the program with Swift's message).
+  - `metadata`: value witness tables for the builtin types programs name (`$sBi8_WV` to
+    `$sBi128_WV`, `$sBi1_WV`, `$sBpWV`, `$sBoWV`, `$sBOWV`, `$sBbWV`, `$sytWV`), `String`'s,
+    and opaque existentials' (a three-word buffer, the type and its witness tables; values
+    larger than the buffer boxed and shared); struct metadata and descriptors for `Int`, the
+    sized integers, `Double`, `Float`, `Bool`, `String`, the raw pointers and
+    `DefaultStringInterpolation`; `Any` and `()`; class metadata for the runtime's own classes
+    under `_SwiftObject`.
+  - `generic`: `Optional<T>` (its value witnesses on top of `T`'s, an extra tag byte when `T`
+    has no extra inhabitants, as `Int??` takes 10 bytes), `Array`, `Dictionary` and `Set`
+    metadata, `_ContiguousArrayStorage<T>` and `_DictionaryStorage<K, V>` classes and
+    existentials of up to three protocols, each made once per set of arguments and kept.
+  - `storage`: `_swiftEmptyArrayStorage` and `_swiftEmptyDictionarySingleton` (immortal), the
+    array and dictionary storages' destructors (their elements destroyed through their value
+    witnesses), `_DictionaryStorage.allocate`, `resize` and `copy`, `Array.endIndex` and its
+    subscript for unspecialized code, `swift_arrayInitWithCopy` and the other array witness
+    functions, and the dictionary's fatal error for an inconsistent `Hashable`.
+  - `string`: `String.append` and `TextOutputStream.write` (in place into a uniquely
+    referenced native storage with room, else into a new one at least twice as large),
+    `_StringGuts.grow`, `String.hash(into:)`, `_stringCompareWithSmolCheck`, `__StringStorage`,
+    and `Hasher`'s `init(_seed:)`, `_combine` and `_finalize`, keyed by a random execution seed
+    (none when `SWIFT_DETERMINISTIC_HASHING` is set).
+  - `protocols`: `CustomStringConvertible` and `TextOutputStream` descriptors, conformance
+    descriptors and witness tables for the integers, `Double`, `Bool`, `String` and
+    `DefaultStringInterpolation`, and `Double.write(to:)`.
+  - `type_lookup`: `swift_getTypeByMangledNameInContext` (and `InMetadataState`): the runtime's
+    descriptors and substitutions give its own metadata, a program's non-generic type its
+    metadata accessor's answer; and `Optional`'s accessor `$sSqMa`.
+  - `print`: `print(_:separator:terminator:)` for strings, the integers, `Double` and `Bool`
+    into the C library's standard output stream (so `printf` and `print` interleave in order),
+    and `CommandLine.argc`.
+  - `swift_object`: `_TtCs12_SwiftObject`, the Objective-C root class of Swift classes, whose
+    methods count the Swift way; `objc_retain`, `objc_release` and `objc_autorelease` reach a
+    native Swift object's count directly.
+  libSystem gains `___chkstk_darwin` (Swift's stack probe for large and dynamically sized
+  frames), libsystem's thread record `swift_accesses`, and `stdio::write_standard_output`.
+- **The check.** `tests/macos-swift/main.swift`, our own Swift program, is test data like
+  `tests/macos-objc` (D142): CI's `macos-programs` job builds it with `xcrun swiftc -O -target
+  <cpu>-apple-macos13.0` for arm64 and x86_64 (`xtask/src/macos.rs`'s `SWIFT_PROGRAMS`,
+  `swift_arguments`), and the macOS programs boot test runs it on aarch64 and x86_64: a
+  protocol with two conforming structs, a generic function, a final class whose `deinit`
+  prints, arrays, dictionaries keyed by short and long strings, `[any Shape]`, growing a
+  string past 15 bytes, comparisons, interpolated integers and doubles, `print` with a
+  separator; and `macos-swift conflict` breaks exclusivity on purpose and ends with Swift's
+  message and status 134. Built with Swift 6.3, it imports 47 functions and variables from
+  `libswiftCore`, all of them provided.
+- **Decided by research** (a research subagent searched GitHub, downloaded and hashed 11
+  candidates' releases into the session scratchpad, and dumped each binary's load commands,
+  imports per library and `Info.plist`). The real Swift app: **Minesweeper 1.0.0 by codemaki**
+  (<https://github.com/codemaki/Minesweeper>, MIT), the release asset
+  <https://github.com/codemaki/Minesweeper/releases/download/v1.0.0/Minesweeper-1.0.0.zip>
+  (170 998 bytes, SHA-256
+  `53bbd3cc0f3158adf70f5a843d995438f9f1b2c62aaf0f57fdd09d16fa041858`), because it is Swift on
+  AppKit with its interface built in code (no nib, no storyboard, no SwiftUI, no Sparkle or
+  other framework), a universal binary for macOS 13 with the system's Swift runtime (no
+  `Contents/Frameworks`), `Minesweeper.app/Contents/MacOS/Minesweeper` with
+  `Resources/AppIcon.icns`, and the smallest import list of the candidates: 112 from
+  `libswiftCore`, 7 `libswiftDispatch`, 3 `libswiftCoreGraphics`, 1 `libswiftObjectiveC`, 1
+  `libswiftCoreFoundation`, 21 CoreGraphics, 20 AppKit, 19 Foundation (its Swift overlay,
+  which macOS 13's Foundation carries), 4 CoreFoundation. Its later 1.0.1 is a `.dmg` only. The
+  zip carries AppleDouble `._*` members the installer must skip. Runner-up Mine2000 1.0.1
+  (arm64 only, and its bitmaps are not under its code's MIT licence); SwiftUI apps (CountUp,
+  Mater, remindful), Sparkle apps (Remora, Pelmet), menu-bar-only Hidden Bar and unlicensed
+  ones rejected. The console program: our own source compiled by `swiftc` on CI's macOS
+  runner (D142's precedent for test data) rather than a third party's binary, so its imports
+  stay what the runtime is checked against; `-O`, because unoptimized builds call the
+  generic standard library through more entry points, and no `import Foundation` or `Darwin`.
+- **Decided without research.** SipHash-1-3 with the seed mixed into the key (the state is
+  opaque to programs, so only its size must match); comparing and hashing strings by their
+  UTF-8 bytes, which is Swift's order for strings in the same normalization form (NFC
+  normalization is not done); `Double`'s shortest digits by exact big integers rather than a
+  faster table-driven algorithm (size before speed until a benchmark says otherwise); the
+  access conflict message without its second and third lines (Swift prints where each access
+  began); fatal errors ending with `abort` (status 134) where Swift traps; `___chkstk_darwin`
+  touching nothing (a stack's 8 MiB reserve sits above a 1 MiB guard gap, so only a frame
+  larger than the gap could skip it); the runtime's own storage classes descending from
+  `_SwiftObject` with no Objective-C class data of their own; no type-layout prefix before
+  class metadata; generic metadata kept for the program's life in one list behind one lock;
+  existentials of more than three protocols, class-bound existentials, metatypes and generic
+  types of the program refused by name lookup as unimplemented features (status 127, naming
+  the type) rather than guessed.
+- **Performance and size (D24).** `swift_retain` is one atomic add and `swift_release` one
+  compare-and-swap; no lock on either. `objc_retain`, `objc_release` and `objc_autorelease`
+  now read the object's class's data word first (one load, a second only for Swift classes)
+  to send native Swift objects to their own count. The runtime is part of the macOS layer,
+  an optional component (D152, D18): it costs nothing to a program that does not link
+  `libswiftCore`, beyond the layer's size, which grows by the new module. No benchmark is
+  added yet: the Swift hot paths (retain, release, the access checks, appends) are measured
+  with the app's slice, when there is a real workload to measure.
+- **Not yet** (what the real app needs, for the next slice of part 28): the overlays it links
+  (`libswiftCoreFoundation`, `libswiftDispatch`, `libswiftObjectiveC`, `libswiftCoreGraphics`,
+  and the weak ones it imports nothing from, which must load as empty libraries) and
+  Foundation's Swift overlay (`Data`, `Notification`, `CharacterSet`,
+  `trimmingCharacters(in:)`, bridging `String`, `Array` and `Dictionary` to and from NSString,
+  NSArray and NSDictionary, `_bridgeAnyObjectToAny`, `_CocoaArrayWrapper`, strings backed by
+  NSString); `swift_getWitnessTable` with resilient witnesses and the method, protocol and
+  associated-type descriptors of `Equatable`, `Hashable`, `RawRepresentable`, `CaseIterable`,
+  `SetAlgebra`, `_ObjectiveCBridgeable`, `_SwiftNewtypeWrapper` and
+  `_HasCustomAnyHashableRepresentation` with their default implementations;
+  `swift_dynamicCast` and `swift_dynamicCastObjCClass`, `swift_getObjCClassMetadata`,
+  `swift_getForeignTypeMetadata`, `swift_getObjectType`; Swift weak references
+  (`swift_weakInit`, `swift_weakLoadStrong`, `swift_weakDestroy` and the unknown-object
+  forms, which need a side table); `swift_stdlib_random`, `swift_deletedMethodError`,
+  `_swift_stdlib_reportUnimplementedInitializer`, `_assertionFailure`, `_typeName`;
+  `String.count`, its indices, subscripts and iterator, `Character` hashing, `lowercased()`,
+  `_fromSubstring`, `UTF8View._foreignCount`, `_StringGuts.copyUTF8`, `Array.
+  _allocateBufferUninitialized`, `String.hashValue`; Swift classes that subclass NSView and
+  NSObject in AppKit (their Objective-C class data, instance sizes and ivar offsets realized
+  with Swift's metadata, `swift_initClassMetadata2` where needed); NSGridView, NSTrackingArea,
+  NSSound with in-memory WAV data, NSUserDefaults, NSAttributedString, NSFont, NSScreen,
+  NSGraphicsContext's `CGContext` and the 21 CoreGraphics functions it draws with (paths,
+  ellipses, fills, strokes, state, scale) and `DispatchQueue.main.async`; then
+  `cargo xtask swift-app` (download, pin, install from its `.zip` with its icon, a QEMU check
+  that opens a cell, flags one and starts a new game, and frame comparisons), CI's `swift-app`
+  job in `check`'s needs, and its row in docs/compatibility.md moved to the working list.
+  Also not yet: printing values other than strings, `Bool` and the numbers (reflection),
+  `Float`'s description, the program's own generic types in mangled names
+  (`swift_getGenericMetadata` and conformance requirements), class-bound existentials and
+  metatypes, Unicode normalization in comparison and hashing, Swift concurrency, the Swift
+  benchmarks and riscv64 (no Swift for it on macOS).
