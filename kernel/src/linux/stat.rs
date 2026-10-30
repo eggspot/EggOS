@@ -21,6 +21,7 @@ use super::Errno;
 use super::credentials::{Credentials, Kind as IdKind};
 use super::descriptors::{Descriptors, FileKind};
 use super::files;
+use super::pseudo_terminal::{PseudoTerminalEnd, Side};
 use super::thread::LinuxThread;
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind};
@@ -329,6 +330,7 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
 fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
     match files.file(fd)?.kind() {
         FileKind::Console => Ok(CONSOLE),
+        FileKind::PseudoTerminal(end) => Ok(pseudo_terminal_status(end)),
         FileKind::Pipe(end) => Ok(Status {
             device: PIPES,
             inode: end.inode(),
@@ -380,6 +382,24 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
             ..CONSOLE
         }),
         FileKind::Event(_) => Ok(EVENT_FILE),
+    }
+}
+
+fn pseudo_terminal_status(end: &PseudoTerminalEnd) -> Status {
+    use crate::vfs::devfs;
+    let (inode, permissions, (major, minor)) = match end.side() {
+        Side::Controlling => (devfs::PTMX, 0o666, devfs::PTMX_DEVICE),
+        Side::Program => (
+            devfs::pseudo_terminal_node(end.number()),
+            0o620,
+            (devfs::PSEUDO_TERMINAL_MAJOR, end.number()),
+        ),
+    };
+    Status {
+        inode,
+        mode: S_IFCHR | permissions,
+        represented_device: Device { major, minor },
+        ..CONSOLE
     }
 }
 

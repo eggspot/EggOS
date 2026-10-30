@@ -82,6 +82,7 @@ fn usage_of(kind: &FileKind) -> (Usage, (u32, u32)) {
         FileKind::MemoryFile(_) => pseudo(magic::TMPFS),
         FileKind::Event(_) => pseudo(magic::ANON_INODE_FS),
         FileKind::Console
+        | FileKind::PseudoTerminal(_)
         | FileKind::Window(_)
         | FileKind::AgentChannel(_)
         | FileKind::MemoryDevice(..)

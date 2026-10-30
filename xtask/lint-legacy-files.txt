@@ -49,7 +49,6 @@ kernel/src/linux/random.rs 7
 kernel/src/linux/signal_frame.rs 22
 kernel/src/linux/signals.rs 118
 kernel/src/linux/stat.rs 1
-kernel/src/linux/terminal.rs 8
 kernel/src/linux/thread.rs 2
 kernel/src/linux/thread_pointer.rs 5
 kernel/src/linux/time.rs 19

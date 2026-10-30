@@ -415,10 +415,12 @@ pub fn wait_for<P: Platform>(
     }
 }
 
-/// The wake list of `kind`, if it keeps one: pipes, `AF_UNIX` sockets and the event files.
+/// The wake list of `kind`, if it keeps one: pipes, pseudo-terminals, `AF_UNIX` sockets and
+/// the event files.
 pub fn wake_list(kind: &FileKind) -> Option<Arc<WakeList>> {
     match kind {
         FileKind::Pipe(end) => Some(Arc::clone(end.wake_list())),
+        FileKind::PseudoTerminal(end) => Some(Arc::clone(end.wake_list())),
         FileKind::Socket(socket) => Some(Arc::clone(socket.wake_list())),
         FileKind::Event(event) => Some(Arc::clone(event.wake_list())),
         _ => None,
@@ -451,6 +453,7 @@ pub fn needs_looking_at(kind: &FileKind) -> bool {
     match kind {
         FileKind::Event(EventFile::EventFd(_) | EventFile::Inotify(_))
         | FileKind::Pipe(_)
+        | FileKind::PseudoTerminal(_)
         | FileKind::Socket(_) => false,
         _ => true,
     }
@@ -509,6 +512,7 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         | FileKind::MemoryDevice(..) => requested & (OUTPUT_EVENTS | INPUT_EVENTS),
         FileKind::Path(_) => event::NVAL,
         FileKind::Pipe(end) => end.events(requested),
+        FileKind::PseudoTerminal(end) => end.events(requested),
         FileKind::Window(connection) => super::window::events(connection, requested),
         FileKind::AgentChannel(_) => agent_events(requested),
         FileKind::Socket(socket) => socket.events(requested),

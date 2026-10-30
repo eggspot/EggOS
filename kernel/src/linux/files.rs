@@ -357,7 +357,7 @@ fn open<P: Platform>(
             return Err(Errno::ELOOP);
         }
         if let Some(device) = node.character_device() {
-            open_device(process, node, device)?
+            open_device(process, node, device, flags)?
         } else if node.kind() == NodeKind::Socket {
             return Err(Errno::ENXIO);
         } else {
@@ -425,20 +425,28 @@ fn open_device<P: Platform>(
     process: &Process<P>,
     node: Node,
     device: (u32, u32),
+    flags: u32,
 ) -> Result<FileKind, Errno> {
+    use super::process_table::{TABLE, Terminal};
+    use super::pseudo_terminal;
     use crate::vfs::devfs;
     match device {
         devfs::WINDOW_DEVICE => super::window::open::<P>(),
         devfs::AGENT_DEVICE => super::agent_channel::open(process),
         devfs::CONSOLE_DEVICE => Ok(FileKind::Console),
+        devfs::PTMX_DEVICE => pseudo_terminal::open_controlling_side::<P>(),
+        (devfs::PSEUDO_TERMINAL_MAJOR, number) => {
+            pseudo_terminal::open_program_side(process, number, flags)
+        }
         devfs::TTY_DEVICE => {
             let caller = process.id().get();
-            match super::process_table::TABLE
-                .lock()
-                .controlling_terminal(caller)
-            {
-                Ok(_) => Ok(FileKind::Console),
-                Err(_) => Err(Errno::ENXIO),
+            let controlling = TABLE.lock().controlling_terminal_of(caller);
+            match controlling {
+                Some(Terminal::Console) => Ok(FileKind::Console),
+                Some(Terminal::Pseudo(number)) => {
+                    pseudo_terminal::open_program_side(process, number, flags | open_flag::NOCTTY)
+                }
+                None => Err(Errno::ENXIO),
             }
         }
         device => match MemoryDevice::of(device) {
@@ -695,6 +703,7 @@ pub fn pread64<P: Platform>(
     if matches!(
         file.kind(),
         FileKind::Console
+            | FileKind::PseudoTerminal(_)
             | FileKind::Pipe(_)
             | FileKind::Socket(_)
             | FileKind::InetSocket(_)

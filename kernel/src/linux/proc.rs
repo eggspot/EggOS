@@ -44,7 +44,8 @@
 
 use super::descriptors::FileKind;
 use super::identity;
-use super::process_table::{Listed, NAME_LENGTH, Running, TABLE};
+use super::process_table::{Listed, NAME_LENGTH, Running, TABLE, Terminal};
+use super::pseudo_terminal::Side;
 use crate::memory;
 use crate::process::{Mapping, MappingLabel, Process};
 use crate::regions::FilePages;
@@ -470,6 +471,10 @@ fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
         FileKind::Snapshot(snapshot) => return path_of(&snapshot.node),
         FileKind::MemoryDevice(_, node) => return path_of(node),
         FileKind::Console => text.bytes(b"/dev/console")?,
+        FileKind::PseudoTerminal(end) if end.side() == Side::Controlling => {
+            text.bytes(b"/dev/ptmx")?
+        }
+        FileKind::PseudoTerminal(end) => write!(text, "/dev/pts/{}", end.number()).ok()?,
         FileKind::Window(_) => text.bytes(b"/dev/window")?,
         FileKind::AgentChannel(_) => text.bytes(b"/dev/agent")?,
         FileKind::Pipe(end) => write!(text, "pipe:[{}]", end.inode()).ok()?,
@@ -552,16 +557,29 @@ fn mapped_bytes(mappings: &[Mapping]) -> u64 {
 
 const CONSOLE_TTY_NUMBER: u32 = 5 << 8 | 1;
 
+fn tty_number(terminal: Terminal) -> u32 {
+    match terminal {
+        Terminal::Console => CONSOLE_TTY_NUMBER,
+        Terminal::Pseudo(number) => {
+            crate::vfs::devfs::PSEUDO_TERMINAL_MAJOR << 8 | (number & 0xff) | (number & !0xff) << 12
+        }
+    }
+}
+
 fn process_stat<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     let (listed, terminal) = {
         let table = TABLE.lock();
         let (listed, _) = table.describe(pid)?;
-        (listed, table.controlling_terminal(pid).ok())
+        let terminal = table.controlling_terminal_of(pid).and_then(|terminal| {
+            let (_, foreground) = table.controlling(terminal, pid).ok()?;
+            Some((terminal, foreground))
+        });
+        (listed, terminal)
     };
     let process = running_process::<P>(pid);
     let state = if listed.ended { 'Z' } else { 'R' };
     let (tty, foreground) = match terminal {
-        Some((_, foreground)) => (CONSOLE_TTY_NUMBER, i64::from(foreground)),
+        Some((terminal, foreground)) => (tty_number(terminal), i64::from(foreground)),
         None => (0, -1),
     };
     let (threads, size, rss_limit, layout, heap_start) = match &process {

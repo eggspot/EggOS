@@ -674,6 +674,7 @@ fn can_be_watched(kind: &FileKind) -> bool {
             matches!(device, MemoryDevice::Random | MemoryDevice::Urandom)
         }
         FileKind::Console
+        | FileKind::PseudoTerminal(_)
         | FileKind::Pipe(_)
         | FileKind::Window(_)
         | FileKind::AgentChannel(_)

@@ -103,6 +103,7 @@ pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 
 const SIGCHLD: usize = 17;
 const SIGPIPE: usize = 13;
+const TIOCSCTTY: usize = 0x540e;
 const SIGNAL_SET_BYTES: usize = 8;
 const NOT_RUN: i32 = 127;
 
@@ -146,6 +147,7 @@ pub struct Spawn<'a> {
     directory: Option<&'a CStr>,
     own_group: bool,
     own_session: bool,
+    controlling_terminal: bool,
     exec_error: AtomicIsize,
 }
 
@@ -166,6 +168,7 @@ impl<'a> Spawn<'a> {
             directory: None,
             own_group: false,
             own_session: false,
+            controlling_terminal: false,
             exec_error: AtomicIsize::new(0),
         }
     }
@@ -193,6 +196,17 @@ impl<'a> Spawn<'a> {
     pub fn in_own_session(self) -> Self {
         Self {
             own_session: true,
+            ..self
+        }
+    }
+
+    /// The same request, with the child leading a session of its own whose controlling
+    /// terminal is the terminal its standard input names (`setsid`, then `TIOCSCTTY`), as a
+    /// terminal program starts its shell on a pseudo-terminal (D187).
+    pub fn with_controlling_terminal(self) -> Self {
+        Self {
+            own_session: true,
+            controlling_terminal: true,
             ..self
         }
     }
@@ -258,6 +272,10 @@ extern "C" fn start_child(request: usize) -> ! {
     if request.own_session {
         // SAFETY: `setsid` touches no memory.
         unsafe { syscall::call(number::SETSID, [0, 0, 0, 0, 0, 0]) };
+        if request.controlling_terminal {
+            // SAFETY: `TIOCSCTTY` takes its argument as a number and touches no memory.
+            unsafe { syscall::call(number::IOCTL, [request.streams[0], TIOCSCTTY, 0, 0, 0, 0]) };
+        }
     } else if request.own_group {
         // SAFETY: `setpgid` touches no memory.
         unsafe { syscall::call(number::SETPGID, [0, 0, 0, 0, 0, 0]) };

@@ -281,6 +281,7 @@ pub fn pwrite64<P: Platform>(
     }
     let node = match file.kind() {
         FileKind::Console
+        | FileKind::PseudoTerminal(_)
         | FileKind::Pipe(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)

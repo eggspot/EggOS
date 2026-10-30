@@ -78,6 +78,7 @@ pub mod poll;
 pub mod proc;
 pub mod process_ids;
 pub mod process_table;
+pub mod pseudo_terminal;
 pub mod random;
 pub mod reboot;
 pub mod signal_frame;
@@ -1622,6 +1623,9 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
+            FileKind::PseudoTerminal(end) => {
+                pseudo_terminal::write(process, thread, context, &file, end, &iovecs)
+            }
             FileKind::Console => {
                 let result = write_iovecs_to_console(process, &iovecs);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -1682,8 +1686,13 @@ fn read<P: Platform>(
     });
     match prepared {
         Ok((file, iovecs)) => match file.kind() {
-            FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
+            FileKind::Console => {
+                terminal::read(process, thread, context, &file, &terminal::Console, &iovecs)
+            }
             FileKind::Pipe(end) => pipe::read(process, thread, context, &file, end, &iovecs),
+            FileKind::PseudoTerminal(end) => {
+                pseudo_terminal::read(process, thread, context, &file, end, &iovecs)
+            }
             FileKind::Window(connection) => {
                 window::read(process, thread, context, &file, connection, &iovecs)
             }
@@ -1762,13 +1771,19 @@ fn ioctl<P: Platform>(
     }
     match file.kind() {
         FileKind::Console if terminal::changes_the_terminal(request) => {
-            match job_control::terminal_access(process, thread, signal::SIGTTOU) {
-                job_control::Access::Allowed => terminal::ioctl(process, request, argument),
+            let console = process_table::Terminal::Console;
+            match job_control::terminal_access(process, thread, console, signal::SIGTTOU) {
+                job_control::Access::Allowed => {
+                    terminal::ioctl(process, &terminal::Console, request, argument)
+                }
                 job_control::Access::Refused => Err(Errno::EIO),
                 job_control::Access::Signalled => Err(job_control::SIGNALLED),
             }
         }
-        FileKind::Console => terminal::ioctl(process, request, argument),
+        FileKind::Console => terminal::ioctl(process, &terminal::Console, request, argument),
+        FileKind::PseudoTerminal(end) => {
+            pseudo_terminal::ioctl(process, thread, end, request, argument)
+        }
         FileKind::Window(connection) => {
             window::ioctl(process, thread, connection, request, argument)
         }
@@ -1802,6 +1817,7 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
     let file = files.file(fd)?;
     match file.kind() {
         FileKind::Console
+        | FileKind::PseudoTerminal(_)
         | FileKind::Pipe(_)
         | FileKind::Window(_)
         | FileKind::AgentChannel(_)

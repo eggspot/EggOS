@@ -44,6 +44,8 @@ pub mod open_flag {
     pub const NONBLOCK: u32 = 0o4000;
     /// The new descriptor is closed by `execve` (`dup3`, `open`).
     pub const CLOEXEC: u32 = 0o2_000_000;
+    /// Opening a terminal does not make it the caller's controlling terminal.
+    pub const NOCTTY: u32 = 0o400;
     /// Create the file if it does not exist.
     pub const CREAT: u32 = 0o100;
     /// With [`CREAT`], fail if the file exists.
@@ -118,13 +120,16 @@ pub mod request {
     pub const FIOASYNC: u32 = 0x5452;
 }
 
-/// What an open file description names: the console, a node of the file system (D102), an
+/// What an open file description names: the console, a side of a pseudo-terminal (D187), a
+/// node of the file system (D102), an
 /// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), a
 /// socket (D138, D157), a memory file (D139), a memory device (D168) or an event file.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
     Console,
+    /// One side of a pseudo-terminal (D187): `/dev/ptmx`'s or `/dev/pts/<n>`.
+    PseudoTerminal(super::pseudo_terminal::PseudoTerminalEnd),
     /// A regular file.
     Regular(Node),
     /// A directory, read with `getdents64`.
@@ -219,6 +224,7 @@ impl FileKind {
     pub fn node(&self) -> Option<Node> {
         match self {
             Self::Console
+            | Self::PseudoTerminal(_)
             | Self::Pipe(_)
             | Self::Window(_)
             | Self::AgentChannel(_)

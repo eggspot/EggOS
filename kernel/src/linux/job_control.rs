@@ -1,7 +1,7 @@
-//! Job control (D105, D181): process groups and sessions (`setpgid`, `getpgid`, `getpgrp`,
-//! `setsid`, `getsid`), the console as a session's controlling terminal and its foreground
-//! process group (`TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP`, `TIOCGSID`), which the console's
-//! signal characters reach, `prctl`'s `PR_SET_CHILD_SUBREAPER`, which takes in a descendant's
+//! Job control (D105, D181, D187): process groups and sessions (`setpgid`, `getpgid`,
+//! `getpgrp`, `setsid`, `getsid`), a terminal (the console or a pseudo-terminal) as a session's
+//! controlling terminal and its foreground process group (`TIOCSCTTY`, `TIOCGPGRP`,
+//! `TIOCSPGRP`, `TIOCGSID`), which the terminal's signal characters reach, `prctl`'s `PR_SET_CHILD_SUBREAPER`, which takes in a descendant's
 //! orphans, and stopping and continuing processes. All of it is kept in the process table
 //! ([`super::process_table`]).
 //!
@@ -13,12 +13,12 @@
 //! `SIGKILL`; its parent is woken from its waits and sent `SIGCHLD` (`CLD_STOPPED`, and
 //! `CLD_CONTINUED` when it continues) unless it set `SA_NOCLDSTOP`. `SIGTSTP`, `SIGTTIN` and
 //! `SIGTTOU` do not stop a process whose group is orphaned. A process in a background group of
-//! the console's session that reads the console gets `SIGTTIN` (sent to its whole group), and
-//! one that changes the console's settings or foreground group gets `SIGTTOU`, unless it
+//! a terminal's session that reads the terminal gets `SIGTTIN` (sent to its whole group), and
+//! one that changes the terminal's settings or foreground group gets `SIGTTOU`, unless it
 //! ignores or blocks it; the call then starts again once the process continues, or fails with
 //! `EIO` for a group that is orphaned (and for `SIGTTIN` ignored or blocked), as on Linux.
 
-use super::process_table::{Stopping, TABLE};
+use super::process_table::{Stopping, TABLE, Terminal};
 use super::signals::{self, Info, Interrupted};
 use super::thread::{self, LinuxThread};
 use super::{Errno, credentials, signal, wait};
@@ -34,10 +34,10 @@ use eggos_hal::user::UserContext;
 /// process continues ([`restart_after_signal`]). Never returned to a program.
 pub const SIGNALLED: Errno = Errno(u16::MAX - 1);
 
-/// Whether a process may read the console or change it ([`terminal_access`]).
+/// Whether a process may read a terminal or change it ([`terminal_access`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
-    /// It may: the console is not its controlling terminal, or its group is the foreground.
+    /// It may: the terminal is not its controlling terminal, or its group is the foreground.
     Allowed,
     /// It may not, and the call fails with `EIO`.
     Refused,
@@ -45,15 +45,16 @@ pub enum Access {
     Signalled,
 }
 
-/// Whether `process`, of which `thread` is the calling thread, may read the console (`number`
+/// Whether `process`, of which `thread` is the calling thread, may read `terminal` (`number`
 /// `SIGTTIN`) or change its settings or foreground group (`SIGTTOU`), as Linux's
 /// `tty_check_change` decides: see the module documentation.
 pub fn terminal_access<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
+    terminal: Terminal,
     number: u32,
 ) -> Access {
-    let background = TABLE.lock().background_on_console(process.id().get());
+    let background = TABLE.lock().background_on(terminal, process.id().get());
     let Some((group, orphaned)) = background else {
         return Access::Allowed;
     };
@@ -163,12 +164,23 @@ fn signal_group<P: Platform>(group: u32, number: u32) {
     }
 }
 
-/// Sends signal `number` from the kernel to every process of the console's foreground group,
-/// as a change of the console's window size sends `SIGWINCH` (D181).
-pub fn send_to_console_foreground<P: Platform>(number: u32) {
-    let members = TABLE.lock().console_foreground_members();
+/// Sends signal `number` from the kernel to every process of `terminal`'s foreground group, as
+/// a change of the terminal's window size sends `SIGWINCH` (D181).
+pub fn send_to_foreground<P: Platform>(terminal: Terminal, number: u32) {
+    let members = TABLE.lock().foreground_members(terminal);
     for running in &members {
         wait::send_to_running::<P>(running, Info::from_kernel(number));
+    }
+}
+
+/// Hangs `terminal` up (D187): it becomes no session's, and its foreground group and its
+/// session's leader are sent `SIGHUP`, then `SIGCONT` so a stopped one sees it.
+pub fn hang_up<P: Platform>(terminal: Terminal) {
+    let hung_up = TABLE.lock().hang_up(terminal);
+    for number in [signal::SIGHUP, signal::SIGCONT] {
+        for running in &hung_up {
+            wait::send_to_running::<P>(running, Info::from_kernel(number));
+        }
     }
 }
 
@@ -256,13 +268,14 @@ pub fn prctl<P: Platform>(process: &Process<P>, option: u64, argument: u64) -> R
     }
 }
 
-/// The job-control `ioctl`s on the console ([`request`]), `None` for another request. As
-/// Linux: `ENOTTY` unless the console is the caller's controlling terminal (but for
+/// The job-control `ioctl`s on `terminal` ([`request`]), `None` for another request. As
+/// Linux: `ENOTTY` unless `terminal` is the caller's controlling terminal (but for
 /// `TIOCSCTTY`); `EFAULT` if `argument` is not the program's memory; `TIOCSPGRP`'s and
-/// `TIOCSCTTY`'s errors as [`super::process_table::Table::set_console_foreground`] and
-/// [`super::process_table::Table::take_console`] say.
+/// `TIOCSCTTY`'s errors as [`super::process_table::Table::set_foreground`] and
+/// [`super::process_table::Table::take`] say.
 pub fn ioctl<P: Platform>(
     process: &Process<P>,
+    terminal: Terminal,
     request: u32,
     argument: u64,
 ) -> Option<Result<u64, Errno>> {
@@ -275,17 +288,17 @@ pub fn ioctl<P: Platform>(
     };
     Some(match request {
         request::TIOCGPGRP => {
-            let terminal = TABLE.lock().controlling_terminal(caller);
-            terminal.and_then(|(_, foreground)| write(foreground))
+            let controlling = TABLE.lock().controlling(terminal, caller);
+            controlling.and_then(|(_, foreground)| write(foreground))
         }
         request::TIOCGSID => {
-            let terminal = TABLE.lock().controlling_terminal(caller);
-            terminal.and_then(|(session, _)| write(session))
+            let controlling = TABLE.lock().controlling(terminal, caller);
+            controlling.and_then(|(session, _)| write(session))
         }
         request::TIOCSPGRP => {
             let mut bytes = [0; 4];
-            let terminal = TABLE.lock().controlling_terminal(caller);
-            terminal
+            let controlling = TABLE.lock().controlling(terminal, caller);
+            controlling
                 .and_then(|_| {
                     process
                         .read_user_memory(argument, &mut bytes)
@@ -294,29 +307,33 @@ pub fn ioctl<P: Platform>(
                 .and_then(|()| {
                     TABLE
                         .lock()
-                        .set_console_foreground(caller, i32::from_ne_bytes(bytes))
+                        .set_foreground(terminal, caller, i32::from_ne_bytes(bytes))
                 })
                 .map(|()| 0)
         }
         request::TIOCSCTTY => {
             let privileged = credentials::get_effective(process, credentials::Kind::User) == 0;
             let steal = argument as u32 == 1 && privileged;
-            TABLE.lock().take_console(caller, steal).map(|()| 0)
+            TABLE.lock().take(terminal, caller, steal).map(|()| 0)
         }
         _ => return None,
     })
 }
 
-/// Sends the signal a character typed on the console raises to every process of the
-/// console's foreground group, with Linux's `siginfo_t` for a signal from the kernel. Called
-/// from the console's interrupt.
-pub fn signal_console_foreground<P: Platform>(sent: TerminalSignal) {
+/// Sends the signal a character typed on `terminal` raises to every process of the terminal's
+/// foreground group, with Linux's `siginfo_t` for a signal from the kernel.
+pub fn signal_foreground<P: Platform>(terminal: Terminal, sent: TerminalSignal) {
     let number = match sent {
         TerminalSignal::Interrupt => signal::SIGINT,
         TerminalSignal::Quit => signal::SIGQUIT,
         TerminalSignal::Suspend => signal::SIGTSTP,
     };
-    send_to_console_foreground::<P>(number);
+    send_to_foreground::<P>(terminal, number);
+}
+
+/// [`signal_foreground`] of the console; called from the console's interrupt.
+pub fn signal_console_foreground<P: Platform>(sent: TerminalSignal) {
+    signal_foreground::<P>(Terminal::Console, sent);
 }
 
 /// Gives the console back to no session, for a test that needs it.

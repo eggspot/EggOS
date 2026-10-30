@@ -7,11 +7,15 @@
 //! controlling terminal, which is the console or none), the links `fd`, `stdin`, `stdout` and
 //! `stderr` into `/proc/self/fd`, `window`, the window server's device (docs/windows.md), and
 //! `agent`, the agent channel (D136, docs/mcp.md), only while a virtio console gave the kernel
-//! one, and the directory `shm`, which the boot mounts a memory file system on for POSIX shared
-//! memory (`shm_open`, D169). Each device has Linux's number and mode.
+//! one, the directory `shm`, which the boot mounts a memory file system on for POSIX shared
+//! memory (`shm_open`, D169), and the pseudo-terminals (D187): `ptmx`, which makes one, and the
+//! directory `pts`, which lists the program side of each one whose controlling side is open
+//! ([`crate::linux::pseudo_terminal`]). Each device has Linux's number and mode.
 
 use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Usage, magic};
+use crate::linux::pseudo_terminal;
 use alloc::vec::Vec;
+use core::fmt::Write;
 
 const ROOT: u64 = 1;
 
@@ -48,6 +52,65 @@ pub const TTY_DEVICE: (u32, u32) = (5, 0);
 /// `/dev/console`'s device number.
 pub const CONSOLE_DEVICE: (u32, u32) = (5, 1);
 
+/// `/dev/ptmx`'s node.
+pub const PTMX: u64 = 20;
+
+/// `/dev/ptmx`'s device number: a new pseudo-terminal's controlling side.
+pub const PTMX_DEVICE: (u32, u32) = (5, 2);
+
+/// The major device number of `/dev/pts/<n>`, whose minor is `n`.
+pub const PSEUDO_TERMINAL_MAJOR: u32 = 136;
+
+const PTS: u64 = 21;
+
+const FIRST_PSEUDO_TERMINAL: u64 = 0x100;
+
+/// The node of `/dev/pts/<number>`.
+pub const fn pseudo_terminal_node(number: u32) -> u64 {
+    FIRST_PSEUDO_TERMINAL + number as u64
+}
+
+fn pseudo_terminal_of(node: u64) -> Option<u32> {
+    let number = node.checked_sub(FIRST_PSEUDO_TERMINAL)?;
+    (number < u64::from(pseudo_terminal::MAX_PSEUDO_TERMINALS)).then_some(number as u32)
+}
+
+fn pseudo_terminal_name(number: u32) -> Name {
+    let mut text = NameText::default();
+    let _ = write!(text, "{number}");
+    Name::new(&text.bytes[..text.length])
+}
+
+#[derive(Default)]
+struct NameText {
+    bytes: [u8; 10],
+    length: usize,
+}
+
+impl Write for NameText {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        let end = self.length + text.len();
+        let room = self
+            .bytes
+            .get_mut(self.length..end)
+            .ok_or(core::fmt::Error)?;
+        room.copy_from_slice(text.as_bytes());
+        self.length = end;
+        Ok(())
+    }
+}
+
+fn parse_number(name: &[u8]) -> Option<u32> {
+    if name.is_empty() || name.len() > 9 || (name.len() > 1 && name[0] == b'0') {
+        return None;
+    }
+    name.iter().try_fold(0u32, |number, &digit| {
+        digit
+            .is_ascii_digit()
+            .then(|| number * 10 + u32::from(digit - b'0'))
+    })
+}
+
 const NULL: u64 = 8;
 
 const ZERO: u64 = 9;
@@ -74,12 +137,14 @@ const SHM: u64 = 19;
 
 const DEVICE: (u32, u32) = (0, 5);
 
-const FILES: [(&[u8], u64); 14] = [
+const FILES: [(&[u8], u64); 16] = [
     (b"agent", AGENT),
     (b"console", CONSOLE),
     (b"fd", FD),
     (b"full", FULL),
     (b"null", NULL),
+    (b"ptmx", PTMX),
+    (b"pts", PTS),
     (b"random", RANDOM),
     (b"shm", SHM),
     (b"stderr", STDERR),
@@ -115,7 +180,7 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 
 fn kind_of(node: u64) -> NodeKind {
     match node {
-        ROOT | SHM => NodeKind::Directory,
+        ROOT | SHM | PTS => NodeKind::Directory,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
         _ => NodeKind::CharacterDevice,
     }
@@ -147,10 +212,11 @@ impl FileSystem for DeviceFiles {
         Attributes {
             kind: self.kind(node),
             permissions: match node {
-                ROOT => 0o755,
+                ROOT | PTS => 0o755,
                 SHM => 0o1777,
                 AGENT | CONSOLE => 0o600,
                 _ if link_of(node).is_some() => 0o777,
+                _ if pseudo_terminal_of(node).is_some() => 0o620,
                 _ => 0o666,
             },
             file_id: node,
@@ -163,19 +229,28 @@ impl FileSystem for DeviceFiles {
     }
 
     fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
-        if directory != ROOT {
-            return None;
+        match directory {
+            ROOT => listed()
+                .find(|(file, _)| *file == name)
+                .map(|&(_, node)| node),
+            PTS => parse_number(name)
+                .filter(|&number| pseudo_terminal::is_listed(number))
+                .map(pseudo_terminal_node),
+            _ => None,
         }
-        listed()
-            .find(|(file, _)| *file == name)
-            .map(|&(_, node)| node)
     }
 
-    fn parent(&self, _node: u64) -> u64 {
-        ROOT
+    fn parent(&self, node: u64) -> u64 {
+        match pseudo_terminal_of(node) {
+            Some(_) => PTS,
+            None => ROOT,
+        }
     }
 
     fn name(&self, node: u64) -> Name {
+        if let Some(number) = pseudo_terminal_of(node) {
+            return pseudo_terminal_name(number);
+        }
         Name::new(
             FILES
                 .iter()
@@ -199,7 +274,8 @@ impl FileSystem for DeviceFiles {
             URANDOM => Some(URANDOM_DEVICE),
             TTY => Some(TTY_DEVICE),
             CONSOLE => Some(CONSOLE_DEVICE),
-            _ => None,
+            PTMX => Some(PTMX_DEVICE),
+            _ => pseudo_terminal_of(node).map(|number| (PSEUDO_TERMINAL_MAJOR, number)),
         }
     }
 
@@ -208,15 +284,26 @@ impl FileSystem for DeviceFiles {
     }
 
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
-        if directory != ROOT {
-            return None;
+        let position = usize::try_from(position).ok()?;
+        match directory {
+            ROOT => {
+                let &(name, node) = listed().nth(position)?;
+                Some(DirectoryEntry {
+                    name: Name::new(name),
+                    node,
+                    kind: kind_of(node),
+                })
+            }
+            PTS => {
+                let number = pseudo_terminal::listed(position)?;
+                Some(DirectoryEntry {
+                    name: pseudo_terminal_name(number),
+                    node: pseudo_terminal_node(number),
+                    kind: NodeKind::CharacterDevice,
+                })
+            }
+            _ => None,
         }
-        let &(name, node) = listed().nth(usize::try_from(position).ok()?)?;
-        Some(DirectoryEntry {
-            name: Name::new(name),
-            node,
-            kind: kind_of(node),
-        })
     }
 }
 
@@ -249,6 +336,8 @@ mod tests {
                 b"fd",
                 b"full",
                 b"null",
+                b"ptmx",
+                b"pts",
                 b"random",
                 b"shm",
                 b"stderr",
@@ -273,6 +362,7 @@ mod tests {
             (b"urandom", (1, 9), 0o666),
             (b"tty", (5, 0), 0o666),
             (b"console", (5, 1), 0o600),
+            (b"ptmx", (5, 2), 0o666),
         ] {
             let node = files.lookup(ROOT, name).unwrap();
             assert_eq!(files.character_device(node), Some(device));
@@ -280,6 +370,27 @@ mod tests {
             assert_eq!(files.attributes(node).permissions, permissions);
             assert_eq!(files.name(node).as_bytes(), name);
         }
+    }
+
+    #[test]
+    fn pts_lists_numbers_by_name_and_finds_nothing_else() {
+        let files = DeviceFiles;
+        let pts = files.lookup(ROOT, b"pts").unwrap();
+        assert_eq!(files.kind(pts), NodeKind::Directory);
+        assert_eq!(files.attributes(pts).permissions, 0o755);
+        for name in [&b"07"[..], b"x", b"", b"4294967296", b"64"] {
+            assert_eq!(files.lookup(pts, name), None, "{name:?}");
+        }
+        assert_eq!(parse_number(b"0"), Some(0));
+        assert_eq!(parse_number(b"63"), Some(63));
+        assert_eq!(parse_number(b"6a"), None);
+        let node = pseudo_terminal_node(12);
+        assert_eq!(files.name(node).as_bytes(), b"12");
+        assert_eq!(files.parent(node), pts);
+        assert_eq!(files.kind(node), NodeKind::CharacterDevice);
+        assert_eq!(files.character_device(node), Some((136, 12)));
+        assert_eq!(files.attributes(node).permissions, 0o620);
+        assert_eq!(pseudo_terminal_of(pseudo_terminal_node(64)), None);
     }
 
     #[test]

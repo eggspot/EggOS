@@ -5,8 +5,8 @@
 //! can wait for it (the kernel is its parent, or the parent ignores `SIGCHLD` or set
 //! `SA_NOCLDWAIT`). A process that ends hands its children to the nearest ancestor that asked
 //! for orphans (`PR_SET_CHILD_SUBREAPER`), else to init, else to the kernel. The table also
-//! records which session has the console as its controlling terminal and the console's
-//! foreground process group.
+//! records which session has each terminal, the console or a pseudo-terminal (D187), as its
+//! controlling terminal, and the terminal's foreground process group.
 //!
 //! One lock holds it all, a leaf but for the heap: nothing else is locked under it, and
 //! nothing it gives out is a strong reference to a process, so no process is freed under it.
@@ -246,13 +246,23 @@ pub struct Ended {
     pub to_parent: Option<Notice>,
     /// The ended children it handed over, for their new parent.
     pub to_new_parent: Option<Notice>,
-    /// The console's foreground group, which loses its controlling terminal as the session's
-    /// leader ends: each gets `SIGHUP` and `SIGCONT`.
+    /// The foreground group of the terminal the session's leader controlled, which loses its
+    /// controlling terminal as the leader ends: each gets `SIGHUP` and `SIGCONT`.
     pub hung_up: Vec<Running>,
 }
 
+/// A terminal a session may have as its controlling terminal (D187).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Console {
+pub enum Terminal {
+    /// The console (`/dev/console`).
+    Console,
+    /// Pseudo-terminal `n` (`/dev/pts/<n>`), of which `/dev/ptmx` opened the other side.
+    Pseudo(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Controlled {
+    terminal: Terminal,
     session: u32,
     foreground: u32,
 }
@@ -262,21 +272,34 @@ struct Console {
 pub struct Table {
     entries: Vec<Entry>,
     init: u32,
-    console: Console,
+    controlled: Vec<Controlled>,
     stopped: u32,
 }
 
 impl Table {
-    /// No process, no init and the console no session's.
+    /// No process, no init and no terminal any session's.
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
             init: 0,
-            console: Console {
-                session: 0,
-                foreground: 0,
-            },
+            controlled: Vec::new(),
             stopped: 0,
+        }
+    }
+
+    fn controlled_by(&self, terminal: Terminal) -> Option<&Controlled> {
+        self.controlled
+            .iter()
+            .find(|controlled| controlled.terminal == terminal)
+    }
+
+    fn controlled_by_session(&self, session: u32) -> Option<usize> {
+        match session {
+            0 => None,
+            session => self
+                .controlled
+                .iter()
+                .position(|controlled| controlled.session == session),
         }
     }
 
@@ -468,8 +491,8 @@ impl Table {
     /// Records that process `id`, whose real user id is `uid`, ended as `exit`: it becomes a
     /// zombie for its parent, or is removed at once if nobody can wait for it; its children go
     /// to their new parent, which reaps those that ended already if it cannot wait for them;
-    /// if it led the session the console belongs to, the console belongs to none from now on.
-    /// Returns whom to tell.
+    /// if it led a session that has a controlling terminal, the terminal belongs to none from
+    /// now on and its foreground group is hung up. Returns whom to tell.
     pub fn end(&mut self, id: u32, exit: ProcessExit, uid: u32) -> Ended {
         let mut ended = Ended::default();
         let Some(index) = self.index(id) else {
@@ -514,10 +537,12 @@ impl Table {
             self.remove_at(index);
         }
         let mut hung_up_group = 0;
-        if session == id && self.console.session == id {
-            hung_up_group = self.console.foreground;
-            ended.hung_up = self.members(self.console.foreground);
-            self.release_console();
+        if session == id
+            && let Some(index) = self.controlled_by_session(id)
+        {
+            let controlled = self.controlled.swap_remove(index);
+            hung_up_group = controlled.foreground;
+            ended.hung_up = self.members(controlled.foreground);
         }
         for group in around {
             if group != hung_up_group && self.has_stopped_member(group) && self.is_orphaned(group) {
@@ -646,14 +671,19 @@ impl Table {
             .is_some_and(|entry| self.is_orphaned(entry.group))
     }
 
-    /// For process `caller` reading the console or changing its settings (D181): its process
-    /// group, and whether that group is orphaned, if the console is its controlling terminal
-    /// and its group is not the console's foreground; `None` otherwise (it may go on).
-    pub fn background_on_console(&self, caller: u32) -> Option<(u32, bool)> {
+    /// For process `caller` reading `terminal` or changing its settings (D181): its process
+    /// group, and whether that group is orphaned, if `terminal` is its controlling terminal
+    /// and its group is not the terminal's foreground; `None` otherwise (it may go on).
+    pub fn background_on(&self, terminal: Terminal, caller: u32) -> Option<(u32, bool)> {
         let entry = self.entry(caller)?;
-        let in_session = self.console.session != 0 && self.console.session == entry.session;
-        (in_session && entry.group != self.console.foreground)
+        let controlled = self.controlled_by(terminal)?;
+        (controlled.session == entry.session && entry.group != controlled.foreground)
             .then(|| (entry.group, self.is_orphaned(entry.group)))
+    }
+
+    /// [`Self::background_on`] the console.
+    pub fn background_on_console(&self, caller: u32) -> Option<(u32, bool)> {
+        self.background_on(Terminal::Console, caller)
     }
 
     /// Removes process `id`, which never ended as a Linux process does (it never ran, or its
@@ -683,8 +713,8 @@ impl Table {
             }
             self.remove_at(index);
         }
-        if self.console.session == id {
-            self.release_console();
+        if let Some(index) = self.controlled_by_session(id) {
+            self.controlled.swap_remove(index);
         }
         ended
     }
@@ -882,43 +912,82 @@ impl Table {
     /// For a session leader the kernel starts, `id`: the console becomes its session's
     /// controlling terminal, its group the foreground, if the console has no session yet.
     pub fn give_console_if_free(&mut self, id: u32) {
-        if self.console.session != 0 {
+        self.give_if_free(Terminal::Console, id);
+    }
+
+    /// For process `id` opening `terminal` without `O_NOCTTY`, as Linux's open of a terminal
+    /// does: if it leads a session that has no controlling terminal and `terminal` is no
+    /// session's, `terminal` becomes the session's, its group the foreground.
+    pub fn give_if_free(&mut self, terminal: Terminal, id: u32) {
+        if self.controlled_by(terminal).is_some() || self.controlled_by_session(id).is_some() {
             return;
         }
-        if let Some(entry) = self.entry(id)
-            && entry.session == id
-        {
-            self.console = Console {
-                session: id,
-                foreground: entry.group,
-            };
+        let Some(entry) = self.entry(id).filter(|entry| entry.session == id) else {
+            return;
+        };
+        let controlled = Controlled {
+            terminal,
+            session: id,
+            foreground: entry.group,
+        };
+        if self.controlled.try_reserve(1).is_ok() {
+            self.controlled.push(controlled);
         }
+    }
+
+    /// `terminal` becomes no session's controlling terminal.
+    pub fn release(&mut self, terminal: Terminal) {
+        self.controlled
+            .retain(|controlled| controlled.terminal != terminal);
     }
 
     /// The console becomes no session's controlling terminal.
     pub fn release_console(&mut self) {
-        self.console = Console {
-            session: 0,
-            foreground: 0,
-        };
+        self.release(Terminal::Console);
     }
 
-    /// The console's session and foreground group, if the console is process `caller`'s
+    /// The terminal process `caller`'s session controls, if it has one.
+    pub fn controlling_terminal_of(&self, caller: u32) -> Option<Terminal> {
+        let (session, _) = self.session_of(caller).ok()?;
+        let index = self.controlled_by_session(session)?;
+        Some(self.controlled[index].terminal)
+    }
+
+    /// `terminal`'s session and foreground group, if `terminal` is process `caller`'s
     /// controlling terminal; `ENOTTY` otherwise.
-    pub fn controlling_terminal(&self, caller: u32) -> Result<(u32, u32), Errno> {
+    pub fn controlling(&self, terminal: Terminal, caller: u32) -> Result<(u32, u32), Errno> {
         let (session, _) = self.session_of(caller).map_err(|_| Errno::ENOTTY)?;
-        match self.console.session == session && session != 0 {
-            true => Ok((self.console.session, self.console.foreground)),
-            false => Err(Errno::ENOTTY),
+        match self.controlled_by(terminal) {
+            Some(controlled) if controlled.session == session && session != 0 => {
+                Ok((controlled.session, controlled.foreground))
+            }
+            _ => Err(Errno::ENOTTY),
         }
     }
 
-    /// `TIOCSPGRP` by process `caller`: makes group `group` (a `pid_t`) the console's
-    /// foreground. `ENOTTY` unless the console is the caller's controlling terminal; `EINVAL`
+    /// [`Self::controlling`] the console.
+    pub fn controlling_terminal(&self, caller: u32) -> Result<(u32, u32), Errno> {
+        self.controlling(Terminal::Console, caller)
+    }
+
+    /// `terminal`'s session and foreground group, whoever asks, if a session controls it: what
+    /// a pseudo-terminal's other side reads (`TIOCGPGRP`, `TIOCGSID` on `/dev/ptmx`'s side).
+    pub fn session_and_foreground(&self, terminal: Terminal) -> Option<(u32, u32)> {
+        self.controlled_by(terminal)
+            .map(|controlled| (controlled.session, controlled.foreground))
+    }
+
+    /// `TIOCSPGRP` by process `caller`: makes group `group` (a `pid_t`) `terminal`'s
+    /// foreground. `ENOTTY` unless `terminal` is the caller's controlling terminal; `EINVAL`
     /// for a negative group; `ESRCH` for a group no process is in; `EPERM` for a group of
     /// another session.
-    pub fn set_console_foreground(&mut self, caller: u32, group: i32) -> Result<(), Errno> {
-        let (session, _) = self.controlling_terminal(caller)?;
+    pub fn set_foreground(
+        &mut self,
+        terminal: Terminal,
+        caller: u32,
+        group: i32,
+    ) -> Result<(), Errno> {
+        let (session, _) = self.controlling(terminal, caller)?;
         if group < 0 {
             return Err(Errno::EINVAL);
         }
@@ -928,30 +997,72 @@ impl Table {
         if !self.group_exists_in(group as u32, session) {
             return Err(Errno::EPERM);
         }
-        self.console.foreground = group as u32;
+        if let Some(controlled) = self
+            .controlled
+            .iter_mut()
+            .find(|controlled| controlled.terminal == terminal)
+        {
+            controlled.foreground = group as u32;
+        }
         Ok(())
     }
 
-    /// `TIOCSCTTY` by process `caller`: makes the console its session's controlling terminal,
+    /// [`Self::set_foreground`] of the console.
+    pub fn set_console_foreground(&mut self, caller: u32, group: i32) -> Result<(), Errno> {
+        self.set_foreground(Terminal::Console, caller, group)
+    }
+
+    /// `TIOCSCTTY` by process `caller`: makes `terminal` its session's controlling terminal,
     /// its group the foreground. As Linux: `EPERM` unless the caller leads its session; then
-    /// nothing to do if it is already; `EPERM` if the console is another session's and the
-    /// caller may not `steal` it (an argument of 1 and privileges).
-    pub fn take_console(&mut self, caller: u32, steal: bool) -> Result<(), Errno> {
+    /// nothing to do if it is already; `EPERM` if the session controls another terminal, or if
+    /// `terminal` is another session's and the caller may not `steal` it (an argument of 1 and
+    /// privileges). `ENOMEM` without memory.
+    pub fn take(&mut self, terminal: Terminal, caller: u32, steal: bool) -> Result<(), Errno> {
         let (session, group) = self.session_of(caller)?;
         if session != caller {
             return Err(Errno::EPERM);
         }
-        if self.console.session == session {
+        let current = self.controlled_by(terminal).map(|owner| owner.session);
+        if current == Some(session) {
             return Ok(());
         }
-        if self.console.session != 0 && !steal {
+        if self.controlled_by_session(session).is_some() || (current.is_some() && !steal) {
             return Err(Errno::EPERM);
         }
-        self.console = Console {
+        self.release(terminal);
+        self.controlled.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        self.controlled.push(Controlled {
+            terminal,
             session,
             foreground: group,
-        };
+        });
         Ok(())
+    }
+
+    /// [`Self::take`] the console.
+    pub fn take_console(&mut self, caller: u32, steal: bool) -> Result<(), Errno> {
+        self.take(Terminal::Console, caller, steal)
+    }
+
+    /// Hangs `terminal` up, as the last close of a pseudo-terminal's `/dev/ptmx` side does
+    /// (D187): it becomes no session's, and the running processes of its foreground group and
+    /// its session's leader are returned, to be sent `SIGHUP` and `SIGCONT`.
+    pub fn hang_up(&mut self, terminal: Terminal) -> Vec<Running> {
+        let Some(controlled) = self.controlled_by(terminal).copied() else {
+            return Vec::new();
+        };
+        self.release(terminal);
+        let mut hung_up = self.members(controlled.foreground);
+        let leader = self
+            .entry(controlled.session)
+            .filter(|leader| leader.group != controlled.foreground && leader.exit.is_none())
+            .and_then(|leader| leader.running.clone());
+        if let Some(leader) = leader
+            && hung_up.try_reserve(1).is_ok()
+        {
+            hung_up.push(leader);
+        }
+        hung_up
     }
 
     /// The running processes of group `group`.
@@ -1011,11 +1122,11 @@ impl Table {
     }
 
     /// Adds to `ids` every process id the table holds in use (D183): each process's, ended or
-    /// not, every process group's and session's, the console's session and foreground group,
-    /// and init's; and returns how to reach each running process, whose other threads hold
+    /// not, every process group's and session's, each controlling terminal's session and
+    /// foreground group, and init's; and returns how to reach each running process, whose other threads hold
     /// ids too. Ids are pushed unsorted, possibly more than once. `Err` without memory.
     pub fn ids_in_use(&self, ids: &mut Vec<u32>) -> Result<Vec<Running>, Errno> {
-        ids.try_reserve(self.entries.len() * 3 + 3)
+        ids.try_reserve(self.entries.len() * 3 + self.controlled.len() * 2 + 1)
             .map_err(|_| Errno::ENOMEM)?;
         let mut running = Vec::new();
         running
@@ -1029,7 +1140,10 @@ impl Table {
                 running.push(reach.clone());
             }
         }
-        ids.extend([self.init, self.console.session, self.console.foreground]);
+        ids.push(self.init);
+        for controlled in &self.controlled {
+            ids.extend([controlled.session, controlled.foreground]);
+        }
         Ok(running)
     }
 
@@ -1038,9 +1152,18 @@ impl Table {
         self.init
     }
 
-    /// The running processes of the console's foreground group.
+    /// The running processes of `terminal`'s foreground group; none while no session controls
+    /// it.
+    pub fn foreground_members(&self, terminal: Terminal) -> Vec<Running> {
+        match self.controlled_by(terminal) {
+            Some(controlled) => self.members(controlled.foreground),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Self::foreground_members`] of the console.
     pub fn console_foreground_members(&self) -> Vec<Running> {
-        self.members(self.console.foreground)
+        self.foreground_members(Terminal::Console)
     }
 
     /// How many processes the table holds, zombies among them, in session `session`.
@@ -1301,6 +1424,56 @@ mod tests {
         assert_eq!(table.controlling_terminal(101), Err(Errno::ENOTTY));
         assert_eq!(table.take_console(110, false), Ok(()));
         assert_eq!(table.controlling_terminal(110), Ok((110, 110)));
+    }
+
+    #[test]
+    fn each_session_controls_one_terminal_and_a_pseudo_terminal_hangs_up_its_session() {
+        let mut table = table_with(&[(120, None), (121, Some(120)), (130, None), (131, Some(130))]);
+        let pseudo = Terminal::Pseudo(3);
+        table.give_console_if_free(120);
+        table.give_if_free(pseudo, 120);
+        assert_eq!(table.controlling_terminal_of(121), Some(Terminal::Console));
+        assert_eq!(table.controlling(pseudo, 120), Err(Errno::ENOTTY));
+        table.give_if_free(pseudo, 131);
+        assert_eq!(
+            table.controlling_terminal_of(131),
+            None,
+            "not a session leader"
+        );
+        table.give_if_free(pseudo, 130);
+        assert_eq!(
+            table.controlling_terminal_of(131),
+            Some(Terminal::Pseudo(3))
+        );
+        assert_eq!(table.controlling(pseudo, 131), Ok((130, 130)));
+        assert_eq!(table.session_and_foreground(pseudo), Some((130, 130)));
+        assert_eq!(table.take(Terminal::Console, 130, false), Err(Errno::EPERM));
+        assert_eq!(table.take(pseudo, 120, true), Err(Errno::EPERM));
+        table.set_group(130, 131, 0).unwrap();
+        table.set_foreground(pseudo, 130, 131).unwrap();
+        assert_eq!(
+            table.set_foreground(Terminal::Console, 130, 131),
+            Err(Errno::ENOTTY)
+        );
+        assert_eq!(table.background_on(pseudo, 130), Some((130, true)));
+        assert_eq!(table.background_on(pseudo, 131), None);
+        assert_eq!(table.background_on(Terminal::Console, 131), None);
+        table.set_running(130, running());
+        table.set_running(131, running());
+        assert_eq!(table.foreground_members(pseudo).len(), 1);
+        assert_eq!(
+            table.hang_up(pseudo).len(),
+            2,
+            "the foreground group and the leader"
+        );
+        assert_eq!(table.controlling_terminal_of(130), None);
+        assert!(table.hang_up(pseudo).is_empty());
+        assert_eq!(table.controlling_terminal_of(120), Some(Terminal::Console));
+        let mut ids = Vec::new();
+        table.ids_in_use(&mut ids).unwrap();
+        assert!(ids.contains(&120));
+        table.release_console();
+        assert_eq!(table.controlling_terminal_of(121), None);
     }
 
     fn running() -> Running {
