@@ -142,6 +142,70 @@ pub fn argument_moves(kinds: &[ArgumentKind]) -> Vec<ArgumentMove> {
     moves
 }
 
+/// The host registers of the System V AMD64 integer arguments: `rdi`, `rsi`, `rdx`, `rcx`,
+/// `r8`, `r9`.
+pub const SYSV_ARGUMENT_REGISTERS: [u8; 6] = [7, 6, 2, 1, 8, 9];
+/// How many `xmm` registers the System V AMD64 convention passes floating-point values in.
+pub const SYSV_VECTOR_ARGUMENTS: u8 = 8;
+/// Where the first System V stack argument is, from the guest `rsp` at the call: after the
+/// return address.
+pub const SYSV_FIRST_STACK_ARGUMENT: u32 = 8;
+
+/// The moves that take arguments of `kinds` (at most [`MAX_ARGUMENTS`]) from a System V AMD64
+/// call (x86_64 macOS) to an AAPCS64 one, in an order that reads every source before it is
+/// overwritten.
+///
+/// Both conventions count integers and floating-point values apart: System V passes six
+/// integers (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`) and eight values in `xmm0`-`xmm7`, the
+/// rest on the stack in argument order; AAPCS64 passes eight of each. `rcx` moves first, since
+/// `rsi` goes to `x1`, `rcx`'s register. A variadic function's variadic values are not covered:
+/// System V passes them in registers, Darwin's arm64 convention on the stack.
+pub fn sysv_argument_moves(kinds: &[ArgumentKind]) -> Vec<ArgumentMove> {
+    let mut moves = Vec::with_capacity(kinds.len().min(MAX_ARGUMENTS));
+    let mut integers = 0u8;
+    let mut vectors = 0u8;
+    let mut guest_stack = SYSV_FIRST_STACK_ARGUMENT;
+    let mut native_integers = 0u8;
+    let mut native_vectors = 0u8;
+    let mut native_stack = 0u32;
+    for &kind in kinds.iter().take(MAX_ARGUMENTS) {
+        let source = match kind {
+            ArgumentKind::Integer if usize::from(integers) < SYSV_ARGUMENT_REGISTERS.len() => {
+                integers += 1;
+                Source::Register(SYSV_ARGUMENT_REGISTERS[usize::from(integers - 1)])
+            }
+            ArgumentKind::FloatingPoint if vectors < SYSV_VECTOR_ARGUMENTS => {
+                vectors += 1;
+                Source::Vector(vectors - 1)
+            }
+            _ => {
+                guest_stack += 8;
+                Source::GuestStack(guest_stack - 8)
+            }
+        };
+        let destination = match kind {
+            ArgumentKind::Integer if native_integers < AAPCS64_ARGUMENT_REGISTERS => {
+                native_integers += 1;
+                Destination::Register(native_integers - 1)
+            }
+            ArgumentKind::FloatingPoint if native_vectors < AAPCS64_ARGUMENT_REGISTERS => {
+                native_vectors += 1;
+                Destination::Vector(native_vectors - 1)
+            }
+            _ => {
+                native_stack += 8;
+                Destination::NativeStack(native_stack - 8)
+            }
+        };
+        moves.push(ArgumentMove {
+            source,
+            destination,
+        });
+    }
+    moves.sort_by_key(|step| step.source != Source::Register(SYSV_ARGUMENT_REGISTERS[3]));
+    moves
+}
+
 /// The native stack the moves need for arguments, rounded up to 16 bytes.
 pub fn native_stack_bytes(moves: &[ArgumentMove]) -> u32 {
     let end = moves
@@ -228,6 +292,34 @@ pub fn forward_bridge(
     native: u64,
     dispatch: u64,
 ) -> Result<Vec<u32>, EmitError> {
+    bridge(moves, native, dispatch, Convention::Win64)
+}
+
+/// The forward bridge from System V AMD64 code (x86_64 macOS) to a native function at `native`
+/// taking arguments as `moves` ([`sysv_argument_moves`]) says: [`forward_bridge`]'s, which
+/// keeps a superset of the registers System V says a callee keeps (`rbx`, `rsp`, `rbp`,
+/// `r12`-`r15`), and which also copies `x1` to `rdx` after the call, the second half of a
+/// 128-bit or two-word result.
+pub fn sysv_forward_bridge(
+    moves: &[ArgumentMove],
+    native: u64,
+    dispatch: u64,
+) -> Result<Vec<u32>, EmitError> {
+    bridge(moves, native, dispatch, Convention::SystemV)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Convention {
+    Win64,
+    SystemV,
+}
+
+fn bridge(
+    moves: &[ArgumentMove],
+    native: u64,
+    dispatch: u64,
+    convention: Convention,
+) -> Result<Vec<u32>, EmitError> {
     let outgoing = native_stack_bytes(moves);
     let saved = outgoing;
     let saved_vectors = saved + SAVED_GENERAL_BYTES;
@@ -279,6 +371,9 @@ pub fn forward_bridge(
     }
     asm.load_literal(LINK_TARGET, native);
     asm.emit(encode::blr(LINK_TARGET));
+    if convention == Convention::SystemV {
+        asm.emit(copy(Reg(2), Reg(1)));
+    }
     for (index, (first, second)) in SAVED_PAIRS.into_iter().enumerate() {
         asm.emit(encode::pair(
             Pair::Ldp,
@@ -602,6 +697,64 @@ mod tests {
         let length = image.code.len();
         add_import_stubs(&mut image, &slots).unwrap();
         assert_eq!(image.code.len(), length);
+    }
+
+    #[test]
+    fn system_v_arguments_count_integers_and_vectors_apart_and_rcx_moves_first() {
+        let mut kinds = [INTEGER; 9].to_vec();
+        kinds.insert(1, FLOAT);
+        let moves = sysv_argument_moves(&kinds);
+        assert_eq!(moves.len(), 10);
+        assert_eq!(moves[0].source, Source::Register(1));
+        assert_eq!(moves[0].destination, Destination::Register(3));
+        let find = |source: Source| moves.iter().find(|step| step.source == source).unwrap();
+        assert_eq!(
+            find(Source::Register(7)).destination,
+            Destination::Register(0)
+        );
+        assert_eq!(
+            find(Source::Register(6)).destination,
+            Destination::Register(1)
+        );
+        assert_eq!(find(Source::Vector(0)).destination, Destination::Vector(0));
+        assert_eq!(
+            find(Source::Register(9)).destination,
+            Destination::Register(5)
+        );
+        assert_eq!(
+            find(Source::GuestStack(8)).destination,
+            Destination::Register(6)
+        );
+        assert_eq!(
+            find(Source::GuestStack(16)).destination,
+            Destination::Register(7)
+        );
+        assert_eq!(
+            find(Source::GuestStack(24)).destination,
+            Destination::NativeStack(0)
+        );
+        let rcx = moves
+            .iter()
+            .position(|step| step.source == Source::Register(1))
+            .unwrap();
+        let rsi = moves
+            .iter()
+            .position(|step| step.destination == Destination::Register(1))
+            .unwrap();
+        assert!(rcx < rsi);
+        let floats = sysv_argument_moves(&[FLOAT; 10]);
+        assert_eq!(floats[8].source, Source::GuestStack(8));
+        assert_eq!(floats[8].destination, Destination::NativeStack(0));
+    }
+
+    #[test]
+    fn the_system_v_bridge_also_returns_the_second_result_word_in_rdx() {
+        let moves = sysv_argument_moves(&[INTEGER; 2]);
+        let system_v = sysv_forward_bridge(&moves, 1, 2).unwrap();
+        let win64 = forward_bridge(&moves, 1, 2).unwrap();
+        assert_eq!(system_v.len(), win64.len() + 1);
+        assert!(system_v.contains(&copy(Reg(2), Reg(1))));
+        assert!(!win64.contains(&copy(Reg(2), Reg(1))));
     }
 
     #[test]
