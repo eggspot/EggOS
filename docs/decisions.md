@@ -14282,7 +14282,7 @@ the license, by an explicit instruction recorded here.
   for `riscv64gc-unknown-linux-musl`); `debuggerd`'s `crash_dump64`; `PR_SET_VMA` names in
   `/proc/<pid>/maps`; a vDSO; `rseq` and `clone3`.
 
-## D189 Windows console breadth: programs that start other programs through `CreateProcessW` and `CreateProcessA`, anonymous pipes, inherited, duplicated and protected handles, waits, exit codes and `TerminateProcess` on children (batch part 37, slice 37a; v0.3.0 items 18, 19 and 19b's "Next"; D121's, D124's and D178's "Not yet"; extends D118, D121, D146, D177, D178) — Decided by the build loop (pipe errors, protected handles, `CREATE_SUSPENDED` and object handles' flags decided by research)
+## D189 Windows console breadth: programs that start other programs through `CreateProcessW` and `CreateProcessA`, anonymous pipes, inherited, duplicated and protected handles, waits, exit codes and `TerminateProcess` on children (batch part 37, slice 37a; v0.3.0 items 18, 19 and 19b's "Next"; D121's, D124's and D178's "Not yet"; extends D118, D121, D146, D177, D178) — Decided by the build loop (pipe errors, protected handles, `CREATE_SUSPENDED` and object handles' flags decided by research; MinGW's toolchain and imports decided by research)
 
 - **What.** A Windows program can start another program and talk to it: `CreateProcessW`
   (D178) and now `CreateProcessA` find the program (a path, or a name searched for in the
@@ -14409,8 +14409,60 @@ the license, by an explicit instruction recorded here.
   rather than a helper thread per read (no layer threads exist yet, and it is the process
   waits' interval); waitable timers left out (std copes); 37a's note on `STARTUPINFOEXW` was
   wrong for `Command` and is left to the attribute-list API below.
-- **Not yet.** Slice 37b2: programs linked to MinGW's `msvcrt.dll` (a `msvcrt` library with
-  the old C runtime's exports over part 25's UCRT code, built by llvm-mingw in CI). Rust
+- **Slice 37b2: programs linked to MinGW's `msvcrt.dll`.** MinGW-w64's default C runtime is
+  the old `msvcrt.dll`, now one of the layer's libraries (`Library::Msvcrt`, the last of
+  `Library::ALL` so earlier module handles keep their places): its own names first
+  (`win32/crt/msvcrt.rs`), then the Universal C Runtime's functions where the two agree
+  (part 25's lists, D146). Its own: `__getmainargs` and `__wgetmainargs` (the layer's
+  arguments and environment, `_startupinfo`'s new mode), `__set_app_type`, `atexit` and
+  `_onexit` (the process's exit table), `_amsg_exit` (`runtime error R60nn`, status 255),
+  `__lconv_init`, `_fpreset` (Windows' default x87 and SSE control words, `FPCR` 0 on
+  aarch64), `___lc_codepage_func` (0, the C locale) and `___mb_cur_max_func` (1),
+  `localeconv` (the C locale's conventions), `strerror` (Microsoft's texts,
+  `error_messages.rs`), `_lock` and `_unlock` (36 recursive locks, the runtime's 16 and one
+  per stream of the `FILE` array, on the layer's critical sections), `_XcptFilter` (the
+  startup's filter, the same as `_seh_filter_exe`, D177), and the variables programs import
+  as data: `_fmode`, `_commode`, `__argc`, `__argv`, `__wargv`, `_environ`, `_wenviron`,
+  `__initenv` and `__winitenv`. Streams (`stdio.rs`): `__iob_func` returns an array of 20
+  `FILE`s of 48 bytes whose first three entries are standard input, output and error, so
+  `&__iob_func()[1]` is `stdout` for every stream function; every stream the layer opens now
+  starts with 88 zeroed bytes, a `FILE` and the critical section MinGW's own `printf` enters
+  right after any `FILE` it did not find in the array (the old runtime's `_FILEX`), before
+  the layer's stream (`msvcrt_layout.rs`). The old runtime's `printf` family is variadic
+  where the Universal C Runtime's is `__stdio_common_*`: `printf`, `fprintf`, `sprintf`,
+  `_snprintf` (Microsoft's ending), `snprintf` (C99's), `_scprintf`, `wprintf`, `fwprintf`,
+  `_snwprintf` and their `v` forms, through new export entries (`win32/abi.rs`,
+  `variadic_after_one`, `_two`, `_three`): on x64 and ARM64 Windows passes variadic
+  arguments in the integer registers and then on the stack, so the entry stores the
+  registers next to the caller's stack arguments and hands the function a `va_list` to the
+  first variadic one. Also new for both runtimes: `putchar`, `setvbuf` (full or no
+  buffering; `_IOLBF` is full buffering, as Microsoft documents; the caller's buffer is not
+  used) and `_setmode` (records and reports a descriptor's mode: bytes are never
+  translated, D179). MinGW's startup always imports `VirtualQuery` (its pseudo-relocations),
+  now in kernel32 (`memory.rs`): the region from the address's page, read from
+  `/proc/self/maps` (`memory_regions.rs`: adjacent mappings that agree merge, no-access pages
+  are reserved, an unmapped address is free up to the next mapping). Check:
+  `tests/windows-mingw/eggmingw.c`, our own C program, built by llvm-mingw's msvcrt
+  toolchain for x64 and ARM64 on CI's Windows runner (`windows::MINGW_PROGRAMS`, the
+  toolchain from `EGGOS_LLVM_MINGW` or `PATH`; the `windows-programs` job installs release
+  20261020 checked against its SHA-256) and added to the C runtime boot test at
+  `/bin/eggmingw.exe`: its arguments and environment, MinGW's `printf`, `qsort`, `malloc` and
+  `realloc`, the old runtime's `_snprintf` with `%I64d` and `_scprintf`, a raised `SIGINT`
+  its handler took, `strerror`, standard error, its `atexit` handler and status 3. Decided by
+  research (sonnet): the toolchain (llvm-mingw's msvcrt flavour for a Windows x64 host targets
+  both; its aarch64 programs import `msvcrt.dll` too) and what MinGW's startup and `printf`
+  import (MinGW's `printf` is its own, `__mingw_printf`, by default for C99, so `printf`
+  itself is imported only by programs built without `__USE_MINGW_ANSI_STDIO`; `stdout` is
+  `&__iob_func()[1]`; `_lock_file` takes `_lock(16 + index)` for array streams and enters
+  the critical section after any other `FILE`). Decided without research: the 88-byte head
+  on every stream rather than a separate table of old-style `FILE`s (one pointer for both
+  runtimes, 88 bytes per open stream); `VirtualQuery` reads `/proc/self/maps` each call (only
+  startup code calls it) into a heap block of 64 KiB, doubled up to 4 MiB; region kinds are
+  private or mapped, never image.
+- **Not yet.** MinGW: DLLs built by MinGW (`__dllonexit`), DOS wildcards in `__getmainargs`
+  (`_dowildcard`, slice 37c), `_putenv`, `setlocale`, the old runtime's `swprintf` (no count),
+  `_sys_errlist` and `_sys_nerr`, and `_file` in the `FILE` array's entries (MinGW reads it
+  through `_fileno`). Rust
   std functions only some programs reach, which still fail to load naming the import:
   `fs::copy` (`CopyFileExW`, whose progress routine takes nine arguments), `fs::canonicalize`
   (`GetFinalPathNameByHandleW`), symbolic and hard links (`CreateSymbolicLinkW`,

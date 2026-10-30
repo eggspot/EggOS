@@ -250,13 +250,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   once) and job objects do not.
   Programs built on Rust's standard library run (D189, slice 37b): `Command`, files, threads,
   locks, clocks and panics; `fs::copy`, `fs::canonicalize`, links, `File::lock`,
-  `fs::remove_dir_all`, networking and waitable timers do not yet, nor programs linked to
-  MinGW's `msvcrt.dll`.
+  `fs::remove_dir_all`, networking and waitable timers do not yet.
+  Programs linked to MinGW's `msvcrt.dll` run (D189, slice 37b2): its startup, `printf` (MinGW's
+  own and the old runtime's variadic one), streams, the heap, strings, `qsort`, `getenv`,
+  `signal`, `atexit`; MinGW DLLs (`__dllonexit`), DOS wildcards in `__getmainargs`, wide
+  `swprintf`, `_putenv`, `setlocale` and line-ending translation do not yet.
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.
   Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
-  `std::exception_ptr`, `dynamic_cast` and `typeid`, MinGW's or Rust's std, `setjmp`,
+  `std::exception_ptr`, `dynamic_cast` and `typeid`, the rest of Rust's std, `setjmp`,
   locales, most of the math library, wide streams, low-level I/O's text mode (`_open` works but
   never translates line endings, D179), other
   DLLs than the layer's own, multi-line edits or selection, radio keys, editable combo boxes

@@ -18,8 +18,9 @@ gets the mouse and keyboard as Win32 messages and shows message boxes. Programs 
 runtime (D146) run too: C programs built with `/MD` import `vcruntime140.dll` and the
 Universal C Runtime (`ucrtbase.dll`, through the `api-ms-win-crt-*` API sets), which the layer
 provides as well, with structured exception handling and C++ exceptions (D177). Programs on
-the C++ standard library's DLL (`msvcp140.dll`), MinGW's `msvcrt.dll` or Rust's standard
-library import more than this and are refused with the name of the first missing function.
+the C++ standard library's DLL (`msvcp140.dll`) import more than this and are refused with
+the name of the first missing function; programs on MinGW's `msvcrt.dll` and on Rust's
+standard library run (D189, below).
 
 ## Add a program to the image
 
@@ -165,8 +166,24 @@ anonymous pipes), overlapped reads on pipes, `ReadFileEx`, `WriteFileEx` and ale
 `GetFileInformationByHandleEx`, `SetFileInformationByHandle`, `ProcessPrng` and
 `GetUserProfileDirectoryW`; `NUL` is `/dev/null`. Not yet: `fs::copy`, `fs::canonicalize`,
 links, `File::lock`, `fs::remove_dir_all`, networking and the process attribute-list API
-(such a program does not start, and the message names the missing function), and programs
-linked to MinGW's `msvcrt.dll`.
+(such a program does not start, and the message names the missing function).
+
+## Programs built with MinGW
+
+A C program built by MinGW-w64 (GCC or llvm-mingw) against its default C runtime, the old
+`msvcrt.dll`, runs as it is on x86_64 and aarch64 (D189): MinGW's startup (`__getmainargs`,
+`atexit`, `_fmode`, the TLS callbacks and pseudo-relocations, which use `VirtualQuery`),
+MinGW's own `printf` (which locks the streams through `_lock` and writes them with `fputc`)
+and the old runtime's `printf` family (`printf`, `fprintf`, `sprintf`, `_snprintf`,
+`_scprintf`, `wprintf` and their `v` forms, with `%I64d`), `stdout` and `stderr` through
+`__iob_func`, `setvbuf`, the heap, strings, `qsort`, `getenv`, `signal` and `raise`,
+`strerror`, `localeconv`, `_setmode` and `exit`. The layer gives `msvcrt.dll` the same
+functions as the Universal C Runtime where the two agree. Not yet: MinGW DLLs (`__dllonexit`),
+DOS wildcards in the arguments (`_dowildcard`), `_putenv`, `setlocale`, the old runtime's
+`swprintf` and line-ending translation in text mode.
+
+`tests/windows-mingw/eggmingw.c` is our own example: CI builds it with llvm-mingw for x64 and
+ARM64, and the Windows C runtime boot test runs it (`cargo xtask windows-crt`).
 
 ## Programs that start other programs
 
@@ -318,9 +335,8 @@ size needed, as each function documents.
 
 ## What does not work yet
 
-- **Programs on the C++ standard library's DLL (`msvcp140.dll`), on MinGW's `msvcrt.dll` or
-  on Rust's std**: they import more (iostreams, `ProcessPrng`, more of the C library), which
-  later parts add. The layer names the first function it lacks. C++'s `std::exception_ptr`,
+- **Programs on the C++ standard library's DLL (`msvcp140.dll`) and the rest of Rust's std**:
+  they import more (iostreams, `CopyFileExW`, more of the C library), which later parts add. The layer names the first function it lacks. C++'s `std::exception_ptr`,
   `dynamic_cast` and `typeid` are missing too (D177's "Not yet"). Of MSVC's C runtime,
   `setlocale`, `setjmp`, the math library beyond `sqrtf`, wide streams, low-level I/O's line
   ending translation and permission modes (`_open` itself works, D179), `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
