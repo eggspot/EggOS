@@ -4,6 +4,7 @@
 //! `rand`).
 
 use super::{Exclusive, c_string, errno_from, heap, set_errno, stdio};
+use crate::callback;
 use crate::darwin::{self, EINVAL};
 use crate::linux;
 use core::ffi::{c_char, c_int, c_long, c_longlong, c_uint, c_ulong, c_ulonglong, c_void};
@@ -115,6 +116,7 @@ pub extern "C" fn exit(status: c_int) -> ! {
             })
         });
         let Some(handler) = handler else { break };
+        let handler = callback::native_callable(handler);
         // SAFETY: `atexit` stored a function that takes nothing.
         let handler: extern "C" fn() = unsafe { core::mem::transmute(handler) };
         handler();
@@ -713,12 +715,19 @@ pub extern "C" fn arc4random_uniform(bound: u32) -> u32 {
 
 type Compare = unsafe extern "C" fn(*const c_void, *const c_void) -> c_int;
 
+fn native_compare(compare: Compare) -> Compare {
+    let native = callback::native_callable(compare as usize);
+    // SAFETY: the comparator, or the thunk that calls it with the same arguments.
+    unsafe { core::mem::transmute::<usize, Compare>(native) }
+}
+
 /// # Safety
 /// `base` must hold `count` elements of `size` bytes, and `compare` must compare two of them.
 pub unsafe extern "C" fn qsort(base: *mut c_void, count: usize, size: usize, compare: Compare) {
     if size == 0 || count < 2 {
         return;
     }
+    let compare = native_compare(compare);
     let element = |index: usize| base.cast::<u8>().wrapping_add(index * size);
     let sift_down = |mut root: usize, end: usize| loop {
         let mut child = 2 * root + 1;
@@ -758,6 +767,7 @@ pub unsafe extern "C" fn bsearch(
     size: usize,
     compare: Compare,
 ) -> *mut c_void {
+    let compare = native_compare(compare);
     let (mut low, mut high) = (0, count);
     while low < high {
         let middle = low + (high - low) / 2;

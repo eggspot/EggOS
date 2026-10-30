@@ -343,6 +343,9 @@ pub unsafe extern "C" fn pthread_once(once: *mut Once, routine: extern "C" fn())
     loop {
         match state.compare_exchange(0, ONCE_RUNNING, Ordering::Acquire, Ordering::Acquire) {
             Ok(_) => {
+                let routine = crate::callback::native_callable(routine as usize);
+                // SAFETY: the caller's routine, or the thunk that calls it.
+                let routine: extern "C" fn() = unsafe { core::mem::transmute(routine) };
                 routine();
                 state.store(ONCE_DONE, Ordering::Release);
                 linux::futex_wake(state, WakeCount::All);

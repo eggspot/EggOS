@@ -61,6 +61,10 @@ fn word_at(base: *const u8, offset: usize) -> usize {
     unsafe { base.wrapping_add(offset).cast::<usize>().read_unaligned() }
 }
 
+fn function_at(base: *const u8, offset: usize) -> usize {
+    crate::callback::native_callable(word_at(base, offset))
+}
+
 fn flags_at(base: *const u8, offset: usize) -> &'static AtomicI32 {
     // SAFETY: as above: the 32-bit flags word of a block or `__block` variable, which lives at
     // least as long as the reference the caller holds.
@@ -133,7 +137,7 @@ pub extern "C" fn block_copy(block: *const u8) -> *mut u8 {
     if value & HAS_COPY_DISPOSE != 0 {
         // SAFETY: a block with the flag has the compiler's copy helper in its descriptor.
         let helper: extern "C" fn(*mut u8, *const u8) =
-            unsafe { core::mem::transmute(word_at(descriptor, DESCRIPTOR_COPY_OFFSET)) };
+            unsafe { core::mem::transmute(function_at(descriptor, DESCRIPTOR_COPY_OFFSET)) };
         helper(copy, block);
     }
     copy
@@ -156,7 +160,7 @@ pub extern "C" fn block_release(block: *const u8) {
         let descriptor = word_at(block, DESCRIPTOR_OFFSET) as *const u8;
         // SAFETY: a block with the flag has the compiler's dispose helper in its descriptor.
         let helper: extern "C" fn(*const u8) =
-            unsafe { core::mem::transmute(word_at(descriptor, DESCRIPTOR_DISPOSE_OFFSET)) };
+            unsafe { core::mem::transmute(function_at(descriptor, DESCRIPTOR_DISPOSE_OFFSET)) };
         helper(block);
     }
     heap::release(block.cast_mut());
@@ -212,7 +216,8 @@ fn byref_copy(variable: *const u8) -> *const u8 {
                 }
             }
             // SAFETY: the compiler's keep helper copies the variable's value.
-            let keep: extern "C" fn(*mut u8, *mut u8) = unsafe { core::mem::transmute(keep) };
+            let keep: extern "C" fn(*mut u8, *mut u8) =
+                unsafe { core::mem::transmute(crate::callback::native_callable(keep)) };
             keep(copy, source);
         } else {
             // SAFETY: both blocks hold `size` bytes; the value follows the header.
@@ -241,7 +246,7 @@ fn byref_release(variable: *const u8) {
     if value & BYREF_HAS_COPY_DISPOSE != 0 {
         // SAFETY: a variable with the flag has its destroy helper after the header.
         let destroy: extern "C" fn(*mut u8) =
-            unsafe { core::mem::transmute(word_at(variable, BYREF_DESTROY_OFFSET)) };
+            unsafe { core::mem::transmute(function_at(variable, BYREF_DESTROY_OFFSET)) };
         destroy(variable);
     }
     heap::release(variable);
@@ -274,9 +279,10 @@ extern "C" fn object_dispose(object: *const u8, flags: i32) {
     }
 }
 
-/// The function a block runs, which takes the block first and then its own arguments.
+/// The function a block runs, which takes the block first and then its own arguments: a
+/// native function the layer can call, also when the block is a translated program's.
 pub fn invoke_address(block: Id) -> usize {
-    word_at(block.cast_const().cast(), INVOKE_OFFSET)
+    function_at(block.cast_const().cast(), INVOKE_OFFSET)
 }
 
 extern "C" fn copy_with_zone(this: Id, _: Sel, _: usize) -> Id {

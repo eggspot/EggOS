@@ -162,7 +162,7 @@ pub fn dispose(object: Id) {
     while let Some(current) = record {
         if current.has(HAS_CXX_DESTRUCT) {
             let destruct = super::RUNTIME.with(|_| current.own_method(sel!(".cxx_destruct")));
-            if let Some(imp) = destruct {
+            if let Some(imp) = destruct.map(crate::callback::native_callable) {
                 // SAFETY: `.cxx_destruct` takes the object and its selector.
                 let destruct: extern "C" fn(Id, Sel) = unsafe { core::mem::transmute(imp) };
                 destruct(object, sel!(".cxx_destruct"));

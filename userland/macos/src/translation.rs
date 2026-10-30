@@ -8,21 +8,26 @@
 //! leaves data imports at their native addresses. [`call_guest`] enters translated code
 //! through the entry trampoline (the program's `main`) with the calling thread's guest state,
 //! and [`install_fault_handler`] ends a program whose translated code traps or faults, or
-//! whose function the layer called natively, with a line naming the guest address.
+//! whose function the layer called natively, with a line naming the guest address. The
+//! layer calls the program's other functions (handlers, comparators, thread starts, blocks,
+//! Objective-C methods) through [`native_callable`]'s thunks (slice 39e2c), and its signal
+//! handlers through [`call_signal_handler`].
 
-use crate::libsystem;
+use crate::libsystem::{self, Exclusive};
 use crate::linux;
 use crate::macho::{MachO, read_u64};
 use crate::translated::{self, PointerFixups};
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::ffi::c_int;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use eggos_runtime::startup::{Startup, auxv};
 use eggos_translate::cache::{self, CacheFile};
 use eggos_translate::image::bridge;
 use eggos_translate::image::{ImageInput, TranslatedImage, translate_image};
 use eggos_translation_loader::cache_files;
+use eggos_translation_loader::callback_thunks;
 use eggos_translation_loader::disk::Disk;
 use eggos_translation_loader::installed::{self, InstalledCode, StubBridge};
 use eggos_translation_loader::trap::codegen_mode;
@@ -43,6 +48,10 @@ const SIGINFO_ADDRESS: usize = 16;
 const UCONTEXT_REGISTERS: usize = 184;
 const UCONTEXT_PC: usize = 440;
 const STANDARD_ERROR: usize = 2;
+const GUEST_STACK_REGISTER: usize = 4;
+const SHADOW_STACK_REGISTER: usize = 20;
+const GUEST_STACK_REACH: u64 = 8 << 20;
+const GUEST_RED_ZONE: u64 = 128;
 
 struct Translation {
     code: InstalledCode,
@@ -225,6 +234,124 @@ pub unsafe fn call_guest(address: u64, arguments: &[u64]) -> Option<u64> {
             .code
             .call_guest(block, gs_base, address, &registers[..count])
     })
+}
+
+struct Thunks {
+    page: usize,
+    used: usize,
+    by_guest: BTreeMap<u64, usize>,
+}
+
+static THUNKS: Exclusive<Thunks> = Exclusive::new(Thunks {
+    page: 0,
+    used: callback_thunks::THUNKS_PER_PAGE,
+    by_guest: BTreeMap::new(),
+});
+
+impl Thunks {
+    fn thunk(&mut self, guest: u64) -> Option<usize> {
+        if let Some(&thunk) = self.by_guest.get(&guest) {
+            return Some(thunk);
+        }
+        if self.used == callback_thunks::THUNKS_PER_PAGE {
+            self.page = installed::callback_thunk_page(callback_entry as usize as u64)?;
+            self.used = 0;
+        }
+        let index = self.used;
+        let slot = self.page + callback_thunks::guest_slot_offset(index);
+        // SAFETY: the slot is an aligned word of the thunk page's writable data page, which
+        // stays mapped for the process's life; no thunk reads it before it is handed out.
+        unsafe { AtomicU64::from_ptr(slot as *mut u64) }.store(guest, Ordering::Release);
+        self.used += 1;
+        let thunk = self.page + index * callback_thunks::THUNK_BYTES;
+        self.by_guest.insert(guest, thunk);
+        Some(thunk)
+    }
+}
+
+extern "C" fn callback_entry(
+    guest: u64,
+    first: u64,
+    second: u64,
+    third: u64,
+    fourth: u64,
+    fifth: u64,
+    sixth: u64,
+) -> u64 {
+    let arguments = [first, second, third, fourth, fifth, sixth];
+    // SAFETY: only the thunk `native_callable` made for `guest` branches here, and the layer
+    // calls that thunk where the program expects its function to be called, with the
+    // arguments the function takes.
+    match unsafe { call_guest(guest, &arguments) } {
+        Some(result) => result,
+        None => {
+            libsystem::write_error(b"macos: no memory to call the program's translated code\n");
+            linux::exit(SIGNAL_EXIT_BASE + SIGSEGV as i32)
+        }
+    }
+}
+
+/// A native function that calls the program's translated function at `address` (a thunk made
+/// once per address), or `address` itself when it is not in the translated program: how every
+/// place in the layer that is given one of the program's functions (a handler, comparator,
+/// thread start, block, Objective-C method) calls it. Up to six integer or pointer arguments
+/// and an integer result pass through.
+pub fn native_callable(address: usize) -> usize {
+    let Some(translation) = current() else {
+        return address;
+    };
+    if !translation.code.holds_guest(address as u64) {
+        return address;
+    }
+    THUNKS
+        .with(|thunks| thunks.thunk(address as u64))
+        .unwrap_or(address)
+}
+
+/// Calls the program's signal handler `handler` with `arguments` when it is translated code
+/// (false otherwise, and the caller calls it natively). When the signal interrupted translated
+/// code (`context` is the kernel's `ucontext_t`), the handler's guest frames go below the
+/// interrupted guest stack and its red zone, not below where the thread last called the layer.
+/// Takes no lock, so it is safe in a signal handler.
+pub fn call_signal_handler(handler: usize, arguments: [u64; 3], context: *mut u8) -> bool {
+    let Some(translation) = current() else {
+        return false;
+    };
+    if !translation.code.holds_guest(handler as u64) {
+        return false;
+    }
+    let Some(block) = thread_block() else {
+        return false;
+    };
+    let stack_field = block + bridge::thread::NATIVE_CALL_GUEST_STACK as usize;
+    let shadow_field = block + bridge::thread::NATIVE_CALL_SHADOW_STACK as usize;
+    let field = |at: usize| {
+        // SAFETY: the fields are aligned words of this thread's own block.
+        unsafe { AtomicU64::from_ptr(at as *mut u64) }
+    };
+    let saved = (
+        field(stack_field).load(Ordering::Relaxed),
+        field(shadow_field).load(Ordering::Relaxed),
+    );
+    if !context.is_null() {
+        let pc = word(context, UCONTEXT_PC);
+        let code = translation.code.code as u64;
+        let guest_stack = word(context, UCONTEXT_REGISTERS + 8 * GUEST_STACK_REGISTER);
+        if pc.wrapping_sub(code) < translation.code.mapped as u64
+            && guest_stack < saved.0
+            && saved.0 - guest_stack < GUEST_STACK_REACH
+        {
+            field(stack_field).store(guest_stack - GUEST_RED_ZONE, Ordering::Relaxed);
+            let shadow = word(context, UCONTEXT_REGISTERS + 8 * SHADOW_STACK_REGISTER);
+            field(shadow_field).store(shadow, Ordering::Relaxed);
+        }
+    }
+    // SAFETY: the program installed `handler` as a signal handler, which takes the signal
+    // number, a `siginfo_t` and a context.
+    let _ = unsafe { call_guest(handler as u64, &arguments) };
+    field(stack_field).store(saved.0, Ordering::Relaxed);
+    field(shadow_field).store(saved.1, Ordering::Relaxed);
+    true
 }
 
 fn word(context: *mut u8, offset: usize) -> u64 {

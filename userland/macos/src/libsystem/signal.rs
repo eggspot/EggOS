@@ -146,7 +146,11 @@ fn change(signal: c_int, new: Option<Action>) -> Result<Action, c_int> {
     })
 }
 
-extern "C" fn deliver(linux_signal: c_int, info: *const [u8; LINUX_INFO_READ], _: *mut c_void) {
+extern "C" fn deliver(
+    linux_signal: c_int,
+    info: *const [u8; LINUX_INFO_READ],
+    context: *mut c_void,
+) {
     let Some(signal) = darwin_signals::darwin_signal(linux_signal as usize) else {
         return;
     };
@@ -169,11 +173,14 @@ extern "C" fn deliver(linux_signal: c_int, info: *const [u8; LINUX_INFO_READ], _
     };
     darwin_info.signal = signal;
     let saved_errno = errno();
-    // SAFETY: the program installed `handler` as a signal handler, which takes the signal
-    // number, Darwin's `siginfo_t` and a context (a handler that takes only the number
-    // ignores the rest).
-    let handler = unsafe { core::mem::transmute::<usize, Handler>(handler) };
-    handler(signal, &mut darwin_info, core::ptr::null_mut());
+    let arguments = [signal as u64, (&raw mut darwin_info) as u64, 0];
+    if !crate::callback::call_signal_handler(handler, arguments, context.cast()) {
+        // SAFETY: the program installed `handler` as a signal handler, which takes the signal
+        // number, Darwin's `siginfo_t` and a context (a handler that takes only the number
+        // ignores the rest).
+        let handler = unsafe { core::mem::transmute::<usize, Handler>(handler) };
+        handler(signal, &mut darwin_info, core::ptr::null_mut());
+    }
     set_errno(saved_errno);
 }
 

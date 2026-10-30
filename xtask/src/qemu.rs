@@ -177,7 +177,10 @@ pub enum Expect {
     /// CPU's program, one that links a library EggOS lacks, the other CPU's program and a fat
     /// file of both. The test types a line at each prompt that runs one, and each command must
     /// write its lines in order before the next prompt: the program's checks, exit statuses,
-    /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120).
+    /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120). On
+    /// aarch64 the x86_64 program runs translated and writes the same checks as this CPU's
+    /// (its `qsort` comparator and `atexit` handler called through callback thunks), on x86_64
+    /// the arm64 program is refused (D191).
     MacosPrograms,
     /// The release kernel boots with a host folder attached as the run scripts attach one
     /// (`--apps`, [`host_folder_args`]): a text file and our static Linux program in a
@@ -816,6 +819,32 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
     b"exit 7\r",
 ];
 
+const MACOS_CONSOLE_CHECK_LINES: [&str; 21] = [
+    "MACOS-CONSOLE apple executable_path",
+    "MACOS-CONSOLE env GREETING=hi envp setenv",
+    "MACOS-CONSOLE printf",
+    "MACOS-CONSOLE ints -42 7 3000000000 -1234567890123 9000000000000000000 12 beef BEEF \
+     10 Z %",
+    "MACOS-CONSOLE widths [   42] [42   ] [00042] [+42] [abc] [   right] [left    ] \
+     [0xff] [   7]",
+    "MACOS-CONSOLE floats 3.25 -0.500000 2 1.234568e+04 0.0001",
+    "MACOS-CONSOLE snprintf 15 truncat",
+    "MACOS-CONSOLE puts",
+    "MACOS-CONSOLE strings strlen strcmp strchr strstr strdup memcmp",
+    "MACOS-CONSOLE numbers qsort strtol atoi",
+    "MACOS-CONSOLE file eggos",
+    "MACOS-CONSOLE missing ENOENT, read-only, open read close",
+    "MACOS-CONSOLE stat regular 6 bytes, directory",
+    "MACOS-CONSOLE dir about",
+    "MACOS-CONSOLE cwd chdir getcwd relative",
+    "MACOS-CONSOLE malloc small large realloc",
+    "MACOS-CONSOLE time monotonic realtime mach gettimeofday",
+    "MACOS-CONSOLE pid positive",
+    "MACOS-CONSOLE stderr",
+    "MACOS-CONSOLE atexit",
+    "MACOS-CONSOLE status 0",
+];
+
 const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
@@ -823,7 +852,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
     b"macos-console abort; echo MACOS-CONSOLE status $?\r",
     b"macos-console unimplemented; echo MACOS-CONSOLE status $?\r",
     b"macos-unsupported; echo MACOS-CONSOLE status $?\r",
-    b"macos-other; echo MACOS-CONSOLE status $?\r",
+    b"GREETING=hi macos-other a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"GREETING=hi macos-std a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"macos-std exit 5; echo MACOS-CONSOLE status $?\r",
     b"macos-tools -v --verbose -n 3 --list /usr/share/eggos --name=eggos rest more; \
@@ -1144,36 +1173,27 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             end,
         ];
     }
-    let own = if arch == "x86_64" { "x86_64" } else { "arm64" };
     let mut objc_program = objc_program_output().into_iter();
     let mut swift_program = swift_program_output().into_iter();
+    let console_lines = |name: &str| -> Vec<Line> {
+        let first = format!("MACOS-CONSOLE {name} args a|b c");
+        let mut lines = whole(&[first.as_str()]);
+        lines.extend(whole(&MACOS_CONSOLE_CHECK_LINES));
+        lines
+    };
+    let other = if arch == "x86_64" {
+        vec![
+            Line::Around(
+                "macos: ",
+                "macos-other: has code only for arm64, not for this x86_64 machine",
+            ),
+            status(126),
+        ]
+    } else {
+        console_lines("macos-other")
+    };
     [
-        whole(&[
-            "MACOS-CONSOLE macos-console args a|b c",
-            "MACOS-CONSOLE apple executable_path",
-            "MACOS-CONSOLE env GREETING=hi envp setenv",
-            "MACOS-CONSOLE printf",
-            "MACOS-CONSOLE ints -42 7 3000000000 -1234567890123 9000000000000000000 12 beef BEEF \
-             10 Z %",
-            "MACOS-CONSOLE widths [   42] [42   ] [00042] [+42] [abc] [   right] [left    ] \
-             [0xff] [   7]",
-            "MACOS-CONSOLE floats 3.25 -0.500000 2 1.234568e+04 0.0001",
-            "MACOS-CONSOLE snprintf 15 truncat",
-            "MACOS-CONSOLE puts",
-            "MACOS-CONSOLE strings strlen strcmp strchr strstr strdup memcmp",
-            "MACOS-CONSOLE numbers qsort strtol atoi",
-            "MACOS-CONSOLE file eggos",
-            "MACOS-CONSOLE missing ENOENT, read-only, open read close",
-            "MACOS-CONSOLE stat regular 6 bytes, directory",
-            "MACOS-CONSOLE dir about",
-            "MACOS-CONSOLE cwd chdir getcwd relative",
-            "MACOS-CONSOLE malloc small large realloc",
-            "MACOS-CONSOLE time monotonic realtime mach gettimeofday",
-            "MACOS-CONSOLE pid positive",
-            "MACOS-CONSOLE stderr",
-            "MACOS-CONSOLE atexit",
-            "MACOS-CONSOLE status 0",
-        ]),
+        console_lines("macos-console"),
         vec![status(42)],
         vec![status(3)],
         whole(&["Aborted", "MACOS-CONSOLE status 134"]),
@@ -1188,17 +1208,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             ),
             status(126),
         ],
-        vec![
-            Line::Around(
-                "macos: ",
-                if own == "x86_64" {
-                    "macos-other: has code only for arm64, not for this x86_64 machine"
-                } else {
-                    "macos-other: has code only for x86_64, not for this arm64 machine"
-                },
-            ),
-            status(126),
-        ],
+        other,
         whole(&[
             "MACOS-STD hello from Rust std",
             "MACOS-STD args a|b c",
@@ -4133,6 +4143,15 @@ mod tests {
         }
         let elsewhere = macos_programs_console("x86_64");
         assert!(verdict("aarch64", Expect::MacosPrograms, true, &elsewhere).is_err());
+        assert!(ok.contains("MACOS-CONSOLE macos-other args a|b c"));
+        assert!(!ok.contains("has code only"));
+        assert!(elsewhere.contains("macos-other: has code only for arm64"));
+        let refused = ok.replacen(
+            "MACOS-CONSOLE macos-other args a|b c\r\n",
+            "macos: macos-other: has code only for x86_64, not for this arm64 machine\r\n",
+            1,
+        );
+        assert!(verdict("aarch64", Expect::MacosPrograms, true, &refused).is_err());
     }
 
     #[test]

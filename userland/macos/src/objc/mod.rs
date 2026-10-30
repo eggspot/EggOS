@@ -301,6 +301,7 @@ mod runtime {
     }
 
     fn call_load(imp: usize, class: *mut ClassObject) {
+        let imp = crate::callback::native_callable(imp);
         // SAFETY: a `+load` method, which takes the class and its selector.
         let load: extern "C" fn(Id, Sel) = unsafe { core::mem::transmute(imp) };
         load(class.cast(), sel!("load"));

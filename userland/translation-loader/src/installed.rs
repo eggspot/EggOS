@@ -5,6 +5,7 @@
 //! guest state [`new_guest_thread`] made, and [`InstalledCode::guest_fault`] tells a fault
 //! handler where in the guest a trap or fault in translated code happened.
 
+use crate::callback_thunks;
 use crate::trap::{self, TrapCause};
 use alloc::vec::Vec;
 use eggos_runtime::syscall::call;
@@ -150,6 +151,26 @@ pub fn executable_words(words: &[u32]) -> Option<usize> {
     put_words(host, 0, words);
     synchronize_instruction_cache(page, bytes);
     protect(page, bytes, PROT_READ | PROT_EXEC).ok()?;
+    Some(page)
+}
+
+/// Maps a page of callback thunks ([`callback_thunks::page_words`]), read-only and executable,
+/// followed by its writable data page with `entry` in [`callback_thunks::ENTRY_SLOT`]; the
+/// code page's address. The caller writes a thunk's guest address in its slot before handing
+/// the thunk out.
+pub fn callback_thunk_page(entry: u64) -> Option<usize> {
+    let page = map(2 * callback_thunks::PAGE_BYTES).ok()?;
+    // SAFETY: `page` is a new private mapping of two zeroed pages that only this function uses
+    // until the first is made executable.
+    let host =
+        unsafe { core::slice::from_raw_parts_mut(page as *mut u8, callback_thunks::PAGE_BYTES) };
+    put_words(host, 0, &callback_thunks::page_words());
+    write_u64(
+        page + callback_thunks::guest_slot_offset(callback_thunks::ENTRY_SLOT),
+        entry,
+    );
+    synchronize_instruction_cache(page, callback_thunks::PAGE_BYTES);
+    protect(page, callback_thunks::PAGE_BYTES, PROT_READ | PROT_EXEC).ok()?;
     Some(page)
 }
 

@@ -256,6 +256,7 @@ fn run_exit_handlers(thread: *mut Thread) {
             (block.exit_handlers as *const [usize; 2]).wrapping_add(block.exit_handler_count);
         // SAFETY: a pair `tlv_atexit` stored.
         let [destructor, object] = unsafe { slot.read() };
+        let destructor = crate::callback::native_callable(destructor);
         // SAFETY: `tlv_atexit`'s contract.
         let destructor: extern "C" fn(usize) = unsafe { core::mem::transmute(destructor) };
         destructor(object);
@@ -268,6 +269,7 @@ fn run_exit_handlers(thread: *mut Thread) {
             let value = unsafe { &mut (*thread).values[key] };
             if destructor != 0 && *value != 0 {
                 let argument = core::mem::take(value);
+                let destructor = crate::callback::native_callable(destructor);
                 // SAFETY: `pthread_key_create`'s contract: a function that takes the value.
                 let destructor: extern "C" fn(usize) = unsafe { core::mem::transmute(destructor) };
                 destructor(argument);
@@ -449,6 +451,7 @@ pub unsafe extern "C" fn pthread_create(
     start: usize,
     argument: usize,
 ) -> c_int {
+    let start = crate::callback::native_callable(start);
     reap();
     let (stack_size, detach_state) = if attributes.is_null() {
         (DEFAULT_STACK, CREATE_JOINABLE)

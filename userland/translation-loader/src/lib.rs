@@ -5,13 +5,15 @@
 //! mode from the CPU's capabilities, and where a layer's own code lies
 //! ([`executable_range`]). On aarch64, `installed` maps a translation with its bridges,
 //! makes each thread's guest state and calls into translated code through the entry
-//! trampoline.
+//! trampoline, and [`callback_thunks`] lays out the native thunks through which a layer's own
+//! code calls a translated function it was given.
 
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod cache_files;
+pub mod callback_thunks;
 #[cfg(all(target_env = "musl", target_arch = "aarch64"))]
 pub mod disk;
 #[cfg(all(target_env = "musl", target_arch = "aarch64"))]

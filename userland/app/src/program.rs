@@ -174,11 +174,16 @@ fn mach_o_architecture(cpu: u32) -> Architecture {
 }
 
 /// Whether a program built for `built_for` runs on `machine` through ahead-of-time translation
-/// (D191): x64 Windows programs on aarch64, whose layer translates them at their first launch.
+/// (D191): x64 Windows and x86_64 macOS programs on aarch64, which the installer translates
+/// and whose layer loads the translation at launch.
 pub fn runs_translated(source: Source, built_for: Architecture, machine: Architecture) -> bool {
     matches!(
         (source, built_for, machine),
-        (Source::Windows, Architecture::X86_64, Architecture::Aarch64)
+        (
+            Source::Windows | Source::Macos,
+            Architecture::X86_64,
+            Architecture::Aarch64
+        )
     )
 }
 
@@ -452,7 +457,8 @@ mod tests {
         assert_eq!(recognise(&x64, Aarch64), program(Source::Windows, X86_64));
         assert!(runs_translated(Source::Windows, X86_64, Aarch64));
         assert!(!runs_translated(Source::Windows, Aarch64, X86_64));
-        assert!(!runs_translated(Source::Macos, X86_64, Aarch64));
+        assert!(runs_translated(Source::Macos, X86_64, Aarch64));
+        assert!(!runs_translated(Source::Macos, Aarch64, X86_64));
         assert_eq!(
             recognise(&x64, Riscv64),
             Err(NotRunnable::LayerNotOnThisCpu(Source::Windows))
@@ -558,7 +564,15 @@ mod tests {
         );
         assert_eq!(
             recognise(&fat_file(&[0x0100_0007]), Aarch64),
-            Err(NotRunnable::OtherCpu(X86_64))
+            program(Source::Macos, X86_64)
+        );
+        assert_eq!(
+            recognise(&mach_o(0x0100_0007, 2), Aarch64),
+            program(Source::Macos, X86_64)
+        );
+        assert_eq!(
+            recognise(&fat_file(&[0x0100_0007]), Riscv64),
+            Err(NotRunnable::LayerNotOnThisCpu(Source::Macos))
         );
         let java_class = [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52];
         assert_eq!(
