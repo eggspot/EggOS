@@ -238,7 +238,7 @@ const BOOT_CLOCK_LINE: &str = "EGGOS-BENCH: boot_to_prompt ";
 
 const SHELL_PROMPT: &str = "eggsh:/";
 
-const SHELL_SESSION: [&[u8]; 34] = [
+const SHELL_SESSION: [&[u8]; 36] = [
     b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
     b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
     b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
@@ -249,6 +249,8 @@ const SHELL_SESSION: [&[u8]; 34] = [
     b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
     b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
     b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
+    b"eggsh /usr/share/eggsh/language-test; echo EGGSH-TEST language status $?\r",
+    b"for i in 1 2; do echo EGGSH-TEST loop $i; done\r",
     b"true && echo EGGSH-TEST and ok; false && echo EGGSH-TEST never; false || echo EGGSH-TEST or ok\r",
     b"eggsh -c 'echo echo EGGSH-TEST redirected stderr >&2' 2> /tmp/e; . /tmp/e\r",
     b"eggsh -c 'echo echo EGGSH-TEST stderr joined >&2' > /tmp/d 2>&1; . /tmp/d\r",
@@ -1477,7 +1479,7 @@ struct ShellTyping {
     reactions: [bool; REACTIONS.len()],
 }
 
-const SHELL_LINES: [&str; 37] = [
+const SHELL_LINES: [&str; 51] = [
     "EGGSH-TEST quoting single  quoted double /home/root $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
     "EGGSH-TEST cd /usr/libexec /home/root",
@@ -1493,6 +1495,20 @@ const SHELL_LINES: [&str; 37] = [
     "EGGSH-TEST sourced yes",
     "EGGSH-TEST script status 5",
     "EGGSH-TEST dash-c name arg",
+    "EGGSH-TEST function world 2",
+    "EGGSH-TEST return 3 who=unset",
+    "EGGSH-TEST glob /usr/share/eggsh",
+    "EGGSH-TEST substitution [substituted output]",
+    "EGGSH-TEST while c",
+    "EGGSH-TEST if yes",
+    "EGGSH-TEST subshell /usr",
+    "EGGSH-TEST after subshell",
+    "EGGSH-TEST here-document one two three",
+    "EGGSH-TEST piped loop",
+    "EGGSH-TEST done default",
+    "EGGSH-TEST language status 0",
+    "EGGSH-TEST loop 1",
+    "EGGSH-TEST loop 2",
     "EGGSH-TEST and ok",
     "EGGSH-TEST or ok",
     "EGGSH-TEST redirected stderr",

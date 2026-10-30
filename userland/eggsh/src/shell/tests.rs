@@ -1,6 +1,9 @@
 use super::*;
 use crate::path::Kind;
+use crate::test::FileType;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+
+const FIRST_FORK: i32 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Started {
@@ -38,10 +41,19 @@ struct FakeSystem {
     kills: Vec<(i32, u8)>,
     given: Vec<i32>,
     history_files: Vec<Option<String>>,
+    forks: Vec<Group>,
+    fork_as_child: bool,
+    fork_statuses: HashMap<i32, i32>,
+    substitution_outputs: VecDeque<Vec<u8>>,
+    ended_subshells: Vec<i32>,
+    documents: Vec<Vec<u8>>,
 }
 
 impl FakeSystem {
     fn final_status(&self, child: i32) -> i32 {
+        if child >= FIRST_FORK {
+            return self.fork_statuses.get(&child).copied().unwrap_or(0);
+        }
         let program = &self.ran[(child - 100) as usize].program;
         self.statuses.get(program).copied().unwrap_or(0)
     }
@@ -111,6 +123,84 @@ impl System for FakeSystem {
         }
     }
 
+    fn read_data(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read {
+        match self.open.contains_key(&descriptor) || descriptor == 0 {
+            true => self.read(descriptor, buffer),
+            false => Read::End,
+        }
+    }
+
+    fn document(&mut self, contents: &[u8]) -> Result<usize, Errno> {
+        let descriptor = self.descriptor();
+        self.documents.push(contents.to_vec());
+        self.open
+            .insert(descriptor, contents.iter().copied().collect());
+        Ok(descriptor)
+    }
+
+    fn fork(&mut self, group: Group) -> Result<Forked, Errno> {
+        self.forks.push(group);
+        if std::mem::take(&mut self.fork_as_child) {
+            return Ok(Forked::Child);
+        }
+        if let Some(output) = self.substitution_outputs.pop_front() {
+            let (read, _) = *self.pipes.last().unwrap();
+            self.open.insert(read, output.into_iter().collect());
+        }
+        Ok(Forked::Parent(FIRST_FORK + self.forks.len() as i32 - 1))
+    }
+
+    fn end_subshell(&mut self, status: i32) {
+        self.ended_subshells.push(status);
+    }
+
+    fn read_directory(&mut self, path: &[u8], each: &mut dyn FnMut(&[u8])) -> Result<(), Errno> {
+        let directory = match text(path) {
+            dot if dot == "." => self.working_directory.clone(),
+            other if other.len() > 1 => other.trim_end_matches('/').to_owned(),
+            other => other,
+        };
+        if self.kind(format!("{directory}\0").as_bytes()) != Kind::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+        let prefix = format!("{}/", directory.trim_end_matches('/'));
+        for (name, _) in &self.files {
+            if let Some(rest) = name.strip_prefix(&prefix)
+                && !rest.is_empty()
+                && !rest.contains('/')
+            {
+                each(rest.as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    fn file_status(&mut self, path: &[u8], _follow: bool) -> Option<FileStatus> {
+        let size = self.contents.get(&text(path)).map_or(1, Vec::len) as u64;
+        let file_type = match self.kind(path) {
+            Kind::Missing => return None,
+            Kind::Directory => FileType::Directory,
+            Kind::Executable | Kind::NotExecutable => FileType::Regular,
+        };
+        Some(FileStatus {
+            file_type,
+            size,
+            mode: 0o755,
+        })
+    }
+
+    fn accessible(&mut self, path: &[u8], access: Access) -> bool {
+        match (self.kind(path), access) {
+            (Kind::Missing, _) => false,
+            (Kind::NotExecutable, Access::Execute) => false,
+            _ => true,
+        }
+    }
+
+    fn is_terminal(&mut self, _descriptor: usize) -> bool {
+        false
+    }
+
     fn open(&mut self, path: &[u8]) -> Result<usize, Errno> {
         let content = self.contents.get(&text(path)).ok_or(Errno::ENOENT)?.clone();
         let descriptor = self.descriptor();
@@ -134,6 +224,10 @@ impl System for FakeSystem {
             return Err(Errno(30));
         }
         let descriptor = self.descriptor();
+        if redirection == Redirection::Input {
+            let content = self.contents[&path].iter().copied().collect();
+            self.open.insert(descriptor, content);
+        }
         self.redirected.push((path, redirection, descriptor));
         Ok(descriptor)
     }
@@ -148,6 +242,10 @@ impl System for FakeSystem {
         match how {
             Wait::Block => {
                 self.waited.push(child);
+                if child >= FIRST_FORK {
+                    assert!(self.reaped.insert(child), "{child} waited for twice");
+                    return Ok(Some((child, self.final_status(child))));
+                }
                 let program = self.ran[(child - 100) as usize].program.clone();
                 if let Some(&stop) = self.stops.get(&program)
                     && self.stopped.insert(child)
@@ -275,7 +373,7 @@ fn system() -> FakeSystem {
 const ARGUMENTS: [&[u8]; 3] = [b"script", b"one", b"two words"];
 
 fn shell(interactive: bool) -> Shell<'static, FakeSystem> {
-    let mut shell = Shell::new(system(), 42, &ARGUMENTS, 3, interactive, true);
+    let mut shell = Shell::new(system(), 42, &ARGUMENTS, interactive, true);
     shell.import(b"HOME=/home");
     shell.import(b"PATH=/bin:/usr/bin");
     shell.import(b"TERM=linux");
@@ -441,20 +539,17 @@ fn type_says_what_a_name_runs() {
 
 #[test]
 fn unsupported_operators_reject_the_whole_line_and_end_a_script() {
-    let shell = run("echo first\necho ran; ls (wc)\necho never");
+    let shell = run("echo first\necho ran; echo $((1 + 2))\necho never");
     assert_eq!(output(&shell), "first\n");
-    assert_eq!(errors(&shell), "eggsh: `(` is not supported yet\n");
+    assert_eq!(errors(&shell), "eggsh: `$((` is not supported yet\n");
     assert_eq!(shell.exit_status(), 2);
-    let shell = run("ls && wc &");
-    assert_eq!(
-        errors(&shell),
-        "eggsh: `&` after `&&` or `||` is not supported yet\n"
-    );
+    let shell = run("ls (wc)");
+    assert_eq!(errors(&shell), "eggsh: syntax error near unexpected token `(`\n");
     assert!(shell.system.ran.is_empty());
-    let mut interactive = shell_with_input(true, &["echo a << f\n", "echo next\n"]);
+    let mut interactive = shell_with_input(true, &["echo a &> f\n", "echo next\n"]);
     interactive.run_descriptor(0, true);
     assert_eq!(output(&interactive), "next\n");
-    assert!(errors(&interactive).contains("eggsh: `<<` is not supported yet\n"));
+    assert!(errors(&interactive).contains("eggsh: `&>` is not supported yet\n"));
     assert!(interactive.system.ran.is_empty());
 }
 
@@ -583,7 +678,7 @@ fn syntax_errors_are_reported() {
             "syntax error: unexpected end of file, looking for the closing `}`",
         ),
         ("; echo", "syntax error near unexpected token `;`"),
-        ("echo ${A:-b}", "bad substitution"),
+        ("echo ${A:}", "bad substitution"),
     ] {
         let shell = run(script);
         assert_eq!(errors(&shell), format!("eggsh: {message}\n"), "{script}");
@@ -638,7 +733,7 @@ fn the_prompt_follows_ps1_and_the_user() {
     let mut shell = shell_with_input(true, &["PS1='> $ '\n"]);
     shell.run_descriptor(0, true);
     assert_eq!(errors(&shell), "eggsh:/# > $ exit\n");
-    let mut user = Shell::new(system(), 1, &ARGUMENTS, 3, true, false);
+    let mut user = Shell::new(system(), 1, &ARGUMENTS, true, false);
     user.set_working_directory_variable();
     user.run_descriptor(0, true);
     assert_eq!(errors(&user), "eggsh:/$ exit\n");
@@ -695,7 +790,7 @@ fn a_file_read_in_pieces_runs_each_command_once() {
 #[test]
 fn help_lists_the_builtins() {
     let shell = run("help");
-    assert!(output(&shell).contains("Builtins: . (source) : bg cd echo exit"));
+    assert!(output(&shell).contains("Builtins: . (source) : [ bg break cd continue echo eval"));
     assert!(output(&shell).contains("fg help jobs kill"));
 }
 
@@ -718,14 +813,17 @@ fn cd_from_a_working_directory_longer_than_a_path_keeps_the_shell_alive() {
     ));
     assert_eq!(output(&shell), "1 [] /\n");
     assert_eq!(errors(&shell), "eggsh: cd: too many variables\n");
-    let mut imported = Shell::new(system(), 1, &ARGUMENTS, 3, false, true);
+    let mut imported = Shell::new(system(), 1, &ARGUMENTS, false, true);
     imported.import(format!("PWD=/{}", "p".repeat(PATH_CAPACITY + 10)).as_bytes());
     imported.run_text(b"cd /bin; echo $? $PWD \"[$OLDPWD]\"");
     assert_eq!(output(&imported), "1 /bin []\n");
 }
 
 fn long_quoted_line() -> String {
-    format!("echo 'start\n{}\nls\n'\necho after\n", "y".repeat(5000))
+    format!(
+        "echo 'start\n{}\nls\n'\necho after\n",
+        "y".repeat(LINE_CAPACITY + 1000)
+    )
 }
 
 #[test]
@@ -1026,3 +1124,5 @@ fn an_interactive_shell_names_its_history_file_before_each_prompt() {
     );
     assert!(run("echo x").system.history_files.is_empty());
 }
+
+mod language;

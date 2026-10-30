@@ -445,6 +445,45 @@ const SHELL_TEST_SCRIPT: &str = "# the shell boot test's script (D107)\n\
     echo EGGSH-TEST sourced $SOURCED\n\
     exit 5\n";
 
+const SHELL_TEST_LANGUAGE_PATH: &str = "usr/share/eggsh/language-test";
+
+const SHELL_TEST_LANGUAGE: &str = "# the shell boot test's language script (D182)\n\
+    greet() {\n\
+    \tlocal who=\"$1\"\n\
+    \techo EGGSH-TEST function \"$who\" $#\n\
+    \treturn 3\n\
+    }\n\
+    greet world two\n\
+    echo EGGSH-TEST return $? who=${who:-unset}\n\
+    for file in /usr/share/eggsh/*; do\n\
+    \tcase ${file##*/} in\n\
+    \t\tsourced) echo EGGSH-TEST glob ${file%/*} ;;\n\
+    \t\ttest-* | language-*) ;;\n\
+    \t\t*) echo EGGSH-TEST glob unexpected $file ;;\n\
+    \tesac\n\
+    done\n\
+    words=$(echo substituted `echo output`)\n\
+    echo \"EGGSH-TEST substitution [$words]\"\n\
+    set -- a b c\n\
+    while [ $# -gt 1 ]; do\n\
+    \tshift\n\
+    done\n\
+    echo EGGSH-TEST while \"$@\"\n\
+    if [ -d /usr/share/eggsh ] && ! [ -f /missing ]; then\n\
+    \techo EGGSH-TEST if yes\n\
+    else\n\
+    \techo EGGSH-TEST if no\n\
+    fi\n\
+    ( cd /usr && echo EGGSH-TEST subshell $PWD )\n\
+    [ \"$PWD\" != /usr ] && echo EGGSH-TEST after subshell\n\
+    read first rest <<END\n\
+    one two three\n\
+    END\n\
+    echo EGGSH-TEST here-document \"$first\" \"$rest\"\n\
+    echo EGGSH-TEST piped | while read line; do echo \"$line loop\"; done\n\
+    until true; do :; done\n\
+    echo EGGSH-TEST done ${undefined-default}\n";
+
 const SHELL_TEST_SOURCED_PATH: &str = "usr/share/eggsh/sourced";
 
 const SHELL_TEST_SOURCED: &str = "SOURCED=yes\n";
@@ -1672,6 +1711,10 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
             (
                 SHELL_TEST_SOURCED_PATH,
                 initramfs::Content::Text(SHELL_TEST_SOURCED),
+            ),
+            (
+                SHELL_TEST_LANGUAGE_PATH,
+                initramfs::Content::Text(SHELL_TEST_LANGUAGE),
             ),
             (TMP_PATH, initramfs::Content::Directory),
             (HOME_PATH, initramfs::Content::Directory),

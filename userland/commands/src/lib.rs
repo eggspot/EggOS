@@ -579,7 +579,8 @@ pub const KEPT_NAMES: [&str; 41] = [
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the
 /// tests (D165); `eggsh` does not link the registry, so they are not in [`COMMANDS`].
-pub const SHELL_BUILTINS: [&str; 18] = [
-    ".", ":", "bg", "cd", "echo", "exit", "export", "false", "fg", "help", "jobs", "kill", "pwd",
-    "set", "true", "type", "unset", "wait",
+pub const SHELL_BUILTINS: [&str; 27] = [
+    ".", ":", "[", "bg", "break", "cd", "continue", "echo", "eval", "exit", "export", "false",
+    "fg", "help", "jobs", "kill", "local", "pwd", "read", "return", "set", "shift", "test", "true",
+    "type", "unset", "wait",
 ];

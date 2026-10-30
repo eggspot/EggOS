@@ -32,6 +32,23 @@ const FILE: [OperandDefinition; 1] = [operand("file", ValueType::Path, Count::On
 
 const FOLDER: [OperandDefinition; 1] = [operand("folder", ValueType::Path, Count::ZeroOrOne)];
 
+const COUNT: [OperandDefinition; 1] = [operand(
+    "count",
+    ValueType::Integer {
+        minimum: 1,
+        maximum: 999_999_999,
+    },
+    Count::ZeroOrOne,
+)];
+
+const EXPRESSION: [OperandDefinition; 1] = [operand(
+    "expression",
+    ValueType::Text,
+    Count::ZeroOrMore,
+)];
+
+const READ_ERRORS: [CommandError; 1] = [exits(&FAILED, 1)];
+
 const STATUS: [OperandDefinition; 1] = [operand(
     "status",
     ValueType::Integer {
@@ -104,7 +121,7 @@ const fn built_in(
 }
 
 /// `eggsh`'s built-ins, in the order of [`crate::SHELL_BUILTINS`].
-pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
+pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
     built_in(
         &["."],
         "Runs a file's commands in this shell.",
@@ -125,6 +142,16 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
         &[],
     ),
     built_in(
+        &["["],
+        "Tests an expression, ended by ].",
+        "As test, with ] as its last word: ends with status 0 if the expression is true, 1 if \
+         it is false and 2 if it cannot be read.",
+        &EXPRESSION,
+        NOTHING,
+        Effect::Read,
+        &USAGE_2,
+    ),
+    built_in(
         &["bg"],
         "Continues a stopped job in the background.",
         "Sends a stopped job SIGCONT and leaves it running in the background, writing [n]+ \
@@ -136,6 +163,16 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
         &JOB_ERRORS,
     ),
     built_in(
+        &["break"],
+        "Leaves a loop.",
+        "Leaves the innermost for, while or until loop, or the count-th one out; in a \
+         function, only the function's own loops.",
+        &COUNT,
+        NOTHING,
+        Effect::Control,
+        &USAGE_1,
+    ),
+    built_in(
         &["cd"],
         "Changes the working folder.",
         "Changes the shell's working folder to the operand, to $HOME without one, or back to \
@@ -144,6 +181,16 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
         NOTHING,
         Effect::Read,
         &CD_ERRORS,
+    ),
+    built_in(
+        &["continue"],
+        "Starts a loop's next round.",
+        "Goes on with the next round of the innermost for, while or until loop, or of the \
+         count-th one out.",
+        &COUNT,
+        NOTHING,
+        Effect::Control,
+        &USAGE_1,
     ),
     CommandDefinition {
         options: &[flag(b'n', "No newline at the end.")],
@@ -158,6 +205,16 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
             &[],
         )
     },
+    built_in(
+        &["eval"],
+        "Runs words as commands.",
+        "Joins its words with spaces and runs the result as commands in this shell, ending \
+         with the last one's status.",
+        &ANY_WORDS,
+        NOTHING,
+        Effect::Control,
+        &[],
+    ),
     built_in(
         &["exit"],
         "Ends the shell.",
@@ -238,6 +295,16 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
         )
     },
     built_in(
+        &["local"],
+        "Makes variables local to a function.",
+        "Keeps each NAME or NAME=value to the function running: when it returns, the \
+         variables have their earlier values again.",
+        &NAMES,
+        NOTHING,
+        Effect::Change,
+        &USAGE_1,
+    ),
+    built_in(
         &["pwd"],
         "Writes the working folder.",
         "Writes the shell's working folder, as $PWD holds it.",
@@ -246,13 +313,58 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
         Effect::Read,
         &[],
     ),
+    CommandDefinition {
+        options: &[flag(b'r', "Keep backslashes as they are.")],
+        ..built_in(
+            &["read"],
+            "Reads a line into variables.",
+            "Reads a line of standard input and splits it at the characters of IFS into the \
+             named variables, the last taking the rest of the line (REPLY without a name); \
+             status 1 at the end of the input.",
+            &NAMES,
+            NOTHING,
+            Effect::Read,
+            &READ_ERRORS,
+        )
+    },
+    built_in(
+        &["return"],
+        "Ends a function.",
+        "Ends the function running, or the file . runs, with the status given or the last \
+         command's.",
+        &STATUS,
+        NOTHING,
+        Effect::Control,
+        &USAGE_1,
+    ),
     built_in(
         &["set"],
-        "Writes the shell's variables.",
-        "Writes every variable with a value as NAME='value', one a line; options are not \
-         supported yet.",
-        &[],
+        "Writes the shell's variables, or sets its options and arguments.",
+        "Alone, writes every variable with a value as NAME='value', one a line; -e ends the \
+         shell when a command fails, +e stops that, and the words after the options (or \
+         after --) become the positional parameters $1, $2, ....",
+        &WORDS,
         TEXT,
+        Effect::Change,
+        &USAGE_2,
+    ),
+    built_in(
+        &["shift"],
+        "Drops positional parameters.",
+        "Drops the first positional parameter, or the first count of them: $2 becomes $1.",
+        &COUNT,
+        NOTHING,
+        Effect::Change,
+        &USAGE_1,
+    ),
+    built_in(
+        &["test"],
+        "Tests an expression.",
+        "Ends with status 0 if the expression is true, 1 if it is false and 2 if it cannot be \
+         read: -e, -f, -d, -r, -w, -x, -s and other file tests, -n and -z, = and != for \
+         words, -eq, -ne, -lt, -le, -gt and -ge for numbers, with !, -a, -o and parentheses.",
+        &EXPRESSION,
+        NOTHING,
         Effect::Read,
         &USAGE_2,
     ),
@@ -268,8 +380,8 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
     built_in(
         &["type"],
         "Says what each name runs.",
-        "Writes for each name whether it is a shell built-in or which program in $PATH it \
-         runs.",
+        "Writes for each name whether it is a function, a shell built-in or which program in \
+         $PATH it runs.",
         &NAMES,
         TEXT,
         Effect::Read,
@@ -278,7 +390,8 @@ pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
     built_in(
         &["unset"],
         "Removes variables.",
-        "Removes each named variable from the shell and the environment it gives commands.",
+        "Removes each named variable from the shell and the environment it gives commands; \
+         with -f, each named function.",
         &NAMES,
         NOTHING,
         Effect::Change,
