@@ -214,6 +214,7 @@ dependencies = [
  "eggos-macos-gui",
  "eggos-runtime",
  "eggos-toolkit",
+ "eggos-translate",
 ]
 
 [[package]]

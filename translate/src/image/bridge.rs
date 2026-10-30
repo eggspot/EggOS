@@ -308,10 +308,86 @@ pub fn sysv_forward_bridge(
     bridge(moves, native, dispatch, Convention::SystemV)
 }
 
+/// The bytes of the System V register save area a variadic bridge builds: `rdi`, `rsi`, `rdx`,
+/// `rcx`, `r8` and `r9`, then `xmm0`-`xmm7` (16 bytes each).
+pub const SYSV_REGISTER_SAVE_BYTES: u32 = 176;
+/// Where `xmm0` is in the register save area, which is also the `fp_offset` of a `va_list`
+/// whose named arguments are all integers.
+pub const SYSV_VECTOR_SAVE: u32 = 48;
+/// The bytes of a System V `va_list`: `gp_offset` and `fp_offset` (32 bits each), then the
+/// `overflow_arg_area` and `reg_save_area` pointers.
+pub const SYSV_VA_LIST_BYTES: u32 = 24;
+/// The bit a variadic bridge sets in the `va_list` pointer it passes: a Darwin arm64
+/// `va_list` (a pointer to 8-byte slots) never has it, so the layer's reader can tell the two
+/// apart.
+pub const SYSV_VA_LIST_TAG: u32 = 1;
+/// The most named integer arguments a variadic bridge takes; the tagged `va_list` goes in the
+/// next AAPCS64 integer register.
+pub const MAX_VARIADIC_NAMED: u8 = 7;
+const VARIADIC_AREA_BYTES: u32 =
+    (SYSV_REGISTER_SAVE_BYTES + SYSV_VA_LIST_BYTES).next_multiple_of(16);
+
+/// The forward bridge from a System V AMD64 call of a variadic function (x86_64 macOS
+/// `printf`, `open`, `NSLog`, ...) to the layer's native function at `native` that takes the
+/// `named` integer arguments, then a `va_list`: the C convention passes the variadic values in
+/// the registers left after the named ones, with `al` counting the vector registers used, then
+/// on the stack, while the layer's variadic functions on arm64 read Darwin's stack slots. So
+/// the bridge stores the six integer argument registers and `xmm0`-`xmm7` in a register save
+/// area on the native stack, builds a System V `va_list` next to it (`gp_offset` past the named
+/// integers, `fp_offset` [`SYSV_VECTOR_SAVE`], the overflow area after the return address and
+/// the named stack arguments), moves the named arguments, and passes the list's address with
+/// [`SYSV_VA_LIST_TAG`] set in `x<named>`. Every register is saved, so `al` need not be read.
+pub fn sysv_variadic_bridge(named: u8, native: u64, dispatch: u64) -> Result<Vec<u32>, EmitError> {
+    if named > MAX_VARIADIC_NAMED {
+        return Err(EmitError::OutOfRange { at: 0 });
+    }
+    let moves = sysv_argument_moves(
+        &[ArgumentKind::Integer; MAX_VARIADIC_NAMED as usize][..usize::from(named)],
+    );
+    bridge(&moves, native, dispatch, Convention::SystemVVariadic(named))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Convention {
     Win64,
     SystemV,
+    SystemVVariadic(u8),
+}
+
+fn emit_va_list(asm: &mut Assembler, area: u32, named: u8) -> Result<(), EmitError> {
+    for (index, &register) in SYSV_ARGUMENT_REGISTERS.iter().enumerate() {
+        asm.emit(store(Reg(register), SP, area + 8 * index as u32)?);
+    }
+    for register in 0..SYSV_VECTOR_ARGUMENTS {
+        let at = area + SYSV_VECTOR_SAVE + 16 * u32::from(register);
+        asm.emit(vector(VectorLoadStore::StrQ, register, SP, at)?);
+    }
+    let list = area + SYSV_REGISTER_SAVE_BYTES;
+    let register_integers = named.min(SYSV_ARGUMENT_REGISTERS.len() as u8);
+    let offsets =
+        asm.literal(u64::from(8 * register_integers) | (u64::from(SYSV_VECTOR_SAVE) << 32));
+    asm.load_literal(LINK_TARGET, offsets);
+    asm.emit(store(LINK_TARGET, SP, list)?);
+    let named_on_stack = 8 * u16::from(named - register_integers);
+    asm.emit(encode::add_sub_immediate(
+        AddSub::Add,
+        Size::X,
+        LINK_TARGET,
+        STACK_BASE,
+        SYSV_FIRST_STACK_ARGUMENT as u16 + named_on_stack,
+        false,
+    ));
+    asm.emit(store(LINK_TARGET, SP, list + 8)?);
+    asm.emit(encode::add_sub_immediate(
+        AddSub::Add,
+        Size::X,
+        LINK_TARGET,
+        SP,
+        area as u16,
+        false,
+    ));
+    asm.emit(store(LINK_TARGET, SP, list + 16)?);
+    Ok(())
 }
 
 fn bridge(
@@ -321,7 +397,10 @@ fn bridge(
     convention: Convention,
 ) -> Result<Vec<u32>, EmitError> {
     let outgoing = native_stack_bytes(moves);
-    let saved = outgoing;
+    let saved = match convention {
+        Convention::SystemVVariadic(_) => outgoing + VARIADIC_AREA_BYTES,
+        Convention::Win64 | Convention::SystemV => outgoing,
+    };
     let saved_vectors = saved + SAVED_GENERAL_BYTES;
     let frame = saved_vectors + SAVED_VECTOR_BYTES;
     let frame = u16::try_from(frame).map_err(|_| EmitError::OutOfRange { at: 0 })?;
@@ -366,12 +445,26 @@ fn bridge(
     )?);
     asm.emit(simd::msr_fpcr(Reg::ZR));
     asm.emit(copy(STACK_BASE, GUEST_STACK));
+    if let Convention::SystemVVariadic(named) = convention {
+        emit_va_list(&mut asm, outgoing, named)?;
+    }
     for &step in moves {
         emit_move(&mut asm, step)?;
     }
+    if let Convention::SystemVVariadic(named) = convention {
+        let tagged = outgoing + SYSV_REGISTER_SAVE_BYTES + SYSV_VA_LIST_TAG;
+        asm.emit(encode::add_sub_immediate(
+            AddSub::Add,
+            Size::X,
+            Reg(named),
+            SP,
+            tagged as u16,
+            false,
+        ));
+    }
     asm.load_literal(LINK_TARGET, native);
     asm.emit(encode::blr(LINK_TARGET));
-    if convention == Convention::SystemV {
+    if convention != Convention::Win64 {
         asm.emit(copy(Reg(2), Reg(1)));
     }
     for (index, (first, second)) in SAVED_PAIRS.into_iter().enumerate() {
@@ -755,6 +848,70 @@ mod tests {
         assert_eq!(system_v.len(), win64.len() + 1);
         assert!(system_v.contains(&copy(Reg(2), Reg(1))));
         assert!(!win64.contains(&copy(Reg(2), Reg(1))));
+    }
+
+    #[test]
+    fn a_variadic_bridge_saves_the_argument_registers_and_passes_a_tagged_system_v_list() {
+        let words = sysv_variadic_bridge(1, 0x1111, 0x2222).unwrap();
+        let has = |word: u32| words.contains(&word);
+        for (index, &register) in SYSV_ARGUMENT_REGISTERS.iter().enumerate() {
+            assert!(has(store(Reg(register), SP, 8 * index as u32).unwrap()));
+        }
+        for register in 0..SYSV_VECTOR_ARGUMENTS {
+            let at = SYSV_VECTOR_SAVE + 16 * u32::from(register);
+            assert!(has(vector(VectorLoadStore::StrQ, register, SP, at).unwrap()));
+        }
+        let list = SYSV_REGISTER_SAVE_BYTES;
+        assert!(has(store(LINK_TARGET, SP, list).unwrap()));
+        assert!(has(store(LINK_TARGET, SP, list + 8).unwrap()));
+        assert!(has(store(LINK_TARGET, SP, list + 16).unwrap()));
+        let overflow = encode::add_sub_immediate(
+            AddSub::Add,
+            Size::X,
+            LINK_TARGET,
+            STACK_BASE,
+            SYSV_FIRST_STACK_ARGUMENT as u16,
+            false,
+        );
+        assert!(has(overflow));
+        let tagged = encode::add_sub_immediate(
+            AddSub::Add,
+            Size::X,
+            Reg(1),
+            SP,
+            (list + SYSV_VA_LIST_TAG) as u16,
+            false,
+        );
+        assert!(has(tagged));
+        assert!(has(copy(Reg(0), Reg(7))));
+        let offsets = words.windows(2).any(|pair| pair == [8, SYSV_VECTOR_SAVE]);
+        assert!(offsets);
+        let store_rdi = words
+            .iter()
+            .position(|&word| word == store(Reg(7), SP, 0).unwrap())
+            .unwrap();
+        let move_rdi = words
+            .iter()
+            .position(|&word| word == copy(Reg(0), Reg(7)))
+            .unwrap();
+        let tag = words.iter().position(|&word| word == tagged).unwrap();
+        assert!(store_rdi < move_rdi && move_rdi < tag);
+    }
+
+    #[test]
+    fn a_variadic_bridge_counts_named_stack_arguments_and_refuses_too_many_named() {
+        let words = sysv_variadic_bridge(7, 1, 2).unwrap();
+        let overflow = encode::add_sub_immediate(
+            AddSub::Add,
+            Size::X,
+            LINK_TARGET,
+            STACK_BASE,
+            SYSV_FIRST_STACK_ARGUMENT as u16 + 8,
+            false,
+        );
+        assert!(words.contains(&overflow));
+        assert!(words.windows(2).any(|pair| pair == [48, SYSV_VECTOR_SAVE]));
+        assert!(sysv_variadic_bridge(MAX_VARIADIC_NAMED + 1, 1, 2).is_err());
     }
 
     #[test]

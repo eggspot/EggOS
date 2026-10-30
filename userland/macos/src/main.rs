@@ -12,6 +12,9 @@
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
+#[cfg(test)]
+extern crate alloc;
+
 #[cfg(all(
     target_env = "musl",
     any(target_arch = "aarch64", target_arch = "x86_64")
@@ -151,6 +154,8 @@ mod stream_buffer;
 mod swift;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod translated;
 
 #[cfg(all(
     target_env = "musl",

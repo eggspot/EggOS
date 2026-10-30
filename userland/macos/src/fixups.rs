@@ -6,7 +6,7 @@
 
 use crate::macho::{InvalidMachO, MachO, Range, read_u32, read_u64};
 
-const POINTER_64: u16 = 2;
+pub(crate) const POINTER_64: u16 = 2;
 const POINTER_64_OFFSET: u16 = 6;
 const PAGE_START_NONE: u16 = 0xffff;
 const STRIDE: usize = 4;
@@ -164,12 +164,25 @@ impl<'a> ChainedFixups<'a> {
         load_address: u64,
         imports: &[u64],
     ) -> Result<(), InvalidMachO> {
+        let slide = load_address.wrapping_sub(macho.base_address());
+        self.walk(image, |_, raw, format| {
+            resolve(raw, format, slide, load_address, imports).map(Some)
+        })
+    }
+
+    /// Visits every pointer of every chain in `image` (laid out as for [`Self::apply`]) in chain
+    /// order: `each` gets its offset in the image, its raw chained value and its segment's
+    /// pointer format, and returns the value to write there, if any.
+    pub(crate) fn walk(
+        &self,
+        image: &mut [u8],
+        mut each: impl FnMut(usize, u64, u16) -> Result<Option<u64>, InvalidMachO>,
+    ) -> Result<(), InvalidMachO> {
         let truncated = invalid("truncated chain starts");
         let segment_count = read_u32(self.data, self.starts).ok_or(truncated)? as usize;
         if segment_count > 256 {
             return Err(invalid("too many segments in the chain starts"));
         }
-        let slide = load_address.wrapping_sub(macho.base_address());
         for index in 0..segment_count {
             let offset = read_u32(self.data, self.starts + 4 + index * 4).ok_or(truncated)?;
             if offset == 0 {
@@ -179,18 +192,16 @@ impl<'a> ChainedFixups<'a> {
                 .starts
                 .checked_add(offset as usize)
                 .ok_or(invalid("a segment's chain starts are outside the table"))?;
-            self.apply_segment(at, image, slide, load_address, imports)?;
+            self.walk_segment(at, image, &mut each)?;
         }
         Ok(())
     }
 
-    fn apply_segment(
+    fn walk_segment(
         &self,
         at: usize,
         image: &mut [u8],
-        slide: u64,
-        load_address: u64,
-        imports: &[u64],
+        each: &mut impl FnMut(usize, u64, u16) -> Result<Option<u64>, InvalidMachO>,
     ) -> Result<(), InvalidMachO> {
         let truncated = invalid("truncated segment chain starts");
         let half = |offset: usize| -> Result<u16, InvalidMachO> {
@@ -237,8 +248,9 @@ impl<'a> ChainedFixups<'a> {
                 let slot = &mut image[location..location + 8];
                 let raw = u64::from_le_bytes(slot.try_into().unwrap_or([0; 8]));
                 let next = ((raw >> 51) & 0xfff) as usize;
-                let value = resolve(raw, format, slide, load_address, imports)?;
-                slot.copy_from_slice(&value.to_le_bytes());
+                if let Some(value) = each(location, raw, format)? {
+                    slot.copy_from_slice(&value.to_le_bytes());
+                }
                 if next == 0 {
                     break;
                 }

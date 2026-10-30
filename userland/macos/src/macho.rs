@@ -53,7 +53,7 @@ const THREAD_STATE_X86_64_PC: usize = 16 * 8;
 const THREAD_STATE_ARM64: u32 = 6;
 const THREAD_STATE_ARM64_PC: usize = 32 * 8;
 
-mod command {
+pub(crate) mod command {
     pub const UNIXTHREAD: u32 = 0x5;
     pub const LOAD_DYLIB: u32 = 0xc;
     pub const LOAD_DYLINKER: u32 = 0xe;

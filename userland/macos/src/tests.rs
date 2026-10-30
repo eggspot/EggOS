@@ -1368,3 +1368,243 @@ fn fixup_segment_indexes_count_pagezero_as_the_opcodes_do() {
     assert_eq!(name(3), Some(&b"__LINKEDIT"[..]));
     assert_eq!(name(4), None);
 }
+
+const FUNCTION_STARTS_AT: usize = FIXUPS_AT + 0x100;
+const EXPORTS_AT: usize = FIXUPS_AT + 0x180;
+const INSTRUCTION_SECTION_FLAGS: u32 = 0x8000_0400;
+const FUNCTION_STARTS: [u8; 4] = [0x80, 0x20, 0x20, 0x00];
+const EXPORTS_TRIE: [u8; 25] = [
+    0x00, 0x02, b'_', b'm', b'a', b'i', b'n', 0x00, 15, b'_', b't', b'l', b'v', 0x00, 20, 0x03,
+    0x00, 0x90, 0x20, 0x00, 0x03, 0x01, 0x90, 0x20, 0x00,
+];
+
+fn linkedit_command(kind: u32, offset: usize, size: usize) -> Vec<u8> {
+    let mut command = Vec::new();
+    for value in [kind, 16, offset as u32, size as u32] {
+        put32(&mut command, value);
+    }
+    command
+}
+
+fn x86_64_program(instruction_sections: bool) -> Vec<u8> {
+    let fixups = chained_fixups(6);
+    let mut text = segment(b"__TEXT", TEXT, 0x4000, 0, 0x4000, 5, 0);
+    if instruction_sections {
+        text = with_sections(
+            text,
+            &[
+                (b"__text", TEXT + 0x1000, 0x300),
+                (b"__stubs", TEXT + 0x1300, 0x10),
+                (b"__cstring", TEXT + 0x1400, 0x10),
+            ],
+        );
+        for index in 0..2 {
+            let at = 72 + 80 * index + 64;
+            text[at..at + 4].copy_from_slice(&INSTRUCTION_SECTION_FLAGS.to_le_bytes());
+        }
+    }
+    let mut main = Vec::new();
+    put32(&mut main, 0x8000_0028);
+    put32(&mut main, 24);
+    put64(&mut main, 0x1000);
+    put64(&mut main, 0);
+    let commands = [
+        segment(b"__PAGEZERO", 0, TEXT, 0, 0, 0, 0),
+        text,
+        segment(
+            b"__DATA_CONST",
+            TEXT + 0x4000,
+            0x4000,
+            0x4000,
+            0x4000,
+            3,
+            0x10,
+        ),
+        segment(b"__LINKEDIT", TEXT + 0x8000, 0x4000, 0x8000, 0x200, 1, 0),
+        linkedit_command(0x8000_0034, FIXUPS_AT, fixups.len()),
+        main,
+        string_command(0xc, 24, macho::LIBSYSTEM),
+        linkedit_command(0x26, FUNCTION_STARTS_AT, FUNCTION_STARTS.len()),
+        linkedit_command(0x8000_0033, EXPORTS_AT, EXPORTS_TRIE.len()),
+    ];
+    let size: usize = commands.iter().map(Vec::len).sum();
+    let mut file = Vec::new();
+    for value in [
+        MH_MAGIC_64,
+        CPU_TYPE_X86_64,
+        3,
+        2,
+        commands.len() as u32,
+        size as u32,
+        0x20_0085,
+        0,
+    ] {
+        put32(&mut file, value);
+    }
+    for command in commands {
+        file.extend(command);
+    }
+    file.resize(0x1000, 0);
+    file.extend_from_slice(&[0xB8, 0x07, 0x00, 0x00, 0x00, 0xC3]);
+    for at in [0x1010, 0x1020, 0x1234] {
+        file.resize(at, 0x90);
+        file.push(0xC3);
+    }
+    file.resize(0x12FF, 0x90);
+    file.push(0xC3);
+    file.resize(0x1310, 0xC3);
+    file.resize(0x4000, 0);
+    for raw in [
+        0x8010_0000_0000_0000u64,
+        0x8010_0000_0000_0001 | (3 << 24),
+        0x1234 | (0x5a << 36),
+    ] {
+        put64(&mut file, raw);
+    }
+    file.resize(FIXUPS_AT, 0);
+    file.extend(fixups);
+    file.resize(FUNCTION_STARTS_AT, 0);
+    file.extend_from_slice(&FUNCTION_STARTS);
+    file.resize(EXPORTS_AT, 0);
+    file.extend_from_slice(&EXPORTS_TRIE);
+    file.resize(FIXUPS_AT + 0x200, 0);
+    file
+}
+
+#[test]
+fn an_x86_64_program_gives_its_instruction_sections_then_every_segment_to_the_translator() {
+    use crate::translated::sections;
+    let file = x86_64_program(true);
+    let program = MachO::parse(&file).unwrap();
+    assert_eq!(program.cpu, Cpu::X86_64);
+    let image = laid_out(&program);
+    let found: Vec<(u32, usize, bool)> = sections(&program, &image)
+        .iter()
+        .map(|section| (section.rva, section.bytes.len(), section.executable))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (0x1000, 0x300, true),
+            (0x1300, 0x10, true),
+            (0, 0x4000, false),
+            (0x4000, 0x4000, false),
+            (0x8000, 0x4000, false),
+        ]
+    );
+    let file = x86_64_program(false);
+    let program = MachO::parse(&file).unwrap();
+    let image = laid_out(&program);
+    let executable: Vec<(u32, usize)> = sections(&program, &image)
+        .iter()
+        .filter(|section| section.executable)
+        .map(|section| (section.rva, section.bytes.len()))
+        .collect();
+    assert_eq!(executable, [(0, 0x4000)]);
+}
+
+#[test]
+fn chained_fixups_give_the_import_slots_and_rebase_targets_without_changing_the_image() {
+    use crate::translated::{ImportSlot, pointer_fixups};
+    let file = x86_64_program(true);
+    let program = MachO::parse(&file).unwrap();
+    let chained = ChainedFixups::parse(&program, program.chained_fixups.unwrap()).unwrap();
+    let mut image = laid_out(&program);
+    let fixups = pointer_fixups(&program, Some(&chained), &mut image).unwrap();
+    assert_eq!(image, laid_out(&program));
+    assert_eq!(fixups.rebase_targets, [0x1234]);
+    assert_eq!(
+        fixups.binds,
+        [
+            ImportSlot {
+                rva: 0x4000,
+                name: &b"_puts"[..],
+                source: Source::Library(1),
+                weak: false,
+                addend: 0,
+            },
+            ImportSlot {
+                rva: 0x4008,
+                name: &b"_weak"[..],
+                source: Source::Library(1),
+                weak: true,
+                addend: 3,
+            },
+        ]
+    );
+}
+
+#[test]
+fn seeds_come_from_the_entry_function_starts_exports_and_rebases_into_code() {
+    use crate::translated::{pointer_fixups, sections, seeds};
+    use eggos_translate::image::{Seed, SeedOrigin};
+    let file = x86_64_program(true);
+    let program = MachO::parse(&file).unwrap();
+    let chained = ChainedFixups::parse(&program, program.chained_fixups.unwrap()).unwrap();
+    let mut image = laid_out(&program);
+    let fixups = pointer_fixups(&program, Some(&chained), &mut image).unwrap();
+    let mut rebase_targets = fixups.rebase_targets.clone();
+    rebase_targets.push(0x4010);
+    let sections = sections(&program, &image);
+    let seed = |rva, origin| Seed { rva, origin };
+    assert_eq!(
+        seeds(&program, &sections, &rebase_targets),
+        [
+            seed(0x1000, SeedOrigin::EntryPoint),
+            seed(0x1000, SeedOrigin::FunctionStart),
+            seed(0x1020, SeedOrigin::FunctionStart),
+            seed(0x1010, SeedOrigin::Export),
+            seed(0x1234, SeedOrigin::Relocation),
+        ]
+    );
+}
+
+#[test]
+fn a_mach_o_translator_input_translates_with_every_seed_an_entry() {
+    use crate::translated::{pointer_fixups, sections, seeds};
+    use eggos_translate::codegen::CodegenMode;
+    use eggos_translate::image::{ImageInput, translate_image};
+    let file = x86_64_program(true);
+    let program = MachO::parse(&file).unwrap();
+    let chained = ChainedFixups::parse(&program, program.chained_fixups.unwrap()).unwrap();
+    let mut image = laid_out(&program);
+    let fixups = pointer_fixups(&program, Some(&chained), &mut image).unwrap();
+    let sections = sections(&program, &image);
+    let seeds = seeds(&program, &sections, &fixups.rebase_targets);
+    let input = ImageInput {
+        image_base: program.base_address(),
+        sections: &sections,
+        seeds: &seeds,
+    };
+    let translated = translate_image(&input, CodegenMode::default()).unwrap();
+    for rva in [0x1000, 0x1010, 0x1020] {
+        assert!(translated.entries.lookup(rva).is_some(), "{rva:#x}");
+    }
+}
+
+#[test]
+fn an_exports_trie_gives_its_regular_symbols_and_refuses_bad_offsets() {
+    use crate::translated::export_addresses;
+    assert_eq!(export_addresses(&EXPORTS_TRIE), Some(vec![0x1010]));
+    let mut outside = EXPORTS_TRIE;
+    outside[8] = 0x7F;
+    assert_eq!(export_addresses(&outside), None);
+    let looping = [0x00, 0x01, b'a', 0x00, 0x00];
+    assert_eq!(export_addresses(&looping), None);
+    let cycle = [0x00, 0x01, b'a', 0x00, 0x05, 0x00, 0x01, b'b', 0x00, 0x05];
+    assert_eq!(export_addresses(&cycle), None);
+    assert_eq!(export_addresses(&[]), None);
+}
+
+#[test]
+fn a_variadic_entry_names_its_named_count_and_the_va_list_function() {
+    use crate::translated::variadic_entry;
+    assert_eq!(
+        variadic_entry([0x9100_03E1, 0x1400_0010]),
+        Some((1, 4 + 64))
+    );
+    assert_eq!(variadic_entry([0x9100_03E3, 0x17FF_FFFF]), Some((3, 0)));
+    assert_eq!(variadic_entry([0x9100_03E9, 0x1400_0010]), None);
+    assert_eq!(variadic_entry([0xD503_201F, 0x1400_0010]), None);
+    assert_eq!(variadic_entry([0x9100_03E1, 0x9400_0010]), None);
+}
