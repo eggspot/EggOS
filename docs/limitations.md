@@ -270,9 +270,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   tables, images, Auto Layout, Swift apps, most of Foundation beyond its core (no NSFileManager
   or NSNotification), signal handlers, other frameworks and riscv64 do not run yet. Swift
   console programs run on the layer's own Swift runtime (D180) without Foundation's Swift
-  overlay, the other overlays, dynamic casts, the program's conformances to the standard
-  library's protocols, weak references, `String`'s indices and printing beyond strings, `Bool`
-  and numbers; strings compare and hash by their UTF-8 bytes (no Unicode normalization); the
+  overlay, the Dispatch and CoreGraphics overlays, casts to protocols, the program's own
+  generic types named in metadata and printing beyond strings, `Bool` and numbers; strings
+  compare and hash by their UTF-8 bytes (no Unicode normalization), characters and
+  `lowercased()` know only the scripts D180 lists; Swift's failures end with status 134 where
+  a Mac traps with 133; the
   stack probe `___chkstk_darwin` touches nothing, so a single frame over 1 MiB could pass the
   stack's guard gap unnoticed.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any

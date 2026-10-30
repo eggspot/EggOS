@@ -13136,34 +13136,104 @@ the license, by an explicit instruction recorded here.
   `libswiftCore`, beyond the layer's size, which grows by the new module. No benchmark is
   added yet: the Swift hot paths (retain, release, the access checks, appends) are measured
   with the app's slice, when there is a real workload to measure.
-- **Not yet** (what the real app needs, for the next slice of part 28): the overlays it links
-  (`libswiftCoreFoundation`, `libswiftDispatch`, `libswiftObjectiveC`, `libswiftCoreGraphics`,
-  and the weak ones it imports nothing from, which must load as empty libraries) and
-  Foundation's Swift overlay (`Data`, `Notification`, `CharacterSet`,
-  `trimmingCharacters(in:)`, bridging `String`, `Array` and `Dictionary` to and from NSString,
-  NSArray and NSDictionary, `_bridgeAnyObjectToAny`, `_CocoaArrayWrapper`, strings backed by
-  NSString); `swift_getWitnessTable` with resilient witnesses and the method, protocol and
-  associated-type descriptors of `Equatable`, `Hashable`, `RawRepresentable`, `CaseIterable`,
-  `SetAlgebra`, `_ObjectiveCBridgeable`, `_SwiftNewtypeWrapper` and
-  `_HasCustomAnyHashableRepresentation` with their default implementations;
-  `swift_dynamicCast` and `swift_dynamicCastObjCClass`, `swift_getObjCClassMetadata`,
-  `swift_getForeignTypeMetadata`, `swift_getObjectType`; Swift weak references
-  (`swift_weakInit`, `swift_weakLoadStrong`, `swift_weakDestroy` and the unknown-object
-  forms, which need a side table); `swift_stdlib_random`, `swift_deletedMethodError`,
-  `_swift_stdlib_reportUnimplementedInitializer`, `_assertionFailure`, `_typeName`;
-  `String.count`, its indices, subscripts and iterator, `Character` hashing, `lowercased()`,
-  `_fromSubstring`, `UTF8View._foreignCount`, `_StringGuts.copyUTF8`, `Array.
-  _allocateBufferUninitialized`, `String.hashValue`; Swift classes that subclass NSView and
-  NSObject in AppKit (their Objective-C class data, instance sizes and ivar offsets realized
-  with Swift's metadata, `swift_initClassMetadata2` where needed); NSGridView, NSTrackingArea,
-  NSSound with in-memory WAV data, NSUserDefaults, NSAttributedString, NSFont, NSScreen,
-  NSGraphicsContext's `CGContext` and the 21 CoreGraphics functions it draws with (paths,
-  ellipses, fills, strokes, state, scale) and `DispatchQueue.main.async`; then
-  `cargo xtask swift-app` (download, pin, install from its `.zip` with its icon, a QEMU check
-  that opens a cell, flags one and starts a new game, and frame comparisons), CI's `swift-app`
-  job in `check`'s needs, and its row in docs/compatibility.md moved to the working list.
-  Also not yet: printing values other than strings, `Bool` and the numbers (reflection),
-  `Float`'s description, the program's own generic types in mangled names
-  (`swift_getGenericMetadata` and conformance requirements), class-bound existentials and
-  metatypes, Unicode normalization in comparison and hashing, Swift concurrency, the Swift
-  benchmarks and riscv64 (no Swift for it on macOS).
+- **Second slice (batch part 28, continued): the language runtime the app needs.** Pure modules
+  with host tests: `conformance_layout` (a conformance descriptor's trailing objects as Swift's
+  ABI orders them: retroactive context, conditional requirements, pack shapes, resilient
+  witnesses, the generic witness table's sizes and instantiator; a protocol's requirements and
+  the slot each fills, read through a `Memory` trait and checked against the bytes `swiftc`
+  emitted for an enum's `Hashable` conformance), `grapheme` (where a `Character` ends: UAX #29's
+  rules for CR LF, controls, Hangul, combining marks, zero-width joiners in emoji sequences and
+  regional-indicator pairs, over compact property tables), `case_mapping` (`lowercased()` for
+  Latin, Greek, Cyrillic, Armenian, Georgian and fullwidth Latin, `İ` to two scalars),
+  `string_index` (`String.Index`: the UTF-8 offset in bits 16-63, flags for scalar and character
+  alignment and the encodings, as programs print them), `mangling::name_length` and
+  `refcount::try_retain` with a weakly-referenced bit (the top of the unowned count). Runtime
+  parts:
+  - `conformance`: `swift_getWitnessTable` returns a conformance's static table, or instantiates
+    a resilient or generic one once per conforming type (kept in a list behind a lock, built
+    outside it so a base protocol's accessor can ask for its own table): the pattern, each
+    resilient witness in the slot of the requirement descriptor it names, the protocol's
+    default implementations, base protocols' tables resolved at once (generic code reads a base
+    table straight from its slot, the first ones, in declaration order, as observed in
+    `swiftc`'s output), then the instantiator. Associated types and conformances stay mangled
+    names until `swift_getAssociatedTypeWitness` or `swift_getAssociatedConformanceWitness`
+    resolves and keeps them (`\xff\x07` plus a relative pointer names an accessor).
+  - `standard_protocols`: the descriptors and requirement descriptors programs' witnesses name
+    for `Equatable`, `Hashable` (with its default `hashValue` and `_rawHashValue(seed:)`),
+    `RawRepresentable`, `CaseIterable`, `_HasCustomAnyHashableRepresentation`,
+    `_SwiftNewtypeWrapper` and `_ObjectiveCBridgeable`, their dispatch thunks, and `String` and
+    `Int` as `Equatable` and `Hashable`; `Sequence`, `Collection` and `StringProtocol` with no
+    requirements the runtime dispatches, so `[A]: Collection` and `String: StringProtocol` have
+    tables of their conformance alone.
+  - `cast`: `swift_dynamicCast` (existentials and optionals opened on the way in; optionals,
+    `Any` and `AnyObject` wrapped on the way out; class instances checked against a class's
+    ancestry; NSNumber to the numbers and `Bool` and NSString to `String` as Foundation's
+    bridging casts do), the class casts, `swift_getObjectType`, `swift_getObjCClassMetadata`
+    (a wrapper per Objective-C class, made once), `swift_getForeignTypeMetadata` and
+    `_bridgeAnyObjectToAny`.
+  - `weak`: `swift_weak*` and `swift_unknownObjectWeak*`: a weak reference is a word naming a slot
+    of its own in the Objective-C runtime's weak table, which now also holds native Swift objects
+    (their last release clears the slots before `deinit`; a load retains only an object not yet
+    deinitializing), so Swift may move native weak references bitwise.
+  - `characters`: `String.count`, `index(_:offsetBy:limitedBy:)`, the character and range
+    subscripts (a `Substring`'s four words return in registers through an entry that passes
+    Rust a stack buffer), `String.Iterator.next()`, `_fromSubstring`, `lowercased()`,
+    `Character`'s hashing, metadata and `write(to:)`, `_StringGuts.copyUTF8`,
+    `UTF8View._foreignCount`, `String.hashValue`.
+  - `failures` and `type_name`: `_assertionFailure` (`file:line: Fatal error: message`, as
+    `fatalError` prints), `swift_deletedMethodError`, `_swift_stdlib_reportUnimplementedInitializer`,
+    `swift_stdlib_random`, `_typeName` (nested names, the module when qualified, generic
+    arguments, Objective-C classes, `Any`, `AnyObject`, compositions, tuples).
+  - `Array._allocateBufferUninitialized`, `AnyObject`'s metadata, `CGFloat` (the
+    `libswiftCoreFoundation` overlay's, in the `CoreGraphics` module), `libswiftObjectiveC`'s
+    `Selector ==`; the overlays `libswiftCoreFoundation`, `libswiftCoreGraphics`,
+    `libswiftDispatch`, `libswiftFoundation` and `libswiftObjectiveC` are libraries the layer
+    provides (imports it lacks become stubs that end the program when called, as for the other
+    libraries), and weakly linked overlays still load as empty; libSystem's x86_64
+    `____chkstk_darwin` and libobjc's `objc_allocWithZone`.
+  The check grows: `macos-swift` now prints its levels through generic `Hashable` and
+  `RawRepresentable` code, casts from `Any`, weak references before and after their objects go,
+  characters of a string with accents, `type(of:)` and `Int.random`, and `macos-swift fatal
+  error` ends with `fatalError`'s message and status 134. Built with Swift 6.3, the program's
+  imports are all provided (`swift_coroFrameAlloc` is a weak import Swift falls back from).
+- **Decided by research** (second slice, a research subagent probing `swiftc`-built programs on a
+  Mac): NSNumber casts succeed only when the value is exactly representable in the target, as
+  SE-0170 and the probes agree (`0.1` as a `Double` to `Float` is `nil`; `NaN`, infinities and
+  `-0.0` pass; `Bool` takes exactly 0 or 1, integer or floating); an unimplemented initializer
+  prints `Fatal error: Use of unimplemented initializer 'init()' for class 'Module.Class'`
+  with no file or line.
+- **Decided without research** (second slice): weak references through the Objective-C weak
+  table with a slot per reference rather than Swift's side tables (the layout is opaque to
+  programs; one table serves both kinds of objects); the witness table slot of each requirement
+  of the runtime's own resilient protocols in the order `swiftc` lists their witnesses, base
+  protocols first; the grapheme and lowercase tables limited to the scripts listed (a full
+  Unicode table comes with part 33's text work); runtime-made indices carrying no cached
+  character stride; casts to protocol existentials, of values over three words into `Any`, to
+  Core Foundation types and from `Error` existentials, the program's generic classes'
+  associated types and `_SwiftNewtypeWrapper`'s `_toCustomAnyHashable` refused as unimplemented
+  features rather than guessed; failures still end with `abort` (status 134) where Swift traps
+  (133); `objc_allocWithZone` sending `alloc`.
+- **Performance and size (second slice).** An instantiated witness table and an Objective-C
+  class's wrapper are each found by a linear search of a list as long as the conformances and
+  classes the program uses, once per lazy accessor (the program caches the answer); weak loads
+  search D175's weak table under its lock. The layer grows by the new modules and its tables
+  (about 60 property ranges); a program that does not link `libswiftCore` pays nothing else.
+- **Not yet** (what the real app needs, for the next slices of part 28): Foundation's Swift
+  overlay (`Data`, `Notification`, `CharacterSet`, `trimmingCharacters(in:)`, bridging
+  `String`, `Array` and `Dictionary` to and from NSString, NSArray and NSDictionary,
+  `_CocoaArrayWrapper`, strings backed by NSString and their UTF-16 indices); the Dispatch
+  overlay (`DispatchQueue.main.async` on the app's run loop, `DispatchQoS`,
+  `DispatchWorkItemFlags` and `SetAlgebra`'s initializer); the CoreGraphics overlay
+  (`move(to:)`, `addLine(to:)`, `addArc`) and the CoreGraphics framework's 21 drawing functions
+  behind NSGraphicsContext's `CGContext`; `sin` in libSystem; Swift subclasses of NSView and
+  NSObject in AppKit (their instance sizes and ivar offsets realized from Swift's metadata);
+  NSGridView, NSTrackingArea, NSSound with in-memory WAV data, NSUserDefaults,
+  NSAttributedString, NSFont, NSScreen; then `cargo xtask swift-app` (download, pin, install
+  from its `.zip` with its icon, a QEMU check that opens a cell, flags one and starts a new
+  game, and frame comparisons), CI's `swift-app` job in `check`'s needs, and its row in
+  docs/compatibility.md moved to the working list. Also not yet: casts to protocol existentials
+  (`swift_conformsToProtocol` over the program's `__swift5_proto`), the program's own generic
+  types in mangled names (`swift_getGenericMetadata`), printing values other than strings,
+  `Bool` and the numbers (reflection), `Float`'s description, class-bound existentials and
+  metatypes by name, full Unicode tables for characters, case and normalization, Swift
+  concurrency, the Swift benchmarks and riscv64 (no Swift for it on macOS).

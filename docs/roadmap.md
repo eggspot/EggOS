@@ -673,13 +673,14 @@ The release path (the release-path review's issues #141-#145, after the items ab
   ninth step, a real Swift app, **written in part, unchecked** (D180): Swift's runtime,
   `libswiftCore`, in the macOS layer (native objects and their counts, metadata and value
   witnesses, `Optional`, existentials, `String`, `Hasher`, `Array` and `Dictionary` storage,
-  mangled type names, `print`, exclusivity checks), checked by `macos-swift`, our own Swift
-  program built by `swiftc` in CI, in the macOS programs test on aarch64 and x86_64; the app,
-  Minesweeper 1.0.0 (chosen by research; universal, Swift on AppKit built in code), is listed in
-  docs/compatibility.md as chosen. Next: Foundation's Swift overlay and the other overlays,
-  witness tables for the program's conformances, dynamic casts, weak references, Swift
-  subclasses of AppKit's classes, CoreGraphics drawing, then `cargo xtask swift-app` and its CI
-  job (D180's "Not yet").
+  mangled type names, `print`, exclusivity checks; then witness tables of the program's own
+  conformances, dynamic casts with NSNumber and NSString bridging, weak references,
+  `String`'s characters, `_typeName`, `fatalError` and the overlays' runtime parts), checked by
+  `macos-swift`, our own Swift program built by `swiftc` in CI, in the macOS programs test on
+  aarch64 and x86_64; the app, Minesweeper 1.0.0 (chosen by research; universal, Swift on
+  AppKit built in code), is listed in docs/compatibility.md as chosen. Next: Foundation's Swift
+  overlay, the Dispatch and CoreGraphics overlays, Swift subclasses of AppKit's classes,
+  CoreGraphics drawing, then `cargo xtask swift-app` and its CI job (D180's "Not yet").
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

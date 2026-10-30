@@ -296,8 +296,10 @@ works.
   imports among the candidates (112 from `libswiftCore`, a few from the Dispatch,
   CoreGraphics, ObjectiveC and CoreFoundation overlays, and Foundation's Swift overlay).
   Runner-up: Mine2000 1.0.1 (arm64 only; its bitmaps are not under its code's licence).
-- **Where it stands.** The Swift runtime's first slice runs Swift console programs (D180); the
-  overlays, the witness tables of the app's own conformances, dynamic casts, weak references,
-  Swift subclasses of NSView and the CoreGraphics drawing it uses come next, with
+- **Where it stands.** The Swift runtime runs Swift console programs (D180), with the witness
+  tables of a program's own conformances, dynamic casts, weak references, `String`'s characters
+  and the runtime parts of the overlays the app links; Foundation's Swift overlay, the Dispatch
+  and CoreGraphics overlays, Swift subclasses of NSView and the CoreGraphics drawing it uses
+  come next, with
   `cargo xtask swift-app` and CI's `swift-app` job, which will install it, open a cell, flag one
   and start a new game. D180's "Not yet" lists what remains.

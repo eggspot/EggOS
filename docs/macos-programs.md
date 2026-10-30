@@ -226,7 +226,8 @@ A Swift program built for macOS 13 or later runs from `eggsh` like any other: `s
 Such a program links `/usr/lib/swift/libswiftCore.dylib`, the system's Swift runtime, which the
 layer provides itself, in Rust (D180). The boot test's `macos-swift`
 (`tests/macos-swift/main.swift`, built by `cargo xtask macos-programs`) prints the same lines as
-on a Mac, and `macos-swift conflict` stops at an exclusivity violation as a Mac does.
+on a Mac, `macos-swift conflict` stops at an exclusivity violation as a Mac does, and
+`macos-swift fatal error` ends with `fatalError`'s message.
 
 What works:
 
@@ -244,14 +245,25 @@ What works:
   `CommandLine.argc`.
 - **Exclusivity checks**: two overlapping accesses to the same variable, one of them a
   modification, end the program with Swift's message.
+- **The program's conformances to the standard library's protocols** (`Equatable`, `Hashable`,
+  `RawRepresentable`, `CaseIterable`), used through generic code: the runtime builds their
+  witness tables.
+- **Dynamic casts** (`as?`, `as!`) to concrete types, classes, optionals, `Any` and
+  `AnyObject`; NSNumber and NSString cast to Swift's numbers, `Bool` and `String` when the
+  value fits exactly.
+- **Weak references** (`weak var`, `[weak self]`) to Swift and Objective-C objects, `nil` once
+  the object goes.
+- **`String`'s characters**: `count`, iteration, indices moved by characters, the character
+  and range subscripts, `lowercased()`, `Character` in sets and dictionaries; characters follow
+  Unicode's grapheme rules for Latin, Greek, Cyrillic, Hangul, combining marks, emoji sequences
+  and flags.
+- **`type(of:)` names, `Int.random`, `fatalError`** (`file:line: Fatal error: message`).
 
 What does not yet: Foundation's Swift overlay (`Data`, bridging to NSString, NSArray and
-NSDictionary), the other overlays (`Dispatch`, `CoreGraphics`, `ObjectiveC`), dynamic casts
-(`as?` to a protocol or class), conformances to the standard library's protocols in the
-program (`Hashable`, `Equatable`, `CustomStringConvertible` of its own types), weak references,
-`String`'s indices and characters, printing other types, and Swift GUI apps (D180's "Not
-yet"). A program that uses one of these ends with `eggos-macos: unimplemented ...` and status
-127 when it reaches it.
+NSDictionary), the Dispatch and CoreGraphics overlays, casts to a protocol (`as? any P`),
+the program's own generic types named in metadata, printing other types, full Unicode tables,
+and Swift GUI apps (D180's "Not yet"). A program that uses one of these ends with
+`eggos-macos: unimplemented ...` and status 127 when it reaches it.
 
 ## GUI apps
 
