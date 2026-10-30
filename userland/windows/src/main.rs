@@ -50,6 +50,8 @@ mod linux;
 #[cfg(any(test, runs_windows_programs))]
 mod locale;
 #[cfg(any(test, runs_windows_programs))]
+mod low_level_io;
+#[cfg(any(test, runs_windows_programs))]
 mod pe;
 #[cfg(any(test, runs_windows_programs))]
 mod process_list;

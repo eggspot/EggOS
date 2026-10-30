@@ -12907,6 +12907,20 @@ the license, by an explicit instruction recorded here.
 - **`/etc/passwd` and `/etc/group`** (`initramfs/etc`, 52 bytes): `root` (uid and gid 0, home
   `/home/root`, shell `/bin/eggsh`), so musl's `getpwuid_r` and `getgrgid_r` name the user
   and group that Qt's file dialog, GLib and `ls -l` in Linux programs ask for.
+- **Part 25's leftovers, one picked up: the Windows C runtime's low-level I/O**
+  (`userland/windows/src/win32/crt/low_level.rs`, flags in `userland/windows/src/low_level_io.rs`
+  so their host tests run): `_open`, `_wopen`, `_sopen_s`, `_wsopen_s`, `_close`, `_read`,
+  `_write`, `_lseek` and `_lseeki64` on the Linux descriptors the streams use, so `_fileno`,
+  `_fdopen` and `_open_osfhandle` name the same ones. Windows paths as `fopen`'s; `_O_RDONLY`,
+  `_O_WRONLY`, `_O_RDWR`, `_O_APPEND`, `_O_CREAT`, `_O_TRUNC` and `_O_EXCL` become Linux's,
+  `_O_TEMPORARY` removes the name once opened (Windows removes it at the last close), the
+  other known flags change nothing and an unknown one or both write modes are `EINVAL`;
+  `_sopen_s`'s sharing mode is checked (`EINVAL` for another) and has no effect, as EggOS's
+  files are always shared; the permission argument is not kept (files are made `0666` less the
+  umask). Text mode does not translate line endings. Left for later parts: `setjmp` and
+  `longjmp` (they need the D177 unwinder for `longjmp` through C++ frames), locales
+  (`setlocale`, `localeconv`, `_create_locale`), the math library beyond `sqrtf`, wide streams
+  (`fgetwc`, `fputws` and the rest), low-level I/O's text mode and `_commit`, msvcp140.
 - **Front-ends (D22).** GUI: the app's icon and launcher row open it, Files and the installer's
   window install it; copy and paste inside and between Wayland apps; its windows in the
   element tree as for GTK (title, focused text field). CLI: `app install --entry --environment
@@ -12935,7 +12949,9 @@ the license, by an explicit instruction recorded here.
   cookie) and removed, the same record not queued twice; a watched file's own changes and its
   watch ending with its last name; masks replaced, added to and refused, one-shot watches,
   `IN_IGNORED` on removal and a small read refused; one `IN_Q_OVERFLOW` for a full queue.
-  xtask: the GL libraries read back through their dynamic section and hash table on both
+  windows: `_open`'s flags as Linux's and unknown ones refused, sharing modes and seek
+  origins checked. xtask: the GL libraries read back through their dynamic section and hash
+  table on both
   machines (every function found, its code returning its answer), the section headers, the
   System V hash; the pinned packages, the archive's members, the environment and the launch
   line within 256 bytes, the typed lines and the verdict.

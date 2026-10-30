@@ -4,13 +4,15 @@
 //! startup code (`wWinMainCRTStartup` and the rest) into the program itself; it calls the
 //! runtime's startup and exit functions here (`runtime.rs`) and a few kernel32 functions of its
 //! own (`startup.rs`). The rest is the C library: the heap (`heap.rs`), strings and characters
-//! (`string.rs`), streams and `printf` (`stdio.rs`), and the utility and time functions
-//! (`utility.rs`). Exception handling, C's and C++'s, and `signal` are in `win32/exception`
-//! (D177); both runtimes' lists include their functions.
+//! (`string.rs`), streams and `printf` (`stdio.rs`), low-level I/O on descriptors
+//! (`low_level.rs`, D179), and the utility and time functions (`utility.rs`). Exception
+//! handling, C's and C++'s, and `signal` are in `win32/exception` (D177); both runtimes' lists
+//! include their functions.
 
 pub(super) use runtime::{end_abnormally, errno, set_errno};
 
 mod heap;
+mod low_level;
 mod runtime;
 mod startup;
 mod stdio;
@@ -47,6 +49,7 @@ pub(super) const UCRT: &[&[Export]] = &[
     heap::EXPORTS,
     string::EXPORTS,
     stdio::EXPORTS,
+    low_level::EXPORTS,
     utility::EXPORTS,
     super::exception::CXX_UCRT_EXPORTS,
     super::exception::SIGNAL_EXPORTS,

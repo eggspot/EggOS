@@ -643,7 +643,8 @@ The release path (the release-path review's issues #141-#145, after the items ab
   C++ `throw` and `catch` through `__CxxFrameHandler3` and `__CxxFrameHandler4` (destructors,
   rethrow, throws from catch blocks), `signal` and `raise`; the Windows C runtime boot test runs
   `eggcpp.exe`, our own C++ program built by MSVC in CI, on x86_64 and aarch64. Next: the rest
-  of the Windows C runtime (`setjmp`, locales, the math library, wide streams, `_open`) and
+  of the Windows C runtime (`setjmp`, locales, the math library, wide streams; `_open` and
+  low-level I/O done in D179) and
   msvcp140 (D177's "Not yet"); nib loading for apps like UDCalc (D175's "Not yet"). Its
   seventh step, a real Win32 app on common controls, GDI+ and COM installs
   and runs, **written, unchecked** (D178): AutoHotkey v2.0.31 (chosen by research; its x64

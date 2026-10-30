@@ -238,7 +238,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   aarch64 a context resumed after a fault loses `x16`.
   Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
   `std::exception_ptr`, `dynamic_cast` and `typeid`, MinGW's or Rust's std, `setjmp`,
-  locales, most of the math library, wide streams, `_open`, other
+  locales, most of the math library, wide streams, low-level I/O's text mode (`_open` works but
+  never translates line endings, D179), other
   DLLs than the layer's own, multi-line edits or selection, radio keys, editable combo boxes
   and menu keys (D145, D174), the common controls' hover looks, tooltips, custom drawing and
   label editing, GDI+ beyond images (JPEG, GIF and TIFF too), out-of-process COM and COM
