@@ -290,7 +290,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   riscv64 (bionic's riscv64 string functions need the vector extension, which the kernel does
   not enable yet, D188).
 - **macOS: console programs and programmatic AppKit apps, on aarch64 and x86_64 only.**
-  Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
+  Mach-O console programs (thin or fat, with chained fixups or `LC_DYLD_INFO`, down to Mac OS
+  X 10.6 on x86_64 and macOS 11 on arm64) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
   programs on x86_64, from the host folder or installed as apps (a real one, CocoaGame, is

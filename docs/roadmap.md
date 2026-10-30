@@ -255,6 +255,10 @@ Must-have, in order:
     name (126). The kernel's `execve` starts the layer for Mach-O and fat files (not Java
     class files) on aarch64 and x86_64; riscv64 refuses them with `ENOEXEC`. A QEMU test on all
     three boots programs built from our own source by Apple's linker (on CI's macOS runner).
+    Programs without chained fixups run too (D190, slice 38c): `LC_DYLD_INFO` rebase, bind
+    and lazy-bind opcodes, lazy pointers bound at load, and x86_64 programs for Mac OS X 10.7
+    and earlier that start at `LC_UNIXTHREAD`, checked by `macos-legacy`, built for 10.7
+    without chained fixups (macOS 11 on arm64).
 21. **done** — macOS, part 2: users can now run small real macOS console tools from `eggsh`:
     `getopt`/`getopt_long`, directory listing, calendar time (`gmtime_r`, `localtime_r`,
     `timegm`, `strftime`, in UTC), `errno` per thread with `strerror`, C-locale `setlocale`,
@@ -277,8 +281,9 @@ Must-have, in order:
     en_US.UTF-8 and UTF-8, names from the environment and composite names, en_US's
     `nl_langinfo`, `localeconv` and `%x`, UTF-8 `mbrtowc` and its family, `isalpha` and
     `towupper` over Latin-1 through `__DefaultRuneLocale` and `___maskrune`, `strptime`, and
-    wide `scanf` fields as UTF-8, checked by `macos-text`. Next: programs without chained
-    fixups, a program for macOS 11 and `getopt_long` reordering words (slice 38c).
+    wide `scanf` fields as UTF-8, checked by `macos-text`. Slice 38c: `getopt_long` and
+    `getopt_long_only` reorder words as a Mac does (`+`, `-` and `POSIXLY_CORRECT` included),
+    with a Mac's messages, checked by `macos-legacy`. Next: D190's "Not yet".
 22. **done** — users can now pipe commands and redirect input and output from `eggsh` (D125,
     docs/shell.md): `a | b | c` runs its programs at the same time, piped, in one process
     group that `^C` reaches, with the last one's status; `<`, `>` and `>>` on builtins and
@@ -414,7 +419,8 @@ D16):
     mutable forms, NSNumber, the compiler's literals, NSBundle's main bundle, `NSLog` and `%@`).
     A QEMU test runs an Objective-C program from our own source, built by clang on CI's macOS
     runner, with the same lines as on a Mac. Next: blocks, `__weak`, exceptions, more of
-    Foundation (D142's "Not yet").
+    Foundation (D142's "Not yet"). Older programs, built without chained fixups or for Mac OS X
+    10.7 on x86_64, load through `LC_DYLD_INFO` and `LC_UNIXTHREAD` (D190, slice 38c).
 47a. **done** — users can now let an AI agent see and operate any app's window. Part 1, the
     command line (D141, docs/windows.md): `CAPTURE_WINDOW` copies a window's content from its
     own buffer (covered or minimised too), `SEND_INPUT` sends clicks, keys, characters and the

@@ -6,7 +6,8 @@ CPU, with no emulator, no virtual machine and no translation (D17). The macOS la
 `/usr/lib/eggos/macos`, does what dyld does on a Mac: it reads the program's Mach-O file
 (thin, or fat/universal with a slice per CPU), maps its segments, binds the functions it imports
 from libSystem to its own implementations, written in Rust on EggOS's system calls, applies the
-file's chained fixups and calls `main(argc, argv, envp, apple)`. A libSystem call is a plain
+file's chained fixups (or, for an older program, its `LC_DYLD_INFO` opcodes) and calls
+`main(argc, argv, envp, apple)`. A libSystem call is a plain
 function call; no system call happens unless the function needs the kernel (a write, a file
 read), and `malloc` allocates without one.
 
@@ -48,8 +49,10 @@ Tool` removes it. See [Apps](apps.md) (D134).
 
 ## Build a program that runs
 
-C, Rust or any language whose program links only libSystem, with Apple's linker and a
-deployment target of macOS 13 or later, which gives chained fixups:
+C, Rust or any language whose program links only libSystem, with Apple's linker. A deployment
+target of macOS 13 or later gives chained fixups; older targets and `-Wl,-no_fixup_chains` give
+`LC_DYLD_INFO` opcodes, which run too (D190, slice 38c), and an x86_64 program built for
+macOS 10.7 or earlier, which starts at `LC_UNIXTHREAD`, as well:
 
 ```
 MACOSX_DEPLOYMENT_TARGET=13.0 clang -O2 -o hello hello.c
@@ -103,7 +106,7 @@ its arguments, an environment variable, a file, `/bin`'s listing, a missing file
 | Files | `open`, `close`, `read`, `write`, `lseek`, `stat`, `lstat`, `fstat` (on x86_64 only their `$INODE64` names: the unsuffixed ones are the old 32-bit-inode ABI, and calling them stops with status 127), `isatty`, `access`, `getcwd`, `chdir`, `unlink`, `rmdir`, `mkdir`, `opendir`, `readdir` (`readdir$INODE64` on x86_64, likewise), `closedir`, `dirfd` |
 | Files, part 2 | `dup`, `dup2`, `pipe`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `writev` |
 | Process and environment | `exit`, `_exit`, `_Exit`, `abort`, `atexit`, `raise`, `kill`, `getpid`, `getppid`, `getuid`, `geteuid`, `getenv`, `setenv`, `putenv`, `unsetenv`, `environ`, `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron`, `_NSGetProgname`, `_NSGetExecutablePath`, `__error` (`errno`, one per thread), `strerror_r`, `__stack_chk_guard`, `__stack_chk_fail`, `getpagesize`, `sysconf` (page size, CPUs, `_SC_OPEN_MAX`, `_SC_CLK_TCK`, `_SC_ARG_MAX`) |
-| Options | `getopt`, `getopt_long`, `optarg`, `optind`, `opterr`, `optopt`, `optreset` |
+| Options | `getopt`, `getopt_long`, `getopt_long_only`, `optarg`, `optind`, `opterr`, `optopt`, `optreset` |
 | Threads | `pthread_create`, `pthread_join`, `pthread_detach`, `pthread_exit`, `pthread_self`, `pthread_equal`, `pthread_main_np`, `pthread_threadid_np`, `pthread_mach_thread_np`, `pthread_get_stackaddr_np`, `pthread_get_stacksize_np`, `pthread_setname_np`, `pthread_getname_np`, `pthread_attr_init`, `pthread_attr_destroy`, `pthread_attr_setstacksize`, `pthread_attr_getstacksize`, `pthread_attr_setdetachstate`, `pthread_attr_getdetachstate`, `pthread_attr_setguardsize`, `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific`, `pthread_setspecific`, `sched_yield`, thread-local variables (`_tlv_bootstrap`, `_tlv_atexit`) |
 | Locks | `pthread_mutex_init`, `pthread_mutex_destroy`, `pthread_mutex_lock`, `pthread_mutex_trylock`, `pthread_mutex_unlock` (normal, error-checking, recursive, and the static initializers), `pthread_mutexattr_init`, `pthread_mutexattr_destroy`, `pthread_mutexattr_settype`, `pthread_cond_init`, `pthread_cond_destroy`, `pthread_cond_wait`, `pthread_cond_timedwait`, `pthread_cond_signal`, `pthread_cond_broadcast`, `pthread_once`, `dispatch_semaphore_create`, `dispatch_semaphore_wait`, `dispatch_semaphore_signal`, `dispatch_time`, `dispatch_retain`, `dispatch_release` |
 | Signals | `sigaction`, `__sigaction`, `signal`, `sigaltstack`, `sigprocmask`, `pthread_sigmask`, `sigsuspend`, `sigpending`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset`, `sigismember`, `pause`, `killpg` |
@@ -189,6 +192,29 @@ classes. en_US.UTF-8 gives `nl_langinfo` and `localeconv` the United States' val
 `%m/%d/%Y`, `THOUSEP` `,`, `USD ` and `$`), and `strftime`'s `%x` four-digit years.
 `strptime` reads the conversions `strftime` writes, as a Mac does. `tests/macos-text/main.c`
 checks all of it.
+
+### Older programs and options
+
+A program linked without chained fixups (built for macOS 11 on arm64 or 12 and earlier on
+x86_64, or with `-Wl,-no_fixup_chains`) runs (D190, slice 38c): the layer reads its
+`LC_DYLD_INFO` rebase, bind and lazy-bind opcodes, slides its pointers, binds its
+`__got` (`__nl_symbol_ptr` in older files) and binds every `__la_symbol_ptr` lazy pointer when
+it loads the program, so a call through `__stubs` goes straight to the function and
+`dyld_stub_binder` never runs. An x86_64 program built for Mac OS X 10.7 or earlier starts at
+its `LC_UNIXTHREAD` entry, the C runtime's `start`, with `argc`, `argv`, `envp` and `apple` on
+the stack as on a Mac; `LC_VERSION_MIN_MACOSX` is accepted beside `LC_BUILD_VERSION`, and a
+file built for iOS, tvOS, watchOS or Mac Catalyst is refused with a message.
+
+`getopt_long` and `getopt_long_only` move operands after the options as they go, as a Mac
+does: `tool a -v --name=x b` sees `-v` and `--name=x`, then `optind` points at `a` in
+`tool -v --name=x a b`. A `+` at the start of the option string, or `POSIXLY_CORRECT` in the
+environment, stops at the first operand instead; a `-` hands each operand back as option 1
+with `optarg`. `getopt_long_only` reads `-name` as a long option and falls back to the short
+options when no long one matches. `getopt` never reorders. The messages are a Mac's (`invalid
+option -- x`, ``unrecognized option `--x'``, ``option `--x' requires an argument``).
+`tests/macos-legacy/main.c`, built with `-mmacosx-version-min=10.7 -Wl,-no_fixup_chains`
+(so `LC_MAIN` and macOS 11 on arm64, `LC_UNIXTHREAD` on x86_64), checks it in the macOS
+programs boot test.
 
 ## Objective-C programs
 
@@ -413,8 +439,7 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   U+00FF, `printf`'s `%ls` and `%lc`, the `_l` extended-locale functions, hexadecimal floating-point
   input (`%a` reads only decimal), `nan(...)`, and stdio streams shared between threads (each
   stream assumes one thread at a time).
-- **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
-  does, so options after an operand stay operands; `getopt_long_only` is missing.
+- **`getopt_long`'s `W;`** (`-W foo` as `--foo`) is not read.
 - **AppKit beyond its core** (D147's and D175's "Not yet"): nibs and storyboards, flipped
   views, layers, Auto Layout, scroll views, tables, images, cursors, sheets and panels (other
   than the About panel), checkboxes and
@@ -425,9 +450,10 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   program that links any library other than libSystem, libobjc, Foundation, CoreFoundation,
   AppKit and Cocoa is refused. Weak libraries are allowed and their imports are missing. Imports a program makes
   from itself (C++'s weak definitions, through its export trie) are missing too.
-- **Older programs**: files without chained fixups, which use `LC_DYLD_INFO` opcodes (arm64
-  programs built for macOS 11, x86_64 ones built for macOS 12 or earlier), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e
-  programs (pointer authentication) and encrypted ones are refused with a message.
+- **Oldest programs**: files that bind through relocations and the indirect symbol table
+  alone (Mac OS X 10.5 and earlier, no `LC_DYLD_INFO`), 32-bit programs, arm64e programs
+  (pointer authentication) and encrypted ones are refused with a message. Weak binds between
+  images are not applied (the program keeps its own weak definitions, as the first image).
 - **Mach**: no ports, no messages, no `task_*` or `vm_*` calls; `mach_absolute_time` and
   `mach_timebase_info` only.
 - **Pages**: arm64 macOS uses 16 KiB pages and EggOS 4 KiB ones. Segments are laid out at

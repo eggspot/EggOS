@@ -14677,9 +14677,8 @@ the license, by an explicit instruction recorded here.
   `sigsetjmp`/`siglongjmp`, `sigwait`, `siginterrupt`, `sigqueue`; `pthread_atfork` and
   taking the layer's locks around `fork`; a `vfork`-style `posix_spawn` that copies no page
   tables; `POSIX_SPAWN_START_SUSPENDED`; `popen` with `r+`; `execvp` running a file without
-  a format through the shell; `posix_spawn_file_actions_addclosefrom_np`; slices 38b (`scanf`,
-  locales other than C) and 38c (programs without chained fixups, a program for macOS 11,
-  `getopt_long` reordering words).
+  a format through the shell; `posix_spawn_file_actions_addclosefrom_np` (slices 38b, 38b2
+  and 38c below add the rest of part 38).
 - **Slice 38b: `scanf`.** `scanf`, `fscanf`, `sscanf`, `vscanf`, `vfscanf` and `vsscanf`
   (`libsystem/scanf.rs`, variadic entries as `printf`'s) read Darwin's conversions: `%d %i %u
   %o %x %X %p`, `%e %f %g %a` (and capitals), `%c`, `%s`, `%[...]` with ranges, negation and a
@@ -14778,3 +14777,80 @@ the license, by an explicit instruction recorded here.
   these five (`de_DE.UTF-8` and the rest are refused with a null pointer), `strcoll` and
   `strxfrm` by locale, `printf`'s `%ls` and `%lc` through the locale's encoding, the `_l`
   extended-locale functions (`newlocale`, `uselocale`, `isalpha_l`), and time zones.
+- **Slice 38c: older programs and reordered options.** The Mach-O reader (`macho.rs`) reads
+  `LC_DYLD_INFO` and `LC_DYLD_INFO_ONLY` (`MachO::dyld_info`: the rebase, bind and lazy-bind
+  ranges; the weak-bind and export ranges are checked against the file), and the pure
+  `dyld_info.rs` decodes their opcodes as `mach-o/loader.h` documents them: rebases
+  (`SET_TYPE_IMM` for pointers only, `SET_SEGMENT_AND_OFFSET_ULEB`, `ADD_ADDR_ULEB`,
+  `ADD_ADDR_IMM_SCALED` and the four `DO_REBASE` forms) and binds (library ordinals, immediate,
+  ULEB and special, the symbol with its weak-import flag, the type, a SLEB addend, the place
+  and the four `DO_BIND` forms); the bind table ends at its first `DONE`, the lazy-bind table
+  is a run of entries that each end with one. A place is a segment by its index among the
+  segment commands, `__PAGEZERO` included (`MachO::segment_by_command_index`), and an offset
+  that must leave a whole pointer inside the segment. `start.rs` slides the rebased pointers,
+  then binds the bind table (`__got`, `__nl_symbol_ptr` in older files) and every lazy pointer
+  (`__la_symbol_ptr`) when it loads the program, through the same resolver as chained imports
+  (`Binder::address_of`: the layer's functions, a stub that names a missing one, 0 for a
+  missing weak import, a placeholder class), so a call through `__stubs` goes straight to its
+  function and the stub helper never runs; `dyld_stub_binder`, which every such program binds,
+  is a layer function that ends the program with a message, reached only if a program jumps
+  into a stub helper by itself. Weak binds are not applied: they choose between images that
+  each define a symbol weakly, and the executable, first in the load order, keeps its own
+  definitions. Threaded binds (arm64e) and 32-bit rebase and bind types are refused, a table
+  names at most 2^27 pointers, and a file that links libraries with neither chained fixups nor
+  `LC_DYLD_INFO` (Mac OS X 10.5 and earlier: relocations and the indirect symbol table) is now
+  refused with a message instead of running unbound. `LC_UNIXTHREAD` gives the entry point:
+  the pc of `x86_THREAD_STATE64` (flavor 4, `rip` at byte 128) or `ARM_THREAD_STATE64`
+  (flavor 6, `pc` at byte 256), checked like `LC_MAIN`'s; its other registers, the stack
+  pointer included, are unused, as for any program dyld loads (`MachO::start` is
+  `Start::Thread`). The layer then copies `argc`, `argv`, `envp` and `apple`, each ended by a
+  null pointer, to a 16-byte-aligned place below its own stack pointer and jumps to the entry
+  (`eggos_macos_enter_start`, a few instructions per CPU in `start.rs`), where the C runtime's
+  `start` calls `main` and `exit` (bound like any import). `LC_VERSION_MIN_MACOSX` is accepted
+  beside `LC_BUILD_VERSION`; a `LC_BUILD_VERSION` for another platform than macOS (1) and
+  `LC_VERSION_MIN_IPHONEOS`, `_TVOS` and `_WATCHOS` are refused ("built for an Apple platform
+  other than macOS"). Options (`getopt.rs`, pure; `libsystem/options.rs`): `getopt_long` and
+  the new `getopt_long_only` move each run of operands after the options found after it, on
+  the next call, and after `--`, leaving `optind` at the first operand at the end, with the
+  same `optind` after every call as a Mac; a `+` option string or `POSIXLY_CORRECT` stops at
+  the first operand, a `-` one hands each operand back as option 1 with `optarg` (and wins
+  over `POSIXLY_CORRECT`); `getopt` never reorders. `getopt_long_only` reads a single-dash word
+  (or the rest of a group of short options) as a long name first: an exact name, else a
+  unique abbreviation, except that a single character that is a short option stays short; no
+  match falls back to the short options only when the first character is one. Abbreviations
+  are ambiguous only between options that differ in argument, `flag` or `val`. The messages
+  are a Mac's: `getopt` prints `argv[0]` and `illegal option -- x`; the long forms print the
+  program's name and `invalid option -- x` (`illegal` under `POSIXLY_CORRECT`),
+  ``unrecognized option `--x'``, ``option `--x' is ambiguous``, ``option `--x' requires an
+  argument`` and ``option `--x' doesn't allow an argument``, with the option as typed (so
+  `macos-tools -x` now prints `invalid option`); `getopt` sets `optopt` on success too.
+  Observed on this Mac with `xcrun clang` (SDK 26.5): `-Wl,-no_fixup_chains` gives
+  `LC_DYLD_INFO_ONLY` with `__stubs`, `__stub_helper`, `__la_symbol_ptr` and `__got` (today's
+  linker has no `__nl_symbol_ptr`) on both CPUs; arm64 always gets `LC_MAIN` and
+  `LC_BUILD_VERSION` with macOS 11.0 (clang raises `-mmacosx-version-min=10.7`, and `-e` does
+  not change it); x86_64 gets `LC_UNIXTHREAD` and `LC_VERSION_MIN_MACOSX` for every target up
+  to 10.7 (crt1's `start` reads `argc` at the stack pointer, then calls `main` and `exit`), and
+  `LC_MAIN` from 10.8 (10.13 with `LC_VERSION_MIN_MACOSX`, 11.0 with `LC_BUILD_VERSION`). So
+  arm64's `LC_UNIXTHREAD` path has host tests only. The check: `tests/macos-legacy/main.c`
+  (`C_PROGRAMS[2]`, built with `-mmacosx-version-min=10.7 -Wl,-no_fixup_chains` through the
+  new `CProgram::link_flags`) runs as `macos-legacy one -v --name=eggos two` in the macOS
+  programs boot test on aarch64 and x86_64: reordered words, `-`, `+` and `POSIXLY_CORRECT`,
+  `getopt_long_only`, `optreset`, the four long-option messages, `getopt` stopping, and lazy,
+  non-lazy and rebased pointers; its expected lines are its output on macOS 26 (arm64; the
+  x86_64 build compiles with `-Wall -Werror` too). Host tests decode that program's own
+  rebase, bind and lazy-bind opcodes and check repeats, skips, addends, special libraries,
+  malformed tables, `LC_UNIXTHREAD` on both CPUs and the segment indexes, and replay the
+  Mac's `getopt_long` and `getopt_long_only` runs. Front-ends: the macOS ABI only. Cost: none
+  for programs with chained fixups; an `LC_DYLD_INFO` program resolves every lazy symbol at
+  load, as `DYLD_BIND_AT_LAUNCH` does, and never pays a first-call trip through
+  `dyld_stub_binder`; the long `getopt` forms scan the environment for `POSIXLY_CORRECT` on
+  each call. Decided without research: binding lazy pointers at load instead of a stub
+  binder in assembly that saves the argument registers (one path for both fixup formats, no
+  lazy state); not applying weak binds; one test program for 10.7 that covers `LC_UNIXTHREAD`
+  on x86_64 and `LC_DYLD_INFO` with `LC_MAIN` on arm64; refusing other Apple platforms and
+  relocation-only files; reading `POSIXLY_CORRECT` on every call (a Mac reads it when parsing
+  restarts, which gives the same results for programs that set it before parsing). Decided by
+  research: none needed; every behaviour above was observed directly by programs run on this
+  Mac. Not yet: files that bind only through relocations and the indirect symbol table
+  (Mac OS X 10.5 and earlier), i386 programs, imports a program makes from itself through its
+  export trie, `getopt_long`'s `W;`, and arm64e.
