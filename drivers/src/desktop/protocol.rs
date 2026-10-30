@@ -275,10 +275,13 @@ pub enum PointerShape {
     ResizeEastWest,
     ResizeNorthWestSouthEast,
     ResizeNorthEastSouthWest,
+    /// No pointer at all over the window's content (D172): what a Wayland program's null
+    /// cursor surface asks for.
+    Hidden,
 }
 
 impl PointerShape {
-    /// The shape numbered `value`, 0 to 5 in the order above.
+    /// The shape numbered `value`, 0 to 6 in the order above.
     pub const fn from_value(value: u32) -> Option<Self> {
         Some(match value {
             0 => Self::Arrow,
@@ -287,6 +290,7 @@ impl PointerShape {
             3 => Self::ResizeEastWest,
             4 => Self::ResizeNorthWestSouthEast,
             5 => Self::ResizeNorthEastSouthWest,
+            6 => Self::Hidden,
             _ => return None,
         })
     }

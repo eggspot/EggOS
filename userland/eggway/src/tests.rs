@@ -2,8 +2,8 @@ use crate::compositor::{self, Compositor, MAX_CLIENTS};
 use crate::fake::{Fake, SentEvent, message};
 use crate::system::{Fd, System};
 use eggos_wayland::protocol::{
-    Interface, buffer, callback, display, keyboard, pointer, registry, shm, surface, xdg_surface,
-    xdg_toplevel,
+    Interface, buffer, callback, cursor_shape, decoration, display, keyboard, pointer, registry,
+    shm, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
 };
 use eggos_wayland::wire::Value;
 
@@ -247,7 +247,7 @@ fn the_registry_announces_every_global_and_refuses_a_newer_bind() {
         .iter()
         .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
         .collect();
-    assert_eq!(globals.len(), 5);
+    assert_eq!(globals.len(), 9);
     assert_eq!(globals[0].word(0), 1);
     session.bind(1, "wl_compositor", 5, COMPOSITOR);
     session.pump();
@@ -1076,5 +1076,287 @@ fn a_query_gets_the_toplevel_s_title_and_app_id_and_refuses_actions() {
     session.record(QUERY_EVENT, [8, 1, 1, 1]);
     let answer = session.fake.answers.last().unwrap();
     assert_eq!((answer.0, answer.1, answer.2.len()), (8, 2, 0));
+    session.end();
+}
+
+const SUBCOMPOSITOR: u32 = 30;
+const DECORATION_MANAGER: u32 = 31;
+const CURSOR_MANAGER: u32 = 32;
+const VIEWPORTER: u32 = 33;
+const CHILD: u32 = 34;
+const SUBSURFACE: u32 = 35;
+const CHILD_BUFFER: u32 = 36;
+const POSITIONER: u32 = 37;
+const POPUP_SURFACE: u32 = 38;
+const POPUP_XDG: u32 = 39;
+const POPUP: u32 = 40;
+const SECOND_POOL: u32 = 41;
+const POPUP_BUFFER: u32 = 42;
+const DECORATION: u32 = 43;
+const CURSOR_DEVICE: u32 = 44;
+const VIEWPORT: u32 = 45;
+
+impl Session {
+    fn second_pool(&mut self, pixels: Vec<u32>) {
+        let bytes = pixels.len() as i32 * 4;
+        let memory = self.fake.memory_file(pixels);
+        self.send_with(
+            SHM,
+            0,
+            &[Value::NewId(SECOND_POOL), Value::Fd, Value::Int(bytes)],
+            vec![memory],
+        );
+    }
+
+    fn argb_buffer(&mut self, pool: u32, id: u32, offset: i32, size: (i32, i32)) {
+        self.send(
+            pool,
+            0,
+            &[
+                Value::NewId(id),
+                Value::Int(offset),
+                Value::Int(size.0),
+                Value::Int(size.1),
+                Value::Int(size.0 * 4),
+                Value::Uint(shm::ARGB8888),
+            ],
+        );
+    }
+
+    fn commit_buffer(&mut self, surface: u32, buffer: u32) {
+        self.send(
+            surface,
+            1,
+            &[Value::Object(buffer), Value::Int(0), Value::Int(0)],
+        );
+        self.send(surface, 6, &[]);
+    }
+}
+
+#[test]
+fn a_subsurface_is_drawn_over_its_parent_where_it_is_placed_on_the_parent_s_commit() {
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.configured_toplevel();
+    let parent = (WIDTH * HEIGHT) as usize;
+    let mut pixels = vec![0x0011_1111u32; parent];
+    pixels.extend(vec![0xff22_2222u32; 100]);
+    session.pool(pixels);
+    session.buffer(BUFFER, WIDTH, HEIGHT);
+    session.argb_buffer(POOL, CHILD_BUFFER, parent as i32 * 4, (10, 10));
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(SURFACE),
+        ],
+    );
+    session.send(SUBSURFACE, 1, &[Value::Int(20), Value::Int(30)]);
+    session.commit_buffer(CHILD, CHILD_BUFFER);
+    session.pump();
+    assert!(session.fake.window().is_none());
+    session.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    let (_, window) = session.fake.window().expect("a window");
+    assert_eq!(window.pixels[(30 * WIDTH + 20) as usize], 0x0022_2222);
+    assert_eq!(window.pixels[(39 * WIDTH + 29) as usize], 0x0022_2222);
+    assert_eq!(window.pixels[(29 * WIDTH + 20) as usize], 0x0011_1111);
+    assert_eq!(window.pixels[(30 * WIDTH + 30) as usize], 0x0011_1111);
+    assert!(session.of(BUFFER, buffer::RELEASE.opcode).is_empty());
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(46),
+            Value::Object(SURFACE),
+            Value::Object(CHILD),
+        ],
+    );
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((
+            SUBCOMPOSITOR,
+            eggos_wayland::protocol::subsurface::BAD_SURFACE
+        ))
+    );
+    session.end();
+}
+
+#[test]
+fn a_popup_goes_where_its_positioner_says_and_a_click_outside_its_grab_dismisses_it() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.send(WM_BASE, 1, &[Value::NewId(POSITIONER)]);
+    session.send(POSITIONER, 1, &[Value::Int(50), Value::Int(40)]);
+    session.send(
+        POSITIONER,
+        2,
+        &[
+            Value::Int(10),
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(10),
+        ],
+    );
+    session.send(POSITIONER, 3, &[Value::Uint(xdg_positioner::BOTTOM_LEFT)]);
+    session.send(POSITIONER, 4, &[Value::Uint(xdg_positioner::BOTTOM_RIGHT)]);
+    session.send(COMPOSITOR, 0, &[Value::NewId(POPUP_SURFACE)]);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(POPUP_XDG), Value::Object(POPUP_SURFACE)],
+    );
+    session.send(
+        POPUP_XDG,
+        2,
+        &[
+            Value::NewId(POPUP),
+            Value::Object(XDG_SURFACE),
+            Value::Object(POSITIONER),
+        ],
+    );
+    session.pump();
+    let placed = session.of(POPUP, xdg_popup::CONFIGURE.opcode)[0];
+    let place: Vec<i32> = (0..4).map(|index| placed.word(index) as i32).collect();
+    assert_eq!(place, [10, 20, 50, 40]);
+    let serial = session.of(POPUP_XDG, xdg_surface::CONFIGURE.opcode)[0].word(0);
+    session.send(POPUP_XDG, 4, &[Value::Uint(serial)]);
+    session.second_pool(vec![0xff33_3333; 50 * 40]);
+    session.argb_buffer(SECOND_POOL, POPUP_BUFFER, 0, (50, 40));
+    session.send(POPUP, 1, &[Value::Object(SEAT), Value::Uint(1)]);
+    session.commit_buffer(POPUP_SURFACE, POPUP_BUFFER);
+    session.pump();
+    let pixels = &session.fake.windows[&window].pixels;
+    assert_eq!(pixels[(20 * WIDTH + 10) as usize], 0x0033_3333);
+    assert_eq!(pixels[(59 * WIDTH + 59) as usize], 0x0033_3333);
+    assert_eq!(pixels[(20 * WIDTH + 9) as usize], 20 * WIDTH + 9);
+    let entered = session.of(KEYBOARD, keyboard::ENTER.opcode);
+    assert_eq!(
+        entered.last().map(|event| event.word(1)),
+        Some(POPUP_SURFACE)
+    );
+    session.record(record::POINTER_ENTER, [30, 30, 0, 0]);
+    let pointed = session.of(POINTER, pointer::ENTER.opcode);
+    assert_eq!(
+        pointed.last().map(|event| event.word(1)),
+        Some(POPUP_SURFACE)
+    );
+    session.record(record::POINTER_MOVE, [5, 5, 0, 0]);
+    session.record(record::BUTTON, [5, 5, 0x110, 1]);
+    assert_eq!(session.of(POPUP, xdg_popup::POPUP_DONE.opcode).len(), 1);
+    assert!(session.of(POINTER, pointer::BUTTON.opcode).is_empty());
+    session.end();
+}
+
+#[test]
+fn a_toplevel_s_decoration_is_the_server_s_whatever_mode_it_asks_for() {
+    let mut session = Session::new();
+    session.globals();
+    session.bind(7, "zxdg_decoration_manager_v1", 1, DECORATION_MANAGER);
+    session.configured_toplevel();
+    session.send(
+        DECORATION_MANAGER,
+        1,
+        &[Value::NewId(DECORATION), Value::Object(TOPLEVEL)],
+    );
+    session.send(DECORATION, 1, &[Value::Uint(decoration::CLIENT_SIDE)]);
+    session.pump();
+    let modes: Vec<u32> = session
+        .of(DECORATION, decoration::CONFIGURE.opcode)
+        .iter()
+        .map(|event| event.word(0))
+        .collect();
+    assert_eq!(modes, [decoration::SERVER_SIDE, decoration::SERVER_SIDE]);
+    assert_eq!(
+        session.of(XDG_SURFACE, xdg_surface::CONFIGURE.opcode).len(),
+        3
+    );
+    session.send(DECORATION, 1, &[Value::Uint(7)]);
+    session.pump();
+    assert_eq!(session.error(), Some((DECORATION, display::INVALID_METHOD)));
+    session.end();
+}
+
+#[test]
+fn cursor_shapes_and_a_hidden_cursor_set_the_window_s_pointer() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(8, "wp_cursor_shape_manager_v1", 1, CURSOR_MANAGER);
+    session.send(
+        CURSOR_MANAGER,
+        1,
+        &[Value::NewId(CURSOR_DEVICE), Value::Object(POINTER)],
+    );
+    session.pump();
+    session.record(record::POINTER_ENTER, [5, 5, 0, 0]);
+    let serial = session.of(POINTER, pointer::ENTER.opcode)[0].word(0);
+    for shape in [cursor_shape::TEXT, cursor_shape::NWSE_RESIZE, 4] {
+        session.send(CURSOR_DEVICE, 1, &[Value::Uint(serial), Value::Uint(shape)]);
+    }
+    session.send(
+        POINTER,
+        0,
+        &[
+            Value::Uint(serial),
+            Value::Object(0),
+            Value::Int(0),
+            Value::Int(0),
+        ],
+    );
+    session.pump();
+    assert_eq!(session.fake.windows[&window].pointer_shapes, [1, 4, 0, 6]);
+    session.send(
+        CURSOR_DEVICE,
+        1,
+        &[Value::Uint(serial), Value::Uint(cursor_shape::LAST + 1)],
+    );
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((CURSOR_DEVICE, cursor_shape::INVALID_SHAPE))
+    );
+    session.end();
+}
+
+#[test]
+fn a_viewport_scales_the_buffer_to_its_destination_and_refuses_a_source_outside_it() {
+    let mut session = Session::new();
+    session.globals();
+    session.bind(9, "wp_viewporter", 1, VIEWPORTER);
+    session.configured_toplevel();
+    session.send(
+        VIEWPORTER,
+        1,
+        &[Value::NewId(VIEWPORT), Value::Object(SURFACE)],
+    );
+    session.send(VIEWPORT, 2, &[Value::Int(400), Value::Int(200)]);
+    let pixels = (0..WIDTH * HEIGHT).collect();
+    session.pool(pixels);
+    session.buffer(BUFFER, WIDTH, HEIGHT);
+    session.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    let (_, window) = session.fake.window().expect("a window");
+    assert_eq!((window.width, window.height), (400, 200));
+    assert_eq!(window.pixels[2 * 400 + 3], WIDTH + 1);
+    assert_eq!(window.pixels[199 * 400 + 399], WIDTH * HEIGHT - 1);
+    let fixed = eggos_wayland::wire::fixed;
+    session.send(
+        VIEWPORT,
+        1,
+        &[
+            Value::Fixed(fixed(150)),
+            Value::Fixed(0),
+            Value::Fixed(fixed(100)),
+            Value::Fixed(fixed(10)),
+        ],
+    );
+    session.send(SURFACE, 6, &[]);
+    session.pump();
+    assert_eq!(session.error(), Some((VIEWPORT, viewport::OUT_OF_BUFFER)));
     session.end();
 }

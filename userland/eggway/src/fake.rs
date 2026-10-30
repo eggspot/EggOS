@@ -6,7 +6,7 @@
 use crate::client::ClientSlot;
 use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
 use eggos_runtime::errno::Errno;
-use eggos_wayland::blit::{OPAQUE_MASK, Rect};
+use eggos_wayland::blit::{OPAQUE_MASK, Placement, Rect, WindowPixels};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Bytes a client sent in one `sendmsg`, with its descriptors.
@@ -56,7 +56,23 @@ pub struct FakeWindow {
     pub states: Vec<u32>,
     pub commits: Vec<Vec<Rect>>,
     pub drags: Vec<(u32, u32)>,
+    pub pointer_shapes: Vec<u32>,
     pub destroyed: bool,
+}
+
+struct FakePixels<'a> {
+    pixels: &'a mut [u32],
+    width: u32,
+}
+
+impl WindowPixels for FakePixels<'_> {
+    fn get(&mut self, x: u32, y: u32) -> u32 {
+        self.pixels[(y * self.width + x) as usize]
+    }
+
+    fn set(&mut self, x: u32, y: u32, pixel: u32) {
+        self.pixels[(y * self.width + x) as usize] = pixel;
+    }
 }
 
 /// The machine.
@@ -306,6 +322,39 @@ impl System for Fake {
         }
     }
 
+    fn place(
+        &mut self,
+        from: PoolPixels,
+        size: (u32, u32),
+        window: WindowBuffer,
+        placement: Placement,
+    ) {
+        let Some(&(descriptor, length)) = self.mappings.get(&from.address) else {
+            panic!("draw from {:#x}, which is not mapped", from.address);
+        };
+        assert_eq!(length, from.length);
+        let source = self.memory.get(&descriptor).cloned().unwrap_or_default();
+        let target = self.windows.get_mut(&window.id).expect("a window");
+        assert_eq!((target.width, target.height), (window.width, window.height));
+        let placement = Placement {
+            clip: placement.clip.clipped(window.width, window.height),
+            ..placement
+        };
+        let read = |column: u32, row: u32| -> Option<u32> {
+            if column >= size.0 || row >= size.1 {
+                return None;
+            }
+            let at = from.offset + row as usize * from.stride + column as usize * 4;
+            assert!(at + 4 <= from.length, "draw past the pool");
+            source.get(at / 4).copied()
+        };
+        let mut pixels = FakePixels {
+            pixels: &mut target.pixels,
+            width: window.width,
+        };
+        placement.draw(read, &mut pixels);
+    }
+
     fn keymap(&mut self) -> Result<(Fd, u32), Errno> {
         self.keymaps += 1;
         let size = eggos_wayland::keymap::US_KEYMAP.len() as u32 + 1;
@@ -400,6 +449,12 @@ impl System for Fake {
     ) -> Result<(), Errno> {
         let target = self.windows.get_mut(&window).ok_or(Errno::EINVAL)?;
         target.minimum = (width, height);
+        Ok(())
+    }
+
+    fn set_pointer(&mut self, _device: Fd, window: u32, shape: u32) -> Result<(), Errno> {
+        let target = self.windows.get_mut(&window).ok_or(Errno::EINVAL)?;
+        target.pointer_shapes.push(shape);
         Ok(())
     }
 

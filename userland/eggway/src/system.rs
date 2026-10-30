@@ -4,7 +4,7 @@
 
 use crate::client::ClientSlot;
 use eggos_runtime::errno::Errno;
-use eggos_wayland::blit::Rect;
+use eggos_wayland::blit::{Placement, Rect};
 
 /// A file descriptor.
 pub type Fd = i32;
@@ -76,6 +76,16 @@ pub trait System {
     /// Copies `rect` of a client's buffer into the same place of `window`'s buffer, every
     /// pixel made opaque; the parts outside the pool's mapping or the window are left out.
     fn copy_rows(&mut self, from: PoolPixels, window: WindowBuffer, rect: Rect);
+    /// Draws a client's buffer of `size` pixels into `window` as `placement` says (D172):
+    /// scaled, offset, clipped and blended; the parts outside the pool's mapping or the window
+    /// are left out.
+    fn place(
+        &mut self,
+        from: PoolPixels,
+        size: (u32, u32),
+        window: WindowBuffer,
+        placement: Placement,
+    );
     /// A new memory file holding the keyboard map and its NUL, sealed against changes of size:
     /// its descriptor and size.
     fn keymap(&mut self) -> Result<(Fd, u32), Errno>;
@@ -112,6 +122,9 @@ pub trait System {
         outcome: u32,
         tree: &[u8],
     ) -> Result<(), Errno>;
+    /// Sets the pointer shape `SET_POINTER` draws over the window's content: 0 arrow to 5 the
+    /// diagonal resize, 6 none.
+    fn set_pointer(&mut self, device: Fd, window: u32, shape: u32) -> Result<(), Errno>;
     /// Sets the smallest content the window may be resized to.
     fn set_minimum_size(
         &mut self,

@@ -1,6 +1,7 @@
 //! The interfaces EggOS's Wayland server serves, with their requests' signatures and their
-//! events' opcodes, errors and enums, from `wayland.xml` and `xdg-shell.xml`. Request tables are
-//! indexed by opcode; a request whose `since` is above the object's version is no request of
+//! events' opcodes, errors and enums, from `wayland.xml`, `xdg-shell.xml`,
+//! `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml` and `viewporter.xml`. Request tables
+//! are indexed by opcode; a request whose `since` is above the object's version is no request of
 //! that object's.
 
 use crate::wire::Arg::{self, Array, Fd, Fixed, Int, NewId, NullableObject, Object, String, Uint};
@@ -27,6 +28,14 @@ pub enum Interface {
     XdgSurface,
     XdgToplevel,
     XdgPopup,
+    Subcompositor,
+    Subsurface,
+    DecorationManager,
+    ToplevelDecoration,
+    CursorShapeManager,
+    CursorShapeDevice,
+    Viewporter,
+    Viewport,
 }
 
 impl Interface {
@@ -52,6 +61,14 @@ impl Interface {
             Self::XdgSurface => "xdg_surface",
             Self::XdgToplevel => "xdg_toplevel",
             Self::XdgPopup => "xdg_popup",
+            Self::Subcompositor => "wl_subcompositor",
+            Self::Subsurface => "wl_subsurface",
+            Self::DecorationManager => "zxdg_decoration_manager_v1",
+            Self::ToplevelDecoration => "zxdg_toplevel_decoration_v1",
+            Self::CursorShapeManager => "wp_cursor_shape_manager_v1",
+            Self::CursorShapeDevice => "wp_cursor_shape_device_v1",
+            Self::Viewporter => "wp_viewporter",
+            Self::Viewport => "wp_viewport",
         }
     }
 }
@@ -182,6 +199,45 @@ const XDG_POPUP: &[Request] = &[
     request("grab", 1, &[Object, Uint]),
     request("reposition", 3, &[Object, Uint]),
 ];
+const SUBCOMPOSITOR: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_subsurface", 1, &[NewId, Object, Object]),
+];
+const SUBSURFACE: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_position", 1, &[Int, Int]),
+    request("place_above", 1, &[Object]),
+    request("place_below", 1, &[Object]),
+    request("set_sync", 1, &[]),
+    request("set_desync", 1, &[]),
+];
+const DECORATION_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_toplevel_decoration", 1, &[NewId, Object]),
+];
+const TOPLEVEL_DECORATION: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_mode", 1, &[Uint]),
+    request("unset_mode", 1, &[]),
+];
+const CURSOR_SHAPE_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_pointer", 1, &[NewId, Object]),
+    request("get_tablet_tool_v2", 1, &[NewId, Object]),
+];
+const CURSOR_SHAPE_DEVICE: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_shape", 1, &[Uint, Uint]),
+];
+const VIEWPORTER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_viewport", 1, &[NewId, Object]),
+];
+const VIEWPORT: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_source", 1, &[Fixed, Fixed, Fixed, Fixed]),
+    request("set_destination", 1, &[Int, Int]),
+];
 
 /// `interface`'s requests, indexed by opcode.
 pub const fn requests(interface: Interface) -> &'static [Request] {
@@ -205,6 +261,14 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::XdgSurface => XDG_SURFACE,
         Interface::XdgToplevel => XDG_TOPLEVEL,
         Interface::XdgPopup => XDG_POPUP,
+        Interface::Subcompositor => SUBCOMPOSITOR,
+        Interface::Subsurface => SUBSURFACE,
+        Interface::DecorationManager => DECORATION_MANAGER,
+        Interface::ToplevelDecoration => TOPLEVEL_DECORATION,
+        Interface::CursorShapeManager => CURSOR_SHAPE_MANAGER,
+        Interface::CursorShapeDevice => CURSOR_SHAPE_DEVICE,
+        Interface::Viewporter => VIEWPORTER,
+        Interface::Viewport => VIEWPORT,
     }
 }
 
@@ -224,7 +288,7 @@ pub struct Global {
 }
 
 /// Every global, in the order the registry announces them.
-pub const GLOBALS: [Global; 5] = [
+pub const GLOBALS: [Global; 9] = [
     Global {
         name: 1,
         interface: Interface::Compositor,
@@ -249,6 +313,26 @@ pub const GLOBALS: [Global; 5] = [
         name: 5,
         interface: Interface::XdgWmBase,
         version: 3,
+    },
+    Global {
+        name: 6,
+        interface: Interface::Subcompositor,
+        version: 1,
+    },
+    Global {
+        name: 7,
+        interface: Interface::DecorationManager,
+        version: 1,
+    },
+    Global {
+        name: 8,
+        interface: Interface::CursorShapeManager,
+        version: 1,
+    },
+    Global {
+        name: 9,
+        interface: Interface::Viewporter,
+        version: 1,
     },
 ];
 
@@ -426,11 +510,82 @@ pub mod xdg_toplevel {
     pub const EDGE_BOTTOM_RIGHT: u32 = 10;
 }
 
-/// `xdg_popup`'s events.
+/// `xdg_popup`'s events and errors.
 pub mod xdg_popup {
     use super::{Event, event};
     pub const CONFIGURE: Event = event(0, 1);
     pub const POPUP_DONE: Event = event(1, 1);
+    pub const REPOSITIONED: Event = event(2, 3);
+    pub const INVALID_GRAB: u32 = 0;
+}
+
+/// `xdg_positioner`'s errors and enums: anchors and gravities share their numbers.
+pub mod xdg_positioner {
+    pub const INVALID_INPUT: u32 = 0;
+    pub const NONE: u32 = 0;
+    pub const TOP: u32 = 1;
+    pub const BOTTOM: u32 = 2;
+    pub const LEFT: u32 = 3;
+    pub const RIGHT: u32 = 4;
+    pub const TOP_LEFT: u32 = 5;
+    pub const BOTTOM_LEFT: u32 = 6;
+    pub const TOP_RIGHT: u32 = 7;
+    pub const BOTTOM_RIGHT: u32 = 8;
+    pub const SLIDE_X: u32 = 1;
+    pub const SLIDE_Y: u32 = 2;
+    pub const FLIP_X: u32 = 4;
+    pub const FLIP_Y: u32 = 8;
+    pub const RESIZE_X: u32 = 16;
+    pub const RESIZE_Y: u32 = 32;
+}
+
+/// `wl_subcompositor`'s and `wl_subsurface`'s errors.
+pub mod subsurface {
+    pub const BAD_SURFACE: u32 = 0;
+    pub const BAD_PARENT: u32 = 1;
+}
+
+/// `zxdg_toplevel_decoration_v1`'s events, errors and modes.
+pub mod decoration {
+    use super::{Event, event};
+    pub const CONFIGURE: Event = event(0, 1);
+    pub const UNCONFIGURED_BUFFER: u32 = 0;
+    pub const ALREADY_CONSTRUCTED: u32 = 1;
+    pub const ORPHANED: u32 = 2;
+    pub const CLIENT_SIDE: u32 = 1;
+    pub const SERVER_SIDE: u32 = 2;
+}
+
+/// `wp_cursor_shape_device_v1`'s errors and shapes (version 1's, 1 to 34).
+pub mod cursor_shape {
+    pub const INVALID_SHAPE: u32 = 1;
+    pub const DEFAULT: u32 = 1;
+    pub const TEXT: u32 = 9;
+    pub const VERTICAL_TEXT: u32 = 10;
+    pub const E_RESIZE: u32 = 18;
+    pub const N_RESIZE: u32 = 19;
+    pub const NE_RESIZE: u32 = 20;
+    pub const NW_RESIZE: u32 = 21;
+    pub const S_RESIZE: u32 = 22;
+    pub const SE_RESIZE: u32 = 23;
+    pub const SW_RESIZE: u32 = 24;
+    pub const W_RESIZE: u32 = 25;
+    pub const EW_RESIZE: u32 = 26;
+    pub const NS_RESIZE: u32 = 27;
+    pub const NESW_RESIZE: u32 = 28;
+    pub const NWSE_RESIZE: u32 = 29;
+    pub const COL_RESIZE: u32 = 30;
+    pub const ROW_RESIZE: u32 = 31;
+    pub const LAST: u32 = 34;
+}
+
+/// `wp_viewporter`'s and `wp_viewport`'s errors.
+pub mod viewport {
+    pub const VIEWPORT_EXISTS: u32 = 0;
+    pub const BAD_VALUE: u32 = 0;
+    pub const BAD_SIZE: u32 = 1;
+    pub const OUT_OF_BUFFER: u32 = 2;
+    pub const NO_SURFACE: u32 = 3;
 }
 
 /// The signatures of the events the test client decodes, by the interface and opcode.
@@ -469,6 +624,8 @@ pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'stat
         (Interface::XdgToplevel, 1) => &[],
         (Interface::XdgPopup, 0) => &[Int, Int, Int, Int],
         (Interface::XdgPopup, 1) => &[],
+        (Interface::XdgPopup, 2) => &[Uint],
+        (Interface::ToplevelDecoration, 0) => &[Uint],
         _ => return None,
     })
 }

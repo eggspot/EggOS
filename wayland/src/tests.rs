@@ -1,4 +1,4 @@
-use crate::blit::{OPAQUE_MASK, Rect, copy_opaque_rows};
+use crate::blit::{OPAQUE_MASK, Placement, Rect, WindowPixels, blend_over, copy_opaque_rows};
 use crate::keymap::{self, US_KEYMAP};
 use crate::protocol::{self, Interface};
 use crate::wire::{self, Arg, Header, MAX_ARGUMENTS, Value, WireError, decode, encode};
@@ -218,6 +218,14 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::XdgSurface,
         Interface::XdgToplevel,
         Interface::XdgPopup,
+        Interface::Subcompositor,
+        Interface::Subsurface,
+        Interface::DecorationManager,
+        Interface::ToplevelDecoration,
+        Interface::CursorShapeManager,
+        Interface::CursorShapeDevice,
+        Interface::Viewporter,
+        Interface::Viewport,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);
@@ -245,8 +253,24 @@ fn every_request_table_is_ordered_and_bounded() {
             ("wl_shm", 1),
             ("wl_seat", 5),
             ("wl_output", 3),
-            ("xdg_wm_base", 3)
+            ("xdg_wm_base", 3),
+            ("wl_subcompositor", 1),
+            ("zxdg_decoration_manager_v1", 1),
+            ("wp_cursor_shape_manager_v1", 1),
+            ("wp_viewporter", 1)
         ]
+    );
+    assert_eq!(
+        protocol::request_of(Interface::Viewport, 1, 1).map(|request| request.signature.len()),
+        Some(4)
+    );
+    assert_eq!(
+        protocol::request_of(Interface::Subsurface, 1, 5).map(|request| request.name),
+        Some("set_desync")
+    );
+    assert_eq!(
+        protocol::GLOBALS.map(|global| global.name),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9]
     );
 }
 
@@ -315,4 +339,53 @@ fn rectangles_from_clients_are_clipped_and_joined() {
     assert_eq!(Rect::default().union(&joined), joined);
     assert_eq!(joined.clipped(6, 4), Rect::new(2, 0, 4, 4));
     assert!(joined.clipped(1, 1).is_empty());
+}
+
+struct Pixels {
+    pixels: Vec<u32>,
+    width: u32,
+}
+
+impl WindowPixels for Pixels {
+    fn get(&mut self, x: u32, y: u32) -> u32 {
+        self.pixels[(y * self.width + x) as usize]
+    }
+
+    fn set(&mut self, x: u32, y: u32, pixel: u32) {
+        self.pixels[(y * self.width + x) as usize] = pixel;
+    }
+}
+
+#[test]
+fn a_placement_scales_offsets_clips_and_blends() {
+    let source: Vec<u32> = (0..16).map(|pixel| 0xff00_0000 | pixel).collect();
+    let read = |x: u32, y: u32| source.get((y * 4 + x) as usize).copied();
+    let mut window = Pixels {
+        pixels: vec![7; 64],
+        width: 8,
+    };
+    let doubled = Placement {
+        source: Rect::new(0, 0, 4, 4),
+        at: (-2, 1),
+        size: (8, 8),
+        clip: Rect::new(0, 0, 8, 8),
+        blend: false,
+    };
+    assert_eq!(doubled.written(), Rect::new(0, 1, 6, 7));
+    doubled.draw(read, &mut window);
+    assert_eq!(window.pixels[0], 7);
+    assert_eq!(window.pixels[8], 1);
+    assert_eq!(window.pixels[8 + 5], 3);
+    assert_eq!(window.pixels[7 * 8], 4 * 3 + 1);
+    assert_eq!(window.pixels[8 + 6], 7);
+    let half = blend_over(0x8040_4040, 0x00ff_ffff);
+    assert_eq!(half, 0x00bf_bfbf);
+    assert_eq!(blend_over(0xff12_3456, 0x0000_0000), 0x0012_3456);
+    assert_eq!(blend_over(0x0000_0000, 0x0012_3456), 0x0012_3456);
+    let outside = Placement {
+        at: (20, 20),
+        size: (4, 4),
+        ..doubled
+    };
+    assert!(outside.written().is_empty());
 }

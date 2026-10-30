@@ -109,13 +109,15 @@ fn bitmap(shape: PointerShape) -> Bitmap {
         PointerShape::ResizeEastWest => (&RESIZE_NORTH_SOUTH, Transform::Transposed),
         PointerShape::ResizeNorthWestSouthEast => (&RESIZE_NORTH_WEST, Transform::None),
         PointerShape::ResizeNorthEastSouthWest => (&RESIZE_NORTH_WEST, Transform::Mirrored),
+        PointerShape::Hidden => (&[], Transform::None),
     };
     Bitmap { rows, transform }
 }
 
 impl Bitmap {
     fn size(&self) -> (u32, u32) {
-        let (width, height) = (self.rows[0].len() as u32, self.rows.len() as u32);
+        let width = self.rows.first().map_or(0, |row| row.len()) as u32;
+        let height = self.rows.len() as u32;
         match self.transform {
             Transform::Transposed => (height, width),
             Transform::None | Transform::Mirrored => (width, height),
@@ -149,6 +151,7 @@ pub const fn size_and_hotspot(shape: PointerShape) -> ((u32, u32), (u32, u32)) {
         PointerShape::ResizeEastWest => ((19, 9), (9, 4)),
         PointerShape::ResizeNorthWestSouthEast => ((16, 16), (7, 7)),
         PointerShape::ResizeNorthEastSouthWest => ((16, 16), (8, 7)),
+        PointerShape::Hidden => ((0, 0), (0, 0)),
     }
 }
 
@@ -214,6 +217,7 @@ mod tests {
             PointerShape::ResizeEastWest,
             PointerShape::ResizeNorthWestSouthEast,
             PointerShape::ResizeNorthEastSouthWest,
+            PointerShape::Hidden,
         ] {
             let bitmap = bitmap(shape);
             assert_eq!(bitmap.size(), size_and_hotspot(shape).0, "{shape:?}");
@@ -224,5 +228,7 @@ mod tests {
                     .all(|row| row.len() == bitmap.rows[0].len())
             );
         }
+        assert!(area(PointerShape::Hidden, 40, 50).is_empty());
+        assert_eq!(pixel_at(PointerShape::Hidden, (40, 50), 40, 50), None);
     }
 }

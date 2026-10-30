@@ -1,9 +1,11 @@
-//! One Wayland client's state (D140), all of it fixed in size: what it sent and what waits to
-//! go to it, the descriptors in both directions, its objects by id, and its pools, buffers and
-//! surfaces. The compositor keeps each client in memory of its own, given back when it goes.
+//! One Wayland client's state (D140, D172), all of it fixed in size: what it sent and what
+//! waits to go to it, the descriptors in both directions, its objects by id, and its pools,
+//! buffers, surfaces and positioners. The compositor keeps each client in memory of its own,
+//! given back when it goes.
 
 use crate::system::{Fd, WindowBuffer};
 use eggos_wayland::blit::Rect;
+use eggos_wayland::positioner::Positioner;
 use eggos_wayland::protocol::{Event, Interface, display};
 use eggos_wayland::wire::{self, Value};
 
@@ -29,6 +31,8 @@ pub const MAX_POOLS: usize = 8;
 pub const MAX_FRAMES: usize = 8;
 /// The longest title kept, in bytes: `/dev/window`'s.
 pub const TITLE_CAPACITY: usize = 64;
+/// Positioners per client.
+pub const MAX_POSITIONERS: usize = 8;
 
 /// One entry of the object table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -64,6 +68,8 @@ pub struct Buffer {
     pub width: u32,
     pub height: u32,
     pub stride: usize,
+    /// `ARGB8888`: its alpha counts where it is drawn over another surface.
+    pub alpha: bool,
 }
 
 /// What the next commit does with the surface's buffer.
@@ -78,7 +84,35 @@ pub enum Attach {
     Buffer(u16),
 }
 
-/// A `wl_surface` and, when it has the role, its `xdg_surface` and `xdg_toplevel`.
+/// A role a surface takes besides the `xdg_surface` ones, which [`Surface::xdg_surface`] marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Role {
+    #[default]
+    None,
+    /// A `wl_subsurface`'s, drawn over its parent.
+    Subsurface,
+    /// The pointer's image (`wl_pointer.set_cursor`).
+    Cursor,
+}
+
+/// A `wp_viewport`'s state: the part of the buffer shown and the size it is shown at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewportState {
+    /// The source rectangle in buffer pixels, 24.8 fixed point: x, y, width, height.
+    pub source: Option<[i32; 4]>,
+    /// The surface's size.
+    pub destination: Option<(i32, i32)>,
+}
+
+impl ViewportState {
+    /// Whether it changes how the buffer is shown.
+    pub fn is_active(&self) -> bool {
+        self.source.is_some() || self.destination.is_some()
+    }
+}
+
+/// A `wl_surface` and, when it has the role, its `xdg_surface` and `xdg_toplevel` or
+/// `xdg_popup`, or its `wl_subsurface`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Surface {
     pub id: u32,
@@ -108,6 +142,37 @@ pub struct Surface {
     pub maximized: bool,
     pub minimised: bool,
     pub activated: bool,
+    pub role: Role,
+    /// The surface a subsurface or a popup is drawn on.
+    pub parent: Option<u16>,
+    /// A subsurface's or a popup's place relative to its parent, in surface pixels.
+    pub position: (i32, i32),
+    /// A subsurface's `set_position`, taken on its parent's next commit.
+    pub pending_position: Option<(i32, i32)>,
+    /// A subsurface waits for its parent's commit to show what it commits.
+    pub synced: bool,
+    /// What a synchronized subsurface committed, shown on its parent's next commit.
+    pub cached: Option<Attach>,
+    /// The buffer kept to draw again when anything in its window changes.
+    pub held: Option<u16>,
+    /// A subsurface's place among its siblings: above its parent when positive.
+    pub order: i32,
+    /// The `xdg_popup`, 0 when it is none.
+    pub popup: u32,
+    /// The popup took the keyboard and dismisses on a click elsewhere.
+    pub grabbed: bool,
+    /// The popup was dismissed: what it commits is not shown.
+    pub dismissed: bool,
+    /// The popup's size, as placed.
+    pub popup_size: (u32, u32),
+    /// The window geometry (`set_window_geometry`): x, y, width, height.
+    pub geometry: Option<(i32, i32, i32, i32)>,
+    /// The `zxdg_toplevel_decoration_v1`, 0 when it is none.
+    pub decoration: u32,
+    /// The `wp_viewport`, 0 when it is none.
+    pub viewport: u32,
+    pub viewport_pending: ViewportState,
+    pub viewport_current: ViewportState,
 }
 
 impl Surface {
@@ -141,23 +206,45 @@ impl Surface {
             maximized: false,
             minimised: false,
             activated: false,
+            role: Role::None,
+            parent: None,
+            position: (0, 0),
+            pending_position: None,
+            synced: true,
+            cached: None,
+            held: None,
+            order: 0,
+            popup: 0,
+            grabbed: false,
+            dismissed: false,
+            popup_size: (0, 0),
+            geometry: None,
+            decoration: 0,
+            viewport: 0,
+            viewport_pending: ViewportState {
+                source: None,
+                destination: None,
+            },
+            viewport_current: ViewportState {
+                source: None,
+                destination: None,
+            },
         }
     }
 
-    /// Forgets the toplevel role's state, as when the toplevel is destroyed.
+    /// Forgets the toplevel or popup role's state, as when the toplevel or popup is destroyed;
+    /// what it holds and its viewport stay.
     pub fn reset_toplevel(&mut self) {
-        let (id, xdg_surface, frames, frame_count, last_done_ms) = (
-            self.id,
-            self.xdg_surface,
-            self.frames,
-            self.frame_count,
-            self.last_done_ms,
-        );
-        *self = Self::new(id);
-        self.xdg_surface = xdg_surface;
-        self.frames = frames;
-        self.frame_count = frame_count;
-        self.last_done_ms = last_done_ms;
+        let kept = *self;
+        *self = Self::new(kept.id);
+        self.xdg_surface = kept.xdg_surface;
+        self.frames = kept.frames;
+        self.frame_count = kept.frame_count;
+        self.last_done_ms = kept.last_done_ms;
+        self.held = kept.held;
+        self.viewport = kept.viewport;
+        self.viewport_pending = kept.viewport_pending;
+        self.viewport_current = kept.viewport_current;
         self.ever_attached = true;
     }
 }
@@ -184,7 +271,13 @@ pub struct ClientSlot {
     pub pools: [Option<Pool>; MAX_POOLS],
     pub buffers: [Option<Buffer>; MAX_BUFFERS],
     pub surfaces: [Option<Surface>; MAX_SURFACES],
+    pub positioners: [Option<Positioner>; MAX_POSITIONERS],
     pub pool_bytes: usize,
+    /// It bound `wl_subcompositor` or `wp_viewporter`, or made a positioner: its windows are
+    /// drawn from the buffers they hold, so subsurfaces and popups can be drawn over them.
+    pub composes: bool,
+    /// The last order given to a subsurface placed on top.
+    pub next_order: i32,
     pub pointer_focus: Option<u16>,
     pub keyboard_focus: Option<u16>,
     pub held_press: Option<(u32, u16)>,
@@ -223,7 +316,10 @@ impl ClientSlot {
             pools: [None; MAX_POOLS],
             buffers: [None; MAX_BUFFERS],
             surfaces: [None; MAX_SURFACES],
+            positioners: [None; MAX_POSITIONERS],
             pool_bytes: 0,
+            composes: false,
+            next_order: 0,
             pointer_focus: None,
             keyboard_focus: None,
             held_press: None,

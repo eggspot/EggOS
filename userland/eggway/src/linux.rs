@@ -12,7 +12,7 @@ use core::ffi::CStr;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
-use eggos_wayland::blit::{OPAQUE_MASK, Rect};
+use eggos_wayland::blit::{OPAQUE_MASK, Placement, Rect, WindowPixels};
 use eggos_wayland::keymap::US_KEYMAP;
 
 /// The folder of every user's runtime directory.
@@ -69,6 +69,7 @@ mod request {
     pub const SET_SIZE: usize = 0xc018_7703;
     pub const SET_MINIMUM_SIZE: usize = 0x400c_7704;
     pub const SET_STATE: usize = 0x4008_7706;
+    pub const SET_POINTER: usize = 0x4008_7707;
     pub const COMMIT: usize = 0x4088_7708;
     pub const DESTROY: usize = 0x4004_7709;
     pub const GET_WORK_AREA: usize = 0x8014_770a;
@@ -628,6 +629,38 @@ impl System for Linux {
         }
     }
 
+    fn place(
+        &mut self,
+        from: PoolPixels,
+        size: (u32, u32),
+        window: WindowBuffer,
+        placement: Placement,
+    ) {
+        let placement = Placement {
+            clip: placement.clip.clipped(window.width, window.height),
+            ..placement
+        };
+        let read = |column: u32, row: u32| -> Option<u32> {
+            if column >= size.0 || row >= size.1 {
+                return None;
+            }
+            let at = (row as usize)
+                .checked_mul(from.stride)?
+                .checked_add(from.offset)?
+                .checked_add(column as usize * 4)?;
+            if at.checked_add(4)? > from.length {
+                return None;
+            }
+            let source = (from.address + at) as *const u32;
+            // SAFETY: the pixel is inside the pool's mapping (`at + 4` is at most its length)
+            // and 4-aligned (the mapping is page-aligned, the buffer's offset and stride
+            // multiples of 4). The client may change that memory at any moment, so it is read
+            // with one volatile load and never through a reference; any 32 bits are a pixel.
+            Some(unsafe { source.read_volatile() })
+        };
+        placement.draw(read, &mut MappedWindow(window));
+    }
+
     fn keymap(&mut self) -> Result<(Fd, u32), Errno> {
         let descriptor = call(
             number::MEMFD_CREATE,
@@ -764,6 +797,13 @@ impl System for Linux {
         ioctl(device, request::SET_MINIMUM_SIZE, &mut minimum)
     }
 
+    fn set_pointer(&mut self, device: Fd, window: u32, shape: u32) -> Result<(), Errno> {
+        let mut argument = [0u8; 8];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, shape);
+        ioctl(device, request::SET_POINTER, &mut argument)
+    }
+
     fn set_state(&mut self, device: Fd, window: u32, state: u32) -> Result<(), Errno> {
         let mut argument = [0u8; 8];
         put(&mut argument, 0, window);
@@ -830,6 +870,30 @@ impl System for Linux {
             Err(Errno::EAGAIN) => Ok(0),
             read => read,
         }
+    }
+}
+
+struct MappedWindow(WindowBuffer);
+
+impl MappedWindow {
+    fn pixel(&self, x: u32, y: u32) -> *mut u32 {
+        (self.0.address + (y as usize * self.0.width as usize + x as usize) * 4) as *mut u32
+    }
+}
+
+impl WindowPixels for MappedWindow {
+    fn get(&mut self, x: u32, y: u32) -> u32 {
+        // SAFETY: `Placement::draw` asks only for pixels inside its clip, which `place` cut to
+        // the window's width and height, so the pixel is inside the window's buffer mapping and
+        // 4-aligned; this thread is the only one that writes it and the window server reads it
+        // only during `COMMIT`, which is not in flight.
+        unsafe { self.pixel(x, y).read() }
+    }
+
+    fn set(&mut self, x: u32, y: u32, pixel: u32) {
+        // SAFETY: as in `get`: inside the window's buffer, aligned, and written by this thread
+        // alone while no `COMMIT` reads it.
+        unsafe { self.pixel(x, y).write(pixel) }
     }
 }
 
