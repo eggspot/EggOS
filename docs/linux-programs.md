@@ -148,8 +148,8 @@ and closes it on every architecture.
 
 ### What real toolkits need next
 
-SDL apps run (D172) and GTK 3 apps run (D176, [compatibility](compatibility.md)); Qt,
-GTK 4, browsers and Electron apps do not yet. What they need, roughly in the order it unlocks them:
+SDL apps run (D172), GTK 3 apps run (D176) and Qt 6 Widgets apps run (D179,
+[compatibility](compatibility.md)); GTK 4, Qt Quick, browsers and Electron apps do not yet. What they need, roughly in the order it unlocks them:
 
 | Need | Who needs it |
 |------|--------------|
@@ -162,8 +162,9 @@ GTK 4, browsers and Electron apps do not yet. What they need, roughly in the ord
 | (`xdg_popup` placement: done inside the toplevel's window, D172) | menus and tooltips |
 | (`wl_data_device_manager` and the primary selection: copy and paste done, D176); drag and drop | copy and paste, drag and drop |
 | (cursor surfaces and `cursor-shape-v1`: done with EggOS's shapes, D172); a cursor surface's own image, the hand and busy shapes | the program's own pointer shapes |
-| (`wp_viewporter`: done, D172); fractional scale, buffer scales above 1 | scaling |
-| `linux-dmabuf` and a GPU driver stack | EGL and Vulkan through Mesa |
+| (`wp_viewporter`: done, D172; `wp_fractional_scale_v1` at a scale of 1 and `wl_output` 4: done, D179); scales other than 1, buffer scales above 1 | scaling |
+| (`inotify`: done for names made, moved and removed in a watched folder and a watched file's own changes, D179); a folder's watch told of its files' writes and closes | Qt's `QFileSystemWatcher`, GLib's `GFileMonitor`, file managers |
+| `linux-dmabuf` and a GPU driver stack (until then, EggOS's own `libEGL.so.1`, `libGL.so.1` and `libGLESv2.so.2` that report no display, carried by apps whose toolkit links them, D179) | EGL and Vulkan through Mesa, Qt Quick |
 | (`text-input-v3`: served, D176); an input method to send text through it | input methods |
 | (`xdg-activation`: done, D176) | apps that raise their own windows |
 | relative pointer and pointer constraints | games |
@@ -205,8 +206,9 @@ GTK 4, browsers and Electron apps do not yet. What they need, roughly in the ord
   TCP (`std::net::TcpStream` and `TcpListener`: `connect`, `listen`, `accept`, `poll`,
   `shutdown`, timeouts), and names through musl's resolver; IPv6 and `AF_UNIX` datagrams do
   not yet. Wayland GUI programs work through `eggway` (D140, above), and SDL apps (D172) and GTK 3
-  apps (D176) on it; Qt not yet. `sysinfo` and `fadvise64` work (D176); `inotify`, `chown`,
-  `copy_file_range`, `splice` and extended attributes do not yet.
+  apps (D176) and Qt 6 Widgets apps (D179) on it. `sysinfo` and `fadvise64` (D176) and
+  `inotify` (D179) work; `chown`, `copy_file_range`, `splice` and extended attributes do not
+  yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

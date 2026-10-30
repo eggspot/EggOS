@@ -644,8 +644,8 @@ The release path (the release-path review's issues #141-#145, after the items ab
   rethrow, throws from catch blocks), `signal` and `raise`; the Windows C runtime boot test runs
   `eggcpp.exe`, our own C++ program built by MSVC in CI, on x86_64 and aarch64. Next: the rest
   of the Windows C runtime (`setjmp`, locales, the math library, wide streams, `_open`) and
-  msvcp140 (D177's "Not yet"); nib loading for apps like UDCalc (D175's "Not yet"); a real Qt
-  app (part 27). Its seventh step, a real Win32 app on common controls, GDI+ and COM installs
+  msvcp140 (D177's "Not yet"); nib loading for apps like UDCalc (D175's "Not yet"). Its
+  seventh step, a real Win32 app on common controls, GDI+ and COM installs
   and runs, **written, unchecked** (D178): AutoHotkey v2.0.31 (chosen by research; its x64
   build, so x86_64 only), listed in docs/compatibility.md, running our script's window of Claude
   Fable's design (docs/ux/windows-controls-v0.3.md sections 20-31); comctl32's status bar,
@@ -655,7 +655,19 @@ The release path (the release-path review's issues #141-#145, after the items ab
   VARIANTs and SAFEARRAYs; dialogs from templates, accelerators, menu items, subclassing; and
   advapi32, wsock32, WinINet, version, psapi, shlwapi, uxtheme, dwmapi and more of kernel32,
   user32 and shell32; CI's `autohotkey` job drives the list, the toolbar, the tabs and the tree,
-  reads the element tree and compares the frames.
+  reads the element tree and compares the frames. Its eighth step, a real Qt app installs and
+  runs, **written, unchecked** (D179): CorePad 5.0.0 on Qt 6.11.1 Widgets (chosen by research;
+  Qt's raster engine draws into `wl_shm` buffers; Alpine's builds for x86_64 and aarch64),
+  listed in docs/compatibility.md, carrying Qt's Wayland plugins, ICU's data and EggOS's own
+  `libEGL.so.1`, `libGL.so.1` and `libGLESv2.so.2`, which answer that there is no display (Alpine's
+  Qt is linked against Mesa's); eggway's `wl_output` 4 (the output's name and description),
+  `xdg_wm_base` 5 (each toplevel's bounds, the window manager's capabilities) and
+  `wp_fractional_scale_v1` (a preferred scale of 1); `inotify` in the kernel (names made, moved
+  and removed in a watched folder, a watched file's changes, through `poll`, `epoll` and
+  `FIONREAD`; the linux-events program checks it); `/etc/passwd` and `/etc/group` in the base;
+  CI's `qt-app` job types, copies and pastes, saves as through Qt's file dialog and quits, and
+  reads the saved file back. Next: Qt Quick and OpenGL widgets (a GPU stack, part 67), D-Bus,
+  icon themes, scales other than 1 (part 43), a folder's watch told of its files' writes.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

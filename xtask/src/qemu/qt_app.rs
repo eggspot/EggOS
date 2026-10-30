@@ -423,8 +423,9 @@ mod tests {
     fn the_typed_lines_install_open_and_read_back() {
         assert!(install_line().starts_with(
             "app install --entry corepad --environment 'QT_QPA_PLATFORM=wayland \
-             QT_PLUGIN_PATH=/Applications/corepad/plugins ICU_DATA=/Applications/corepad/share/icu \
-             LANG=C.UTF-8' --arguments '/tmp/note.txt' /media/host/corepad.zip;"
+             QT_PLUGIN_PATH=/Applications/corepad/plugins \
+             ICU_DATA=/Applications/corepad/share/icu' --arguments '/tmp/note.txt' \
+             /media/host/corepad.zip;"
         ));
         assert!(open_line().starts_with("echo alpha > /tmp/note.txt; cd /tmp; app open corepad;"));
         assert!(after_line().starts_with("cat /tmp/saved.txt; echo; echo QT-APP saved $?;"));

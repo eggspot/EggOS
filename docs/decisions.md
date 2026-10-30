@@ -12831,3 +12831,163 @@ the license, by an explicit instruction recorded here.
   (D177); host tests for the code under `win32/` (that module is built only for Windows
   programs, so its pure parts belong in modules outside it); aarch64 (part 39, x64 programs on
   Arm).
+
+## D179 A real Qt app installs and runs: CorePad on Qt 6 Widgets through `eggway`, with EggOS's own EGL and GL libraries that report no display, `wl_output` 4, `xdg_wm_base` 5 and `wp_fractional_scale_v1`; `inotify` in the kernel; `/etc/passwd` and `/etc/group`; CI's `qt-app` job (batch part 27, the Real apps track's eighth step, its first Qt app; D176's "Not yet"; extends D18, D21, D22, D140, D167, D169, D172, D176) — Decided by the build loop (the app, where its pieces come from and what Qt needs at run time decided by research)
+- **Why.** After an SDL game (D172) and a GTK app (D176), Qt is the other toolkit most Linux
+  desktop apps are written in (KDE's, LXQt's, many cross-platform tools). It asks for what GTK
+  did not: plugins found through its environment, ICU, an EGL and GL it is linked against even
+  when it never draws with them, the output's name, toplevel bounds, fractional scale, a second
+  toplevel for its own file dialog, and a file watcher for that dialog's folder. The plan's
+  part 27 names the kind of app, not the app: research picked it.
+- **The app** (decided by research, below): CorePad 5.0.0, the C Suite's text editor
+  (GPL-3.0-or-later), a Qt Widgets app on Qt 6.11.1, as Alpine Linux `v3.24` builds it against
+  musl for x86_64 and aarch64, with the C Suite's `libcprime` 5.0.0, Qt's Core, Gui, Widgets,
+  Network, DBus, Xml and Wayland client libraries, ICU 78 and its English data, GLib 2.88.1,
+  HarfBuzz, fontconfig, FreeType, `libproxy` and the network libraries it is linked against
+  (curl, OpenSSL, nghttp2, c-ares, libidn2, libpsl: loaded, never used), the X11 libraries
+  x86_64's Qt is linked against, Wayland 1.25.0's client libraries, `libxkbcommon`, musl and
+  DejaVu's fonts: 52 packages, 54 libraries on aarch64 and 60 on x86_64 (about 62 MB with the
+  plugins, ICU's data and the fonts), and four Qt plugins (`platforms/libqwayland.so`,
+  `wayland-shell-integration/libxdg-shell.so`,
+  `platforminputcontexts/libcomposeplatforminputcontextplugin.so` and
+  `wayland-decoration-client/libbradient.so`, the client-side title bar Qt falls back to, which
+  stays unloaded as eggway draws title bars). It is test data: downloaded by CI on every run,
+  checked against SHA-256s pinned in `xtask/src/qt_app.rs`, never shipped in an image or
+  committed. docs/compatibility.md lists it.
+- **EGL and GL without a GPU** (`xtask/src/gl_libraries.rs`): Alpine's `libQt6Gui` names
+  `libEGL.so.1` and `libGL.so.1` (x86_64) or `libGLESv2.so.2` (aarch64), Mesa's, which bring
+  Mesa's Gallium driver and LLVM (about 235 MB) and a GPU EggOS cannot run yet; musl's loader
+  binds every symbol when it loads a library and refuses one nothing defines. So the archive
+  carries EggOS's own three libraries, written byte by byte as ELF-64 shared objects (a
+  read-and-execute segment with the System V hash table, the dynamic symbols and their names
+  and one 16-byte function per symbol; a read-and-write segment with the dynamic section and
+  `DT_SONAME`; section headers for `readelf` and `objdump`). Every function returns its fixed
+  answer in the return register: 0 (`EGL_FALSE`, `EGL_NO_DISPLAY`, `EGL_NO_CONTEXT`, a null
+  pointer) for EGL 1.5's 37 entry points but `eglGetError` (`EGL_NOT_INITIALIZED`) and
+  `eglReleaseThread` (`EGL_TRUE`), `GLX_NO_EXTENSION` for GLX's queries, 0 for the GL queries:
+  what a system without a GPU driver answers. Qt Widgets never asks for a context and draws
+  with its raster engine into `wl_shm` buffers.
+- **What Qt binds in eggway** (`wayland/src/protocol.rs`, `userland/eggway/src/compositor.rs`):
+  `wl_output` is served at version 4: `name` (`DISPLAY-1`) and `description` (`EggOS display`)
+  before `done`. `xdg_wm_base` at version 5: each toplevel is told the work area's size as its
+  bounds (`configure_bounds`, before every `configure`; the size is read from the window
+  server when a client connects) and, when it is made, the window manager's capabilities
+  (`wm_capabilities`: maximise and minimise; no window menu, and full screen is maximised, so
+  neither is announced). Global 15, `wp_fractional_scale_manager_v1` 1: `get_fractional_scale`
+  gives a surface its object (one per surface, `fractional_scale_exists` for a second) and
+  tells it `preferred_scale` 120, a scale of 1, as every EggOS output has; the object goes
+  inert with its surface. Clients bound at older versions get nothing new. Qt also binds
+  `wl_compositor`, `wl_shm`, `wl_seat`, `wl_subcompositor`, `wp_viewporter`,
+  `zxdg_decoration_manager_v1` (server-side: EggOS's title bar), `wp_cursor_shape_manager_v1`,
+  `wl_data_device_manager`, the primary selection, `xdg_activation_v1` and
+  `zwp_text_input_manager_v3`, all served already (D172, D176); its file dialog is a second
+  toplevel and its completer a popup.
+- **`inotify`** (`kernel/src/linux/inotify.rs`; x86_64 `inotify_init` 253, `inotify_add_watch`
+  254, `inotify_rm_watch` 255, `inotify_init1` 294; generic 26, 27 and 28): Qt's file dialog
+  watches its folder through `QFileSystemWatcher`, which uses `inotify` and polls without it,
+  as GLib's `GFileMonitor` does. An instance is an event file (`EventFile::Inotify`,
+  `anon_inode:inotify`) with its watches (8 192 at most, descriptors from 1, one per node:
+  `IN_MASK_ADD` adds to a watch's mask, `IN_MASK_CREATE` refuses an existing one with
+  `EEXIST`, `IN_ONLYDIR` wants a directory, `IN_DONT_FOLLOW` keeps the last link) and its
+  records (16 384 at most, then one `IN_Q_OVERFLOW`; a record the same as the last one is not
+  queued again). The calls that change files report to it after they succeed: a name made in
+  a watched folder by `openat`'s `O_CREAT`, `mkdirat`, `symlinkat` or `linkat` (`IN_CREATE`,
+  `IN_ISDIR` for a folder), moved by `renameat2` (`IN_MOVED_FROM` and `IN_MOVED_TO` with one
+  cookie, `IN_MOVE_SELF` on what moved), removed by `unlinkat` (`IN_DELETE`; on what it named
+  `IN_DELETE_SELF` and `IN_IGNORED` when it was its last name, `IN_ATTRIB` otherwise); a watched
+  file written (`write`, `writev`, `pwrite64`) or truncated (`ftruncate`, `O_TRUNC`):
+  `IN_MODIFY`; its mode or time changed or a name added: `IN_ATTRIB`; its description closed:
+  `IN_CLOSE_WRITE` or `IN_CLOSE_NOWRITE`. `IN_ONESHOT` ends a watch after its first record.
+  Reads take whole records (Linux's `struct inotify_event`, the name padded with NULs to 16
+  bytes; `EINVAL` when the first does not fit), wait unless `IN_NONBLOCK`; `poll` and `epoll`
+  see the instance readable through its wake list, and `ioctl(FIONREAD)`, which Qt asks before
+  it reads, gives the bytes queued. While no instance watches anything a change costs one
+  relaxed load (`inotify::WATCHES`); with watches, it walks the instances, each under its own
+  lock, and wakes their waiters with no lock held.
+- **`/etc/passwd` and `/etc/group`** (`initramfs/etc`, 52 bytes): `root` (uid and gid 0, home
+  `/home/root`, shell `/bin/eggsh`), so musl's `getpwuid_r` and `getgrgid_r` name the user
+  and group that Qt's file dialog, GLib and `ls -l` in Linux programs ask for.
+- **Front-ends (D22).** GUI: the app's icon and launcher row open it, Files and the installer's
+  window install it; copy and paste inside and between Wayland apps; its windows in the
+  element tree as for GTK (title, focused text field). CLI: `app install --entry --environment
+  --arguments`, `app open`, `app list`, `wm list`, `wm show`. MCP: `app_install`, `app_open`,
+  `wm_list`, `wm_show`. `inotify` is an ABI for Linux programs, not a capability of its own.
+- **The check** (`cargo xtask qt-app --arch <arch>`, `xtask/src/qemu/qt_app.rs`; CI's `qt-app`
+  job, x86_64 and aarch64, in `check`'s needs, downloads cached by `xtask/src/qt_app.rs`'s
+  hash): packs `corepad.zip`, boots the release image on a 512 MiB blank disk with 2 GiB,
+  installs it with `--entry corepad --environment 'QT_QPA_PLATFORM=wayland
+  QT_PLUGIN_PATH=/Applications/corepad/plugins ICU_DATA=/Applications/corepad/share/icu'
+  --arguments '/tmp/note.txt'`, lists it, writes `alpha` into the note, opens it from `/tmp`
+  with `app open`, finds its window where the screen changed, clicks its title bar, presses
+  Ctrl+End and types `beta` (the window must change), presses Ctrl+A, Ctrl+C, Ctrl+End and
+  Ctrl+V (it must change again), presses Ctrl+S, which opens CorePad's Save As dialog (the
+  screen must change), Ctrl+A, types `saved.txt` and Return, and quits with Ctrl+Q; then wants
+  `/tmp/saved.txt` to hold `alpha` and `beta` twice with the copy right after the first
+  `beta`, the note to hold `alpha` alone, `corepad` in `/Applications/.fonts`, no CorePad window
+  in `wm list`, a clean power-off and the manifest's `loader`, `libraries`, `arguments` and
+  `environment` on the disk. The Linux programs boot test's `linux-events` program watches a
+  `/tmp` folder with `inotify` through `epoll` and `FIONREAD`: a file made, renamed and
+  removed, then `inotify_rm_watch`'s `IN_IGNORED`.
+- **Tests.** wayland: the fractional scale, output name and toplevel bounds tables, the
+  globals. eggway (fake machine): an output's name, a toplevel's capabilities and bounds before
+  its configure at version 5, a preferred scale of 120 and a second scale object refused.
+  kernel: names padded to 16 bytes; a watched folder's records for names made, moved (one
+  cookie) and removed, the same record not queued twice; a watched file's own changes and its
+  watch ending with its last name; masks replaced, added to and refused, one-shot watches,
+  `IN_IGNORED` on removal and a small read refused; one `IN_Q_OVERFLOW` for a full queue.
+  xtask: the GL libraries read back through their dynamic section and hash table on both
+  machines (every function found, its code returning its answer), the section headers, the
+  System V hash; the pinned packages, the archive's members, the environment and the launch
+  line within 256 bytes, the typed lines and the verdict.
+- **Decided by research** (a research subagent read Alpine `v3.24`'s package index, downloaded
+  and hashed every package for both architectures, followed `DT_NEEDED` from the program and
+  the plugins through every library, listed the symbols the closure leaves unresolved, and
+  read Qt 6.11.1's and CorePad's sources for facts only: which interfaces Qt binds and needs,
+  its environment variables, its keys). Its recommendation, followed: CorePad, because it is a
+  Qt Widgets editor with its interface built in, no KDE Frameworks, WebEngine or QML, no
+  session restore, single instance or first-run dialog, and a file to read back; FeatherPad
+  and SpeedCrunch are not in Alpine `v3.24`; runner-up qalculate-qt 5.11 (63 libraries, a
+  result to see but nothing to read back). Qt 6.11 needs only `wl_compositor`, `wl_shm` and
+  `xdg_wm_base` (its `xdg-shell` plugin), binds the rest when offered, prefers server-side
+  decorations through `zxdg_decoration_manager_v1`, uses `zwp_text_input_v3` when no Qt input
+  method protocol is offered, and makes its shared memory with `memfd_create` and seals. The
+  four plugins and their folders under `QT_PLUGIN_PATH`; ICU's data through `ICU_DATA`;
+  `QT_QPA_PLATFORM=wayland`; EggOS's own EGL and GL libraries with the 25 (x86_64) and 20
+  (aarch64) functions the closure leaves unresolved; Ctrl+S opening Save As in CorePad and
+  Ctrl+Q quitting without a question once saved; CorePad's layout chosen from the screen's
+  physical size (eggway reports none, so Qt assumes 100 dots per inch and QEMU's 1280 by 800
+  gets the desktop layout). Left to the job: the Save As dialog's completer popup, whether
+  `ICU_DATA` finds the data file, Qt's behaviour with D-Bus missing (`libdbus` is loaded; with
+  no `DISPLAY` it does not try to start a bus).
+- **Decided without research.** Writing the GL libraries in xtask as ELF files rather than
+  building a Rust `cdylib` for musl targets (no new toolchain targets, byte-exact and host
+  tested) and carrying them in the app's folder rather than the base (no app in the base needs
+  them; a GPU stack, part 67, replaces them); the extra EGL 1.5 and GLX entry points beyond
+  what Qt names, so other toolkits linked against them start too; dropping `LANG=C.UTF-8` from
+  the environment research proposed (Qt only warns and switches to `C.UTF-8`, and the launch
+  line would have taken 254 of its 256 bytes); serving `wl_output` 4, `xdg_wm_base` 5 and
+  fractional scale now (Qt binds them; the bounds keep a new window within the work area); the
+  output's name `DISPLAY-1`; bounds read when a client connects; `inotify` now rather than
+  later (part 24 and this part both need it), its limits (8 192 watches, 16 384 records, per
+  instance), `IN_DELETE_SELF` at a file's last name rather than its last close, and no events
+  on a folder's watch for its files' writes, opens and closes (the calls that write know the
+  file, not the name it was opened by); `/etc/passwd` and `/etc/group` with `root` alone; the
+  check's Save As to a new name (no replace question). The owner can overrule any of these.
+- **Performance and size (D24).** A file write, truncation, mode or time change, link, rename,
+  removal and close now costs one relaxed load of `inotify::WATCHES` while nothing is watched
+  (the weekly benchmark pass sees whether the write path moved); `unlinkat` reads the file's
+  link count only while something is watched. The `inotify` calls are out of line in
+  `poll::call`. The base grows by `/etc/passwd` and `/etc/group` (52 bytes) and the kernel by
+  the `inotify` module; eggway's surfaces by one word each. No benchmark is added: no hot path
+  gains work beyond the load.
+- **Not yet.** Qt Quick and OpenGL widgets (a GPU stack, part 67); a folder's watch told of its
+  files' `IN_MODIFY`, `IN_ATTRIB`, `IN_OPEN` and `IN_CLOSE_*` (the open file would need the
+  name it was opened by); `IN_ACCESS` and `IN_OPEN`; `IN_DELETE_SELF` at a removed file's last
+  close; `IN_UNMOUNT`; `IN_EXCL_UNLINK`; limits per user rather than per instance and in
+  `/proc/sys/fs/inotify`; `fanotify`; scales other than 1 and outputs' physical size (part
+  43); `zxdg_output_manager_v1`, `xdg_wm_dialog_v1`, `xdg_toplevel_icon_v1` and pointer
+  gestures; D-Bus (notifications, accessibility, portals); an icon theme for Qt apps; Qt 5;
+  `PR_SET_NAME` and `/proc/<pid>/task/<tid>/comm` (Qt and GLib name their threads and ignore
+  the failure); users other than `root` (part 62); riscv64 (Alpine `v3.24` has no riscv64
+  build pinned); whatever the first CI run finds missing for Qt and CorePad, to be recorded in
+  the roadmap.

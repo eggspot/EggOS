@@ -645,12 +645,12 @@ pub fn members(arch: &str, packages: &Path) -> Result<Vec<Member>, String> {
 }
 
 /// What the app is installed with, as `app install --environment` takes it: Qt's Wayland
-/// platform, where Qt finds its plugins and ICU its data (the app's own folders), and a UTF-8
-/// locale, which Qt wants.
+/// platform, and where Qt finds its plugins and ICU its data (the app's own folders). The
+/// launch line, environment first, must stay within the catalogue's 256 bytes.
 pub fn install_environment() -> String {
     format!(
         "QT_QPA_PLATFORM=wayland QT_PLUGIN_PATH=/Applications/{APP}/{PLUGIN_FOLDER} \
-         ICU_DATA=/Applications/{APP}/{ICU_FOLDER} LANG=C.UTF-8"
+         ICU_DATA=/Applications/{APP}/{ICU_FOLDER}"
     )
 }
 
@@ -789,9 +789,18 @@ mod tests {
         assert_eq!(
             install_environment(),
             "QT_QPA_PLATFORM=wayland QT_PLUGIN_PATH=/Applications/corepad/plugins \
-             ICU_DATA=/Applications/corepad/share/icu LANG=C.UTF-8"
+             ICU_DATA=/Applications/corepad/share/icu"
         );
         assert_eq!(install_arguments(), "/tmp/note.txt");
+        let launch_line = format!(
+            "{} /Applications/{APP}/{LIBRARY_FOLDER}/{} --library-path \
+             /Applications/{APP}/{LIBRARY_FOLDER} /Applications/{APP}/{APP} {}",
+            install_environment(),
+            musl_loader("aarch64"),
+            install_arguments()
+        );
+        assert_eq!(launch_line.len(), 241);
+        assert!(launch_line.len() <= eggos_drivers::desktop::COMMAND_CAPACITY);
         assert!(eggos_app_manifest::is_environment(
             install_environment().as_bytes()
         ));

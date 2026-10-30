@@ -268,6 +268,16 @@ holds what used to be written in them.
   schemas are compiled inside EggOS, `app open` opens it on `/tmp/note.txt`, keys type, copy,
   paste, save and quit, and the note, `/Applications/.fonts`, `wm list` and the disk's manifest
   are checked ([compatibility](compatibility.md)).
+- **`cargo xtask qt-app --arch <arch>`** (D179) downloads CorePad, the Qt 6 libraries and
+  plugins it loads, ICU's data and DejaVu's fonts from Alpine `v3.24` (pinned SHA-256s, kept in
+  `target/qt-app/downloads-<arch>`), writes EggOS's own `libEGL.so.1`, `libGL.so.1` and
+  `libGLESv2.so.2` (`xtask/src/gl_libraries.rs`), packs `corepad.zip` (the editor, musl's
+  loader and the libraries in `lib/`, Qt's plugins in `plugins/`, ICU's data and the fonts in
+  `share/`) into a host folder and boots the release image on a blank disk: `app install
+  --entry --environment --arguments` installs it, `app open` opens it on `/tmp/note.txt`, keys
+  type, copy, paste, save as `/tmp/saved.txt` through Qt's file dialog and quit, and the saved
+  file, the note, `/Applications/.fonts`, `wm list` and the disk's manifest are checked
+  ([compatibility](compatibility.md)).
 - **`--memory` and `--room`** (D171). `cargo xtask run --memory <size>` (such as `4G`, at
   least `128M`) and the run scripts' `--memory`/`-Memory` give the machine more memory, which
   on x86_64 reaches above 4 GiB; `cargo xtask run --work <folder> --room <size>` and `cargo
@@ -421,7 +431,8 @@ holds what used to be written in them.
   CPU, `ubuntu-24.04` and `ubuntu-24.04-arm`, cached by `xtask/src/sdl_app.rs`'s hash and handed
   on as an artifact kept one day) and `sdl-app` (D172, one per architecture in the CI image,
   after `sdl3`), `gtk-app` (D176, one per architecture in the CI image, its downloads cached by
-  `xtask/src/gtk_app.rs`'s hash) and, on PRs, `hosts`
+  `xtask/src/gtk_app.rs`'s hash), `qt-app` (D179, the same for `xtask/src/qt_app.rs`) and, on
+  PRs, `hosts`
   (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other

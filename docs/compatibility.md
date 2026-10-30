@@ -14,6 +14,7 @@ works.
 | [AutoHotkey](https://www.autohotkey.com/), a scripting language for automating Windows | 2.0.31 (the release's `AutoHotkey_2.0.31.zip`, its `AutoHotkey64.exe`) | GPL-2.0 | Windows, Win32 in C++ on comctl32's common controls, GDI+ and COM (static C runtime) | x86_64 (AutoHotkey publishes x64 and 32-bit x86 builds only) | installs from its `.zip` with the script it runs, opens from its icon or `app open`, runs our script's window: a toolbar, tabs, a list view, a tree view, a progress bar, a picture through GDI+, a status bar, rows from a `Scripting.Dictionary` through COM; keys and clicks drive them, agents read them with `wm show`, Alt+F4 closes it | `autohotkey` (D178) |
 | [CocoaGame](https://github.com/reallukee/cocoagame), a small Objective-C board game | 1.0.0 (the author's release `CocoaGame.zip`) | MIT | macOS, Objective-C on AppKit (built in code, no nib), linking the Cocoa umbrella | aarch64, x86_64 (a universal binary) | installs from its `.zip`, opens from its icon or `app open` in its own window, moves its player with `w`, `a`, `s`, `d` and the arrow keys, eats the food, shows its About panel from its app menu, answers agents with its views as an element tree, quits with Cmd+Q | `cocoa-app` (D175) |
 | [Mousepad](https://docs.xfce.org/apps/mousepad/start), Xfce's text editor | 0.7.0 (Alpine `v3.24`'s `mousepad-0.7.0-r0`), on GTK 3.24.52 and GtkSourceView 4.8.4 | GPL-2.0-or-later (Mousepad; GTK and its libraries LGPL and others; DejaVu fonts free) | Linux, GTK 3 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader, libraries, schemas and fonts and its environment, opens from its icon or `app open` in its own window with EggOS's title bar, edits text from the keyboard, copies and pastes inside the app (Ctrl+A, Ctrl+C, Ctrl+V), saves and quits | `gtk-app` (D176) |
+| [CorePad](https://gitlab.com/cubocore/coreapps/corepad), the C Suite's text editor | 5.0.0 (Alpine `v3.24`'s `corepad-5.0.0-r0`), on Qt 6.11.1 | GPL-3.0-or-later (CorePad and `libcprime`; Qt LGPL-3.0; ICU, DejaVu fonts and the other libraries free) | Linux, Qt 6 Widgets on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader, libraries, Qt plugins, ICU data, fonts and its environment, opens from its icon or `app open` in its own window with EggOS's title bar, edits text from the keyboard, copies and pastes inside the app (Ctrl+A, Ctrl+C, Ctrl+V), saves as a new file through Qt's file dialog (a second window) and quits | `qt-app` (D179) |
 
 ## Brogue CE (Linux, SDL)
 
@@ -215,3 +216,67 @@ works.
   saving keeps the file's owner only when it is the user's (`chown` is not there yet); drag and
   drop is refused; text input methods have nothing to talk to yet. What EggOS still lacks for
   it is in D176's "Not yet".
+
+## CorePad (Linux, Qt 6)
+
+- **Where it comes from.** `cargo xtask qt-app` downloads Alpine Linux `v3.24`'s package
+  `corepad` and the 51 packages its program, its libraries and the Qt plugins it carries need
+  on either architecture (Qt 6.11.1's Core, Gui, Widgets, Network, DBus, Xml and Wayland
+  client, the C Suite's `libcprime`, ICU 78 with its English data, GLib, HarfBuzz, fontconfig,
+  FreeType, the network libraries Qt's network module is linked against, the X11 libraries
+  x86_64's Qt is linked against, Wayland's client libraries, `libxkbcommon`, musl and DejaVu's
+  fonts), each checked against a SHA-256 pinned in `xtask/src/qt_app.rs` (Alpine's mirror
+  keeps only a package's latest build, so a rebuilt package is pinned again by hand). It is
+  test data: never shipped in an image, never committed. The pieces go into `corepad.zip`:
+  `corepad`, `lib/` (musl's loader, 54 libraries on aarch64 and 60 on x86_64, about 57 MB, and
+  EggOS's own `libEGL.so.1`, `libGL.so.1` and `libGLESv2.so.2`), `plugins/` (Qt's Wayland
+  platform, its `xdg-shell` integration, the compose input context and the client-side title
+  bar Qt falls back to), `share/icu` (ICU's data, 3 MB) and `share/fonts` (four DejaVu fonts).
+- **Why it.** Research chose it as the first Qt app: a real, maintained, freely licensed Qt
+  Widgets editor whose interface and syntax colours are built into its program, that draws with
+  Qt's raster engine into `wl_shm` buffers, needs no KDE Frameworks, WebEngine or QML, starts
+  with no session restore, single instance or first-run dialog, and whose main feature,
+  editing a file, can be driven by keys and checked by reading the saved file back. FeatherPad
+  and SpeedCrunch, the first candidates, are not in Alpine `v3.24`; runner-up: qalculate-qt
+  5.11 (63 libraries and nothing to read back but the screen).
+- **EGL and GL without a GPU.** Alpine's `libQt6Gui` is linked against Mesa's `libEGL.so.1`
+  and `libGL.so.1` (x86_64) or `libGLESv2.so.2` (aarch64), which bring Mesa's Gallium driver
+  and LLVM (about 235 MB) that EggOS cannot run, and musl's loader refuses a program whose
+  libraries name a function nothing defines. So the archive carries EggOS's own three
+  libraries, written by `xtask/src/gl_libraries.rs` as small ELF shared objects: every EGL,
+  GL and GLX entry point Qt names (and the rest of EGL 1.5's) answers that there is no display,
+  configuration, context or surface, as a system without a GPU driver does. Qt Widgets never
+  asks for a context, so it draws with its raster engine.
+- **Installing it.** `app install --entry corepad --environment 'QT_QPA_PLATFORM=wayland
+  QT_PLUGIN_PATH=/Applications/corepad/plugins ICU_DATA=/Applications/corepad/share/icu'
+  --arguments '/tmp/note.txt' /media/host/corepad.zip` (or the MCP tool `app_install` with
+  `entry`, `environment` and `arguments`): the installer finds its loader and libraries as for
+  Mousepad, writes the `environment=` and `arguments=` lines and links the fonts it carries as
+  `/Applications/.fonts/corepad`. The environment names Qt's Wayland platform and where Qt
+  finds its plugins and ICU its data (the app's own folders); with the loader, the libraries'
+  folder, the program and the note, the launch line takes 241 of its 256 bytes. Qt warns that
+  musl's `C` locale is not UTF-8 and switches to `C.UTF-8` itself.
+- **Opening it.** Its icon, `app open corepad` or the MCP tool `app_open`. Qt connects to
+  `eggway`, binds `wl_output` 4 (the output's name), `xdg_wm_base` 5 (each toplevel's bounds
+  and the window manager's capabilities: maximise and minimise), `wp_fractional_scale_v1`
+  (a preferred scale of 1), `wp_viewporter`, `zxdg_decoration_manager_v1` (so EggOS draws the
+  title bar), `wl_data_device_manager` and the primary selection (copy and paste), and
+  `zwp_text_input_v3` (the focused field in `wm show`); its file dialog is a second toplevel,
+  its completer and menus popups. Qt's file dialog watches the folder it shows through
+  `inotify`.
+- **What CI does** (`qt-app`, x86_64 and aarch64): installs it on a blank disk with 2 GiB,
+  lists it, writes `alpha` into `/tmp/note.txt`, opens it from `/tmp`, finds its window where
+  the screen changed, clicks its title bar, presses Ctrl+End and types `beta` (the window must
+  change), presses Ctrl+A, Ctrl+C, Ctrl+End and Ctrl+V (it must change again), presses Ctrl+S,
+  which opens CorePad's Save As dialog (the screen must change), selects the name with Ctrl+A,
+  types `saved.txt` and presses Return, then quits with Ctrl+Q; it wants `/tmp/saved.txt` to
+  hold `alpha` and `beta` twice with the copy right after the first `beta`, the note to hold
+  `alpha` alone, `corepad` in `/Applications/.fonts`, no CorePad window in `wm list`, and the
+  manifest's loader, libraries, arguments and environment on the disk after the power-off.
+- **Known limits.** CorePad saves only through its Save As dialog from the keyboard (Ctrl+S is
+  wired to it; a plain save is a toolbar button); it picks its desktop layout from the screen's
+  physical size, which `eggway` does not report (Qt then assumes 100 dots per inch, so screens
+  narrower than about 1100 pixels get its tablet layout); there is no D-Bus, so its
+  notifications go nowhere and Qt's accessibility bridge stays off; icons are blank (no icon
+  theme is carried); no OpenGL, so Qt Quick and OpenGL widgets do not run. What EggOS still
+  lacks for Qt is in D179's "Not yet".

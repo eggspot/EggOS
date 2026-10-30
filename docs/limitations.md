@@ -209,7 +209,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   do), and only the text around the cursor (240 bytes) joins the element tree; there is no
   touch; GTK apps' images and icons are blank (gdk-pixbuf 2.44 loads them through glycin's
   sandboxed loaders, which EggOS does not ship), and there is no D-Bus (accessibility, portals,
-  single-instance apps), `inotify` (GLib polls instead) or `chown`; at most 16 clients, 16
+  single-instance apps) or `chown`; `inotify` reports names made, moved and removed in a
+  watched folder and a watched file's own changes, but a folder's watch is not told of its
+  files' writes, opens and closes, and a file's last name removed is `IN_DELETE_SELF` at once,
+  even while it is open (D179); Qt apps run with Qt Widgets only: EggOS's `libEGL.so.1`,
+  `libGL.so.1` and `libGLESv2.so.2` report no display, so Qt Quick and OpenGL widgets do not
+  start, and every output's scale is 1, its physical size unknown; at most 16 clients, 16
   surfaces, 8 pools, 8 positioners, 8 selection sources and 4 text inputs each, pools of 32
   MiB at most and 48 MiB for all clients, and the terminal waits while a Wayland program opened
   from it runs, which also writes its files into the terminal's current folder.
