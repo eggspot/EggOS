@@ -22,6 +22,7 @@ use eggos_translate::image::bridge;
 use eggos_translate::image::{ImageInput, TranslatedImage, translate_image};
 use eggos_translation_loader::cache_files;
 use eggos_translation_loader::disk::Disk;
+use eggos_translation_loader::install_record::{self, Origin};
 use eggos_translation_loader::installed::{self, InstalledCode, StubBridge};
 use eggos_translation_loader::trap::codegen_mode;
 
@@ -42,6 +43,27 @@ pub fn prepare(
     image: &[u8],
     capabilities: u64,
 ) -> Result<TranslatedImage, &'static str> {
+    translation(file, pe, image, capabilities).map(|(file, _)| file.image)
+}
+
+/// The installer's translation ahead of the first launch (`--translate`): [`prepare`]'s,
+/// as the record the layer prints.
+pub fn install_record(
+    file: &[u8],
+    pe: &Pe<'_>,
+    image: &[u8],
+    capabilities: u64,
+) -> Result<Vec<u8>, &'static str> {
+    let (file, origin) = translation(file, pe, image, capabilities)?;
+    Ok(install_record::record(&file, origin))
+}
+
+fn translation(
+    file: &[u8],
+    pe: &Pe<'_>,
+    image: &[u8],
+    capabilities: u64,
+) -> Result<(CacheFile, Origin), &'static str> {
     let mode = codegen_mode(capabilities);
     let digest = cache::input_digest(file);
     let key = cache::cache_key(&digest, mode);
@@ -49,7 +71,7 @@ pub fn prepare(
     if let Some(cached) = cache_files::load(&mut disk, &key)
         && cached.image_base == pe.image_base
     {
-        return Ok(cached.image);
+        return Ok((cached, Origin::Cached));
     }
     let sections = translated::sections(pe, image);
     let seeds = translated::seeds(pe, image);
@@ -74,8 +96,12 @@ pub fn prepare(
         image: translation,
     };
     let bytes = cache::serialize(&file);
-    let _ = cache_files::store(&mut disk, &key, &bytes, u64::from(linux::process_id()));
-    Ok(file.image)
+    let stored = cache_files::store(&mut disk, &key, &bytes, u64::from(linux::process_id()));
+    let origin = match stored {
+        true => Origin::Stored(bytes.len()),
+        false => Origin::NotStored(bytes.len()),
+    };
+    Ok((file, origin))
 }
 
 fn write_u64(address: usize, value: u64) {

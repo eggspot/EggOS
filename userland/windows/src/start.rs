@@ -19,6 +19,8 @@ use crate::user_shared_data;
 use crate::win32::{self, thread_environment};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::{Startup, auxv};
+#[cfg(target_arch = "aarch64")]
+use eggos_translation_loader::install_record::LAYER_OPTION;
 
 const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
@@ -29,6 +31,8 @@ const PROGRAM_HEADER_SIZE: usize = 56;
 const THIS_COMPUTER: Machine = Machine::X64;
 #[cfg(target_arch = "aarch64")]
 const THIS_COMPUTER: Machine = Machine::Arm64;
+#[cfg(target_arch = "aarch64")]
+const STANDARD_OUTPUT: usize = 1;
 
 enum Failure {
     Usage,
@@ -47,6 +51,10 @@ pub fn run(startup: &Startup) -> i32 {
     let program = arguments
         .next()
         .map_or(&b"windows"[..], |path| path.to_bytes());
+    #[cfg(target_arch = "aarch64")]
+    if program == LAYER_OPTION.as_bytes() {
+        return translate_ahead(startup);
+    }
     let failure = match start(*startup) {
         Ok(never) => match never {},
         Err(failure) => failure,
@@ -235,6 +243,45 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // that returns the exit code.
     let code = unsafe { win32::call_program(entry, [0; 4]) };
     win32::end_thread(code as u32)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn translate_ahead(startup: &Startup) -> i32 {
+    let shown = startup
+        .arguments()
+        .nth(2)
+        .map_or(&b"windows"[..], |path| path.to_bytes());
+    match translation_record(*startup) {
+        Ok(record) => {
+            let _ = linux::write_all(STANDARD_OUTPUT, &record);
+            0
+        }
+        Err(failure) => {
+            report(shown, failure);
+            CANNOT_EXECUTE
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn translation_record(startup: Startup) -> Result<alloc::vec::Vec<u8>, Failure> {
+    let path = startup.arguments().nth(2).ok_or(Failure::Usage)?;
+    let file = read_file(path.to_bytes_with_nul())?;
+    let pe = Pe::parse(file).map_err(Failure::Invalid)?;
+    if !pe.machine.translated_on(THIS_COMPUTER) {
+        return Err(Failure::Translation(
+            "runs natively on this computer, so there is nothing to translate",
+        ));
+    }
+    let size = pe.mapped_size() as usize;
+    let base = linux::map_anonymous(0, size, PROT_READ | PROT_WRITE, false)
+        .map_err(|_| Failure::Memory)?;
+    // SAFETY: `base` is a new private mapping of `size` zeroed bytes that only this function
+    // uses, and the process ends after it.
+    let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
+    image::copy_sections(&pe, image);
+    let capabilities = startup.auxiliary_value(auxv::HWCAP).unwrap_or(0) as u64;
+    crate::translation::install_record(file, &pe, image, capabilities).map_err(Failure::Translation)
 }
 
 fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {

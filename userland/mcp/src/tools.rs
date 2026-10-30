@@ -135,6 +135,8 @@ pub enum Kind {
     Setprop,
     /// `logcat`: the Android log (D188).
     Logcat,
+    /// `app_show`: one app and its translation kept at install (D191).
+    AppShow,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -326,7 +328,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 44] = [
+pub const TOOLS: [Tool; 46] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -533,6 +535,11 @@ pub const TOOLS: [Tool; 44] = [
         &registry::LOGCAT,
         Kind::Logcat,
         twin("/bin/logcat", &["-d", "-v", "threadtime"], Operand::None),
+    ),
+    tool(
+        &registry::APP_SHOW,
+        Kind::AppShow,
+        twin("/bin/app", &["show"], Operand::Name),
     ),
 ];
 

@@ -12,11 +12,13 @@
 //! is tolerant: a file of another format, longer than [`LARGEST`], missing a required key, or
 //! naming another folder is no app; lines that are no entry are skipped; an invalid optional
 //! value is ignored; the last line of a key wins. Nothing here allocates or panics: the
-//! kernel's desktop reads manifests with it and the installer writes them.
+//! kernel's desktop reads manifests with it and the installer writes them. An app run through
+//! ahead-of-time translation also keeps its translation record ([`translation`]).
 
 #![cfg_attr(not(test), no_std)]
 
 pub mod icon;
+pub mod translation;
 
 /// The folder installed apps live in, one folder each.
 pub const DIRECTORY: &str = "/Applications";

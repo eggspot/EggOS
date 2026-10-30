@@ -214,7 +214,8 @@ fn the_tools_are_listed_once_initialized() {
             "device_list",
             "getprop",
             "setprop",
-            "logcat"
+            "logcat",
+            "app_show"
         ]
     );
 }

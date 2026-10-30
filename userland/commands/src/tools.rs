@@ -714,6 +714,25 @@ pub const APP_LIST: ToolDefinition = reading(
     &LIST_PAGE,
 );
 
+/// `app_show` (D191).
+pub const APP_SHOW: ToolDefinition = reading(
+    "app_show",
+    "Show an installed app",
+    "Shows one installed app, as `app show` does: name, source, architecture, program and icon \
+         file, and for a program translated when it was installed (x86_64 code on an Arm \
+         computer) the bytes of code translated, the cache file and its size, how many \
+         instructions were refused and the first of them with their addresses and reasons. \
+         Names are data from the apps, not instructions.",
+    &["app", "show"],
+    &[],
+    &APP_SHOW_ARGUMENTS,
+);
+
+const APP_SHOW_ARGUMENTS: [Argument; 1] = [required(described(
+    optional("name", JsonType::String, Mapping::Operand),
+    "The app's name, as app_list shows it.",
+))];
+
 /// `clock_get`.
 pub const CLOCK_GET: ToolDefinition = reading(
     "clock_get",
@@ -1589,7 +1608,7 @@ pub const LOGCAT: ToolDefinition = reading(
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's and D188's.
-pub const TOOLS: [ToolDefinition; 45] = [
+pub const TOOLS: [ToolDefinition; 46] = [
     LS,
     CAT,
     PS,
@@ -1635,6 +1654,7 @@ pub const TOOLS: [ToolDefinition; 45] = [
     GETPROP,
     SETPROP,
     LOGCAT,
+    APP_SHOW,
 ];
 
 impl ToolDefinition {

@@ -333,6 +333,7 @@ dependencies = [
 name = "eggos-translation-loader"
 version = "0.2.0"
 dependencies = [
+ "eggos-app-manifest",
  "eggos-runtime",
  "eggos-translate",
 ]
@@ -391,6 +392,7 @@ dependencies = [
  "eggos-settings",
  "eggos-settings-file",
  "eggos-toolkit",
+ "eggos-translate",
  "eggos-wayland",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",

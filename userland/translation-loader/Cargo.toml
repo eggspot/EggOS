@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-app-manifest = { path = "../../app-manifest" }
 eggos-runtime = { path = "../runtime" }
 eggos-translate = { path = "../../translate" }
 

@@ -6,10 +6,15 @@
 //! built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app list` (name,
 //! source, architecture, program and icon file, D148; `--json` writes them as JSON lines, D160;
 //! `--limit <count>` and `--after <cursor>` page them by name, D164). `app uninstall --dry-run`
-//! says what it would remove (D164). Text, the same with or without a display; `--window`
-//! shows the installer's dialogs instead. `--` ends the options, so the next word is the
-//! operand even if it starts with `-`.
+//! says what it would remove (D164). `app show [--json] <name>` gives one app's fields and, for
+//! a program translated at install, its translation: sizes, refused count and the first
+//! refused sites (D191); `app install` translates such a program right after copying it.
+//! Text, the same with or without a display; `--window` shows the installer's dialogs instead.
+//! `--` ends the options, so the next word is the operand even if it starts with `-`.
 
+use crate::messages::Line;
+use core::fmt::Write;
+use eggos_app_manifest::translation::{self, Record};
 use eggos_mcp::json::JsonWriter;
 
 /// What the command was asked.
@@ -36,6 +41,10 @@ pub enum Command<'a> {
         limit: Option<&'a [u8]>,
         after: Option<&'a [u8]>,
     },
+    Show {
+        name: &'a [u8],
+        json: bool,
+    },
     Help,
 }
 
@@ -45,7 +54,8 @@ pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
                          [--] <path>\n       \
                          app uninstall [--window] [--dry-run] [--] <name>\n       \
                          app open [--] <name>\n       \
-                         app list [--json] [--limit <count>] [--after <cursor>]\n";
+                         app list [--json] [--limit <count>] [--after <cursor>]\n       \
+                         app show [--json] [--] <name>\n";
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
@@ -84,7 +94,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             b"--" => options_end = true,
             b"--window" => window = true,
             b"--dry-run" if removing => dry_run = true,
-            b"--json" if verb == b"list" => json = true,
+            b"--json" if verb == b"list" || verb == b"show" => json = true,
             b"--limit" if verb == b"list" => limit = Some(*rest.next()?),
             b"--after" if verb == b"list" => after = Some(*rest.next()?),
             _ if verb == b"list" && argument.starts_with(b"--limit=") => {
@@ -118,6 +128,10 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
         }),
         b"open" if !window => Some(Command::Open { name: operand? }),
         b"list" if operand.is_none() && !window => Some(Command::List { json, limit, after }),
+        b"show" if !window => Some(Command::Show {
+            name: operand?,
+            json,
+        }),
         b"--help" | b"help" if operand.is_none() => Some(Command::Help),
         _ => None,
     }
@@ -137,6 +151,43 @@ pub fn write_app_record(
     icon: Option<&str>,
 ) {
     out.begin_object();
+    write_app_fields(out, name, source, architecture, program, icon);
+    out.end_object();
+    out.end_line();
+}
+
+/// Writes one app as `app show --json`'s record (D191): `app list --json`'s fields, then
+/// `translation`, `null` when the app keeps no translation record, else an object with `key`
+/// (64 hex digits), `code_bytes`, `cache_bytes`, `stored`, `refused` and `refused_sites` (the
+/// first ones, each `address` in `0x` hex and `reason`), then a newline.
+pub fn write_app_show_record(
+    out: &mut JsonWriter<'_>,
+    name: &str,
+    source: &str,
+    architecture: Option<&str>,
+    program: &[u8],
+    icon: Option<&str>,
+    translation: Option<&Record<'_>>,
+) {
+    out.begin_object();
+    write_app_fields(out, name, source, architecture, program, icon);
+    out.key("translation");
+    match translation {
+        Some(record) => write_translation(out, record),
+        None => out.null(),
+    }
+    out.end_object();
+    out.end_line();
+}
+
+fn write_app_fields(
+    out: &mut JsonWriter<'_>,
+    name: &str,
+    source: &str,
+    architecture: Option<&str>,
+    program: &[u8],
+    icon: Option<&str>,
+) {
     out.key("name");
     out.string(name);
     out.key("source");
@@ -153,13 +204,70 @@ pub fn write_app_record(
         Some(icon) => out.string(icon),
         None => out.null(),
     }
+}
+
+fn write_translation(out: &mut JsonWriter<'_>, record: &Record<'_>) {
+    let path = record.cache_path();
+    let digits = translation::CACHE_DIRECTORY.len() + 1;
+    out.begin_object();
+    out.key("key");
+    out.string_lossy(&path[digits..digits + 64]);
+    out.key("code_bytes");
+    out.u64(record.code_bytes);
+    out.key("cache_bytes");
+    out.u64(record.cache_bytes);
+    out.key("stored");
+    out.bool(record.stored);
+    out.key("refused");
+    out.u64(record.refused);
+    out.key("refused_sites");
+    out.begin_array();
+    for site in record.sites() {
+        let mut address = Line::new();
+        let _ = write!(address, "{:#x}", site.address);
+        out.begin_object();
+        out.key("address");
+        out.string(address.as_str());
+        out.key("reason");
+        out.string_lossy(site.reason);
+        out.end_object();
+    }
+    out.end_array();
     out.end_object();
-    out.end_line();
+}
+
+/// `app show`'s text lines after the app's fields: the translation's sizes and cache file,
+/// the refused count, then one line per listed refused site.
+pub fn translation_lines(record: &Record<'_>, mut each: impl FnMut(&str)) {
+    let mut line = Line::new();
+    let _ = write!(
+        line,
+        "translation:\t{} bytes of code, a {}-byte cache in ",
+        record.code_bytes, record.cache_bytes
+    );
+    line.push_bytes(&record.cache_path());
+    if !record.stored {
+        let _ = line.write_str(" (not stored)");
+    }
+    each(line.as_str());
+    let mut line = Line::new();
+    let _ = write!(line, "refused:\t{}", record.refused);
+    if record.refused > record.sites().len() as u64 {
+        let _ = write!(line, " (the first {} below)", record.sites().len());
+    }
+    each(line.as_str());
+    for site in record.sites() {
+        let mut line = Line::new();
+        let _ = write!(line, "\t{:#x}\t", site.address);
+        line.push_bytes(site.reason);
+        each(line.as_str());
+    }
 }
 
 #[cfg(target_env = "musl")]
 mod program {
     use super::*;
+    use crate::architecture::Architecture;
     use crate::files::Path;
     use crate::installer::{self, APPLICATIONS};
     use crate::linux::{self, LinuxFiles, STANDARD_ERROR, STANDARD_OUTPUT, write_all};
@@ -243,6 +351,9 @@ mod program {
                 line.push_bytes(plan.folder().as_bytes());
                 let _ = line.write_str(".");
                 say(STANDARD_OUTPUT, line.as_str());
+                if let Some(ahead) = crate::translation::ahead_of_launch(&plan, machine) {
+                    translate(&mut files, &plan, machine, ahead);
+                }
                 0
             }
             Err(problem) => {
@@ -252,6 +363,106 @@ mod program {
                 FAILED
             }
         }
+    }
+
+    fn translate(
+        files: &mut LinuxFiles,
+        plan: &installer::Plan,
+        machine: Architecture,
+        ahead: crate::translation::AheadOfLaunch,
+    ) {
+        let built_for = plan.program().architecture;
+        say(
+            STANDARD_OUTPUT,
+            messages::translating(plan.name(), built_for, machine).as_str(),
+        );
+        let mut printed = [0u8; translation::LARGEST];
+        let ran = linux::run_translation(ahead.layer, ahead.program.as_bytes(), &mut printed);
+        let printed = match ran {
+            Ok((length, true)) => &printed[..length],
+            _ => {
+                say(STANDARD_OUTPUT, messages::not_translated().as_str());
+                return;
+            }
+        };
+        let Some(record) = translation::parse(printed) else {
+            say(STANDARD_OUTPUT, messages::not_translated().as_str());
+            return;
+        };
+        say(
+            STANDARD_OUTPUT,
+            messages::translated(plan.name(), &record).as_str(),
+        );
+        if crate::translation::keep_record(files, plan.name().as_bytes(), printed).is_err() {
+            complain("could not keep the translation record: app show will not list it");
+        }
+    }
+
+    fn show(name: &[u8], json: bool) -> i32 {
+        let mut files = LinuxFiles::new();
+        let shown = installer::Name::new(name);
+        let mut file = [0u8; eggos_app_manifest::LARGEST + 1];
+        let manifest = installer::read_manifest(&mut files, name, &mut file)
+            .and_then(|length| eggos_app_manifest::parse(&file[..length], name));
+        let Some(app) = manifest else {
+            let mut line = Line::new();
+            let _ = write!(line, "{} is not installed", shown.as_str());
+            report(json, &errors::NO_SUCH_APP, line.as_str());
+            return FAILED;
+        };
+        let mut kept: crate::translation::RecordBuffer = [0; translation::LARGEST + 1];
+        let record = crate::translation::read_record(&mut files, name, &mut kept)
+            .and_then(|length| translation::parse(&kept[..length]));
+        let mut program = Path::new();
+        let resolved = match app.run_is_relative() {
+            true => Path::from(APPLICATIONS)
+                .and_then(|folder| folder.join(app.name.as_bytes()))
+                .and_then(|folder| folder.join(app.run.as_bytes())),
+            false => Path::from(app.run.as_bytes()),
+        };
+        if let Some(resolved) = resolved {
+            program = resolved;
+        }
+        if json {
+            let mut out_bytes = [0u8; APP_RECORD_BYTES];
+            let mut out = JsonWriter::new(&mut out_bytes);
+            write_app_show_record(
+                &mut out,
+                app.name,
+                app.source.key(),
+                app.architecture,
+                program.as_bytes(),
+                app.icon,
+                record.as_ref(),
+            );
+            if out.overflowed() {
+                report(json, &errors::FAILED, "the app's record is too long");
+                return FAILED;
+            }
+            write_all(STANDARD_OUTPUT, out.as_bytes());
+            return 0;
+        }
+        let mut line = Line::new();
+        let _ = write!(line, "name:\t{}", app.name);
+        say(STANDARD_OUTPUT, line.as_str());
+        let mut line = Line::new();
+        let _ = write!(line, "source:\t{}", app.source.key());
+        say(STANDARD_OUTPUT, line.as_str());
+        let mut line = Line::new();
+        let _ = write!(line, "architecture:\t{}", app.architecture.unwrap_or("-"));
+        say(STANDARD_OUTPUT, line.as_str());
+        let mut line = Line::new();
+        let _ = line.write_str("program:\t");
+        line.push_bytes(program.as_bytes());
+        say(STANDARD_OUTPUT, line.as_str());
+        let mut line = Line::new();
+        let _ = write!(line, "icon:\t{}", app.icon.unwrap_or("-"));
+        say(STANDARD_OUTPUT, line.as_str());
+        match record {
+            Some(record) => translation_lines(&record, |line| say(STANDARD_OUTPUT, line)),
+            None => say(STANDARD_OUTPUT, "translation:\t-"),
+        }
+        0
     }
 
     fn uninstall(name: &[u8]) -> i32 {
@@ -309,6 +520,13 @@ mod program {
         let _ = write!(line, "would uninstall {}: removes ", shown.as_str());
         line.push_bytes(APPLICATIONS);
         let _ = write!(line, "/{} and everything in it", shown.as_str());
+        let mut kept: crate::translation::RecordBuffer = [0; translation::LARGEST + 1];
+        let record = crate::translation::read_record(&mut files, name, &mut kept)
+            .and_then(|length| translation::parse(&kept[..length]));
+        if let Some(record) = record {
+            let _ = line.write_str(", and its translated code ");
+            line.push_bytes(&record.cache_path());
+        }
         say(STANDARD_OUTPUT, line.as_str());
         0
     }
@@ -520,6 +738,7 @@ mod program {
             Some(Command::Uninstall { name, .. }) => uninstall(name),
             Some(Command::Open { name }) => open(name),
             Some(Command::List { json, limit, after }) => list(json, limit, after),
+            Some(Command::Show { name, json }) => show(name, json),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());
                 USAGE_ERROR
@@ -747,5 +966,67 @@ mod tests {
             "{\"name\":\"win-paint\",\"source\":\"windows\",\"architecture\":\"x86_64\",\
              \"program\":\"/Applications/win-paint/win-paint.exe\",\"icon\":null}\n"
         );
+    }
+
+    #[test]
+    fn show_takes_a_name_and_json() {
+        assert_eq!(
+            parse(&[b"show", b"--json", b"Paint"]),
+            Some(Command::Show {
+                name: b"Paint",
+                json: true
+            })
+        );
+        assert_eq!(parse(&[b"show"]), None);
+        assert_eq!(parse(&[b"show", b"--window", b"Paint"]), None);
+        assert_eq!(parse(&[b"show", b"a", b"b"]), None);
+    }
+
+    fn refused_record() -> Record<'static> {
+        let mut record = Record::new([0xab; 32], 4096, 20480, true, 3);
+        assert!(record.push_site(translation::RefusedSite {
+            address: 0x1_4000_1010,
+            reason: b"an SSE3 instruction",
+        }));
+        record
+    }
+
+    #[test]
+    fn an_app_s_show_record_adds_its_translation() {
+        let mut buffer = [0u8; APP_RECORD_BYTES];
+        let mut out = JsonWriter::new(&mut buffer);
+        let record = refused_record();
+        write_app_show_record(
+            &mut out,
+            "Paint",
+            "windows",
+            Some("x86_64"),
+            b"/Applications/Paint/paint.exe",
+            None,
+            Some(&record),
+        );
+        let text = core::str::from_utf8(out.as_bytes()).unwrap();
+        let key = "ab".repeat(32);
+        assert_eq!(
+            text,
+            format!(
+                "{{\"name\":\"Paint\",\"source\":\"windows\",\"architecture\":\"x86_64\",\
+                 \"program\":\"/Applications/Paint/paint.exe\",\"icon\":null,\"translation\":\
+                 {{\"key\":\"{key}\",\"code_bytes\":4096,\"cache_bytes\":20480,\"stored\":true,\
+                 \"refused\":3,\"refused_sites\":[{{\"address\":\"0x140001010\",\
+                 \"reason\":\"an SSE3 instruction\"}}]}}}}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn the_text_lists_the_sizes_the_count_and_the_sites() {
+        let mut lines = Vec::new();
+        translation_lines(&refused_record(), |line| lines.push(line.to_owned()));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("translation:\t4096 bytes of code, a 20480-byte cache in "));
+        assert!(lines[0].ends_with(".tx"));
+        assert_eq!(lines[1], "refused:\t3 (the first 1 below)");
+        assert_eq!(lines[2], "\t0x140001010\tan SSE3 instruction");
     }
 }

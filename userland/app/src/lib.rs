@@ -22,6 +22,7 @@ pub mod linux;
 pub mod messages;
 pub mod program;
 pub mod reader;
+pub mod translation;
 #[cfg(all(feature = "window", target_env = "musl"))]
 pub mod window_program;
 

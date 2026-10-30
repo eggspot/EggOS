@@ -6,7 +6,8 @@
 //! ([`executable_range`]). On aarch64, `installed` maps a translation with its bridges,
 //! makes each thread's guest state and calls into translated code through the entry
 //! trampoline, and [`callback_thunks`] lays out the native thunks through which a layer's own
-//! code calls a translated function it was given.
+//! code calls a translated function it was given. [`install_record`] is what a layer prints
+//! when the installer asks it to translate a program ahead of its first launch.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -16,6 +17,7 @@ pub mod cache_files;
 pub mod callback_thunks;
 #[cfg(all(target_env = "musl", target_arch = "aarch64"))]
 pub mod disk;
+pub mod install_record;
 #[cfg(all(target_env = "musl", target_arch = "aarch64"))]
 pub mod installed;
 mod program_headers;

@@ -25,6 +25,7 @@ use crate::files::{self, Files, Handle, Kind, PATH_CAPACITY, Path};
 use crate::icon::{self, OwnIcon, Workspace};
 use crate::program::{self, NotRunnable, Program};
 use crate::reader::{self, FileReader, Reader};
+use crate::translation::{self, RecordBuffer};
 use core::cell::RefCell;
 use eggos_app_manifest::icon as icon_file;
 use eggos_app_manifest::{self as manifest, Manifest, Source};
@@ -44,10 +45,11 @@ pub const TEMPORARY_MANIFEST: &[u8] = b"app.manifest.tmp";
 pub const MAX_DEPTH: usize = 16;
 /// The files the installer writes in an app's folder, which no program and no entry of a
 /// `.zip` may take.
-pub const RESERVED_NAMES: [&[u8]; 3] = [
+pub const RESERVED_NAMES: [&[u8]; 4] = [
     manifest::FILE_NAME.as_bytes(),
     TEMPORARY_MANIFEST,
     icon_file::FILE_NAME.as_bytes(),
+    manifest::translation::FILE_NAME.as_bytes(),
 ];
 /// The most bytes a `.zip`'s files may take once extracted.
 pub const MAX_EXTRACTED_BYTES: u64 = 4 << 30;
@@ -1798,7 +1800,8 @@ pub fn install(files: &mut impl Files, plan: Plan, buffer: &mut [u8]) -> Result<
 }
 
 /// Uninstalls the app called `name`: its manifest first, so it leaves the catalogue at once,
-/// then its folder and everything in it (D18: nothing is left behind).
+/// then its folder and everything in it (D18: nothing is left behind), and its
+/// translation's cache file when it was translated at install (D191).
 pub fn uninstall(files: &mut impl Files, name: &[u8]) -> Result<(), Problem> {
     if !Name::new(name).is_valid() {
         return Err(Problem::NotInstalled);
@@ -1815,7 +1818,13 @@ pub fn uninstall(files: &mut impl Files, name: &[u8]) -> Result<(), Problem> {
         .remove_file(manifest_path.as_bytes())
         .map_err(Problem::from_errno)?;
     unlink_fonts(files, name);
+    let mut kept: RecordBuffer = [0; manifest::translation::LARGEST + 1];
+    let record = translation::read_record(files, name, &mut kept)
+        .and_then(|length| manifest::translation::parse(&kept[..length]));
     let removed = remove_tree(files, folder.as_bytes()).map_err(Problem::from_errno);
+    if let Some(record) = record {
+        translation::remove_cache(files, &record);
+    }
     files.sync();
     removed
 }

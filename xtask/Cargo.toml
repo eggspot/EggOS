@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+eggos-translate = { path = "../translate" }
 eggos-app = { path = "../userland/app", features = ["window"] }
 eggos-editor = { path = "../userland/editor", features = ["window"] }
 eggos-files = { path = "../userland/files", features = ["window", "memory"] }

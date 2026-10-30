@@ -29,6 +29,7 @@ use eggos_translate::image::{ImageInput, TranslatedImage, translate_image};
 use eggos_translation_loader::cache_files;
 use eggos_translation_loader::callback_thunks;
 use eggos_translation_loader::disk::Disk;
+use eggos_translation_loader::install_record::{self, Origin};
 use eggos_translation_loader::installed::{self, InstalledCode, StubBridge};
 use eggos_translation_loader::trap::codegen_mode;
 
@@ -77,6 +78,29 @@ pub fn prepare(
     fixups: &PointerFixups<'_>,
     capabilities: u64,
 ) -> Result<TranslatedImage, &'static str> {
+    translation(file, program, image, fixups, capabilities).map(|(file, _)| file.image)
+}
+
+/// The installer's translation ahead of the first launch (`--translate`): [`prepare`]'s,
+/// as the record the layer prints.
+pub fn install_record(
+    file: &[u8],
+    program: &MachO<'_>,
+    image: &[u8],
+    fixups: &PointerFixups<'_>,
+    capabilities: u64,
+) -> Result<Vec<u8>, &'static str> {
+    let (file, origin) = translation(file, program, image, fixups, capabilities)?;
+    Ok(install_record::record(&file, origin))
+}
+
+fn translation(
+    file: &[u8],
+    program: &MachO<'_>,
+    image: &[u8],
+    fixups: &PointerFixups<'_>,
+    capabilities: u64,
+) -> Result<(CacheFile, Origin), &'static str> {
     let mode = codegen_mode(capabilities);
     let digest = cache::input_digest(file);
     let key = cache::cache_key(&digest, mode);
@@ -85,7 +109,7 @@ pub fn prepare(
     if let Some(cached) = cache_files::load(&mut disk, &key)
         && cached.image_base == base
     {
-        return Ok(cached.image);
+        return Ok((cached, Origin::Cached));
     }
     let sections = translated::sections(program, image);
     let seeds = translated::seeds(program, &sections, &fixups.rebase_targets);
@@ -109,8 +133,12 @@ pub fn prepare(
         image: translation,
     };
     let bytes = cache::serialize(&file);
-    let _ = cache_files::store(&mut disk, &key, &bytes, linux::process_id() as u64);
-    Ok(file.image)
+    let stored = cache_files::store(&mut disk, &key, &bytes, linux::process_id() as u64);
+    let origin = match stored {
+        true => Origin::Stored(bytes.len()),
+        false => Origin::NotStored(bytes.len()),
+    };
+    Ok((file, origin))
 }
 
 /// Where the layer's own code lies, from its program headers; nothing if they cannot be read.

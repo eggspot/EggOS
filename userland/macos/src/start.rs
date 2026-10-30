@@ -22,11 +22,15 @@ use crate::swift;
 use core::ffi::{c_char, c_int};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
+#[cfg(target_arch = "aarch64")]
+use eggos_translation_loader::install_record::LAYER_OPTION;
 
 const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
 const EXECUTABLE_PATH: &[u8] = b"executable_path=";
 const LAYER_ARGUMENTS: usize = 2;
+#[cfg(target_arch = "aarch64")]
+const STANDARD_OUTPUT: usize = 1;
 
 enum Failure {
     Usage,
@@ -45,6 +49,10 @@ pub fn run(startup: &Startup) -> i32 {
         .arguments()
         .nth(1)
         .map_or(&b"macos"[..], |path| path.to_bytes());
+    #[cfg(target_arch = "aarch64")]
+    if program == LAYER_OPTION.as_bytes() {
+        return translate_ahead(startup);
+    }
     let failure = match start(*startup) {
         Ok(never) => match never {},
         Err(failure) => failure,
@@ -118,6 +126,73 @@ impl Message {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn translate_ahead(startup: &Startup) -> i32 {
+    let shown = startup
+        .arguments()
+        .nth(2)
+        .map_or(&b"macos"[..], |path| path.to_bytes());
+    match translation_record(*startup) {
+        Ok(record) => {
+            let _ = linux::write_all(STANDARD_OUTPUT, &record);
+            0
+        }
+        Err(failure) => {
+            report(shown, failure);
+            CANNOT_EXECUTE
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn translation_record(startup: Startup) -> Result<alloc::vec::Vec<u8>, Failure> {
+    let stack_marker = 0u8;
+    // SAFETY: the layer's first step, on its only thread.
+    unsafe { libsystem::set_up_main_thread(&raw const stack_marker as usize) };
+    let path = startup.arguments().nth(2).ok_or(Failure::Usage)?;
+    let file = read_file(path.to_bytes_with_nul())?;
+    let cpu = macho::host_cpu().ok_or(Failure::OtherCpus([None; 4]))?;
+    let (slice, translated) = select_slice(file, cpu)?;
+    if !translated {
+        return Err(Failure::Translation(
+            "runs natively on this computer, so there is nothing to translate",
+        ));
+    }
+    let program = MachO::parse(slice).map_err(Failure::Invalid)?;
+    if program.start == Start::Thread {
+        return Err(Failure::Translation(
+            "starts at an LC_UNIXTHREAD entry, which EggOS does not run translated yet",
+        ));
+    }
+    let fixups = match program.chained_fixups {
+        Some(range) => Some(ChainedFixups::parse(&program, range).map_err(Failure::Invalid)?),
+        None => None,
+    };
+    let size = program.mapped_size() as usize;
+    let base = linux::map_anonymous(0, size, PROT_READ | PROT_WRITE, false)
+        .map_err(|_| Failure::Memory)?;
+    // SAFETY: `base` is a new private mapping of `size` zeroed bytes that only this function
+    // uses, and the process ends after it.
+    let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
+    copy_segments(&program, slice, image);
+    let pointers = crate::translated::pointer_fixups(&program, fixups.as_ref(), image)
+        .map_err(Failure::Invalid)?;
+    let capabilities = startup
+        .auxiliary_value(eggos_runtime::startup::auxv::HWCAP)
+        .unwrap_or(0) as u64;
+    crate::translation::install_record(slice, &program, image, &pointers, capabilities)
+        .map_err(Failure::Translation)
+}
+
+fn copy_segments(program: &MachO<'_>, slice: &[u8], image: &mut [u8]) {
+    for segment in program.segments() {
+        let at = (segment.vmaddr - program.base_address()) as usize;
+        let from = segment.fileoff as usize;
+        let length = segment.filesize as usize;
+        image[at..at + length].copy_from_slice(&slice[from..from + length]);
+    }
+}
+
 type Main =
     extern "C" fn(c_int, *const *mut c_char, *const *mut c_char, *const *mut c_char) -> c_int;
 
@@ -186,12 +261,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // SAFETY: `base` is a new private mapping of `size` zeroed bytes that only this slice uses
     // until the program runs.
     let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
-    for segment in program.segments() {
-        let at = (segment.vmaddr - program.base_address()) as usize;
-        let from = segment.fileoff as usize;
-        let length = segment.filesize as usize;
-        image[at..at + length].copy_from_slice(&slice[from..from + length]);
-    }
+    copy_segments(&program, slice, image);
     #[cfg(target_arch = "aarch64")]
     let pending = match translated {
         true => {

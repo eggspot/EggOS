@@ -5,6 +5,7 @@
 use crate::architecture::Architecture;
 use crate::files::{Files, Handle, Kind, PATH_CAPACITY, Path, Space, Status};
 use core::ffi::CStr;
+use eggos_app_manifest::translation::LAYER_OPTION;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -49,6 +50,8 @@ const OPEN_APP: usize = 0x4044_7710;
 const OPEN_APP_SIZE: usize = 68;
 const BAD_DESCRIPTOR: Errno = Errno(9);
 const MAX_ARGUMENTS: usize = 16;
+const SIGCHLD: usize = 17;
+const EXEC_FAILED: i32 = 127;
 
 /// The standard output.
 pub const STANDARD_OUTPUT: usize = 1;
@@ -177,6 +180,85 @@ pub fn start_window(startup: &Startup, arguments: &[&CStr]) -> Errno {
     ) {
         Ok(_) => Errno::EIO,
         Err(error) => error,
+    }
+}
+
+fn close_descriptor(descriptor: usize) {
+    let _ = call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
+}
+
+/// Runs `layer --translate program` (D191) with its standard output read into `output`: how
+/// many bytes it printed that fit (the rest is read and dropped), and whether it exited with
+/// status 0. Its standard error stays the installer's.
+pub fn run_translation(
+    layer: &[u8],
+    program: &[u8],
+    output: &mut [u8],
+) -> Result<(usize, bool), Errno> {
+    let layer = CPath::new(layer)?;
+    let option = CPath::new(LAYER_OPTION.as_bytes())?;
+    let program = CPath::new(program)?;
+    let arguments = [layer.pointer(), option.pointer(), program.pointer(), 0];
+    let environment = [0usize];
+    let mut ends = [0i32; 2];
+    call(
+        number::PIPE2,
+        [ends.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0],
+    )?;
+    let (reading, writing) = (ends[0] as usize, ends[1] as usize);
+    let child = match call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]) {
+        Ok(child) => child,
+        Err(error) => {
+            close_descriptor(reading);
+            close_descriptor(writing);
+            return Err(error);
+        }
+    };
+    if child == 0 {
+        let _ = call(number::DUP3, [writing, STANDARD_OUTPUT, 0, 0, 0, 0]);
+        let _ = call(
+            number::EXECVE,
+            [
+                layer.pointer(),
+                arguments.as_ptr() as usize,
+                environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        );
+        syscall::exit(EXEC_FAILED);
+    }
+    close_descriptor(writing);
+    let mut filled = 0;
+    let mut dropped = [0u8; 256];
+    loop {
+        let fits = filled < output.len();
+        let room: &mut [u8] = match fits {
+            true => &mut output[filled..],
+            false => &mut dropped,
+        };
+        match call(
+            number::READ,
+            [reading, room.as_mut_ptr() as usize, room.len(), 0, 0, 0],
+        ) {
+            Ok(0) => break,
+            Ok(count) if fits => filled += count,
+            Ok(_) | Err(Errno::EINTR) => {}
+            Err(_) => break,
+        }
+    }
+    close_descriptor(reading);
+    let mut status = 0i32;
+    loop {
+        match call(
+            number::WAIT4,
+            [child, (&raw mut status) as usize, 0, 0, 0, 0],
+        ) {
+            Ok(_) => return Ok((filled, status == 0)),
+            Err(Errno::EINTR) => {}
+            Err(error) => return Err(error),
+        }
     }
 }
 

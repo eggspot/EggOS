@@ -46,9 +46,19 @@ const REPORT_FILES: [&str; 2] = ["report.md", "report.json"];
 const BLOCK_FACTOR: f64 = 2.0;
 
 const RELEASE_IMAGE_BYTES: &str = "release_image_bytes";
+const TRANSLATE_INSTALL_BYTES: &str = "translate_install_bytes";
 
-/// Results that are sizes in bytes, gated exactly: any growth fails.
-const SIZES: &[&str] = &[RELEASE_IMAGE_BYTES];
+/// Results that are sizes, gated exactly: any growth fails.
+const SIZES: &[&str] = &[RELEASE_IMAGE_BYTES, TRANSLATE_INSTALL_BYTES];
+
+const TRANSLATE_IMAGE_BASE: u64 = 0x1_4000_0000;
+const TRANSLATE_TEXT_RVA: u32 = 0x1000;
+const TRANSLATE_FUNCTIONS: u32 = 256;
+const TRANSLATE_FUNCTION_STRIDE: u32 = 16;
+const TRANSLATE_FUNCTION: [u8; 12] = [
+    0x48, 0x01, 0xc8, 0x48, 0x31, 0xd0, 0x48, 0xff, 0xc9, 0x75, 0xf5, 0xc3,
+];
+const NOP: u8 = 0x90;
 
 /// Header of the baseline file, rewritten by `--update-baseline`.
 const BASELINE_HEADER: &str = "\
@@ -225,7 +235,61 @@ fn release_kernel_results(arch: &Arch) -> Result<Vec<(String, f64)>, String> {
     )?;
     let mut results = parse_console(&console)?;
     results.push((RELEASE_IMAGE_BYTES.to_owned(), bytes as f64));
+    if arch.name == "aarch64" {
+        results.push((
+            TRANSLATE_INSTALL_BYTES.to_owned(),
+            translate_install_bytes()?,
+        ));
+    }
     Ok(results)
+}
+
+fn translate_bench_image() -> Vec<u8> {
+    let mut code = vec![NOP; (TRANSLATE_FUNCTIONS * TRANSLATE_FUNCTION_STRIDE) as usize];
+    for function in code.chunks_mut(TRANSLATE_FUNCTION_STRIDE as usize) {
+        function[..TRANSLATE_FUNCTION.len()].copy_from_slice(&TRANSLATE_FUNCTION);
+    }
+    code
+}
+
+fn translate_install_bytes() -> Result<f64, String> {
+    use eggos_translate::cache::{self, CacheFile};
+    use eggos_translate::codegen::CodegenMode;
+    use eggos_translate::image::{ImageInput, Section, Seed, SeedOrigin, translate_image};
+    let code = translate_bench_image();
+    let sections = [Section {
+        rva: TRANSLATE_TEXT_RVA,
+        bytes: &code,
+        executable: true,
+    }];
+    let seeds: Vec<Seed> = (0..TRANSLATE_FUNCTIONS)
+        .map(|index| Seed {
+            rva: TRANSLATE_TEXT_RVA + index * TRANSLATE_FUNCTION_STRIDE,
+            origin: SeedOrigin::Export,
+        })
+        .collect();
+    let input = ImageInput {
+        image_base: TRANSLATE_IMAGE_BASE,
+        sections: &sections,
+        seeds: &seeds,
+    };
+    let mode = CodegenMode {
+        lse: true,
+        ..CodegenMode::default()
+    };
+    let image = translate_image(&input, mode)
+        .map_err(|error| format!("could not translate the benchmark image: {error:?}"))?;
+    let guest_bytes = image.stats.guest_bytes;
+    if guest_bytes == 0 {
+        return Err("the benchmark image translated no code".to_owned());
+    }
+    let file = CacheFile {
+        input_digest: cache::input_digest(&code),
+        mode,
+        image_base: TRANSLATE_IMAGE_BASE,
+        image,
+    };
+    Ok(cache::serialize(&file).len() as f64 / guest_bytes as f64)
 }
 
 /// The baseline with the results of the architectures in `ran` replaced by `measured`'s,
@@ -737,6 +801,13 @@ fn report_json(report: &Comparison, mode: Mode, ran: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_translation_cache_per_code_byte_is_a_finite_ratio_above_one() {
+        let ratio = translate_install_bytes().unwrap();
+        assert!(ratio.is_finite() && ratio > 1.0, "{ratio}");
+        assert_eq!(translate_bench_image().len(), 4096);
+    }
 
     fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Comparison {
         super::compare(baseline, measured, ran, Mode::Gate)

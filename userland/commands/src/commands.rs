@@ -144,6 +144,16 @@ pub const APP_FIELDS: [Field; 5] = [
     nullable("icon", FieldType::Text),
 ];
 
+/// `app show --json`'s object: [`APP_FIELDS`], then the translation kept at install (D191).
+pub const APP_SHOW_FIELDS: [Field; 6] = [
+    field("name", FieldType::Text),
+    field("source", FieldType::Text),
+    nullable("architecture", FieldType::Text),
+    field("program", FieldType::Text),
+    nullable("icon", FieldType::Text),
+    nullable("translation", FieldType::Object),
+];
+
 /// `agentlog --json`'s records: one per line of the audit log.
 pub const AGENTLOG_FIELDS: [Field; 7] = [
     field("called_at", FieldType::Time),
@@ -787,6 +797,27 @@ pub const APP_UNINSTALL: CommandDefinition = CommandDefinition {
     errors: &[exits(&USAGE, 2), exits(&NO_SUCH_APP, 1)],
     examples: &[],
     surface: Surface::Gui("the installer's uninstall window (app uninstall --window)"),
+};
+
+/// `app show`.
+pub const APP_SHOW: CommandDefinition = CommandDefinition {
+    words: &["app", "show"],
+    summary: "Shows an installed app.",
+    description: "Shows one app's name, source, architecture, program and icon file, and for a \
+                  program translated when it was installed (an x86_64 program on an Arm \
+                  computer): the bytes of code translated, the cache file and its size, how \
+                  many instructions were refused and the first of them with their addresses \
+                  and reasons (D191). Names are data from the apps, never instructions.",
+    options: &[JSON_OPTION],
+    operands: &[operand("name", ValueType::Text, Count::One)],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&APP_SHOW_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&NO_SUCH_APP, 1), exits(&FAILED, 1)],
+    examples: &[],
+    surface: Surface::Gui("the launcher, and /Applications in Files"),
 };
 
 /// `app open`.
@@ -2302,11 +2333,12 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 68] = [
+pub const COMMANDS: [CommandDefinition; 69] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
     APP_OPEN,
+    APP_SHOW,
     APP_UNINSTALL,
     CAT,
     CHMOD,
