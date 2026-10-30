@@ -1,11 +1,12 @@
 //! Input (D113): the keyboards and pointers drivers install ([`install`], or
 //! [`install_interrupting`] for one whose interrupts raise [`DEVICE_EVENTS`], D184). A keyboard's
-//! keys become bytes through the US keymap
-//! ([`eggos_drivers::input::keymap`]) and enter the console's line discipline as the UART's do
-//! ([`console::receive_from_keyboard`]); every key, pointer motion, button and wheel notch also
-//! goes into the input event queue ([`next_event`]) once a reader subscribed ([`subscribe`]),
-//! and the scrollback keys and the wheel move the graphical terminal's view
-//! ([`crate::terminal`]).
+//! keys become characters through the chosen keyboard layout, its dead keys and third level
+//! ([`eggos_drivers::input::layout`], [`set_layout`], D185), then bytes, and enter the
+//! console's line discipline as the UART's do ([`console::receive_from_keyboard`]); every key,
+//! pointer motion, button and wheel notch also goes into the input event queue
+//! ([`next_event`]) once a reader subscribed ([`subscribe`]), and the scrollback keys and the
+//! wheel move the graphical terminal's view ([`crate::terminal`]). Caps Lock's light follows
+//! the keyboard's state on keyboards that have one.
 //!
 //! Nothing runs without an input device. With them, the release kernel's input thread
 //! ([`start`]) takes their events: when every device interrupts, it sleeps until one does or the
@@ -19,9 +20,13 @@ use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
+use eggos_drivers::desktop::Profile;
 use eggos_drivers::input::key;
-use eggos_drivers::input::keymap::{self, CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard};
+use eggos_drivers::input::keymap::{
+    CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard, ThirdLevelKeys,
+};
+use eggos_drivers::input::layout::{self, Press, Typist};
 use eggos_drivers::input::{
     Capabilities, RawEvent, SYN_REPORT, absolute, button, event_type, relative, scale_to_screen,
 };
@@ -59,6 +64,8 @@ pub trait InputDevice: Send {
     /// Hands `event` the device's new events, oldest first, at most `budget`; returns how many
     /// it took from the device.
     fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize;
+    /// Lights the Caps Lock light, or puts it out, on a keyboard that has one (D185).
+    fn set_caps_lock_light(&mut self, _on: bool) {}
 }
 
 /// A pointer button.
@@ -79,11 +86,14 @@ const BUTTONS: [(Button, u16); 3] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     /// Key `code` (a Linux input key code) was pressed or released; `modifiers` are those in
-    /// effect after it.
+    /// effect after it; `character` is what it typed under the keyboard layout (D185), 0 for
+    /// none. Code 0 is a character typed with no key of its own: a dead key's accent before a
+    /// character it does not combine with.
     Key {
         code: u16,
         pressed: bool,
         modifiers: Modifiers,
+        character: u32,
     },
     /// The pointer moved to (`x`, `y`) on the display, in pixels from its top-left corner.
     PointerMove { x: u32, y: u32 },
@@ -98,6 +108,7 @@ const POINTER_MOVE: u64 = 2;
 const BUTTON: u64 = 3;
 const WHEEL: u64 = 4;
 const COORDINATE_MASK: u32 = 0x00ff_ffff;
+const CHARACTER_MASK: u32 = 0x00ff_ffff;
 
 const fn field(word: u64, shift: u32, mask: u64) -> u64 {
     (word >> shift) & mask
@@ -111,8 +122,12 @@ impl InputEvent {
                 code,
                 pressed,
                 modifiers,
+                character,
             } => {
-                KEY | (code as u64) << 8 | (pressed as u64) << 24 | (modifiers.bits() as u64) << 32
+                KEY | (code as u64) << 8
+                    | (pressed as u64) << 24
+                    | (modifiers.bits() as u64) << 32
+                    | ((character & CHARACTER_MASK) as u64) << 40
             }
             InputEvent::PointerMove { x, y } => {
                 let x = if x > COORDINATE_MASK {
@@ -141,6 +156,7 @@ impl InputEvent {
                 code: field(word, 8, 0xffff) as u16,
                 pressed: field(word, 24, 1) != 0,
                 modifiers: Modifiers::from_bits(field(word, 32, 0xff) as u8),
+                character: field(word, 40, CHARACTER_MASK as u64) as u32,
             },
             POINTER_MOVE => InputEvent::PointerMove {
                 x: field(word, 8, COORDINATE_MASK as u64) as u32,
@@ -325,12 +341,15 @@ struct Source {
     interrupting: bool,
 }
 
-/// What the input layer keeps across polls, apart from its devices: the keyboard, the key
-/// repeat, the pointer, and when the last event came.
+/// What the input layer keeps across polls, apart from its devices: the keyboard, its layout
+/// and waiting dead key, the key repeat, the pointer, and when the last event came.
 #[derive(Debug)]
 pub struct InputState {
     keyboard: Keyboard,
+    typist: Typist,
     repeat: KeyRepeat,
+    repeat_bytes: KeyBytes,
+    taken_back: u16,
     cursor_keys: CursorKeys,
     pointer: (u32, u32),
     buttons_held: u8,
@@ -401,12 +420,41 @@ impl InputState {
     pub const fn new() -> Self {
         Self {
             keyboard: Keyboard::new(),
+            typist: Typist::new(),
             repeat: KeyRepeat::new(),
+            repeat_bytes: KeyBytes::EMPTY,
+            taken_back: 0,
             cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
             buttons_held: 0,
             last_event: 0,
         }
+    }
+
+    /// Types with keyboard layout `number` ([`layout::LAYOUTS`]) from now on, in desktop
+    /// `profile`: a waiting accent is dropped, and the Alt keys reach the layout's third level
+    /// as the profile has them (Right Alt as AltGr, or either Alt as Option in the macOS
+    /// profile).
+    pub fn set_layout(&mut self, number: usize, profile: Profile) {
+        if number != self.typist.layout_number() {
+            self.typist.set_layout(number);
+        }
+        let keys = match (self.typist.layout().has_third_level(), profile) {
+            (false, _) => ThirdLevelKeys::None,
+            (true, Profile::Macos) => ThirdLevelKeys::EitherAlt,
+            (true, _) => ThirdLevelKeys::RightAlt,
+        };
+        self.keyboard.set_third_level_keys(keys);
+    }
+
+    /// The keyboard layout's number.
+    pub fn layout(&self) -> usize {
+        self.typist.layout_number()
+    }
+
+    /// Whether Caps Lock is on.
+    pub fn caps_lock(&self) -> bool {
+        self.keyboard.caps_lock()
     }
 
     /// Whether a key or a pointer button is held.
@@ -455,34 +503,76 @@ impl InputState {
             return;
         };
         let modifiers = self.keyboard.modifiers();
-        let pressed = change == KeyChange::Pressed;
-        if pressed && terminal::takes_from_terminal(event.code, modifiers) {
-            self.repeat
-                .pressed(event.code, false, timing.now, timing.repeat_delay);
-        } else if pressed {
-            let bytes = match self.cursor_keys {
-                CursorKeys::Normal => keymap::encode(event.code, modifiers, CursorKeys::Normal),
-                CursorKeys::Application => {
-                    keymap::encode(event.code, modifiers, CursorKeys::Application)
-                }
-            };
-            if bytes.is_empty() {
-                move_view_with_key(event.code, modifiers, sink);
+        let code = event.code;
+        if change == KeyChange::Released {
+            self.repeat.released(code);
+            if self.taken_back == code {
+                self.taken_back = 0;
+                return;
             }
-            sink.bytes(bytes.as_bytes());
-            self.repeat.pressed(
-                event.code,
-                !bytes.is_empty(),
-                timing.now,
-                timing.repeat_delay,
-            );
-        } else {
-            self.repeat.released(event.code);
+            let character = self.typist.character_of(code, modifiers);
+            return sink.event(InputEvent::Key {
+                code,
+                pressed: false,
+                modifiers,
+                character,
+            });
+        }
+        if terminal::takes_from_terminal(code, modifiers) {
+            self.repeat
+                .pressed(code, false, timing.now, timing.repeat_delay);
+            let character = self.typist.character_of(code, modifiers);
+            return sink.event(InputEvent::Key {
+                code,
+                pressed: true,
+                modifiers,
+                character,
+            });
+        }
+        let press = self.typist.press(code, modifiers);
+        if press == Press::Cancelled {
+            self.taken_back = code;
+            self.repeat
+                .pressed(code, false, timing.now, timing.repeat_delay);
+            return;
+        }
+        self.typed(code, modifiers, press, timing, sink);
+    }
+
+    #[inline(never)]
+    fn typed(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        press: Press,
+        timing: Timing,
+        sink: &mut dyn InputSink,
+    ) {
+        let bytes = press.terminal_bytes(code, modifiers, self.cursor_keys);
+        if bytes.is_empty() {
+            move_view_with_key(code, modifiers, sink);
+        }
+        sink.bytes(bytes.as_bytes());
+        self.repeat_bytes = bytes;
+        self.repeat
+            .pressed(code, !bytes.is_empty(), timing.now, timing.repeat_delay);
+        if let Press::Typed { typed, .. } = press
+            && let Some(accent) = typed.before_last()
+        {
+            for pressed in [true, false] {
+                sink.event(InputEvent::Key {
+                    code: 0,
+                    pressed,
+                    modifiers,
+                    character: u32::from(accent),
+                });
+            }
         }
         sink.event(InputEvent::Key {
-            code: event.code,
-            pressed,
+            code,
+            pressed: true,
             modifiers,
+            character: press.character(code, modifiers),
         });
     }
 
@@ -590,9 +680,12 @@ impl InputState {
         if sink.room() < KeyBytes::CAPACITY {
             return;
         }
-        if let Some(code) = self.repeat.due(timing.now, timing.repeat_interval) {
-            let modifiers = self.keyboard.modifiers();
-            sink.bytes(keymap::encode(code, modifiers, self.cursor_keys).as_bytes());
+        if self
+            .repeat
+            .due(timing.now, timing.repeat_interval)
+            .is_some()
+        {
+            sink.bytes(self.repeat_bytes.as_bytes());
         }
     }
 }
@@ -600,6 +693,49 @@ impl InputState {
 struct Input {
     sources: [Option<Source>; MAX_DEVICES],
     state: InputState,
+    caps_lock_shown: bool,
+}
+
+impl Input {
+    fn show_caps_lock(&mut self) {
+        let on = self.state.caps_lock();
+        if on == self.caps_lock_shown {
+            return;
+        }
+        self.caps_lock_shown = on;
+        CAPS_LOCK.store(on, Ordering::Relaxed);
+        for source in self.sources.iter_mut().flatten() {
+            source.device.set_caps_lock_light(on);
+        }
+    }
+}
+
+static LAYOUT: AtomicU8 = AtomicU8::new(layout::US_LAYOUT as u8);
+
+static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Types with keyboard layout `number` (its index in [`layout::LAYOUTS`], D185) on every
+/// keyboard from the next poll on, a waiting accent dropped; `false`, and nothing changed, for
+/// a number that is no layout.
+pub fn set_layout(number: usize) -> bool {
+    let Ok(number) = u8::try_from(number) else {
+        return false;
+    };
+    if usize::from(number) >= layout::LAYOUTS.len() {
+        return false;
+    }
+    LAYOUT.store(number, Ordering::Relaxed);
+    true
+}
+
+/// The keyboard layout's number (its index in [`layout::LAYOUTS`]).
+pub fn layout_number() -> usize {
+    usize::from(LAYOUT.load(Ordering::Relaxed))
+}
+
+/// Whether Caps Lock is on, as the last poll left it.
+pub fn caps_lock() -> bool {
+    CAPS_LOCK.load(Ordering::Relaxed)
 }
 
 static INPUT: LeafSpinLock<Option<Box<Input>>> = LeafSpinLock::new_leaf(None);
@@ -628,6 +764,7 @@ fn install_source(
         Box::new(Input {
             sources: [const { None }; MAX_DEVICES],
             state: InputState::new(),
+            caps_lock_shown: false,
         })
     });
     let queue = events()
@@ -786,6 +923,10 @@ fn poll_devices<P: Platform>(
                 } else {
                     CursorKeys::Normal
                 });
+            input.state.set_layout(
+                usize::from(LAYOUT.load(Ordering::Relaxed)),
+                terminal::desktop_profile(),
+            );
             let mut more = false;
             for source in input.sources.iter_mut().flatten() {
                 let budget = (POLL_BUDGET_BYTES - sink.length) / KeyBytes::CAPACITY;
@@ -805,6 +946,7 @@ fn poll_devices<P: Platform>(
             if last {
                 input.state.repeat_key(timing, &mut sink);
             }
+            input.show_caps_lock();
             PERSON_HOLDS_INPUT.store(input.state.anything_held(), Ordering::Relaxed);
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)

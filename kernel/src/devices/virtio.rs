@@ -536,6 +536,10 @@ mod input {
         fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
             self.0.poll(budget, &mut |raw| event(raw))
         }
+
+        fn set_caps_lock_light(&mut self, on: bool) {
+            self.0.set_caps_lock_light(on);
+        }
     }
 
     fn probe_input(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {

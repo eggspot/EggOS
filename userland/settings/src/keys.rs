@@ -4,7 +4,7 @@
 
 use crate::facts::Facts;
 use core::fmt::Write;
-use eggos_settings_file::PROFILES;
+use eggos_settings_file::{KEYBOARD_LAYOUTS, PROFILES};
 use eggos_toolkit::text::Text;
 
 /// A value as it is printed and shown.
@@ -41,6 +41,8 @@ pub enum Refusal {
 pub enum Change {
     /// The desktop's layout profile: its index in [`PROFILES`].
     Profile(usize),
+    /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
+    KeyboardLayout(usize),
 }
 
 /// The names `shell.profile` takes, as the refusal of another one lists them.
@@ -68,7 +70,7 @@ impl Key {
             Self::DisplayScale => eggos_settings_file::DISPLAY_SCALE,
             Self::DisplayResolution => "display.resolution",
             Self::DisplayPointer => "display.pointer",
-            Self::KeyboardLayout => "keyboard.layout",
+            Self::KeyboardLayout => eggos_settings_file::KEYBOARD_LAYOUT,
             Self::SystemVersion => "system.version",
             Self::SystemArch => "system.arch",
             Self::SystemCpus => "system.cpus",
@@ -84,7 +86,29 @@ impl Key {
 
     /// Whether it can be set; the others report facts.
     pub const fn is_settable(self) -> bool {
-        matches!(self, Self::ShellProfile)
+        matches!(self, Self::ShellProfile | Self::KeyboardLayout)
+    }
+
+    /// The values it takes, as the refusal of another one lists them: `a, b or c`.
+    pub fn choices(self) -> Text<256> {
+        let mut choices = Text::<256>::new();
+        match self {
+            Self::KeyboardLayout => {
+                let last = KEYBOARD_LAYOUTS.len() - 1;
+                for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
+                    let separator = match index {
+                        0 => "",
+                        _ if index == last => " or ",
+                        _ => ", ",
+                    };
+                    let _ = write!(choices, "{separator}{}", layout.name);
+                }
+            }
+            _ => {
+                let _ = choices.write_str(PROFILE_CHOICES);
+            }
+        }
+        choices
     }
 
     /// Its value now.
@@ -97,7 +121,9 @@ impl Key {
                 write!(value, "{}x{}", facts.resolution.0, facts.resolution.1)
             }
             Self::DisplayPointer => value.write_str("software"),
-            Self::KeyboardLayout => value.write_str("us"),
+            Self::KeyboardLayout => value.write_str(
+                KEYBOARD_LAYOUTS[facts.keyboard_layout.min(KEYBOARD_LAYOUTS.len() - 1)].name,
+            ),
             Self::SystemVersion => value.write_str(facts.version),
             Self::SystemArch => value.write_str(facts.architecture.as_str()),
             Self::SystemCpus => write!(value, "{}", facts.cpus),
@@ -109,14 +135,17 @@ impl Key {
 
     /// What setting it to `value` changes.
     pub fn change(self, value: &str) -> Result<Change, Refusal> {
-        if !self.is_settable() {
-            return Err(Refusal::ReadOnly);
+        match self {
+            Self::ShellProfile => PROFILES
+                .iter()
+                .position(|profile| *profile == value)
+                .map(Change::Profile)
+                .ok_or(Refusal::InvalidValue),
+            Self::KeyboardLayout => eggos_settings_file::keyboard_layout_named(value.as_bytes())
+                .map(Change::KeyboardLayout)
+                .ok_or(Refusal::InvalidValue),
+            _ => Err(Refusal::ReadOnly),
         }
-        PROFILES
-            .iter()
-            .position(|profile| *profile == value)
-            .map(Change::Profile)
-            .ok_or(Refusal::InvalidValue)
     }
 }
 
@@ -155,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_profile_can_be_set_and_only_to_a_profile() {
+    fn only_the_profile_and_the_layout_can_be_set_and_only_to_their_values() {
         assert_eq!(
             change("shell.profile", "windows"),
             Ok((Key::ShellProfile, Change::Profile(0)))
@@ -171,6 +200,24 @@ mod tests {
         );
         assert_eq!(change("system.version", "9"), Err(Refusal::ReadOnly));
         assert_eq!(change("display.scale", "2"), Err(Refusal::ReadOnly));
+        assert_eq!(
+            change("keyboard.layout", "de"),
+            Ok((Key::KeyboardLayout, Change::KeyboardLayout(8)))
+        );
+        assert_eq!(change("keyboard.layout", "DE"), Err(Refusal::InvalidValue));
+        assert!(
+            Key::KeyboardLayout
+                .choices()
+                .as_str()
+                .starts_with("us, us-intl, gb, us-dvorak")
+        );
+        assert!(
+            Key::KeyboardLayout
+                .choices()
+                .as_str()
+                .ends_with(", es or se")
+        );
+        assert_eq!(Key::ShellProfile.choices().as_str(), PROFILE_CHOICES);
         assert_eq!(change("nope", "x"), Err(Refusal::NoSuchSetting));
     }
 }

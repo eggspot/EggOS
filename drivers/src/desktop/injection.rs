@@ -62,8 +62,10 @@ pub enum InjectedInput {
     },
     /// Key `code` is pressed and released with `modifiers` held.
     Key { code: u16, modifiers: Modifiers },
-    /// The printable ASCII character is typed as the US keymap types it.
-    Character(u8),
+    /// The character, not a control character, is typed: as the US keymap types it when a key
+    /// does, else as a `Key` record of code 0 that carries it, a character with no key of its
+    /// own (D185).
+    Character(char),
 }
 
 impl InjectedInput {
@@ -149,9 +151,8 @@ impl InjectedInput {
                     modifiers: modifiers_of(value),
                 })
             }
-            input_kind::CHARACTER => u8::try_from(code)
-                .ok()
-                .filter(|&byte| key_for_ascii(byte).is_some() && (b' '..=b'~').contains(&byte))
+            input_kind::CHARACTER => char::from_u32(code)
+                .filter(|character| !character.is_control())
                 .map(Self::Character)
                 .ok_or(WindowError::Invalid),
             _ => Err(WindowError::Invalid),
@@ -177,8 +178,8 @@ fn modifiers_of(bits: u32) -> Modifiers {
 pub enum TerminalInput {
     /// Key `code` pressed with `modifiers`: its bytes go to the console.
     Key { code: u16, modifiers: Modifiers },
-    /// The character goes to the console.
-    Character(u8),
+    /// The character goes to the console, in UTF-8.
+    Character(char),
     /// The view scrolls by `notches`, back when positive.
     Scroll { notches: i32 },
 }
@@ -222,7 +223,7 @@ impl InjectedInput {
                 notches, sideways, ..
             } => 1 + usize::from(notches != 0) + usize::from(sideways != 0),
             InjectedInput::Key { modifiers, .. } => 2 + 2 * held_modifier_keys(modifiers),
-            InjectedInput::Character(_) => 0,
+            InjectedInput::Character(_) => 2,
         }
     }
 }
@@ -399,8 +400,8 @@ impl Desktop {
                         modifiers,
                     }))
                 }
-                InjectedInput::Character(byte) => {
-                    Ok(Injected::ForTerminal(TerminalInput::Character(byte)))
+                InjectedInput::Character(character) => {
+                    Ok(Injected::ForTerminal(TerminalInput::Character(character)))
                 }
                 InjectedInput::Wheel {
                     notches,
@@ -446,9 +447,11 @@ impl Desktop {
             return Err(WindowError::Unsupported);
         }
         let input = match input {
-            InjectedInput::Character(byte) => {
-                let (code, modifiers) = key_for_ascii(byte).ok_or(WindowError::Invalid)?;
-                InjectedInput::Key { code, modifiers }
+            InjectedInput::Character(character) => {
+                u8::try_from(character).ok().and_then(key_for_ascii).map_or(
+                    input,
+                    |(code, modifiers)| InjectedInput::Key { code, modifiers },
+                )
             }
             other => other,
         };
@@ -553,6 +556,10 @@ impl Desktop {
                     key_record(modifier_key, false, held, events);
                 }
             }
+        }
+        if let InjectedInput::Character(character) = input {
+            send(event::KEY, 0, 1, 0, u32::from(character), events);
+            send(event::KEY, 0, 0, 0, u32::from(character), events);
         }
         if focus {
             send(event::FOCUS_OUT, 0, 0, 0, 0, events);

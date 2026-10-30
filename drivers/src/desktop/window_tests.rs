@@ -914,3 +914,43 @@ fn a_client_reads_its_own_window_s_placement_and_no_one_else_s() {
         })
     );
 }
+
+#[test]
+fn the_keyboard_layout_requests_have_their_numbers_and_arguments() {
+    assert_eq!(request::GET_KEYBOARD_LAYOUT, 0x8008_771d);
+    assert_eq!(request::SET_KEYBOARD_LAYOUT, 0x4004_771e);
+    assert_eq!(
+        Request::parse(request::GET_KEYBOARD_LAYOUT, &[0; 8]),
+        Some(Request::GetKeyboardLayout)
+    );
+    assert_eq!(
+        Request::parse(request::SET_KEYBOARD_LAYOUT, &8u32.to_ne_bytes()),
+        Some(Request::SetKeyboardLayout { layout: 8 })
+    );
+    assert_eq!(key_modifiers(Modifiers::ALT_GRAPH), modifier::ALT_GRAPH);
+}
+
+#[test]
+fn a_key_typed_through_a_layout_carries_its_character_to_the_focused_window() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    let mut events = Recorded::default();
+    desktop.key_typing(
+        18,
+        true,
+        Modifiers::ALT_GRAPH,
+        u32::from('€'),
+        &mut Damage::new(),
+        &mut events,
+    );
+    let key = events
+        .0
+        .iter()
+        .map(|(_, record)| *record)
+        .find(|record| record.kind == event::KEY)
+        .unwrap();
+    assert_eq!(
+        (key.window, key.a, key.b, key.c, key.d),
+        (window, 18, 1, modifier::ALT_GRAPH, 0x20ac)
+    );
+}

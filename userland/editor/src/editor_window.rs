@@ -1527,6 +1527,7 @@ impl<'a> EditorWindow<'a> {
         let ctrl = held & Modifiers::CTRL != 0;
         let command = held & Modifiers::SUPER != 0;
         let alt = held & Modifiers::ALT != 0;
+        let typing_alt = alt && held & Modifiers::ALT_GRAPH == 0;
         let primary = ctrl || command;
         let shift = modifiers.shift();
         let motion = match code {
@@ -1582,7 +1583,7 @@ impl<'a> EditorWindow<'a> {
                 let typed = self.editor.type_character('\t');
                 self.edited(typed);
             }
-            _ if !primary && !alt => {
+            _ if !primary && !typing_alt => {
                 let Some(typed) = char::from_u32(character).filter(|typed| !typed.is_control())
                 else {
                     return;

@@ -156,12 +156,17 @@ fn ids_are_ascii_then_the_extras_in_the_design_s_order_else_the_question_mark() 
     assert_eq!(glyph_id('→' as u32), 0x9b);
     assert_eq!(glyph_id('↓' as u32), 0x9e);
     assert_eq!(glyph_id('▲' as u32), UP_TRIANGLE);
-    for unknown in [0x7f, 0x9f, 0xe9, 0x2501, 0x1f600, 0x0a] {
+    for unknown in [0x7f, 0x9f, 0x100, 0x178, 0x2501, 0x20ab, 0x1f600, 0x0a] {
         assert_eq!(glyph_id(unknown), REPLACEMENT, "U+{unknown:04X}");
+        assert!(!covers(unknown), "U+{unknown:04X}");
     }
-    assert_eq!(rows(0x7f), rows(b'?'));
-    assert_eq!(rows(0xff), rows(b'?'));
+    assert_eq!(glyph_id(0xe9), 0xe9);
+    assert_eq!(glyph_id(0x20ac), EURO);
+    assert!(covers(u32::from(b'?')) && covers(0xa0) && covers(0x20ac));
+    assert_ne!(rows(EURO), rows(b'?'));
+    assert_ne!(rows(0xff), rows(b'?'));
     assert_eq!(rows(0x00), rows(b'?'));
+    assert_eq!(rows(0x1f), rows(b'?'));
     assert_ne!(rows(UP_TRIANGLE), rows(b'?'));
     for (index, &extra) in EXTRAS.iter().enumerate() {
         assert_eq!(glyph_id(extra as u32), FIRST_EXTRA + index as u8);
@@ -189,4 +194,85 @@ fn a_glyph_is_drawn_into_its_cell_alone_with_its_underline() {
             assert_eq!(pixel, if ink { 0xff } else { 0x11 }, "({x}, {y})");
         }
     }
+}
+
+const LATIN_1_FILE: &str = include_str!("../../docs/ux/font-8x16-latin-1.txt");
+
+fn latin_1_design() -> Vec<(u32, GlyphRows)> {
+    let mut glyphs = Vec::new();
+    let mut lines = LATIN_1_FILE.lines();
+    while let Some(line) = lines.next() {
+        let Some(header) = line.strip_prefix("U+") else {
+            continue;
+        };
+        let codepoint = u32::from_str_radix(&header[..4], 16).unwrap();
+        let mut rows = [0u8; GLYPH_HEIGHT];
+        for row in &mut rows {
+            for (column, pixel) in lines.next().unwrap().bytes().enumerate() {
+                if pixel == b'#' {
+                    *row |= 0x80 >> column;
+                }
+            }
+        }
+        glyphs.push((codepoint, rows));
+    }
+    glyphs
+}
+
+#[test]
+fn the_latin_1_glyphs_and_the_euro_are_the_design_file_s() {
+    let glyphs = latin_1_design();
+    let expected: Vec<u32> = (0xa0..=0xff).chain([0x20ac]).collect();
+    assert_eq!(
+        glyphs
+            .iter()
+            .map(|(codepoint, _)| *codepoint)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    for (codepoint, design) in glyphs {
+        assert_eq!(rows(glyph_id(codepoint)), &design, "U+{codepoint:04X}");
+        assert!(covers(codepoint), "U+{codepoint:04X}");
+    }
+}
+
+#[test]
+fn the_latin_1_glyphs_keep_the_letter_gap_and_the_ascii_letters() {
+    for codepoint in (0xa0..=0xff).chain([0x20ac]) {
+        assert!(
+            rows(glyph_id(codepoint)).iter().all(|row| row & 1 == 0),
+            "U+{codepoint:04X}: column 7"
+        );
+    }
+    assert!(rows(glyph_id(0xa0)).iter().all(|&row| row == 0));
+    for (accented, plain) in [('É', 'E'), ('Ñ', 'N'), ('Ü', 'U'), ('È', 'E'), ('Ô', 'O')] {
+        assert_eq!(
+            rows(glyph_id(accented as u32))[2..13],
+            rows(plain as u8)[2..13],
+            "{accented}"
+        );
+        assert!(
+            rows(glyph_id(accented as u32))[..2]
+                .iter()
+                .any(|&row| row != 0)
+        );
+    }
+    for (accented, plain) in [('é', 'e'), ('ñ', 'n'), ('ü', 'u'), ('à', 'a'), ('ô', 'o')] {
+        assert_eq!(
+            rows(glyph_id(accented as u32))[5..13],
+            rows(plain as u8)[5..13],
+            "{accented}"
+        );
+        assert!(
+            rows(glyph_id(accented as u32))[2..4]
+                .iter()
+                .any(|&row| row != 0)
+        );
+    }
+    assert!(
+        rows(glyph_id('ç' as u32))[13..15]
+            .iter()
+            .any(|&row| row != 0)
+    );
+    assert_eq!(picture(glyph_id('é' as u32))[2], "....#...");
 }

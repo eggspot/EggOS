@@ -1,14 +1,17 @@
-//! Egg Mono 8x16, the system font (docs/ux/font-8x16.txt, D109): one bitmap face of 8x16 cells,
-//! no anti-aliasing. A glyph is addressed by a `u8` glyph id: 0x20 to 0x7E are the printable
-//! ASCII characters themselves, and the box drawing, block and symbol extras take 0x80 upwards in
-//! the order of [`EXTRAS`]; every other id draws `?`. The desktop, the terminal and the
-//! Windows layer's drawing share it (D129). [`egg_sans`] is the proportional UI font of the
-//! toolkit (docs/ux/font-ui-16.txt, D132).
+//! Egg Mono 8x16, the system font (docs/ux/font-8x16.txt, D109; its Latin-1 supplement
+//! docs/ux/font-8x16-latin-1.txt, D185): one bitmap face of 8x16 cells, no anti-aliasing. A
+//! glyph is addressed by a `u8` glyph id: 0x20 to 0x7E are the printable ASCII characters
+//! themselves, 0xA0 to 0xFF the Latin-1 characters themselves, [`EURO`] the euro sign, and the
+//! box drawing, block and symbol extras take 0x80 upwards in the order of [`EXTRAS`]; every
+//! other id draws `?`. The desktop, the terminal and the Windows layer's drawing share it
+//! (D129). [`egg_sans`] is the proportional UI font of the toolkit (docs/ux/font-ui-16.txt,
+//! D132).
 
 #![cfg_attr(not(test), no_std)]
 
 mod egg_mono;
 pub mod egg_sans;
+mod latin_1;
 
 #[cfg(test)]
 mod tests;
@@ -39,11 +42,22 @@ pub const EXTRAS: [char; 32] = [
 /// The glyph id of `▲`.
 pub const UP_TRIANGLE: u8 = FIRST_EXTRA + 31;
 
-/// The glyph id that draws `character`: itself for printable ASCII, an extra's id, else
-/// [`REPLACEMENT`].
+/// The glyph id of the first Latin-1 character, U+00A0; the ids up to 0xFF are the Latin-1
+/// characters themselves.
+pub const FIRST_LATIN_1: u8 = 0xa0;
+
+/// The glyph id of `€` (U+20AC): the one id below [`FIRST_EXTRA`] that no character of its own
+/// takes.
+pub const EURO: u8 = 0x7f;
+
+const EURO_CHARACTER: u32 = 0x20ac;
+
+/// The glyph id that draws `character`: itself for printable ASCII and Latin-1, [`EURO`] for
+/// the euro sign, an extra's id, else [`REPLACEMENT`].
 pub fn glyph_id(character: u32) -> u8 {
     match character {
-        0x20..=0x7e => character as u8,
+        0x20..=0x7e | 0xa0..=0xff => character as u8,
+        EURO_CHARACTER => EURO,
         0x2500..=0x25ff | 0x2190..=0x2193 => EXTRAS
             .iter()
             .position(|&extra| extra as u32 == character)
@@ -52,11 +66,18 @@ pub fn glyph_id(character: u32) -> u8 {
     }
 }
 
+/// Whether Egg Mono has a glyph of its own for `character`.
+pub fn covers(character: u32) -> bool {
+    glyph_id(character) != REPLACEMENT || character == u32::from(REPLACEMENT)
+}
+
 /// The rows of glyph `id`; those of `?` for an id the font does not have.
 pub fn rows(id: u8) -> &'static GlyphRows {
     match id {
         0x20..=0x7e => &egg_mono::ASCII[usize::from(id - 0x20)],
         FIRST_EXTRA..=UP_TRIANGLE => &egg_mono::EXTRAS[usize::from(id - FIRST_EXTRA)],
+        FIRST_LATIN_1..=0xff => &latin_1::LATIN_1[usize::from(id - FIRST_LATIN_1)],
+        EURO => &latin_1::LATIN_1[latin_1::GLYPH_COUNT - 1],
         _ => &egg_mono::ASCII[usize::from(REPLACEMENT - 0x20)],
     }
 }

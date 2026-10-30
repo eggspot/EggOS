@@ -5,12 +5,12 @@
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
-use crate::keys::{self, Change, Key, PROFILE_CHOICES, Refusal};
+use crate::keys::{self, Change, Key, Refusal};
 use core::fmt::Write;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
-use eggos_settings_file::{PATH, SHELL_PROFILE};
+use eggos_settings_file::PATH;
 use eggos_toolkit::text::Text;
 
 /// The command's usage, printed for a usage error.
@@ -39,6 +39,11 @@ pub trait Machine {
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves the keyboard layout `index` (of the settings file's `KEYBOARD_LAYOUTS`) to the
+    /// settings file; the error's text on failure.
+    fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Applies the keyboard layout `index` now; the error's text on failure.
+    fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Writes to standard output.
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
@@ -171,8 +176,8 @@ fn get(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
 }
 
 fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i32 {
-    let (key, index) = match keys::change(name, value) {
-        Ok((key, Change::Profile(index))) => (key, index),
+    let (key, change) = match keys::change(name, value) {
+        Ok(changed) => changed,
         Err(Refusal::NoSuchSetting) => return no_such_setting(machine, false, name),
         Err(Refusal::ReadOnly) => {
             let mut message = Message::new();
@@ -181,10 +186,12 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
             return FAILURE;
         }
         Err(Refusal::InvalidValue) => {
+            let choices = Key::named(name).map_or_else(Text::new, Key::choices);
             let mut message = Message::new();
             let _ = write!(
                 message,
-                "{name}: invalid value '{value}' ({PROFILE_CHOICES})"
+                "{name}: invalid value '{value}' ({})",
+                choices.as_str()
             );
             report(machine, false, &errors::INVALID_VALUE, message.as_str());
             return INVALID_VALUE_STATUS;
@@ -201,16 +208,22 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         machine.write_output(message.as_str().as_bytes());
         return 0;
     }
-    let saved = machine.save_profile(index);
+    let saved = match change {
+        Change::Profile(index) => machine.save_profile(index),
+        Change::KeyboardLayout(index) => machine.save_keyboard_layout(index),
+    };
     if let Err(why) = saved {
         let mut message = Message::new();
         let _ = write!(message, "{PATH}: {}", text_of(why));
         report(machine, false, &errors::FAILED, message.as_str());
     }
-    let applied = machine.apply_profile(index);
+    let applied = match change {
+        Change::Profile(index) => machine.apply_profile(index),
+        Change::KeyboardLayout(index) => machine.apply_keyboard_layout(index),
+    };
     if let Err(why) = applied {
         let mut message = Message::new();
-        let _ = write!(message, "{SHELL_PROFILE}: not applied: {}", text_of(why));
+        let _ = write!(message, "{name}: not applied: {}", text_of(why));
         report(machine, false, &errors::NOT_APPLIED, message.as_str());
     }
     match saved.is_ok() && applied.is_ok() {
@@ -234,6 +247,8 @@ mod tests {
         errors: Vec<u8>,
         saved: Option<usize>,
         applied: Option<usize>,
+        layout_saved: Option<usize>,
+        layout_applied: Option<usize>,
         save_fails: bool,
         apply_fails: bool,
     }
@@ -256,6 +271,19 @@ mod tests {
                 return Err(b"No such device");
             }
             self.applied = Some(index);
+            Ok(())
+        }
+
+        fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+            self.layout_saved = Some(index);
+            Ok(())
+        }
+
+        fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+            if self.apply_fails {
+                return Err(b"No such device");
+            }
+            self.layout_applied = Some(index);
             Ok(())
         }
 
@@ -342,6 +370,35 @@ mod tests {
         assert_eq!(status, 1);
         assert_eq!(fake.applied, Some(2));
         assert!(errors.ends_with(": Read-only file system\n"), "{errors}");
+    }
+
+    #[test]
+    fn set_saves_and_applies_the_keyboard_layout_and_lists_the_layouts_when_refused() {
+        let mut fake = Fake::default();
+        assert_eq!(
+            settings(&mut fake, &["set", "keyboard.layout", "de"]),
+            (0, String::new(), String::new())
+        );
+        assert_eq!((fake.layout_saved, fake.layout_applied), (Some(8), Some(8)));
+        assert_eq!(fake.saved, None);
+        let (status, _, errors) = settings(&mut fake, &["set", "keyboard.layout", "xx"]);
+        assert_eq!(status, 2);
+        assert_eq!(
+            errors,
+            "settings: keyboard.layout: invalid value 'xx' (us, us-intl, gb, us-dvorak, \
+             us-colemak, dk, fi, fr, de, it, no, br, es or se)\n"
+        );
+        let mut fake = Fake {
+            apply_fails: true,
+            ..Fake::default()
+        };
+        let (status, _, errors) = settings(&mut fake, &["set", "keyboard.layout", "fr"]);
+        assert_eq!(status, 1);
+        assert_eq!(fake.layout_saved, Some(7));
+        assert_eq!(
+            errors,
+            "settings: keyboard.layout: not applied: No such device\n"
+        );
     }
 
     #[test]

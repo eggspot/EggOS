@@ -307,6 +307,7 @@ pub struct Desktop {
     notice: Option<Notice>,
     icons: DesktopIcons,
     super_alone: bool,
+    typed: u32,
     now_ms: u32,
     person_input_ms: Option<u32>,
     person_pointer: (u32, u32),
@@ -392,6 +393,7 @@ impl Desktop {
             notice: None,
             icons: DesktopIcons::default(),
             super_alone: false,
+            typed: 0,
             now_ms: 0,
             person_input_ms: None,
             person_pointer: (0, 0),
@@ -1872,6 +1874,23 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        let character = codepoint(code, modifiers);
+        self.key_typing(code, pressed, modifiers, character, damage, events)
+    }
+
+    /// A key event whose `character` the keyboard layout chose (D185): as [`Self::key`], the
+    /// focused window's record and the launcher's search taking `character` instead of the US
+    /// keymap's. Code 0 is a character typed with no key of its own, such as a dead key's accent.
+    pub fn key_typing(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        modifiers: Modifiers,
+        character: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        self.typed = character;
         self.note_person_input();
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
@@ -1945,7 +1964,7 @@ impl Desktop {
                     i32::from(code),
                     i32::from(pressed),
                     key_modifiers(modifiers),
-                    codepoint(code, modifiers),
+                    self.typed,
                 );
                 self.send(slot, record, events);
             }
@@ -2281,6 +2300,7 @@ pub fn key_modifiers(modifiers: Modifiers) -> u32 {
         (Modifiers::ALT, modifier::ALT),
         (Modifiers::SUPER, modifier::SUPER),
         (Modifiers::CAPS_LOCK, modifier::CAPS_LOCK),
+        (Modifiers::ALT_GRAPH, modifier::ALT_GRAPH),
     ]
     .into_iter()
     .filter(|(held, _)| modifiers.contains(*held))

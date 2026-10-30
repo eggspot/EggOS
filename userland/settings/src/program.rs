@@ -10,7 +10,7 @@ use eggos_runtime::syscall::{call, number, write_all};
 use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
 use eggos_settings::settings_window::{
-    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, MINIMUM_SIZE, Request, SetOutcome,
+    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
 };
 use eggos_settings_file::{
@@ -19,7 +19,7 @@ use eggos_settings_file::{
 use eggos_toolkit::application::{self, Application};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetTree};
-use eggos_toolkit::window::{Window, WindowServer, now_ms};
+use eggos_toolkit::window::{Keyboard, Window, WindowServer, now_ms};
 
 const STANDARD_OUTPUT: usize = 1;
 const STANDARD_ERROR: usize = 2;
@@ -355,6 +355,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         .and_then(|server| server.desktop_profile().ok())
         .map_or(saved, |profile| profile as usize);
     let area = server.and_then(|server| server.work_area().ok());
+    let saved_layout = settings_file::keyboard_layout(&file[..length]).unwrap_or(0);
+    let keyboard = server.and_then(|server| server.keyboard().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
         architecture: architecture(),
@@ -372,6 +374,9 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         on_disk: home_is_on_a_disk(),
         now_s: wall_clock().0,
         hardware_clock: hardware_clock_s().is_some(),
+        keyboard_layout: keyboard.map_or(saved_layout, |keyboard| keyboard.layout as usize),
+        keyboard: keyboard.is_none_or(|keyboard| keyboard.present),
+        caps_lock: keyboard.is_some_and(|keyboard| keyboard.caps_lock),
     }
 }
 
@@ -392,6 +397,39 @@ fn save_profile(index: usize) -> bool {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
     saved.is_ok()
+}
+
+fn save_keyboard_layout(index: usize) -> Result<(), Errno> {
+    let name = settings_file::KEYBOARD_LAYOUTS[index].name;
+    save_through_a_temporary_file(settings_file::KEYBOARD_LAYOUT, name)
+}
+
+fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => server.set_keyboard_layout(index as u32),
+        None => Ok(()),
+    }
+}
+
+fn choose_keyboard_layout(index: usize, server: Option<&WindowServer>) {
+    if let Err(error) = apply_keyboard_layout(index, server) {
+        say_error(&[
+            settings_file::KEYBOARD_LAYOUT.as_bytes(),
+            b": not applied: ",
+            error.message(),
+        ]);
+    }
+    if let Err(error) = save_keyboard_layout(index) {
+        say_error(&[PATH.as_bytes(), b": ", error.message()]);
+    }
 }
 
 fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
@@ -448,6 +486,14 @@ impl command::Machine for Machine {
         }
     }
 
+    fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        save_keyboard_layout(index).map_err(Errno::message)
+    }
+
+    fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        apply_keyboard_layout(index, self.server.as_ref()).map_err(Errno::message)
+    }
+
     fn write_output(&mut self, bytes: &[u8]) {
         write_all(STANDARD_OUTPUT, bytes);
     }
@@ -483,7 +529,13 @@ impl Application<CAPACITY> for Settings {
                 self.window.show_set_outcome(outcome, now_ms);
                 self.window.show_time(wall_clock().0);
             }
+            Some(Request::SetKeyboardLayout(index)) => {
+                choose_keyboard_layout(index, self.server.as_ref());
+            }
             None => self.show_clock(now_ms),
+        }
+        if self.window.pane() == KEYBOARD {
+            self.show_keyboard();
         }
     }
 
@@ -522,10 +574,29 @@ impl Application<CAPACITY> for Settings {
         if let Some(profile) = current.filter(|&profile| profile != self.window.facts().profile) {
             self.window.show_profile(profile);
         }
+        if let Some(keyboard) = self.keyboard() {
+            let layout = keyboard.layout as usize;
+            if layout != self.window.facts().keyboard_layout {
+                self.window.show_keyboard_layout(layout);
+            }
+            self.window
+                .show_keyboard(keyboard.present, keyboard.caps_lock);
+        }
     }
 }
 
 impl Settings {
+    fn keyboard(&self) -> Option<Keyboard> {
+        self.server.as_ref()?.keyboard().ok()
+    }
+
+    fn show_keyboard(&mut self) {
+        if let Some(keyboard) = self.keyboard() {
+            self.window
+                .show_keyboard(keyboard.present, keyboard.caps_lock);
+        }
+    }
+
     fn save_unsaved(&mut self) {
         if let Some(index) = self.unsaved_profile.take() {
             save_profile(index);

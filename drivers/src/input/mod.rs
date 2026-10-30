@@ -1,8 +1,10 @@
 //! Input devices' events as they arrive: the event types and codes keyboards, mice and tablets
 //! report (the Linux input event codes, which virtio-input carries unchanged and USB HID maps
-//! to), what a device can report, the US keymap ([`keymap`]) and the pointer's scaling.
+//! to), what a device can report, the US keymap ([`keymap`]), the keyboard layouts with their
+//! dead keys and third level ([`layout`], D185) and the pointer's scaling.
 
 pub mod keymap;
+pub mod layout;
 
 #[cfg(test)]
 mod tests;

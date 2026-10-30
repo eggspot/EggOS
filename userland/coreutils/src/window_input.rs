@@ -9,7 +9,8 @@ pub const HELP: &[u8] = b"Window ids are the ones `wm list` shows; coordinates a
 window's content, from its top-left corner, as `wm capture` shows them at scale 1.\n\
 wm click: --button left (the default), right or middle; --double clicks twice in one step.\n\
 wm drag: presses the button at x y, moves to to-x to-y in steps and releases it there.\n\
-wm type: printable ASCII only, typed with the US keyboard; Enter and other keys are `wm press`.\n\
+wm type: printable characters only, ASCII typed with the US keyboard's keys; Enter and other keys \
+are `wm press`.\n\
 wm press: one key, after any of ctrl+, shift+, alt+ and super+ (as in ctrl+s or ctrl+shift+t). \
 Keys: a to z, 0 to 9, F1 to F12, Enter, Tab, Escape (Esc), Backspace, Delete, Insert, Home, \
 End, PageUp, PageDown, Up, Down, Left, Right, Space, and Shift, Ctrl, Alt or Super alone. \
@@ -476,25 +477,29 @@ fn type_text<S: System>(
     window: u32,
     text: &[u8],
 ) -> i32 {
-    if text.is_empty() || !text.iter().all(|byte| (b' '..=b'~').contains(byte)) {
+    let Some(text) = core::str::from_utf8(text)
+        .ok()
+        .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+    else {
         output.error(&[
-            b"wm type takes printable ASCII text only; press Enter and other keys with wm press",
+            b"wm type takes printable UTF-8 text only; press Enter and other keys with wm press",
         ]);
         return USAGE_STATUS;
-    }
+    };
+    let characters = text.chars().count() as u64;
     let mut window_text = [0u8; 12];
     let window_text = decimal(window, &mut window_text);
     let mut last = Delivered {
         receiver: window,
         outcome: 0,
     };
-    for (typed, &byte) in text.iter().enumerate() {
+    for (typed, character) in text.chars().enumerate() {
         let request = Request {
             window,
             kind: KIND_CHARACTER,
             x: 0,
             y: 0,
-            code: u32::from(byte),
+            code: u32::from(character),
             value: 0,
         };
         match sender.send(&mut output.system, &request) {
@@ -503,16 +508,16 @@ fn type_text<S: System>(
                 output.write(b"typed ");
                 output.write_number(typed as u64, 0);
                 output.write(b" of ");
-                output.write_number(text.len() as u64, 0);
+                output.write_number(characters, 0);
                 output.write(b" characters\n");
                 return refused(output, window_text, errno);
             }
         }
     }
     output.write(b"typed ");
-    output.write_number(text.len() as u64, 0);
+    output.write_number(characters, 0);
     output.write(b" of ");
-    output.write_number(text.len() as u64, 0);
+    output.write_number(characters, 0);
     output.write(b" characters into window ");
     output.write(window_text);
     if last.outcome == SENT_TO_DIALOG {
@@ -768,6 +773,22 @@ mod tests {
         assert_eq!(status, 2, "an option-like text needs --");
         let (status, fake) = run(&[c"type", c"--", c"129", c"-x"], machine());
         assert_eq!((status, fake.sent_input.len()), (0, 2));
+    }
+
+    #[test]
+    fn typing_sends_each_character_of_utf_8_text_and_refuses_control_characters() {
+        let (status, fake) = run(&[c"type", c"--", c"129", c"café €"], machine());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.sent_input,
+            "café €"
+                .chars()
+                .map(|character| [129, KIND_CHARACTER, 0, 0, u32::from(character), 0])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(fake.output(), "typed 6 of 6 characters into window 129\n");
+        let (status, _) = run(&[c"type", c"129", c"a\tb"], machine());
+        assert_eq!(status, 2);
     }
 
     #[test]

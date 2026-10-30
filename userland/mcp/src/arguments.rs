@@ -33,7 +33,7 @@ const APP_ENVIRONMENT_AT: usize = APP_ARGUMENTS_AT + MAX_APP_ARGUMENTS_BYTES;
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 10_000;
 /// `run`'s longest time limit, in seconds.
 pub const MAX_TIMEOUT_SECONDS: u64 = 60;
-/// The most bytes `wm_type` types in a call, printable ASCII only: the audit record escapes
+/// The most bytes `wm_type` types in a call, printable UTF-8 only (D185): the audit record escapes
 /// the logged arguments again, up to four bytes for a `\` or `"`, and its field keeps 512
 /// bytes, so the whole text is always logged.
 pub const MAX_TYPED_TEXT_BYTES: usize = 96;
@@ -121,7 +121,7 @@ pub enum ArgumentProblem {
     BadPoint,
     /// `button` is not `left`, `right` or `middle`.
     BadButton,
-    /// `text` is empty, longer than [`MAX_TYPED_TEXT_BYTES`] or not printable ASCII.
+    /// `text` is empty, longer than [`MAX_TYPED_TEXT_BYTES`] or holds a control character.
     BadText,
     /// `keys` is empty, longer than [`MAX_KEYS_BYTES`] or holds more than letters, digits
     /// and `+`.
@@ -236,8 +236,8 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadButton => "button is left, right or middle",
             ArgumentProblem::BadText => {
-                "text must be 1 to 96 printable ASCII characters; press Enter and other keys \
-                 with wm_press"
+                "text must be 1 to 96 bytes of printable text, no control characters; press Enter \
+                 and other keys with wm_press"
             }
             ArgumentProblem::BadKeys => {
                 "keys must be one key after any of ctrl+, shift+, alt+ and super+, such as \
@@ -929,7 +929,7 @@ fn window_arguments<'a>(
                 "text",
                 words,
                 MAX_TYPED_TEXT_BYTES,
-                |byte| (b' '..=b'~').contains(&byte),
+                |byte| (b' '..=b'~').contains(&byte) || byte >= 0x80,
                 ArgumentProblem::BadText,
             )?);
         }

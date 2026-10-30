@@ -21,13 +21,16 @@ impl Modifiers {
     pub const SUPER: Self = Self(8);
     /// Caps Lock is on.
     pub const CAPS_LOCK: Self = Self(16);
+    /// The third-level key: AltGr, or Option in the macOS profile ([`ThirdLevelKeys`], D185).
+    pub const ALT_GRAPH: Self = Self(32);
 
     /// The modifiers of `bits`, as [`Self::bits`] gives them.
     pub const fn from_bits(bits: u8) -> Self {
-        Self(bits & 31)
+        Self(bits & 63)
     }
 
-    /// The modifiers as bits: 1 Shift, 2 Alt, 4 Ctrl, 8 Super, 16 Caps Lock.
+    /// The modifiers as bits: 1 Shift, 2 Alt, 4 Ctrl, 8 Super, 16 Caps Lock, 32 the third
+    /// level (AltGr).
     pub const fn bits(self) -> u8 {
         self.0
     }
@@ -65,6 +68,9 @@ pub struct KeyBytes {
 }
 
 impl KeyBytes {
+    /// No bytes.
+    pub const EMPTY: Self = Self::of(&[]);
+
     /// The longest sequence a key sends (`ESC [ 1 5 ; 8 ~` is 7).
     pub const CAPACITY: usize = 8;
 
@@ -87,6 +93,10 @@ impl KeyBytes {
             index += 1;
         }
         sequence
+    }
+
+    pub(super) fn push_byte(&mut self, byte: u8) {
+        *self = self.push(byte);
     }
 
     /// The bytes.
@@ -162,7 +172,7 @@ pub const fn key_for_ascii(character: u8) -> Option<(u16, Modifiers)> {
     None
 }
 
-const fn control(character: u8) -> u8 {
+pub(super) const fn control(character: u8) -> u8 {
     match character {
         b' ' => 0,
         b'@'..=b'_' | b'a'..=b'z' => character & 0x1f,
@@ -303,6 +313,20 @@ const MODIFIER_KEYS: [(u16, u8); 8] = [
     (key::RIGHT_SUPER, 1 << 7),
 ];
 
+/// Which Alt keys reach a layout's third level ([`Modifiers::ALT_GRAPH`], D185).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThirdLevelKeys {
+    /// None: the layout has no third level, so both Alt keys are Alt.
+    #[default]
+    None,
+    /// Right Alt is AltGr and no longer Alt; Left Alt stays Alt (the Windows and Linux
+    /// profiles).
+    RightAlt,
+    /// Either Alt key is Option: Alt for shortcuts and the third level for typing (the macOS
+    /// profile).
+    EitherAlt,
+}
+
 /// A keyboard's state: the keys held, the modifiers they make and Caps Lock. All zeros when new,
 /// so a `static` of it costs nothing in the kernel image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,6 +334,7 @@ pub struct Keyboard {
     held: [u64; HELD_WORDS],
     modifier_keys: u8,
     caps_lock: bool,
+    third_level: ThirdLevelKeys,
 }
 
 impl Default for Keyboard {
@@ -325,7 +350,18 @@ impl Keyboard {
             held: [0; HELD_WORDS],
             modifier_keys: 0,
             caps_lock: false,
+            third_level: ThirdLevelKeys::None,
         }
+    }
+
+    /// Has `keys` reach the third level from now on.
+    pub fn set_third_level_keys(&mut self, keys: ThirdLevelKeys) {
+        self.third_level = keys;
+    }
+
+    /// Whether Caps Lock is on.
+    pub const fn caps_lock(&self) -> bool {
+        self.caps_lock
     }
 
     /// Applies a key event: `value` 1 pressed, 0 released. Ignores what would change nothing:
@@ -370,8 +406,21 @@ impl Keyboard {
         if keys & 0b11 != 0 {
             bits |= Modifiers::SHIFT.0;
         }
-        if keys & 0b1100 != 0 {
-            bits |= Modifiers::ALT.0;
+        let (left_alt, right_alt) = (keys & 0b100 != 0, keys & 0b1000 != 0);
+        match self.third_level {
+            ThirdLevelKeys::None if left_alt || right_alt => bits |= Modifiers::ALT.0,
+            ThirdLevelKeys::RightAlt => {
+                if left_alt {
+                    bits |= Modifiers::ALT.0;
+                }
+                if right_alt {
+                    bits |= Modifiers::ALT_GRAPH.0;
+                }
+            }
+            ThirdLevelKeys::EitherAlt if left_alt || right_alt => {
+                bits |= Modifiers::ALT.0 | Modifiers::ALT_GRAPH.0;
+            }
+            _ => {}
         }
         if keys & 0b11_0000 != 0 {
             bits |= Modifiers::CTRL.0;

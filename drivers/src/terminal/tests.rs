@@ -544,6 +544,9 @@ fn unknown_and_overlong_sequences_are_swallowed_whole() {
 
 #[test]
 fn utf8_decodes_to_glyph_ids_and_bad_bytes_draw_one_question_mark_each() {
+    let terminal = fed(20, 1, "café ½ €5 ÿ".as_bytes());
+    assert_eq!(row_text(&terminal, 0), "café ½ \u{7f}5 ÿ");
+    assert_eq!(terminal.line(0)[7].glyph, font::EURO);
     let terminal = fed(20, 1, "┌─┐│é→".as_bytes());
     let ids: Vec<u8> = terminal.line(0)[..6]
         .iter()
@@ -556,7 +559,7 @@ fn utf8_decodes_to_glyph_ids_and_bad_bytes_draw_one_question_mark_each() {
             font::glyph_id('─' as u32),
             font::glyph_id('┐' as u32),
             font::glyph_id('│' as u32),
-            b'?',
+            0xe9,
             font::glyph_id('→' as u32)
         ]
     );

@@ -31,15 +31,19 @@ impl Modifiers {
     pub const CTRL: u32 = 2;
     pub const ALT: u32 = 4;
     pub const SUPER: u32 = 8;
+    /// The third-level key, AltGr, or Option in the macOS profile (D185): Alt held with it
+    /// types a character instead of making a shortcut.
+    pub const ALT_GRAPH: u32 = 32;
 
     /// Whether Shift is held.
     pub fn shift(self) -> bool {
         self.0 & Self::SHIFT != 0
     }
 
-    /// Whether Ctrl, Alt or Super is held.
+    /// Whether Ctrl or Super is held, or Alt without the third-level key.
     pub fn command(self) -> bool {
-        self.0 & (Self::CTRL | Self::ALT | Self::SUPER) != 0
+        self.0 & (Self::CTRL | Self::SUPER) != 0
+            || (self.0 & Self::ALT != 0 && self.0 & Self::ALT_GRAPH == 0)
     }
 }
 

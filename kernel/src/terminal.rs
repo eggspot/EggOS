@@ -154,7 +154,7 @@ const KILL_LINE: u8 = 0x15;
 const TYPED_LINE_CAPACITY: usize = 260;
 
 /// The desktop's layout profile: the controls' side and the shortcuts (D128): the one the
-/// settings file holds, read at boot ([`load_saved_profile`]), or the last one set through
+/// settings file holds, read at boot ([`load_saved_settings`]), or the last one set through
 /// `/dev/window` ([`set_desktop_profile`]); macOS habits until one is chosen (D132).
 pub fn desktop_profile() -> Profile {
     match CHOSEN_PROFILE.load(Ordering::Relaxed) {
@@ -181,9 +181,10 @@ pub fn set_desktop_profile<P: Platform>(profile: Profile) {
 }
 
 /// Makes the profile the settings file holds ([`eggos_settings_file::PATH`]) the desktop's,
-/// before the desktop starts, so its first frame is already in it; the default stays when
-/// there is no file, it holds no known profile, or it cannot be read.
-pub fn load_saved_profile() {
+/// before the desktop starts, so its first frame is already in it, and its keyboard layout the
+/// keyboard's (D185), so the first key types in it; the defaults stay when there is no file, it
+/// holds no known profile or layout, or it cannot be read.
+pub fn load_saved_settings() {
     let root = vfs::root();
     let Ok(node) = vfs::resolve(root, root, eggos_settings_file::PATH.as_bytes()) else {
         return;
@@ -207,6 +208,9 @@ pub fn load_saved_profile() {
         .and_then(|number| Profile::from_number(number as u32))
     {
         remember_profile(profile);
+    }
+    if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
+        crate::input::set_layout(layout);
     }
 }
 
@@ -436,7 +440,8 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 code,
                 pressed,
                 modifiers,
-            } => desktop.key(code, pressed, modifiers, damage, &mut queues),
+                character,
+            } => desktop.key_typing(code, pressed, modifiers, character, damage, &mut queues),
             InputEvent::Wheel { delta } => {
                 desktop.wheel(delta, &mut queues);
                 Action::None
@@ -617,7 +622,7 @@ pub fn type_in_terminal<P: Platform>(line: &[u8]) -> bool {
 /// to the console, a scroll to the view. Called with no lock held: the console's echo takes the
 /// screen's lock.
 pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
-    let mut character = [0u8; 1];
+    let mut character = [0u8; 4];
     let bytes;
     let typed = match input {
         TerminalInput::Key { code, modifiers } => {
@@ -628,10 +633,7 @@ pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
             bytes = keymap::encode(code, modifiers, mode);
             bytes.as_bytes()
         }
-        TerminalInput::Character(byte) => {
-            character[0] = byte;
-            &character[..]
-        }
+        TerminalInput::Character(typed) => typed.encode_utf8(&mut character).as_bytes(),
         TerminalInput::Scroll { notches } => {
             let lines = notches.unsigned_abs() as usize * WHEEL_LINES;
             move_view::<P>(match notches > 0 {

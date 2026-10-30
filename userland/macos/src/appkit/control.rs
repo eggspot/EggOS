@@ -475,8 +475,7 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
     }
     let fields_of_event = event::fields(event);
     let code = fields_of_event.linux_code;
-    let command =
-        fields_of_event.flags & (modifier::COMMAND | modifier::CONTROL | modifier::OPTION) != 0;
+    let command = fields_of_event.flags & (modifier::COMMAND | modifier::CONTROL) != 0;
     if code == key::ENTER && !command {
         send_action(this);
         return;

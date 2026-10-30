@@ -33,6 +33,8 @@ const HELD_MIDDLE: u32 = 4;
 const SHIFT: u32 = 1;
 const CONTROL: u32 = 2;
 const ALT: u32 = 4;
+const ALT_GRAPH: u32 = 32;
+const VK_PACKET: u8 = 0xe7;
 
 /// `wParam`'s `MK_` flags on mouse messages.
 pub mod mouse_keys {
@@ -392,8 +394,16 @@ impl InputState {
             return Event::Ignored;
         };
         self.modifiers = record.c;
-        let Some(key) = virtual_key(code) else {
-            return Event::Ignored;
+        let key = match code {
+            0 => VirtualKey {
+                virtual_key: VK_PACKET,
+                scan: 0,
+                extended: false,
+            },
+            _ => match virtual_key(code) {
+                Some(key) => key,
+                None => return Event::Ignored,
+            },
         };
         let pressed = record.b != 0;
         let (word, bit) = (
@@ -404,7 +414,7 @@ impl InputState {
             true => self.keys_down[word] |= 1 << bit,
             false => self.keys_down[word] &= !(1 << bit),
         }
-        let alt = self.modifiers & ALT != 0;
+        let alt = self.modifiers & ALT != 0 && self.modifiers & ALT_GRAPH == 0;
         let number = match (pressed, alt) {
             (true, false) => message::KEY_DOWN,
             (false, false) => message::KEY_UP,
@@ -507,7 +517,9 @@ pub fn virtual_key(code: u16) -> Option<VirtualKey> {
         81 => plain(0x63),
         82 => plain(0x60),
         83 => plain(0x6e),
+        86 => plain(0xe2),
         87 => plain(0x7a),
+        89 => plain(0xc1),
         88 => plain(0x7b),
         96 => extended(0x0d, 0x1c),
         97 => extended(0x11, 0x1d),

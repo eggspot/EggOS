@@ -1247,7 +1247,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 26] = [
+const PROMPT_SESSION: [&[u8]; 28] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -1273,8 +1273,18 @@ const PROMPT_SESSION: [&[u8]; 26] = [
     b"echo EGGOS-HISTORY recalled\r",
     b"echo EGGOS-HISTORY newest\r",
     RECALL_THE_LINE_BEFORE_LAST,
+    GERMAN_LAYOUT_LINE,
+    ACCENT_LINE,
     b"poweroff\r",
 ];
+
+const GERMAN_LAYOUT_LINE: &[u8] = b"settings set keyboard.layout de\r";
+
+const ACCENT_LINE: &[u8] = "echo EGGOS ACCENT caf\u{e9}\r".as_bytes();
+
+const ACCENT_OUTPUT: &str = "EGGOS ACCENT caf\u{e9}";
+
+const ACCENT_FRAME: &str = "the line typed with the German layout's dead acute";
 
 const RECALL_THE_LINE_BEFORE_LAST: &[u8] = b"\x1b[A\x1b[A\r";
 
@@ -1331,7 +1341,7 @@ const UNAME_LINE: &[u8] = b"uname -a\r";
 
 const SHIFTED_KEYS_LINE: &[u8] = b"echo EGGOS-KEYBOARD Typed_On+Virtio:OK\r";
 
-const KEYBOARD_LINES: [&[u8]; 2] = [UNAME_LINE, SHIFTED_KEYS_LINE];
+const KEYBOARD_LINES: [&[u8]; 3] = [UNAME_LINE, SHIFTED_KEYS_LINE, ACCENT_LINE];
 
 const KEY_PAUSE: Duration = Duration::from_millis(10);
 
@@ -1459,6 +1469,8 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["EGGOS-HISTORY recalled"]),
         whole(&["EGGOS-HISTORY newest"]),
         whole(&["EGGOS-HISTORY recalled"]),
+        Vec::new(),
+        whole(&[ACCENT_OUTPUT]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -1860,15 +1872,21 @@ fn boot(
                 if first_prompt.is_none() && prompts > 0 {
                     first_prompt = Some(started.elapsed());
                 }
+                let accent_shown = terminal_frames.len() == 2
+                    && String::from_utf8_lossy(&console)
+                        .split(ACCENT_OUTPUT)
+                        .nth(2)
+                        .is_some_and(|after| after.contains(SHELL_PROMPT));
                 let at = match prompts {
                     1 => Some("the first prompt"),
                     PROMPT_SESSION_FRAME_PROMPT => {
                         Some("the output of the line typed on the virtio keyboard")
                     }
+                    _ if accent_shown => Some(ACCENT_FRAME),
                     _ => None,
                 };
                 if let (Some(port), Some(at)) = (qmp_port, at)
-                    && terminal_frames.len() < prompts.min(2)
+                    && (terminal_frames.len() < prompts.min(2) || accent_shown)
                 {
                     let with_pointer = prompts == PROMPT_SESSION_FRAME_PROMPT;
                     terminal_frames.push(check_terminal_frame(

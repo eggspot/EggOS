@@ -519,8 +519,9 @@ pub const WM_DRAG: CommandDefinition = CommandDefinition {
 pub const WM_TYPE: CommandDefinition = CommandDefinition {
     words: &["wm", "type"],
     summary: "Types text into a window.",
-    description: "Types printable ASCII text into the window with the US keyboard; it stops when \
-                  a person starts using the machine and says how much it typed.",
+    description: "Types text into the window: printable characters, ASCII ones with the US \
+                  keyboard's keys and the others (é, €) as characters of their own; it stops \
+                  when a person starts using the machine and says how much it typed.",
     options: &[],
     operands: &[WINDOW_OPERAND, operand("text", ValueType::Text, Count::One)],
     outputs: TEXT_ONLY,
@@ -2161,8 +2162,10 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     words: &["settings", "set"],
     summary: "Sets a setting.",
     description: "Sets the setting with that key to the value, saves it and applies it at once: \
-                  shell.profile takes windows, macos or linux, the desktop's layout. The other \
-                  keys report facts and cannot be set. --dry-run checks the key and the value \
+                  shell.profile takes windows, macos or linux, the desktop's layout; \
+                  keyboard.layout takes a keyboard layout's name (us, us-intl, gb, us-dvorak, \
+                  us-colemak, dk, fi, fr, de, it, no, br, es or se). The other keys report facts \
+                  and cannot be set. --dry-run checks the key and the value \
                   and says what would change, and changes nothing.",
     options: &[DRY_RUN_OPTION],
     operands: &[SETTING_KEY, operand("value", ValueType::Text, Count::One)],
@@ -2178,6 +2181,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     ],
     examples: &[
         example("settings set shell.profile linux", ""),
+        example("settings set keyboard.layout de", ""),
         example(
             "settings set --dry-run shell.profile windows",
             "would set shell.profile from macos to windows\n",

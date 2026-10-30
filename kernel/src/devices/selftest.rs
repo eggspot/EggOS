@@ -199,6 +199,7 @@ fn expected_input_events(width: u32, height: u32) -> [InputEvent; 7] {
         code: key::LEFT_SHIFT,
         pressed,
         modifiers,
+        character: 0,
     };
     [
         InputEvent::PointerMove { x, y },

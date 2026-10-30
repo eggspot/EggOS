@@ -1,6 +1,7 @@
 //! The Settings window (docs/ux/desktop-v0.3-gui.md section 10, docs/ux/toolkit-v0.3.md
 //! section 11): the sidebar with its search and its panes, and the panes: Appearance with the
-//! profile picker, Display, Keyboard, Mouse, Date & time (D150, docs/ux/date-time-v0.3.md),
+//! profile picker, Display, Keyboard (D185, docs/ux/keyboard-v0.3.md), Mouse, Date & time
+//! (D150, docs/ux/date-time-v0.3.md),
 //! Components and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
@@ -8,6 +9,7 @@ use crate::art;
 use crate::facts::Facts;
 use core::fmt::Write;
 use eggos_calendar::{ParseError, parse_setting};
+use eggos_settings_file::KEYBOARD_LAYOUTS;
 use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
@@ -21,7 +23,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 48;
+pub const CAPACITY: usize = 52;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -47,6 +49,36 @@ const SET_FIELD: (i32, i32, i32, i32) = (144, 110, 200, 28);
 const SET_BUTTON: (i32, i32, i32, i32) = (352, 110, 96, 28);
 const STATUS_LINE: i32 = 156;
 
+const LAYOUT_LIST: (i32, i32, i32, i32) = (16, 64, 208, 240);
+const LAYOUT_ROW: i32 = 24;
+const LAYOUT_MARK_X: i32 = 8;
+const LAYOUT_TEXT_X: i32 = 24;
+const KEYBOARD_FACTS_X: i32 = 240;
+const THIRD_LEVEL_LINE: i32 = 68;
+const DEAD_KEYS_LINE: i32 = 88;
+const TRY_FIELD: (i32, i32, i32, i32) = (240, 120, 208, 28);
+const KEYBOARD_LINE: i32 = 156;
+
+/// The keyboard layouts' titles, in the Keyboard pane's list order (the settings file's
+/// `KEYBOARD_LAYOUTS`).
+pub const LAYOUT_TITLES: [&str; KEYBOARD_LAYOUTS.len()] = {
+    let mut titles = [""; KEYBOARD_LAYOUTS.len()];
+    let mut index = 0;
+    while index < titles.len() {
+        titles[index] = KEYBOARD_LAYOUTS[index].title;
+        index += 1;
+    }
+    titles
+};
+
+const NO_THIRD_LEVEL: &str = "No third level, so no \u{20ac} key";
+const ALT_GRAPH_TYPES: &str = "Right Alt (AltGr) types \u{20ac} and more";
+const OPTION_TYPES: &str = "Option types \u{20ac} and more";
+const MACOS_PROFILE: usize = 1;
+const CAPS_LOCK_ON: &str = "Caps Lock is on";
+const NO_KEYBOARD: &str = "No keyboard attached.";
+const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
+
 /// The panes, in the sidebar's order.
 pub const PANES: [&str; 7] = [
     "Appearance",
@@ -60,7 +92,8 @@ pub const PANES: [&str; 7] = [
 
 const APPEARANCE: usize = 0;
 const DISPLAY: usize = 1;
-const KEYBOARD: usize = 2;
+/// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
+pub const KEYBOARD: usize = 2;
 const MOUSE: usize = 3;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
 pub const DATE_AND_TIME: usize = 4;
@@ -93,7 +126,22 @@ const PANE_WORDS: [&[&str]; 7] = [
         "screen",
         "monitor",
     ],
-    &["Layout", "Key repeat", "shortcuts"],
+    &[
+        "Layout",
+        "keymap",
+        "language",
+        "input source",
+        "AltGr",
+        "dead keys",
+        "accents",
+        "Caps Lock",
+        "QWERTY",
+        "QWERTZ",
+        "AZERTY",
+        "international",
+        "Key repeat",
+        "shortcuts",
+    ],
     &["Primary button", "Wheel", "trackpad", "pointer"],
     &[
         "clock",
@@ -129,6 +177,9 @@ pub enum Request {
     /// Set the clock to these seconds since the epoch, then say how it went
     /// ([`SettingsWindow::show_set_outcome`]).
     SetTime(u64),
+    /// Make the keyboard layout at this index of the settings file's `KEYBOARD_LAYOUTS` the
+    /// keyboard's and save it (D185).
+    SetKeyboardLayout(usize),
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -166,6 +217,11 @@ struct Widgets {
     set_field: WidgetId,
     set_button: WidgetId,
     status: WidgetId,
+    layouts: WidgetId,
+    third_level: WidgetId,
+    dead_keys: WidgetId,
+    try_field: WidgetId,
+    keyboard_line: WidgetId,
 }
 
 /// The Settings window's widgets and what they show.
@@ -193,11 +249,37 @@ fn lowercase_contains(haystack: &str, needle: &str) -> bool {
 /// its name, a synonym or one of its settings' names, ignoring case.
 pub fn pane_matches(pane: usize, query: &str) -> bool {
     let query = query.trim();
+    let titles: &[&str] = match pane {
+        KEYBOARD => &LAYOUT_TITLES,
+        _ => &[],
+    };
     lowercase_contains(PANES[pane], query)
         || EVERY_PANE_SYNONYMS
             .iter()
             .chain(PANE_WORDS[pane])
+            .chain(titles)
             .any(|word| lowercase_contains(word, query))
+}
+
+fn third_level_text(layout: usize, profile: usize) -> &'static str {
+    match (KEYBOARD_LAYOUTS[layout].third_level, profile) {
+        (false, _) => NO_THIRD_LEVEL,
+        (true, MACOS_PROFILE) => OPTION_TYPES,
+        (true, _) => ALT_GRAPH_TYPES,
+    }
+}
+
+fn dead_keys_text(layout: usize) -> Text<64> {
+    let mut text = Text::new();
+    let _ = match KEYBOARD_LAYOUTS[layout].dead_keys {
+        "" => text.write_str("No dead keys"),
+        accents => write!(text, "Dead keys: {accents}"),
+    };
+    text
+}
+
+fn layout_index(facts: &Facts) -> usize {
+    facts.keyboard_layout.min(KEYBOARD_LAYOUTS.len() - 1)
 }
 
 fn uptime_text(seconds: u64) -> Text<64> {
@@ -375,13 +457,7 @@ impl SettingsWindow {
             Place::right(PADDING + radios_width + PADDING, row_y(2) + TEXT_IN_ROW),
             Kind::label("2x comes in a later version", colour::TEXT_DIM),
         );
-        let no_disk = build.label(
-            appearance,
-            PADDING,
-            NO_DISK_LINE,
-            "No disk attached: this choice lasts until power-off.",
-            colour::TEXT_DIM,
-        );
+        let no_disk = build.label(appearance, PADDING, NO_DISK_LINE, NO_DISK, colour::TEXT_DIM);
 
         let display = panes[DISPLAY];
         build.heading(display, PANES[DISPLAY]);
@@ -399,7 +475,50 @@ impl SettingsWindow {
 
         let keyboard = panes[KEYBOARD];
         build.heading(keyboard, PANES[KEYBOARD]);
-        build.row(keyboard, 0, "Layout", "US");
+        let layout = layout_index(&facts);
+        let layouts = build.add(
+            Some(keyboard),
+            Place::at(
+                LAYOUT_LIST.0,
+                LAYOUT_LIST.1,
+                Length::Px(LAYOUT_LIST.2),
+                Length::Px(LAYOUT_LIST.3),
+            ),
+            Kind::list(&LAYOUT_TITLES, LAYOUT_ROW, LAYOUT_MARK_X, LAYOUT_TEXT_X),
+        );
+        let third_level = build.label(
+            keyboard,
+            KEYBOARD_FACTS_X,
+            THIRD_LEVEL_LINE,
+            third_level_text(layout, profile),
+            colour::TEXT,
+        );
+        let dead_keys = build.label(
+            keyboard,
+            KEYBOARD_FACTS_X,
+            DEAD_KEYS_LINE,
+            dead_keys_text(layout).as_str(),
+            colour::TEXT,
+        );
+        let try_field = build.add(
+            Some(keyboard),
+            Place::at(
+                TRY_FIELD.0,
+                TRY_FIELD.1,
+                Length::Px(TRY_FIELD.2),
+                Length::Px(TRY_FIELD.3),
+            ),
+            Kind::text_field("Type here to try it", Escape::Clear),
+        );
+        let keyboard_line = build.label(
+            keyboard,
+            KEYBOARD_FACTS_X,
+            KEYBOARD_LINE,
+            CAPS_LOCK_ON,
+            colour::TEXT,
+        );
+        let keyboard_no_disk =
+            build.label(keyboard, PADDING, NO_DISK_LINE, NO_DISK, colour::TEXT_DIM);
 
         for later in [MOUSE, COMPONENTS] {
             build.heading(panes[later], PANES[later]);
@@ -505,13 +624,15 @@ impl SettingsWindow {
         tree.set_enabled(set_button, false);
         tree.set_default_button(set_button);
         tree.set_shown(no_disk, !facts.on_disk);
+        tree.set_shown(keyboard_no_disk, !facts.on_disk);
+        tree.set_selected(layouts, layout);
         for (index, pane) in panes.iter().enumerate() {
             tree.set_shown(*pane, index == APPEARANCE);
         }
         tree.set_focus(Some(search), 0);
         let (width, height) = DEFAULT_SIZE;
         tree.resize(width as i32, height as i32);
-        Self {
+        let mut window = Self {
             tree,
             widgets: Widgets {
                 search,
@@ -526,10 +647,17 @@ impl SettingsWindow {
                 set_field,
                 set_button,
                 status,
+                layouts,
+                third_level,
+                dead_keys,
+                try_field,
+                keyboard_line,
             },
             facts,
             pane: APPEARANCE,
-        }
+        };
+        window.show_keyboard(facts.keyboard, facts.caps_lock);
+        window
     }
 
     /// The window's widgets.
@@ -569,6 +697,9 @@ impl SettingsWindow {
         if pane == DATE_AND_TIME {
             self.reset_date_and_time();
         }
+        if pane == KEYBOARD {
+            self.tree.set_text(self.widgets.try_field, "");
+        }
     }
 
     /// Shows profile `index` as the chosen one: its card selected, its modifier and control
@@ -581,6 +712,62 @@ impl SettingsWindow {
             .set_text(self.widgets.modifier, PRIMARY_MODIFIERS[index]);
         self.tree
             .set_text(self.widgets.controls, CONTROL_SIDES[index]);
+        let layout = layout_index(&self.facts);
+        self.tree
+            .set_text(self.widgets.third_level, third_level_text(layout, index));
+    }
+
+    /// Shows keyboard layout `index` (of the settings file's `KEYBOARD_LAYOUTS`) as the chosen
+    /// one: its row selected, its third level and dead keys in the lines beside the list.
+    pub fn show_keyboard_layout(&mut self, index: usize) {
+        let index = index.min(KEYBOARD_LAYOUTS.len() - 1);
+        self.facts.keyboard_layout = index;
+        self.tree.set_selected(self.widgets.layouts, index);
+        self.tree.set_text(
+            self.widgets.third_level,
+            third_level_text(index, self.facts.profile),
+        );
+        self.tree
+            .set_text(self.widgets.dead_keys, dead_keys_text(index).as_str());
+    }
+
+    /// Shows the keyboard on the Keyboard pane: `Caps Lock is on` while it is, `No keyboard
+    /// attached.` without one (the try field then disabled), nothing otherwise.
+    pub fn show_keyboard(&mut self, present: bool, caps_lock: bool) {
+        self.facts.keyboard = present;
+        self.facts.caps_lock = caps_lock;
+        let line = self.widgets.keyboard_line;
+        let (text, ink) = match present {
+            true => (CAPS_LOCK_ON, colour::TEXT),
+            false => (NO_KEYBOARD, colour::TEXT_DIM),
+        };
+        self.tree.set_text(line, text);
+        self.tree.change(line, |kind| {
+            if let Kind::Label { colour, .. } = kind {
+                *colour = ink;
+            }
+        });
+        self.tree.set_shown(line, !present || caps_lock);
+        self.tree.set_enabled(self.widgets.try_field, present);
+    }
+
+    /// The keyboard layout shown as chosen.
+    pub fn keyboard_layout_shown(&self) -> Option<usize> {
+        self.tree.selected(self.widgets.layouts)
+    }
+
+    /// The Keyboard pane's lines beside the list: the third level, the dead keys, and the
+    /// keyboard's line when it is shown.
+    pub fn keyboard_lines(&self) -> [Option<&str>; 3] {
+        let line = self.widgets.keyboard_line;
+        [
+            self.tree.text_of(self.widgets.third_level),
+            self.tree.text_of(self.widgets.dead_keys),
+            self.tree
+                .is_shown(line)
+                .then(|| self.tree.text_of(line))
+                .flatten(),
+        ]
     }
 
     /// Shows `seconds` as the uptime in the About pane.
@@ -679,6 +866,13 @@ impl SettingsWindow {
             Response::Chosen(id, card) if id == widgets.cards => {
                 self.show_profile(card);
                 Some(Request::SetProfile(card))
+            }
+            Response::Chosen(id, layout) if id == widgets.layouts => {
+                if layout == self.facts.keyboard_layout {
+                    return None;
+                }
+                self.show_keyboard_layout(layout);
+                Some(Request::SetKeyboardLayout(layout))
             }
             Response::Chosen(id, pane) | Response::Opened(id, pane) if id == widgets.list => {
                 self.show_pane(pane);
@@ -1010,5 +1204,63 @@ mod tests {
             window.status_shown(),
             Some("Set. No hardware clock: this time lasts until power-off.")
         );
+    }
+
+    #[test]
+    fn the_keyboard_pane_lists_the_layouts_and_choosing_one_asks_for_it() {
+        let mut window = SettingsWindow::new(Facts::example());
+        click(&mut window, 50, 120);
+        assert_eq!(window.pane(), KEYBOARD);
+        assert_eq!(window.keyboard_layout_shown(), Some(0));
+        assert_eq!(
+            window.keyboard_lines(),
+            [
+                Some("No third level, so no \u{20ac} key"),
+                Some("No dead keys"),
+                None
+            ]
+        );
+        let german = (176 + 16 + 50, 64 + 8 * LAYOUT_ROW + 12);
+        assert_eq!(
+            click(&mut window, german.0, german.1),
+            Some(Request::SetKeyboardLayout(8))
+        );
+        assert_eq!(window.facts().keyboard_layout, 8);
+        assert_eq!(
+            window.keyboard_lines()[..2],
+            [
+                Some("Option types \u{20ac} and more"),
+                Some("Dead keys: \u{b4} ` ^")
+            ]
+        );
+        window.show_profile(0);
+        assert_eq!(
+            window.keyboard_lines()[0],
+            Some("Right Alt (AltGr) types \u{20ac} and more")
+        );
+        assert_eq!(click(&mut window, german.0, german.1), None);
+        window.show_keyboard(true, true);
+        assert_eq!(window.keyboard_lines()[2], Some(CAPS_LOCK_ON));
+        window.show_keyboard(false, false);
+        assert_eq!(window.keyboard_lines()[2], Some(NO_KEYBOARD));
+        window.show_keyboard_layout(7);
+        assert_eq!(window.keyboard_lines()[1], Some("Dead keys: ^ \u{a8}"));
+        assert_eq!(LAYOUT_TITLES[0], "English (US)");
+    }
+
+    #[test]
+    fn the_keyboard_pane_is_found_by_its_layouts_and_words() {
+        for query in [
+            "keymap",
+            "AltGr",
+            "dead keys",
+            "caps lock",
+            "azerty",
+            "german",
+        ] {
+            assert!(pane_matches(KEYBOARD, query), "{query}");
+            assert!(!pane_matches(APPEARANCE, query), "{query}");
+        }
+        assert!(pane_matches(KEYBOARD, "layout") && pane_matches(APPEARANCE, "layout"));
     }
 }

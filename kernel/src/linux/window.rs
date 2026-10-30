@@ -27,9 +27,9 @@ use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
     MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
-    create_reply, element_action, get_menu_reply, get_tree_reply, input_outcome, list_reply,
-    placement_reply, put_double_word, put_word, query_kind, read_query_reply, request,
-    send_input_reply, set_size_reply, size, tree_answer,
+    create_reply, element_action, get_menu_reply, get_tree_reply, input_outcome, keyboard_flags,
+    keyboard_layout_reply, list_reply, placement_reply, put_double_word, put_word, query_kind,
+    read_query_reply, request, send_input_reply, set_size_reply, size, tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -84,6 +84,7 @@ pub fn ioctl<P: Platform>(
     let bytes = &mut bytes[..length];
     if number != request::GET_WORK_AREA
         && number != request::GET_PROFILE
+        && number != request::GET_KEYBOARD_LAYOUT
         && number != request::APPS_CHANGED
     {
         process
@@ -99,7 +100,11 @@ pub fn ioctl<P: Platform>(
     if manages && !is_privileged(process) {
         return Err(Errno::EPERM);
     }
-    if matches!(request, Request::SetProfile { .. }) && !may_change_desktop_settings(process) {
+    let changes_settings = matches!(
+        request,
+        Request::SetProfile { .. } | Request::SetKeyboardLayout { .. }
+    );
+    if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
     }
     if matches!(request, Request::OpenApp { .. }) && !may_open_apps(process) {
@@ -275,6 +280,32 @@ pub fn ioctl<P: Platform>(
         Request::SetProfile { profile } => {
             let profile = Profile::from_number(profile).ok_or(Errno::EINVAL)?;
             set_desktop_profile::<P>(profile);
+        }
+        Request::GetKeyboardLayout => {
+            let flags = [
+                (crate::input::caps_lock(), keyboard_flags::CAPS_LOCK),
+                (
+                    crate::input::summary().keyboards > 0,
+                    keyboard_flags::KEYBOARD,
+                ),
+            ]
+            .into_iter()
+            .filter(|(set, _)| *set)
+            .fold(0, |flags, (_, bit)| flags | bit);
+            put_word(
+                bytes,
+                keyboard_layout_reply::LAYOUT,
+                crate::input::layout_number() as u32,
+            );
+            put_word(bytes, keyboard_layout_reply::FLAGS, flags);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetKeyboardLayout { layout } => {
+            if !crate::input::set_layout(layout as usize) {
+                return Err(Errno::EINVAL);
+            }
         }
         Request::AppsChanged => reload_catalogue::<P>(),
         Request::OpenApp { length, name } => {

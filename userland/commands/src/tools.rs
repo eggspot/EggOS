@@ -1200,8 +1200,9 @@ pub const WM_CLICK: ToolDefinition = operating(
 pub const WM_TYPE: ToolDefinition = operating(
     "wm_type",
     "Type into a window",
-    "Types text into a window with the US keyboard, as `wm type` does: printable ASCII only, \
-         at most 96 characters; Enter and other keys are wm_press. If a person starts using the \
+    "Types text into a window, as `wm type` does: printable characters only (ASCII with the \
+         US keyboard's keys, others such as é or € as characters of their own), at most 96 \
+         bytes; Enter and other keys are wm_press. If a person starts using the \
          machine meanwhile, it stops and says how many characters it typed. Needs the run grant: \
          input can do anything a person can, in the terminal too.",
     &["wm", "type"],
@@ -1449,7 +1450,8 @@ const SETTINGS_SET_ARGUMENTS: [Argument; 3] = [
             Some(1),
             64,
         ),
-        "The new value: windows, macos or linux for shell.profile.",
+        "The new value: windows, macos or linux for shell.profile; a layout's name such as us, \
+         de, fr or us-intl for keyboard.layout.",
     )),
     DRY_RUN,
 ];
@@ -1459,9 +1461,10 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
     "settings_list",
     "List the settings",
     "Lists every setting and its value, as `settings list` shows them: key=value, one a line. \
-     shell.profile (windows, macos or linux: the desktop's layout) can be set with \
+     shell.profile (windows, macos or linux: the desktop's layout) and keyboard.layout (us, \
+     us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) can be set with \
      settings_set; the others report facts: the display's scale, resolution and pointer, the \
-     keyboard layout, the version, architecture, CPUs, memory and uptime.",
+     version, architecture, CPUs, memory and uptime.",
     &["settings", "list"],
     &[],
     &[],
@@ -1485,7 +1488,9 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
     description: "Sets a setting, as `settings set` does: saves it and applies it at once, as \
                   the Settings window would. shell.profile takes windows, macos or linux: the \
                   desktop's layout (its taskbar, dock or panel and its window buttons) changes \
-                  for the person at once. The other keys report facts and fail with \
+                  for the person at once. keyboard.layout takes a keyboard layout's name (us, \
+                  us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se): \
+                  what every key types changes at once. The other keys report facts and fail with \
                   setting_read_only. dry_run: true checks the key and the value and says what \
                   would change, and changes nothing. Needs the run grant: a setting changes how \
                   the machine behaves for its user.",

@@ -117,10 +117,16 @@ fn tap(code: u16) -> Vec<RawEvent> {
 const SYN: RawEvent = RawEvent::new(event_type::SYN, SYN_REPORT, 0);
 
 fn key_event(code: u16, pressed: bool, modifiers: Modifiers) -> InputEvent {
+    let mut us = Typist::new();
+    let character = match pressed {
+        true => us.press(code, modifiers).character(code, modifiers),
+        false => us.character_of(code, modifiers),
+    };
     InputEvent::Key {
         code,
         pressed,
         modifiers,
+        character,
     }
 }
 
@@ -405,7 +411,13 @@ fn polling_is_fast_while_active_slow_when_idle_and_never_later_than_a_repeat() {
 fn every_event_packs_into_a_word_and_back() {
     let events = [
         key_event(0, false, Modifiers::NONE),
-        key_event(key::MAX, true, Modifiers::from_bits(31)),
+        key_event(key::MAX, true, Modifiers::from_bits(63)),
+        InputEvent::Key {
+            code: 0,
+            pressed: true,
+            modifiers: Modifiers::ALT_GRAPH,
+            character: 0x10_ffff,
+        },
         InputEvent::PointerMove { x: 0, y: 0 },
         InputEvent::PointerMove {
             x: 0xff_ffff,
@@ -693,4 +705,113 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
         poll_devices::<TestPlatform>(&empty, None, SCREEN, timing(0)),
         None
     );
+}
+
+#[test]
+fn a_layout_s_dead_keys_and_altgr_type_utf_8_and_characters_in_key_events() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    let german = layout::named(b"de").unwrap();
+    state.set_layout(german, Profile::Windows);
+    assert_eq!(state.layout(), german);
+    let acute = 13;
+    let typed: Vec<RawEvent> = [acute, 18, acute, 3].into_iter().flat_map(tap).collect();
+    let recorded = send(&mut state, &mut keyboard, &typed, SCREEN, 0);
+    assert_eq!(recorded.bytes, "é´2".as_bytes());
+    let characters: Vec<(u16, bool, u32)> = recorded
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            InputEvent::Key {
+                code,
+                pressed,
+                character,
+                ..
+            } => Some((code, pressed, character)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        characters,
+        [
+            (acute, true, 0),
+            (acute, false, 0),
+            (18, true, u32::from('é')),
+            (18, false, u32::from('e')),
+            (acute, true, 0),
+            (acute, false, 0),
+            (0, true, u32::from('´')),
+            (0, false, u32::from('´')),
+            (3, true, u32::from('2')),
+            (3, false, u32::from('2')),
+        ]
+    );
+    let alt_graph_e: Vec<RawEvent> = [press(key::RIGHT_ALT), press(18)].concat();
+    let recorded = send(&mut state, &mut keyboard, &alt_graph_e, SCREEN, 0);
+    assert_eq!(recorded.bytes, "€".as_bytes());
+    assert_eq!(
+        recorded.events[1],
+        InputEvent::Key {
+            code: 18,
+            pressed: true,
+            modifiers: Modifiers::ALT_GRAPH,
+            character: u32::from('€'),
+        }
+    );
+}
+
+#[test]
+fn backspace_takes_back_a_waiting_accent_and_sends_nothing() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::named(b"de").unwrap(), Profile::Windows);
+    let typed: Vec<RawEvent> = [13, key::BACKSPACE, 18].into_iter().flat_map(tap).collect();
+    let recorded = send(&mut state, &mut keyboard, &typed, SCREEN, 0);
+    assert_eq!(recorded.bytes, b"e");
+    assert!(!recorded.events.iter().any(|event| matches!(
+        event,
+        InputEvent::Key {
+            code: key::BACKSPACE,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn in_the_macos_profile_either_alt_is_option_and_reaches_the_third_level() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    state.set_layout(layout::named(b"de").unwrap(), Profile::Macos);
+    let option_e: Vec<RawEvent> = [press(key::LEFT_ALT), press(18)].concat();
+    let recorded = send(&mut state, &mut keyboard, &option_e, SCREEN, 0);
+    assert_eq!(recorded.bytes, "€".as_bytes());
+    let us = InputState::new();
+    assert_eq!(us.layout(), layout::US_LAYOUT);
+    assert!(!us.caps_lock());
+}
+
+#[test]
+fn the_kernel_s_layouts_are_the_settings_file_s_in_its_order() {
+    assert_eq!(
+        layout::LAYOUTS.len(),
+        eggos_settings_file::KEYBOARD_LAYOUTS.len()
+    );
+    for (kernel, named) in layout::LAYOUTS
+        .iter()
+        .zip(eggos_settings_file::KEYBOARD_LAYOUTS)
+    {
+        assert_eq!(kernel.name, named.name);
+        assert_eq!(
+            kernel.has_third_level(),
+            named.third_level,
+            "{}",
+            named.name
+        );
+        let dead: Vec<String> = layout::DEAD_ACCENTS
+            .iter()
+            .filter(|&&accent| kernel.has_dead_key(accent))
+            .map(char::to_string)
+            .collect();
+        assert_eq!(dead.join(" "), named.dead_keys, "{}", named.name);
+    }
 }

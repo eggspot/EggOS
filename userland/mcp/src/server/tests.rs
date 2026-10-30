@@ -1758,18 +1758,9 @@ fn hostile_window_arguments_are_refused_before_wm_runs() {
             r#"{"window":1,"x":1,"y":1,"button":"Left"}"#,
             "button",
         ),
-        ("wm_type", r#"{"window":1,"text":""}"#, "printable ASCII"),
-        (
-            "wm_type",
-            r#"{"window":1,"text":"a\nb"}"#,
-            "printable ASCII",
-        ),
-        (
-            "wm_type",
-            r#"{"window":1,"text":"café"}"#,
-            "printable ASCII",
-        ),
-        ("wm_type", long_text.as_str(), "printable ASCII"),
+        ("wm_type", r#"{"window":1,"text":""}"#, "printable text"),
+        ("wm_type", r#"{"window":1,"text":"a\nb"}"#, "printable text"),
+        ("wm_type", long_text.as_str(), "printable text"),
         (
             "wm_press",
             r#"{"window":1,"keys":"ctrl s"}"#,

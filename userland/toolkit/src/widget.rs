@@ -608,7 +608,7 @@ pub fn field_key(
         },
         _ => {
             let typed = char::from_u32(character)
-                .filter(|typed| !command && !typed.is_control() && (*typed as u32) < 0x100);
+                .filter(|typed| !command && eggos_font::egg_sans::covers(*typed));
             let Some(typed) = typed else {
                 return FieldKey::Unused;
             };

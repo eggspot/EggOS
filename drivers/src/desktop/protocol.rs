@@ -73,6 +73,8 @@ pub mod size {
     pub const READ_QUERY: usize = super::read_query_reply::TEXT + super::ELEMENT_TEXT_CAPACITY;
     pub const ANSWER_QUERY: usize = 24;
     pub const GET_PLACEMENT: usize = 20;
+    pub const GET_KEYBOARD_LAYOUT: usize = 8;
+    pub const SET_KEYBOARD_LAYOUT: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -110,6 +112,8 @@ pub mod request {
     pub const READ_QUERY: u32 = encode(READ | WRITE, 26, size::READ_QUERY);
     pub const ANSWER_QUERY: u32 = encode(WRITE, 27, size::ANSWER_QUERY);
     pub const GET_PLACEMENT: u32 = encode(READ | WRITE, 28, size::GET_PLACEMENT);
+    pub const GET_KEYBOARD_LAYOUT: u32 = encode(READ, 29, size::GET_KEYBOARD_LAYOUT);
+    pub const SET_KEYBOARD_LAYOUT: u32 = encode(WRITE, 30, size::SET_KEYBOARD_LAYOUT);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -216,6 +220,9 @@ pub mod modifier {
     pub const ALT: u32 = 4;
     pub const SUPER: u32 = 8;
     pub const CAPS_LOCK: u32 = 16;
+    /// The third-level key: AltGr (Right Alt) on a layout with a third level, or Option in the
+    /// macOS profile (D185).
+    pub const ALT_GRAPH: u32 = 32;
 }
 
 /// What a window is for (docs/ux/desktop-v0.3-gui.md, section 3.1).
@@ -445,6 +452,10 @@ pub enum Request {
     GetPlacement {
         window: u32,
     },
+    GetKeyboardLayout,
+    SetKeyboardLayout {
+        layout: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -501,6 +512,8 @@ impl Request {
             request::READ_QUERY => size::READ_QUERY,
             request::ANSWER_QUERY => size::ANSWER_QUERY,
             request::GET_PLACEMENT => size::GET_PLACEMENT,
+            request::GET_KEYBOARD_LAYOUT => size::GET_KEYBOARD_LAYOUT,
+            request::SET_KEYBOARD_LAYOUT => size::SET_KEYBOARD_LAYOUT,
             _ => return None,
         })
     }
@@ -657,9 +670,26 @@ impl Request {
                 length: double_word(bytes, 16),
             },
             request::GET_PLACEMENT => Self::GetPlacement { window: at(0) },
+            request::GET_KEYBOARD_LAYOUT => Self::GetKeyboardLayout,
+            request::SET_KEYBOARD_LAYOUT => Self::SetKeyboardLayout { layout: at(0) },
             _ => Self::GetWorkArea,
         })
     }
+}
+
+/// What `GetKeyboardLayout` writes back (D185): the keyboard layout's number (its index in the
+/// settings file's `KEYBOARD_LAYOUTS`) and the keyboard's [`keyboard_flags`].
+pub mod keyboard_layout_reply {
+    pub const LAYOUT: usize = 0;
+    pub const FLAGS: usize = 4;
+}
+
+/// The bits of `GetKeyboardLayout`'s flags.
+pub mod keyboard_flags {
+    /// Caps Lock is on.
+    pub const CAPS_LOCK: u32 = 1;
+    /// The machine has a keyboard.
+    pub const KEYBOARD: u32 = 2;
 }
 
 /// Where `Create` writes the window's id, its content width and height and its buffer's offset

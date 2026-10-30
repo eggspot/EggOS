@@ -88,6 +88,70 @@ pub const DISPLAY_SCALE: &str = "display.scale";
 /// `GET_PROFILE` and `SET_PROFILE` (docs/windows.md).
 pub const PROFILES: [&str; 3] = ["windows", "macos", "linux"];
 
+/// The keyboard layout: the name of one of [`KEYBOARD_LAYOUTS`] (D185).
+pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
+
+/// A keyboard layout as Settings and `settings` name and describe it
+/// (docs/ux/keyboard-v0.3.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardLayout {
+    /// The value of [`KEYBOARD_LAYOUT`].
+    pub name: &'static str,
+    /// What the Keyboard pane's list shows.
+    pub title: &'static str,
+    /// Whether AltGr (or Option) types a third level of characters.
+    pub third_level: bool,
+    /// The spacing accents of its dead keys, in the pane's order, separated by spaces; empty
+    /// for none.
+    pub dead_keys: &'static str,
+}
+
+const fn entry(
+    name: &'static str,
+    title: &'static str,
+    third_level: bool,
+    dead_keys: &'static str,
+) -> KeyboardLayout {
+    KeyboardLayout {
+        name,
+        title,
+        third_level,
+        dead_keys,
+    }
+}
+
+/// The keyboard layouts, in the Keyboard pane's order, each at the index that is its number in
+/// `/dev/window`'s `GET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUT` and in the kernel's table.
+pub const KEYBOARD_LAYOUTS: [KeyboardLayout; 14] = [
+    entry("us", "English (US)", false, ""),
+    entry("us-intl", "English (US, international)", true, "´ ` ^ ¨ ~"),
+    entry("gb", "English (UK)", true, ""),
+    entry("us-dvorak", "English (US, Dvorak)", false, ""),
+    entry("us-colemak", "English (US, Colemak)", false, ""),
+    entry("dk", "Danish", true, "´ ` ^ ¨ ~"),
+    entry("fi", "Finnish", true, "´ ` ^ ¨ ~"),
+    entry("fr", "French", true, "^ ¨"),
+    entry("de", "German", true, "´ ` ^"),
+    entry("it", "Italian", true, ""),
+    entry("no", "Norwegian", true, "´ ` ^ ¨ ~"),
+    entry("br", "Portuguese (Brazil)", true, "´ ` ^ ¨ ~"),
+    entry("es", "Spanish", true, "´ ` ^ ¨"),
+    entry("se", "Swedish", true, "´ ` ^ ¨ ~"),
+];
+
+/// The number in [`KEYBOARD_LAYOUTS`] of the layout named `name`.
+pub fn keyboard_layout_named(name: &[u8]) -> Option<usize> {
+    KEYBOARD_LAYOUTS
+        .iter()
+        .position(|layout| layout.name.as_bytes() == name)
+}
+
+/// The number in [`KEYBOARD_LAYOUTS`] of the keyboard layout `file` holds, if it holds a known
+/// one.
+pub fn keyboard_layout(file: &[u8]) -> Option<usize> {
+    keyboard_layout_named(value(file, KEYBOARD_LAYOUT)?)
+}
+
 /// Why a setting could not be written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
@@ -378,5 +442,22 @@ mod tests {
         assert!(!is_listed(ps, 402));
         assert!(!is_listed(ps, 70));
         assert!(!is_listed(b"", 1));
+    }
+
+    #[test]
+    fn the_keyboard_layout_is_one_of_the_named_layouts() {
+        let file = b"eggos-settings 1\nkeyboard.layout=de\n";
+        assert_eq!(keyboard_layout(file), Some(8));
+        assert_eq!(KEYBOARD_LAYOUTS[8].title, "German");
+        assert_eq!(
+            keyboard_layout(b"eggos-settings 1\nkeyboard.layout=DE\n"),
+            None
+        );
+        assert_eq!(keyboard_layout(b"eggos-settings 1\n"), None);
+        assert_eq!(keyboard_layout_named(b"us"), Some(0));
+        for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
+            assert_eq!(keyboard_layout_named(layout.name.as_bytes()), Some(index));
+            assert!(is_key(KEYBOARD_LAYOUT.as_bytes()) && is_value(layout.name.as_bytes()));
+        }
     }
 }

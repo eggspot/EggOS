@@ -64,7 +64,7 @@ pub fn run<P: Platform, W: Write>(
             false
         }
     };
-    terminal::load_saved_profile();
+    terminal::load_saved_settings();
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
         writeln!(
             console,

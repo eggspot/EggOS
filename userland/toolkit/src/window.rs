@@ -20,6 +20,10 @@ const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
 const GET_PROFILE: usize = 0x8004_770d;
 const SET_PROFILE: usize = 0x4004_770e;
+const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
+const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
+const CAPS_LOCK_FLAG: u32 = 1;
+const KEYBOARD_FLAG: u32 = 2;
 
 const TITLE_CAPACITY: usize = 64;
 const AT_FDCWD: usize = -100isize as usize;
@@ -65,6 +69,17 @@ pub fn now_ms() -> u32 {
 pub struct WorkArea {
     pub rect: Rect,
     pub scale: u32,
+}
+
+/// The keyboard, as the window server reports it (D185).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keyboard {
+    /// The layout's number in the settings file's `KEYBOARD_LAYOUTS`.
+    pub layout: u32,
+    /// Whether the machine has a keyboard.
+    pub present: bool,
+    /// Whether Caps Lock is on.
+    pub caps_lock: bool,
 }
 
 /// One connection to the window server.
@@ -124,6 +139,25 @@ impl WindowServer {
     /// Makes profile `profile` the desktop's, at once.
     pub fn set_desktop_profile(&self, profile: u32) -> Result<(), Errno> {
         self.ioctl(SET_PROFILE, &mut profile.to_ne_bytes())
+    }
+
+    /// The keyboard (`GET_KEYBOARD_LAYOUT`, D185): its layout's number in the settings file's
+    /// `KEYBOARD_LAYOUTS`, whether the machine has a keyboard, and whether Caps Lock is on.
+    pub fn keyboard(&self) -> Result<Keyboard, Errno> {
+        let mut reply = [0u8; 8];
+        self.ioctl(GET_KEYBOARD_LAYOUT, &mut reply)?;
+        let flags = word(&reply, 4);
+        Ok(Keyboard {
+            layout: word(&reply, 0),
+            present: flags & KEYBOARD_FLAG != 0,
+            caps_lock: flags & CAPS_LOCK_FLAG != 0,
+        })
+    }
+
+    /// Makes keyboard layout `layout` (its number in the settings file's `KEYBOARD_LAYOUTS`)
+    /// the keyboard's from the next key on (`SET_KEYBOARD_LAYOUT`, D185).
+    pub fn set_keyboard_layout(&self, layout: u32) -> Result<(), Errno> {
+        self.ioctl(SET_KEYBOARD_LAYOUT, &mut layout.to_ne_bytes())
     }
 
     /// The text of the action query `serial` (`READ_QUERY`, D161): `set-text`'s new text,

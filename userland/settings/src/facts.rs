@@ -28,12 +28,18 @@ pub struct Facts {
     pub now_s: u64,
     /// Whether the machine has a hardware clock (`/proc/driver/rtc`), which keeps a set time.
     pub hardware_clock: bool,
+    /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
+    pub keyboard_layout: usize,
+    /// Whether the machine has a keyboard.
+    pub keyboard: bool,
+    /// Whether Caps Lock is on.
+    pub caps_lock: bool,
 }
 
 impl Facts {
     /// The facts of a 1280x800 aarch64 machine with 4 CPUs and 1 GiB, up 1:02:05, in the
-    /// macOS profile with a disk and a hardware clock reading Thursday 29 October 2026,
-    /// 14:05:09 UTC: what tests show.
+    /// macOS profile with a disk, a hardware clock reading Thursday 29 October 2026, 14:05:09
+    /// UTC, and a keyboard in the US layout with Caps Lock off: what tests show.
     pub fn example() -> Self {
         Self {
             version: "0.2.0",
@@ -47,6 +53,9 @@ impl Facts {
             on_disk: true,
             now_s: 1_793_282_709,
             hardware_clock: true,
+            keyboard_layout: 0,
+            keyboard: true,
+            caps_lock: false,
         }
     }
 }

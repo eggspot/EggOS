@@ -579,7 +579,7 @@ impl Desktop {
                 }
             }
             _ => {
-                let character = super::codepoint(code, modifiers);
+                let character = self.typed;
                 let printable = (0x20..0x7f).contains(&character);
                 if !plain || !printable || launcher.query_length == QUERY_CAPACITY {
                     return Action::None;

@@ -1,5 +1,5 @@
 //! Egg Sans 16, the UI font (docs/ux/font-ui-16.txt, docs/ux/toolkit-v0.3.md): one
-//! proportional bitmap face of 16 rows, no anti-aliasing, printable ASCII and Latin-1. The
+//! proportional bitmap face of 16 rows, no anti-aliasing, printable ASCII, Latin-1 and `€`. The
 //! design file is the source: its glyphs are read from it while the crate compiles, so a change
 //! to the drawing is a change to the file alone.
 
@@ -9,12 +9,14 @@ pub const HEIGHT: usize = 16;
 pub const BASELINE: usize = 12;
 /// The widest advance a glyph may have.
 pub const WIDEST: usize = 16;
-/// The glyphs the face holds: U+0020 to U+007E, then U+00A0 to U+00FF.
-pub const GLYPH_COUNT: usize = 191;
+/// The glyphs the face holds: U+0020 to U+007E, then U+00A0 to U+00FF, then U+20AC.
+pub const GLYPH_COUNT: usize = 192;
 
 const ASCII_GLYPHS: usize = 95;
 const FIRST_LATIN_1: u32 = 0xa0;
 const REPLACEMENT: u32 = '?' as u32;
+const LATIN_1_GLYPHS: usize = 96;
+const EURO: u32 = 0x20ac;
 
 /// One glyph: its advance, which includes the space after it, and its rows, top first; bit 15
 /// of each row is column 0.
@@ -35,7 +37,7 @@ impl Glyph {
 
 static GLYPHS: [Glyph; GLYPH_COUNT] = parse(include_bytes!("../../docs/ux/font-ui-16.txt"));
 
-/// The glyph that draws `character`: its own for ASCII and Latin-1, else `?`'s.
+/// The glyph that draws `character`: its own for ASCII, Latin-1 and `€`, else `?`'s.
 pub fn glyph(character: char) -> &'static Glyph {
     &GLYPHS[index(character as u32).unwrap_or(index(REPLACEMENT).unwrap_or(0))]
 }
@@ -56,6 +58,7 @@ const fn index(codepoint: u32) -> Option<usize> {
     match codepoint {
         0x20..=0x7e => Some((codepoint - 0x20) as usize),
         FIRST_LATIN_1..=0xff => Some((codepoint - FIRST_LATIN_1) as usize + ASCII_GLYPHS),
+        EURO => Some(ASCII_GLYPHS + LATIN_1_GLYPHS),
         _ => None,
     }
 }
@@ -63,8 +66,10 @@ const fn index(codepoint: u32) -> Option<usize> {
 const fn codepoint_at(index: usize) -> u32 {
     if index < ASCII_GLYPHS {
         index as u32 + 0x20
-    } else {
+    } else if index < ASCII_GLYPHS + LATIN_1_GLYPHS {
         (index - ASCII_GLYPHS) as u32 + FIRST_LATIN_1
+    } else {
+        EURO
     }
 }
 
@@ -141,7 +146,7 @@ const fn parse(text: &[u8]) -> [Glyph; GLYPH_COUNT] {
             start = line_end(text, start) + 1;
             continue;
         }
-        assert!(count < GLYPH_COUNT, "font-ui-16.txt: more than 191 glyphs");
+        assert!(count < GLYPH_COUNT, "font-ui-16.txt: more than 192 glyphs");
         assert!(
             header_codepoint(text, start) == codepoint_at(count),
             "font-ui-16.txt: a glyph is out of codepoint order"
@@ -177,7 +182,7 @@ const fn parse(text: &[u8]) -> [Glyph; GLYPH_COUNT] {
     }
     assert!(
         count == GLYPH_COUNT,
-        "font-ui-16.txt: fewer than 191 glyphs"
+        "font-ui-16.txt: fewer than 192 glyphs"
     );
     glyphs
 }
@@ -206,10 +211,13 @@ mod tests {
         assert_eq!(glyph(' ').advance, 4);
         assert_eq!(glyph('\u{a0}'), glyph(' '));
         assert_eq!(picture('\u{ad}')[8], "###.");
-        assert_eq!(glyph('ÿ'), &GLYPHS[GLYPH_COUNT - 1]);
+        assert_eq!(glyph('ÿ'), &GLYPHS[GLYPH_COUNT - 2]);
+        assert_eq!(glyph('€'), &GLYPHS[GLYPH_COUNT - 1]);
+        assert_eq!(glyph('€').advance, 6);
         assert!(
             (0x20..=0x7e)
                 .chain(0xa0..=0xff)
+                .chain([0x20ac])
                 .all(|codepoint| { covers(char::from_u32(codepoint).unwrap()) })
         );
     }

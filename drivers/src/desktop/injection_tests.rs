@@ -142,8 +142,9 @@ fn hostile_input_arguments_are_invalid() {
         (input_kind::WHEEL, 0, 0, 0, 0),
         (input_kind::CHARACTER, 0, 0, 0x0d, 0),
         (input_kind::CHARACTER, 0, 0, 0x7f, 0),
-        (input_kind::CHARACTER, 0, 0, 0xe9, 0),
-        (input_kind::CHARACTER, 0, 0, 0x141, 0),
+        (input_kind::CHARACTER, 0, 0, 0x9f, 0),
+        (input_kind::CHARACTER, 0, 0, 0xd800, 0),
+        (input_kind::CHARACTER, 0, 0, 0x11_0000, 0),
     ] {
         assert_eq!(
             InjectedInput::from_request(kind, x, y, code, value),
@@ -200,7 +201,15 @@ fn hostile_input_arguments_are_invalid() {
     );
     assert_eq!(
         InjectedInput::from_request(input_kind::CHARACTER, 0, 0, u32::from(b'~'), 0),
-        Ok(InjectedInput::Character(b'~'))
+        Ok(InjectedInput::Character('~'))
+    );
+    assert_eq!(
+        InjectedInput::from_request(input_kind::CHARACTER, 0, 0, 0xe9, 0),
+        Ok(InjectedInput::Character('é'))
+    );
+    assert_eq!(
+        InjectedInput::from_request(input_kind::CHARACTER, 0, 0, 0x20ac, 0),
+        Ok(InjectedInput::Character('€'))
     );
 }
 
@@ -295,7 +304,7 @@ fn a_key_brings_its_modifiers_down_and_up_around_it() {
     send(
         &mut desktop,
         second,
-        InjectedInput::Character(b'A'),
+        InjectedInput::Character('A'),
         &mut events,
     )
     .unwrap();
@@ -366,10 +375,10 @@ fn the_terminal_s_input_comes_back_for_its_own_handlers() {
         send(
             &mut desktop,
             terminal,
-            InjectedInput::Character(b'x'),
+            InjectedInput::Character('x'),
             &mut events
         ),
-        Ok(Injected::ForTerminal(TerminalInput::Character(b'x')))
+        Ok(Injected::ForTerminal(TerminalInput::Character('x')))
     );
     let wheel = InjectedInput::Wheel {
         x: 0,
@@ -443,7 +452,7 @@ fn points_outside_the_content_and_unknown_windows_are_refused() {
 fn a_person_wins_while_holding_a_button_and_for_half_a_second_after() {
     let (mut desktop, first, _) = desktop_with_two_windows();
     let mut events = Recorded::default();
-    let input = InjectedInput::Character(b'a');
+    let input = InjectedInput::Character('a');
     let at = QUIET_MS;
     desktop.set_time(at);
     desktop.key(
@@ -834,7 +843,7 @@ fn a_window_with_a_dialog_open_passes_keys_to_it_and_refuses_points() {
         send(
             &mut desktop,
             first,
-            InjectedInput::Character(b'y'),
+            InjectedInput::Character('y'),
             &mut events
         ),
         Ok(Injected::QueuedForDialog {
@@ -883,5 +892,37 @@ fn a_window_with_a_dialog_open_passes_keys_to_it_and_refuses_points() {
     assert_eq!(
         send(&mut desktop, first, click, &mut events),
         Ok(Injected::Queued)
+    );
+}
+
+#[test]
+fn a_character_no_key_types_comes_as_a_key_record_of_code_0() {
+    let (mut desktop, _, second) = desktop_with_two_windows();
+    let mut events = Recorded::default();
+    send(
+        &mut desktop,
+        second,
+        InjectedInput::Character('é'),
+        &mut events,
+    )
+    .unwrap();
+    let records: Vec<(u16, i32, i32, u32, u32)> = events
+        .take()
+        .into_iter()
+        .map(|record| (record.kind, record.a, record.b, record.c, record.d))
+        .collect();
+    assert_eq!(
+        records,
+        [(event::KEY, 0, 1, 0, 0xe9), (event::KEY, 0, 0, 0, 0xe9)]
+    );
+    let terminal = desktop.terminal_window();
+    assert_eq!(
+        send(
+            &mut desktop,
+            terminal,
+            InjectedInput::Character('€'),
+            &mut events
+        ),
+        Ok(Injected::ForTerminal(TerminalInput::Character('€')))
     );
 }

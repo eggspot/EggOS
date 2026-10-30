@@ -335,7 +335,8 @@ impl<const N: usize> WidgetTree<N> {
         false
     }
 
-    fn is_shown(&self, id: WidgetId) -> bool {
+    /// Whether widget `id` and every widget holding it are shown.
+    pub fn is_shown(&self, id: WidgetId) -> bool {
         let mut at = Some(id);
         while let Some(current) = at {
             match self.node(current) {
