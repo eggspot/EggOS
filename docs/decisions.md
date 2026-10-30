@@ -14601,3 +14601,82 @@ the license, by an explicit instruction recorded here.
   (`CREATE_SUSPENDED` with `WriteProcessMemory` or `SetThreadContext` on it), `SuspendThread`
   and debugging APIs; job objects; the C runtime's handle table passed to a child through
   `lpReserved2` (`_spawn*`, `system`, `_popen`).
+
+## D190 macOS console breadth: programs that handle signals and start other programs: delivered handlers with Darwin's numbers and `siginfo_t`, masks, `sigsuspend`, alternate stacks; `fork`, the `exec` family, `posix_spawn` with file actions and attributes, pipes, `wait4`, `popen` and `system` (batch part 38, slice 38a; v0.3.0 items 20, 21 and 40's follow-ups; D123's "Not yet"; extends D120, D123, D142) — Decided by the build loop (the shell `system` and `popen` run decided by research)
+
+- **What.** A macOS console program's signal handlers now run. `sigaction`, Darwin's
+  `__sigaction` and `signal` record the action (lock-free tables the handler path reads with
+  atomics) and install it in Linux: ignoring and the default action as they are, and for a
+  handler the layer's own `deliver` with `SA_SIGINFO`, Darwin's flags (`SA_ONSTACK`,
+  `SA_RESTART`, `SA_RESETHAND`, `SA_NODEFER`, `SA_NOCLDSTOP`, `SA_NOCLDWAIT`) translated and the
+  mask converted. `deliver` maps Linux's signal number to Darwin's, builds Darwin's
+  `siginfo_t` from Linux's (sender pid and uid, `si_code` as `SI_USER`, `SI_QUEUE`,
+  `SI_TIMER`, `SI_MESGQ` or `SI_ASYNCIO`, a fault's address and Darwin's `ILL_*`/`FPE_*`
+  codes, a child's pid and status with the signal renumbered), keeps `errno`, and calls the
+  program's handler; it returns through the kernel's trampoline (no `SA_RESTORER`, D64's
+  trampoline) and `rt_sigreturn`. `signal` sets `SA_RESTART`, as BSD's does. `sigprocmask`,
+  `pthread_sigmask` (which returns the error), `sigsuspend`, `sigpending` and `sigaltstack`
+  (Darwin's `stack_t` field order and `SS_DISABLE` 4, `MINSIGSTKSZ` 32 KiB) go to Linux's
+  calls; `raise` is `tgkill` on the calling thread, so the handler runs before it returns;
+  `killpg` is added.
+- **Other programs.** `fork` is `clone(SIGCHLD)` and gives the child's thread its new id;
+  `vfork` is `fork`. `execve`, `execv`, `execvp`, Darwin's `execvP` and the variadic `execl`,
+  `execle` and `execlp` (through the layer's variadic entries, up to 256 arguments) run what
+  the kernel runs for the path, so a macOS program starts the layer again; `execvp` searches
+  `PATH`, `/usr/bin:/bin` when unset, and reports `EACCES` when a directory had the file but
+  refused it. `posix_spawn` and `posix_spawnp` take Darwin's opaque attribute and file-action
+  objects (heap blocks behind the program's pointer; paths copied when added, open flags
+  translated then): the child blocks every signal before the copy, gives each caught signal
+  its default action, restores the mask, takes the attributes' steps (`CLOEXEC_DEFAULT` marks
+  every descriptor close-on-exec with `close_range`, then `SETSID`, `SETPGROUP`, `RESETIDS`,
+  `SETSIGDEF`, `SETSIGMASK`) and the file actions in order (open as a descriptor, close, which
+  ignores `EBADF`, `dup2`, which clears close-on-exec when both are the same, inherit, `chdir`
+  and `fchdir`), then runs the program; a failure is written to a close-on-exec pipe, so the
+  parent returns its `errno` and reaps the child. `POSIX_SPAWN_SETEXEC` runs it in the caller.
+  `pipe`, `dup2`, `wait`, `waitpid`, `wait3` and `wait4` (Darwin's `WCONTINUED`, the status
+  with Darwin's signal numbers, a continued child as stopped by `SIGCONT`) are added; `popen`
+  and `pclose` (64 at once, the parent's end close-on-exec) and `system` run the shell.
+- **Where.** Pure translation in `userland/macos/src/darwin_signals.rs` (numbers both ways,
+  sets, action flags, `how`, wait options and statuses, `siginfo_t`) and
+  `userland/macos/src/spawn_actions.rs` (attributes, file actions, the child's ordered `Step`s,
+  `execvp`'s candidate paths), both host-tested; `libsystem/signal.rs` (rewritten) and the new
+  `libsystem/children.rs` call Linux. `Thread.alternate_stack` is gone: Linux keeps the stack.
+- **The check.** `tests/macos-process/main.c`, our own C program, built by `cargo xtask
+  macos-programs` with `xcrun clang -mmacosx-version-min=13.0 -O2 -Wall -Werror` for arm64 and
+  x86_64 (`macos::C_PROGRAMS`, whose `deployment_target` slice 38c can lower), runs as
+  `/bin/macos-process` in the macOS programs boot test on aarch64 and x86_64 (riscv64 refuses
+  it): a `SA_SIGINFO` handler, `signal`, a blocked signal through `sigpending` and
+  `sigsuspend`, an alternate stack, `fork` with a pipe, a child killed by `SIGTERM`, `SIGCHLD`'s
+  `siginfo_t`, `execv` and `execlp` of itself, a missing `execv`, `posix_spawn` with
+  `CLOEXEC_DEFAULT`, `dup2` and inherit actions reading the child's output, an open action, a
+  missing `posix_spawnp`, a refused suspended start, `popen` and `system`. `macos-console
+  unimplemented` now calls `kqueue`, since `posix_spawn` exists.
+- **Front-ends (D22).** The macOS ABI only; no new capability: the programs run from `eggsh`,
+  MCP `run` and as installed apps as before.
+- **Cost (D24, D78).** Not measured (no builds in this batch). A delivered signal costs one
+  extra call and a 104-byte `siginfo_t` on the handler's stack; `sigaction` one lock and one
+  `rt_sigaction`. The layer's `.bss` grows by 384 bytes (the action tables) and 512 bytes
+  (`popen`'s table); `Thread` shrinks by 24 bytes.
+- **Decided by research** (a research subagent, 2026-10-31, from the repo's decisions and
+  `eggsh`'s argument handling): `system` and `popen` exec `/bin/eggsh` as `sh -c -- command`
+  rather than `/bin/sh`, because the layer implements libSystem itself and can name EggOS's
+  shell, while adding `/bin/sh` to the base is a separate decision about the base and `#!`
+  (it would touch Linux programs too), and trying `/bin/sh` first costs a failing `exec` on
+  every call.
+- **Decided without research.** Pure logic outside `libsystem/` so its host tests run (D178's
+  lesson); unknown `posix_spawnattr_setflags` bits are ignored, as Darwin's kernel ignores
+  private ones, while `POSIX_SPAWN_START_SUSPENDED` is refused with `ENOTSUP` (a stopped child
+  would never close the error pipe, and Linux cannot start a process stopped before its first
+  instruction); the handler's `ucontext_t` is null rather than a made-up one; `errno` kept
+  across a handler; `popen`'s parent end close-on-exec, so later children never inherit it
+  (POSIX's "close earlier popen streams in the child" without a list), and `r+` refused;
+  `posix_spawn` copies the process (`clone(SIGCHLD)`) rather than sharing it like `vfork`,
+  since the child runs the layer's Rust code before `execve`; a `close` action on a closed
+  descriptor succeeds; the descriptor limit for file actions is Darwin's `OPEN_MAX`, 10240.
+- **Not yet.** A handler's `ucontext_t` (registers, for programs that inspect or change them),
+  `sigsetjmp`/`siglongjmp`, `sigwait`, `siginterrupt`, `sigqueue`; `pthread_atfork` and
+  taking the layer's locks around `fork`; a `vfork`-style `posix_spawn` that copies no page
+  tables; `POSIX_SPAWN_START_SUSPENDED`; `popen` with `r+`; `execvp` running a file without
+  a format through the shell; `posix_spawn_file_actions_addclosefrom_np`; slices 38b (`scanf`,
+  locales other than C) and 38c (programs without chained fixups, a program for macOS 11,
+  `getopt_long` reordering words).

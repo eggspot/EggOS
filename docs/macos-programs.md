@@ -101,12 +101,13 @@ its arguments, an environment variable, a file, `/bin`'s listing, a missing file
 | Heap | `malloc`, `calloc`, `realloc`, `reallocf`, `free`, `malloc_size`, `posix_memalign`, `aligned_alloc`, `valloc` |
 | Numbers | `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul`, `strtoull`, `abs`, `labs`, `llabs`, `qsort`, `bsearch`, `rand`, `srand`, `arc4random`, `arc4random_buf`, `arc4random_uniform` |
 | Files | `open`, `close`, `read`, `write`, `lseek`, `stat`, `lstat`, `fstat` (on x86_64 only their `$INODE64` names: the unsuffixed ones are the old 32-bit-inode ABI, and calling them stops with status 127), `isatty`, `access`, `getcwd`, `chdir`, `unlink`, `rmdir`, `mkdir`, `opendir`, `readdir` (`readdir$INODE64` on x86_64, likewise), `closedir`, `dirfd` |
-| Files, part 2 | `dup`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `writev` |
+| Files, part 2 | `dup`, `dup2`, `pipe`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `writev` |
 | Process and environment | `exit`, `_exit`, `_Exit`, `abort`, `atexit`, `raise`, `kill`, `getpid`, `getppid`, `getuid`, `geteuid`, `getenv`, `setenv`, `putenv`, `unsetenv`, `environ`, `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron`, `_NSGetProgname`, `_NSGetExecutablePath`, `__error` (`errno`, one per thread), `strerror_r`, `__stack_chk_guard`, `__stack_chk_fail`, `getpagesize`, `sysconf` (page size, CPUs, `_SC_OPEN_MAX`, `_SC_CLK_TCK`, `_SC_ARG_MAX`) |
 | Options | `getopt`, `getopt_long`, `optarg`, `optind`, `opterr`, `optopt`, `optreset` |
 | Threads | `pthread_create`, `pthread_join`, `pthread_detach`, `pthread_exit`, `pthread_self`, `pthread_equal`, `pthread_main_np`, `pthread_threadid_np`, `pthread_mach_thread_np`, `pthread_get_stackaddr_np`, `pthread_get_stacksize_np`, `pthread_setname_np`, `pthread_getname_np`, `pthread_attr_init`, `pthread_attr_destroy`, `pthread_attr_setstacksize`, `pthread_attr_getstacksize`, `pthread_attr_setdetachstate`, `pthread_attr_getdetachstate`, `pthread_attr_setguardsize`, `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific`, `pthread_setspecific`, `sched_yield`, thread-local variables (`_tlv_bootstrap`, `_tlv_atexit`) |
 | Locks | `pthread_mutex_init`, `pthread_mutex_destroy`, `pthread_mutex_lock`, `pthread_mutex_trylock`, `pthread_mutex_unlock` (normal, error-checking, recursive, and the static initializers), `pthread_mutexattr_init`, `pthread_mutexattr_destroy`, `pthread_mutexattr_settype`, `pthread_cond_init`, `pthread_cond_destroy`, `pthread_cond_wait`, `pthread_cond_timedwait`, `pthread_cond_signal`, `pthread_cond_broadcast`, `pthread_once`, `dispatch_semaphore_create`, `dispatch_semaphore_wait`, `dispatch_semaphore_signal`, `dispatch_time`, `dispatch_retain`, `dispatch_release` |
-| Signals | `sigaction`, `signal`, `sigaltstack`, `sigprocmask`, `pthread_sigmask`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset`, `sigismember`, `pause` |
+| Signals | `sigaction`, `__sigaction`, `signal`, `sigaltstack`, `sigprocmask`, `pthread_sigmask`, `sigsuspend`, `sigpending`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset`, `sigismember`, `pause`, `killpg` |
+| Other programs | `fork`, `vfork` (as `fork`), `execve`, `execv`, `execvp`, `execvP`, `execl`, `execle`, `execlp`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_init`, `_destroy`, `_addopen`, `_addclose`, `_adddup2`, `_addinherit_np`, `_addchdir_np`, `_addfchdir_np` (and the unsuffixed `addchdir`, `addfchdir`), `posix_spawnattr_init`, `_destroy`, `_setflags`, `_getflags`, `_setpgroup`, `_getpgroup`, `_setsigmask`, `_getsigmask`, `_setsigdefault`, `_getsigdefault`, `wait`, `waitpid`, `wait3`, `wait4`, `popen`, `pclose`, `system` |
 | Memory | `mmap` (Darwin's flags), `munmap`, `mprotect`, `madvise` (a hint: accepted) |
 | Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep`, `gmtime_r`, `gmtime`, `localtime_r`, `localtime`, `timegm`, `mktime`, `strftime`, `tzset` |
 | Locale | `setlocale`, `nl_langinfo`, `localeconv`, `__mb_cur_max` (the C locale only) |
@@ -136,6 +137,31 @@ every thread-local variable's descriptor calls, is the accessor itself: three in
 return the calling thread's copy plus the variable's offset. Locks are futexes in the program's
 own memory. Time is UTC (`localtime_r` is `gmtime_r`, `%Z` is `UTC`), and the only locale is C
 (`nl_langinfo(CODESET)` is `US-ASCII`, as on a Mac).
+
+### Signals and other programs
+
+Signals use Darwin's numbers (`SIGUSR1` is 30, `SIGCHLD` 20) and structures (D190). A handler
+`sigaction` or `signal` installs runs when the signal arrives: the layer installs one function
+of its own as the Linux handler of every caught signal, which calls the program's handler with
+Darwin's number and, with `SA_SIGINFO`, Darwin's `siginfo_t` (the sender's pid, user and
+`si_code`, a fault's address, a child's pid and status); the handler returns through the
+kernel's trampoline and `rt_sigreturn`, and `errno` is kept across it. `signal` restarts the
+calls a handler interrupts, as BSD's does. `SA_ONSTACK` runs it on the stack `sigaltstack` set
+(at least `MINSIGSTKSZ`, 32 KiB), and masks, `sigsuspend` and `sigpending` translate Darwin's
+32-bit `sigset_t`; Darwin's `SIGEMT` and `SIGINFO` never arrive (Linux has neither).
+
+`fork` copies the process (any thread but the caller is gone in the child, as on a Mac), the
+`exec` family runs whatever the path names (another macOS program starts the layer again, a
+Linux program runs as it is), and `execvp` and `posix_spawnp` search `PATH` (`/usr/bin:/bin`
+when it is unset). `posix_spawn` starts a child that takes the attributes (`POSIX_SPAWN_SETSID`,
+`SETPGROUP`, `RESETIDS`, `SETSIGDEF`, `SETSIGMASK`, `CLOEXEC_DEFAULT`, and `SETEXEC`, which
+runs the program in the caller) then the file actions in order, and reports a failure to start
+(`ENOENT` for a missing program) as its result, leaving no child behind; it refuses
+`POSIX_SPAWN_START_SUSPENDED` with `ENOTSUP`. Wait statuses use Darwin's signal numbers.
+`system` and `popen` run EggOS's shell, `/bin/eggsh`, as `sh -c -- command`; `system` ignores
+`SIGINT` and `SIGQUIT` and blocks `SIGCHLD` while it waits, as a Mac does. The test program
+`tests/macos-process/main.c`, built by `cargo xtask macos-programs` with
+`clang -mmacosx-version-min=13.0`, checks all of it in the macOS programs boot test.
 
 ## Objective-C programs
 
@@ -347,12 +373,17 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   runtime**, and **unwinding** beyond Objective-C's (`_Unwind_RaiseException`
   and the rest of `_Unwind_*`): a Rust panic with `panic = "unwind"` stops at the first
   unwinder call with status 127.
-- **Signal handlers**: `sigaction` and `signal` record handlers and pass ignoring or the default
-  action on to the kernel, but do not deliver signals to a handler yet; a fault ends the
-  program as Linux's default action does. Signal masks are accepted and stay empty.
-- **`fork`, `exec` and `posix_spawn`**, **pipes**, **`scanf`**, **time zones** (all times are
-  UTC), **locales other than C** (`setlocale` refuses them with a null pointer), and stdio
-  streams shared between threads (each stream assumes one thread at a time).
+- **Signals, in part**: a handler's third argument (the `ucontext_t`) is null, so a handler
+  cannot read or change the interrupted registers; `siglongjmp` out of a handler, `sigwait`
+  and `siginterrupt` are missing.
+- **Other programs, in part**: `POSIX_SPAWN_START_SUSPENDED` is refused, `popen`'s `r+` mode
+  is refused, `pthread_atfork` is missing (so a `fork` while another thread holds a lock of the
+  layer's can hang the child), `execvp` does not run a file without a format through the
+  shell, and `posix_spawn` copies the process before it runs the program instead of sharing
+  its memory as `vfork` does.
+- **`scanf`**, **time zones** (all times are UTC), **locales other than C** (`setlocale`
+  refuses them with a null pointer), and stdio streams shared between threads (each stream
+  assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
   does, so options after an operand stay operands; `getopt_long_only` is missing.
 - **AppKit beyond its core** (D147's and D175's "Not yet"): nibs and storyboards, flipped

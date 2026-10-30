@@ -262,10 +262,16 @@ Must-have, in order:
     directories, `std::thread`, `Mutex`, `thread_local!`) on aarch64 and x86_64 (D123,
     docs/macos-programs.md): threads with their own control blocks behind the thread pointer,
     Mach-O thread-local variables, pthread keys, mutexes, condition variables and once,
-    libdispatch semaphores, `mmap`, `fcntl`, `writev` and `dlsym`. Signal handlers are recorded
-    but not delivered, and the unwinder, time zones, other locales, programs without chained
-    fixups, other dylibs and frameworks, and x86_64 programs on Arm come later (D123's "Not
-    yet").
+    libdispatch semaphores, `mmap`, `fcntl`, `writev` and `dlsym`. The unwinder, time zones,
+    other locales, programs without chained fixups, other dylibs and frameworks, and x86_64
+    programs on Arm come later (D123's "Not yet"). Users can now run macOS programs that handle
+    signals and start other programs (D190, slice 38a): handlers with Darwin's numbers and
+    `siginfo_t`, masks, `sigsuspend`, `sigpending` and alternate stacks; `fork`, the `exec`
+    family, `posix_spawn` and `posix_spawnp` with file actions and attributes, pipes, `dup2`,
+    `waitpid` and `wait4`, and `popen` and `system` through EggOS's shell, checked by
+    `macos-process` from our own C source, built by Apple's clang in CI, in the macOS programs
+    boot test on aarch64 and x86_64. Next: `scanf` and locales other than C (slice 38b), and
+    programs without chained fixups (slice 38c).
 22. **done** — users can now pipe commands and redirect input and output from `eggsh` (D125,
     docs/shell.md): `a | b | c` runs its programs at the same time, piped, in one process
     group that `^C` reaches, with the last one's status; `<`, `>` and `>>` on builtins and
