@@ -175,8 +175,8 @@ pub fn install(
     let trampolines_start = bridges_start + bridge_bytes;
     let trampoline_bytes =
         (bridge::PROCEDURE_TRAMPOLINE_BYTES as usize).next_multiple_of(BRIDGE_ALIGNMENT);
-    let mapped = (trampolines_start + procedure_rvas.len() * trampoline_bytes)
-        .next_multiple_of(PAGE_SIZE);
+    let mapped =
+        (trampolines_start + procedure_rvas.len() * trampoline_bytes).next_multiple_of(PAGE_SIZE);
     let procedure_page = match procedure_rvas.is_empty() {
         true => 0,
         false => PAGE_SIZE,
@@ -382,10 +382,8 @@ impl InstalledCode {
         };
         let guest = match cause {
             Some(cause) if cause.address_in_x16() => x16,
-            _ if offset < self.code_bytes as u64 => {
-                trap::guest_rva(&self.back_map, offset as u32)
-                    .map_or(0, |rva| self.guest_base + u64::from(rva))
-            }
+            _ if offset < self.code_bytes as u64 => trap::guest_rva(&self.back_map, offset as u32)
+                .map_or(0, |rva| self.guest_base + u64::from(rva)),
             _ => 0,
         };
         Some((cause, guest))

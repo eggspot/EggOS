@@ -1519,15 +1519,11 @@ fn chained_fixups_give_the_import_slots_and_rebase_targets_without_changing_the_
             ImportSlot {
                 rva: 0x4000,
                 name: &b"_puts"[..],
-                source: Source::Library(1),
-                weak: false,
                 addend: 0,
             },
             ImportSlot {
                 rva: 0x4008,
                 name: &b"_weak"[..],
-                source: Source::Library(1),
-                weak: true,
                 addend: 3,
             },
         ]

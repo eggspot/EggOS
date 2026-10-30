@@ -16,8 +16,9 @@ eggos-macos-gui = { path = "../macos-gui" }
 eggos-runtime = { path = "../runtime" }
 eggos-toolkit = { path = "../toolkit" }
 
-[dev-dependencies]
+[target.'cfg(any(target_arch = "aarch64", not(target_env = "musl")))'.dependencies]
 eggos-translate = { path = "../../translate" }
+eggos-translation-loader = { path = "../translation-loader" }
 
 [lints]
 workspace = true

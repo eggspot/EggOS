@@ -2,7 +2,9 @@
 //! 8-byte slot each, and its `va_list` is a pointer to the next slot; on x86_64 it follows the
 //! System V convention, registers first, with `va_list` pointing to a register save area.
 //! A short assembly entry for each variadic function turns its arguments into a `va_list` and
-//! calls the Rust function that takes one, so `printf` and `vprintf` share one body.
+//! calls the Rust function that takes one, so `printf` and `vprintf` share one body. On arm64,
+//! translated x86_64 code calls the same functions through a variadic bridge that passes a
+//! System V `va_list` with its lowest bit set (D191), which the reader tells apart.
 
 use crate::format::Arguments;
 use core::ffi::c_void;
@@ -10,16 +12,8 @@ use core::ffi::c_void;
 /// A `va_list` as the program passes it to `vprintf` and its kin.
 pub type RawVaList = *mut c_void;
 
-/// Reads the arguments a [`RawVaList`] points to.
-#[derive(Debug)]
-pub struct VaList {
-    #[cfg(target_arch = "aarch64")]
-    next: *const u64,
-    #[cfg(target_arch = "x86_64")]
-    state: *mut SystemVList,
-}
-
-#[cfg(target_arch = "x86_64")]
+/// A System V `va_list`: the offsets of the next integer and vector argument in the register
+/// save area, the overflow area on the caller's stack and the register save area.
 #[repr(C)]
 #[derive(Debug)]
 pub struct SystemVList {
@@ -29,97 +23,156 @@ pub struct SystemVList {
     saved: *const u8,
 }
 
-#[cfg(target_arch = "x86_64")]
 const GENERAL_SAVE_END: u32 = 48;
-#[cfg(target_arch = "x86_64")]
 const VECTOR_SAVE_END: u32 = 176;
+#[cfg(target_arch = "aarch64")]
+const SYSTEM_V_TAG: usize = eggos_translate::image::bridge::SYSV_VA_LIST_TAG as usize;
+
+/// The System V list `raw` names, if it is one: always on x86_64; on arm64 when a variadic
+/// bridge of translated code tagged it.
+#[cfg(target_arch = "aarch64")]
+pub fn system_v_list(raw: RawVaList) -> Option<*mut SystemVList> {
+    let address = raw as usize;
+    (address & SYSTEM_V_TAG != 0).then_some((address & !SYSTEM_V_TAG) as *mut SystemVList)
+}
+
+/// The System V list `raw` names, if it is one: always on x86_64; on arm64 when a variadic
+/// bridge of translated code tagged it.
+#[cfg(target_arch = "x86_64")]
+pub fn system_v_list(raw: RawVaList) -> Option<*mut SystemVList> {
+    Some(raw.cast())
+}
+
+/// The `va_list` a reader takes for the System V list at `list`.
+#[cfg(target_arch = "aarch64")]
+pub fn system_v_raw(list: *mut SystemVList) -> RawVaList {
+    (list as usize | SYSTEM_V_TAG) as RawVaList
+}
+
+/// The `va_list` a reader takes for the System V list at `list`.
+#[cfg(target_arch = "x86_64")]
+pub fn system_v_raw(list: *mut SystemVList) -> RawVaList {
+    list.cast()
+}
+
+#[derive(Debug)]
+enum List {
+    #[cfg(target_arch = "aarch64")]
+    Slots(*const u64),
+    SystemV(*mut SystemVList),
+}
+
+/// Reads the arguments a [`RawVaList`] points to.
+#[derive(Debug)]
+pub struct VaList(List);
 
 impl VaList {
     /// # Safety
-    /// `raw` must be a `va_list` the program (or a variadic entry) set up for the arguments
-    /// that are read through it, and must stay valid while they are.
+    /// `raw` must be a `va_list` the program (or a variadic entry or bridge) set up for the
+    /// arguments that are read through it, and must stay valid while they are.
     pub unsafe fn new(raw: RawVaList) -> Self {
-        #[cfg(target_arch = "aarch64")]
-        return Self { next: raw.cast() };
-        #[cfg(target_arch = "x86_64")]
-        return Self { state: raw.cast() };
+        match system_v_list(raw) {
+            Some(list) => Self(List::SystemV(list)),
+            None => Self::slots(raw),
+        }
     }
+
+    #[cfg(target_arch = "aarch64")]
+    fn slots(raw: RawVaList) -> Self {
+        Self(List::Slots(raw.cast()))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn slots(raw: RawVaList) -> Self {
+        Self(List::SystemV(raw.cast()))
+    }
+}
+
+fn system_v_integer(list: *mut SystemVList) -> u64 {
+    // SAFETY: `VaList::new`'s caller promised a System V `va_list` for the arguments read.
+    let state = unsafe { &mut *list };
+    if state.general_offset < GENERAL_SAVE_END {
+        // SAFETY: the offset is inside the register save area.
+        let value = unsafe {
+            state
+                .saved
+                .wrapping_add(state.general_offset as usize)
+                .cast::<u64>()
+                .read_unaligned()
+        };
+        state.general_offset += 8;
+        value
+    } else {
+        // SAFETY: the argument is in the caller's overflow area.
+        let value = unsafe { state.overflow.read_unaligned() };
+        state.overflow = state.overflow.wrapping_add(1);
+        value
+    }
+}
+
+fn system_v_double(list: *mut SystemVList) -> f64 {
+    // SAFETY: as in `system_v_integer`.
+    let state = unsafe { &mut *list };
+    if state.vector_offset < VECTOR_SAVE_END {
+        // SAFETY: the offset is inside the register save area.
+        let value = unsafe {
+            state
+                .saved
+                .wrapping_add(state.vector_offset as usize)
+                .cast::<f64>()
+                .read_unaligned()
+        };
+        state.vector_offset += 16;
+        value
+    } else {
+        // SAFETY: the argument is in the caller's overflow area.
+        let value = unsafe { state.overflow.cast::<f64>().read_unaligned() };
+        state.overflow = state.overflow.wrapping_add(1);
+        value
+    }
+}
+
+fn system_v_long_double(list: *mut SystemVList) -> f64 {
+    // SAFETY: as in `system_v_integer`.
+    let state = unsafe { &mut *list };
+    let at = (state.overflow as usize).next_multiple_of(16) as *const u64;
+    // SAFETY: a `long double` is passed in the caller's overflow area, 16-byte aligned, its
+    // 64-bit significand then its sign and exponent.
+    let significand = unsafe { at.read() };
+    // SAFETY: as above.
+    let sign_exponent = unsafe { at.wrapping_add(1).cast::<u16>().read() };
+    state.overflow = at.wrapping_add(2);
+    crate::format::extended_to_double(significand, sign_exponent)
 }
 
 impl Arguments for VaList {
     fn integer(&mut self) -> u64 {
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: `new`'s caller promised a slot for each argument read.
-            let value = unsafe { self.next.read() };
-            self.next = self.next.wrapping_add(1);
-            value
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: `new`'s caller promised a System V `va_list` for the arguments read.
-            let state = unsafe { &mut *self.state };
-            if state.general_offset < GENERAL_SAVE_END {
-                // SAFETY: the offset is inside the register save area.
-                let value = unsafe {
-                    state
-                        .saved
-                        .wrapping_add(state.general_offset as usize)
-                        .cast::<u64>()
-                        .read_unaligned()
-                };
-                state.general_offset += 8;
-                value
-            } else {
-                // SAFETY: the argument is in the caller's overflow area.
-                let value = unsafe { state.overflow.read_unaligned() };
-                state.overflow = state.overflow.wrapping_add(1);
+        match &mut self.0 {
+            #[cfg(target_arch = "aarch64")]
+            List::Slots(next) => {
+                // SAFETY: `new`'s caller promised a slot for each argument read.
+                let value = unsafe { next.read() };
+                *next = next.wrapping_add(1);
                 value
             }
+            List::SystemV(list) => system_v_integer(*list),
         }
     }
 
     fn double(&mut self) -> f64 {
-        #[cfg(target_arch = "aarch64")]
-        {
-            f64::from_bits(self.integer())
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: as in `integer`.
-            let state = unsafe { &mut *self.state };
-            if state.vector_offset < VECTOR_SAVE_END {
-                // SAFETY: the offset is inside the register save area.
-                let value = unsafe {
-                    state
-                        .saved
-                        .wrapping_add(state.vector_offset as usize)
-                        .cast::<f64>()
-                        .read_unaligned()
-                };
-                state.vector_offset += 16;
-                value
-            } else {
-                // SAFETY: the argument is in the caller's overflow area.
-                let value = unsafe { state.overflow.cast::<f64>().read_unaligned() };
-                state.overflow = state.overflow.wrapping_add(1);
-                value
-            }
+        match &self.0 {
+            #[cfg(target_arch = "aarch64")]
+            List::Slots(_) => f64::from_bits(self.integer()),
+            List::SystemV(list) => system_v_double(*list),
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     fn long_double(&mut self) -> f64 {
-        // SAFETY: as in `integer`.
-        let state = unsafe { &mut *self.state };
-        let at = (state.overflow as usize).next_multiple_of(16) as *const u64;
-        // SAFETY: a `long double` is passed in the caller's overflow area, 16-byte aligned, its
-        // 64-bit significand then its sign and exponent.
-        let significand = unsafe { at.read() };
-        // SAFETY: as above.
-        let sign_exponent = unsafe { at.wrapping_add(1).cast::<u16>().read() };
-        state.overflow = at.wrapping_add(2);
-        crate::format::extended_to_double(significand, sign_exponent)
+        match &self.0 {
+            #[cfg(target_arch = "aarch64")]
+            List::Slots(_) => f64::from_bits(self.integer()),
+            List::SystemV(list) => system_v_long_double(*list),
+        }
     }
 }
 

@@ -627,7 +627,6 @@ fn utf8(code: u32, buffer: &mut [u8; 4]) -> &[u8] {
 
 /// The double nearest to the x87 80-bit extended value with the 64-bit `significand` (its
 /// integer bit explicit) and the 16-bit `sign_exponent` (sign, then a bias of 16383).
-#[cfg(any(test, target_arch = "x86_64"))]
 pub fn extended_to_double(significand: u64, sign_exponent: u16) -> f64 {
     let negative = sign_exponent & 0x8000 != 0;
     let exponent = i32::from(sign_exponent & 0x7fff);

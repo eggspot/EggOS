@@ -3,7 +3,7 @@
 //! `__stdinp`, `__stdoutp` and `__stderrp`, the `printf` family and the character and line
 //! functions.
 
-use super::variadic::{RawVaList, VaList, variadic};
+use super::variadic::{self, RawVaList, VaList, variadic};
 use super::{c_string, errno_from, file, heap, set_errno};
 use crate::darwin::{self, EBADF, EINVAL};
 use crate::format::{self, Output};
@@ -397,35 +397,32 @@ pub unsafe extern "C" fn vasprintf(
     length
 }
 
-#[cfg(target_arch = "aarch64")]
-struct VaCopy(RawVaList);
+struct VaCopy {
+    list: [u64; 3],
+    raw: Option<RawVaList>,
+}
 
-#[cfg(target_arch = "aarch64")]
 impl VaCopy {
     fn raw(&self) -> RawVaList {
-        self.0
+        match self.raw {
+            Some(raw) => raw,
+            None => variadic::system_v_raw(self.list.as_ptr().cast_mut().cast()),
+        }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 unsafe fn copy_va_list(raw: RawVaList) -> VaCopy {
-    VaCopy(raw)
-}
-
-#[cfg(target_arch = "x86_64")]
-struct VaCopy([u64; 3]);
-
-#[cfg(target_arch = "x86_64")]
-impl VaCopy {
-    fn raw(&self) -> RawVaList {
-        self.0.as_ptr().cast_mut().cast()
+    match variadic::system_v_list(raw) {
+        Some(list) => VaCopy {
+            // SAFETY: a System V `va_list` is 24 bytes, which the caller's pointer names.
+            list: unsafe { list.cast::<[u64; 3]>().read_unaligned() },
+            raw: None,
+        },
+        None => VaCopy {
+            list: [0; 3],
+            raw: Some(raw),
+        },
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn copy_va_list(raw: RawVaList) -> VaCopy {
-    // SAFETY: a System V `va_list` is 24 bytes, which the caller's pointer names.
-    VaCopy(unsafe { raw.cast::<[u64; 3]>().read_unaligned() })
 }
 
 unsafe extern "C" fn printf_with(format: *const c_char, arguments: RawVaList) -> c_int {

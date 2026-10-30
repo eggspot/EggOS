@@ -37,6 +37,7 @@ enum Failure {
     Library(&'static [u8]),
     TooManyMissing,
     Memory,
+    Translation(&'static str),
 }
 
 pub fn run(startup: &Startup) -> i32 {
@@ -84,6 +85,7 @@ fn report(program: &[u8], failure: Failure) {
             message.push(b"imports more functions EggOS does not provide yet than it can stub")
         }
         Failure::Memory => message.push(b"out of memory"),
+        Failure::Translation(reason) => message.push(reason.as_bytes()),
     }
     message.push(b"\n");
     message.write();
@@ -126,13 +128,15 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let path = startup.arguments().nth(1).ok_or(Failure::Usage)?;
     let file = read_file(path.to_bytes_with_nul())?;
     let cpu = macho::host_cpu().ok_or(Failure::OtherCpus([None; 4]))?;
-    let slice = macho::select_slice(file, cpu).map_err(|error| match error {
-        NoSlice::Invalid(invalid) => Failure::Invalid(invalid),
-        NoSlice::OtherCpus { found } => Failure::OtherCpus(found),
-    })?;
+    let (slice, translated) = select_slice(file, cpu)?;
     let program = MachO::parse(slice).map_err(Failure::Invalid)?;
-    if program.cpu != cpu {
+    if program.cpu != cpu && !translated {
         return Err(Failure::OtherCpus([Some(program.cpu), None, None, None]));
+    }
+    if translated && program.start == Start::Thread {
+        return Err(Failure::Translation(
+            "starts at an LC_UNIXTHREAD entry, which EggOS does not run translated yet",
+        ));
     }
     for library in program.libraries() {
         if Library::provided(library.path).is_none() && !library.weak {
@@ -188,9 +192,25 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         let length = segment.filesize as usize;
         image[at..at + length].copy_from_slice(&slice[from..from + length]);
     }
+    #[cfg(target_arch = "aarch64")]
+    let pending = match translated {
+        true => {
+            let pointers = crate::translated::pointer_fixups(&program, fixups.as_ref(), image)
+                .map_err(Failure::Invalid)?;
+            let capabilities = startup
+                .auxiliary_value(eggos_runtime::startup::auxv::HWCAP)
+                .unwrap_or(0) as u64;
+            let prepared =
+                crate::translation::prepare(slice, &program, image, &pointers, capabilities)
+                    .map_err(Failure::Translation)?;
+            Some((pointers, prepared))
+        }
+        false => None,
+    };
     let mut binder = Binder {
         program: &program,
         missing: 0,
+        translated,
     };
     if let Some(fixups) = fixups {
         let imports = bind_imports(&mut binder, &fixups)?;
@@ -199,6 +219,21 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             .map_err(Failure::Invalid)?;
     } else if let Some(info) = program.dyld_info {
         apply_dyld_info(&mut binder, info, image, base as u64)?;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some((pointers, prepared)) = pending {
+        let layer_code = crate::translation::layer_code(&startup);
+        crate::translation::install(
+            path.to_bytes(),
+            &program,
+            image,
+            base,
+            &pointers,
+            prepared,
+            layer_code,
+        )
+        .map_err(Failure::Translation)?;
+        crate::translation::install_fault_handler();
     }
     let slide = (base as isize).wrapping_sub(program.base_address() as isize);
     if uses_objc {
@@ -244,6 +279,19 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         objc::run_load_methods();
     }
     let entry = base + program.entry as usize;
+    #[cfg(target_arch = "aarch64")]
+    if translated {
+        let words = [
+            argument_count(&startup) as u64,
+            arguments as u64,
+            environment as u64,
+            apple as u64,
+        ];
+        // SAFETY: `entry` is LC_MAIN's checked entry point in the translated image, whose
+        // code is installed; translated `main` takes `argc` and the three vectors.
+        let status = unsafe { crate::translation::call_guest(entry as u64, &words) };
+        libsystem::exit(status.ok_or(Failure::Memory)? as c_int)
+    }
     if program.start == Start::Thread {
         let (words, count) =
             start_words(argument_count(&startup), [arguments, environment, apple])?;
@@ -268,6 +316,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
 struct Binder<'p, 'a> {
     program: &'p MachO<'a>,
     missing: usize,
+    translated: bool,
 }
 
 impl<'a> Binder<'_, 'a> {
@@ -285,7 +334,9 @@ impl<'a> Binder<'_, 'a> {
             Source::Executable => None,
         };
         let library = library.and_then(Library::provided);
-        let found = library.and_then(|_| resolve(name));
+        let found = library
+            .and_then(|_| resolve(name))
+            .filter(|_| !self.translated || translated_binds_natively(name));
         // SAFETY: the file's mapping stays for as long as the program runs, so the name does
         // too.
         let name: &'static [u8] = unsafe { core::slice::from_raw_parts(name.as_ptr(), name.len()) };
@@ -304,6 +355,32 @@ impl<'a> Binder<'_, 'a> {
                 libsystem::bind_missing(self.missing - 1, library.name(), name)
             }
         })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn translated_binds_natively(name: &[u8]) -> bool {
+    crate::translated::binds_natively(name)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn translated_binds_natively(_: &[u8]) -> bool {
+    true
+}
+
+fn select_slice(file: &'static [u8], cpu: Cpu) -> Result<(&'static [u8], bool), Failure> {
+    let translatable = cfg!(target_arch = "aarch64") && cpu != Cpu::X86_64;
+    match macho::select_slice(file, cpu) {
+        Ok(slice) => Ok((slice, false)),
+        Err(NoSlice::Invalid(invalid)) => Err(Failure::Invalid(invalid)),
+        Err(NoSlice::OtherCpus { found }) if translatable && found.contains(&Some(Cpu::X86_64)) => {
+            let slice = macho::select_slice(file, Cpu::X86_64).map_err(|error| match error {
+                NoSlice::Invalid(invalid) => Failure::Invalid(invalid),
+                NoSlice::OtherCpus { found } => Failure::OtherCpus(found),
+            })?;
+            Ok((slice, true))
+        }
+        Err(NoSlice::OtherCpus { found }) => Err(Failure::OtherCpus(found)),
     }
 }
 

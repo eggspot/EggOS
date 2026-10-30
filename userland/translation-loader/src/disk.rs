@@ -103,12 +103,8 @@ impl CacheFiles for Disk {
             while filled < size {
                 let rest = &mut bytes[filled..];
                 // SAFETY: `read` writes at most `rest.len()` bytes into `rest`.
-                let read = unsafe {
-                    call(
-                        READ,
-                        [fd, rest.as_mut_ptr() as usize, rest.len(), 0, 0, 0],
-                    )
-                };
+                let read =
+                    unsafe { call(READ, [fd, rest.as_mut_ptr() as usize, rest.len(), 0, 0, 0]) };
                 match result(read) {
                     Some(0) | None => break,
                     Some(read) => filled += read,
@@ -122,10 +118,7 @@ impl CacheFiles for Disk {
 
     fn create(&mut self, name: &str, bytes: &[u8]) -> bool {
         make_directories();
-        let Some(fd) = open(
-            &cache_files::file_path(name),
-            O_WRONLY | O_CREAT | O_EXCL,
-        ) else {
+        let Some(fd) = open(&cache_files::file_path(name), O_WRONLY | O_CREAT | O_EXCL) else {
             return false;
         };
         let mut rest = bytes;
@@ -235,9 +228,9 @@ impl CacheFiles for Disk {
             )
         };
         match result(made) {
-            Some(_) => policy::cap_bytes(
-                words[STATFS_BLOCKS].saturating_mul(words[STATFS_BLOCK_SIZE]),
-            ),
+            Some(_) => {
+                policy::cap_bytes(words[STATFS_BLOCKS].saturating_mul(words[STATFS_BLOCK_SIZE]))
+            }
             None => 0,
         }
     }

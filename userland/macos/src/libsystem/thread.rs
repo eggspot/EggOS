@@ -57,6 +57,7 @@ pub struct Thread {
     pub autorelease_pools: usize,
     pub caught_exceptions: usize,
     pub swift_accesses: usize,
+    pub translated_thread: usize,
     values: [usize; KEYS],
 }
 
@@ -82,6 +83,7 @@ impl Thread {
         autorelease_pools: 0,
         caught_exceptions: 0,
         swift_accesses: 0,
+        translated_thread: 0,
         values: [0; KEYS],
     };
 }
@@ -92,6 +94,13 @@ static KEY_IN_USE: [AtomicU32; KEYS] = [const { AtomicU32::new(0) }; KEYS];
 static KEY_DESTRUCTORS: [AtomicUsize; KEYS] = [const { AtomicUsize::new(0) }; KEYS];
 static BURIED: super::Exclusive<[usize; BURIED_THREADS]> =
     super::Exclusive::new([0; BURIED_THREADS]);
+
+/// The calling thread's `pthread_key_t` values, where translated x86_64 code finds its GS
+/// base: Darwin keeps a thread's specific data at `gs:[8 * key]`.
+pub fn specific_values() -> usize {
+    // SAFETY: every thread's control block lives as long as the thread.
+    unsafe { (&raw const (*current()).values) as usize }
+}
 
 /// The calling thread's control block.
 #[inline(always)]

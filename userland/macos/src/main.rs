@@ -1,8 +1,9 @@
 //! The macOS layer (D120), at `/usr/lib/eggos/macos`: the kernel starts it for a Mach-O or fat
 //! file, and it runs that macOS program natively, arm64 programs on aarch64 and x86_64
-//! programs on x86_64. The Mach-O format, the fat slice, chained fixups, `LC_DYLD_INFO`
-//! opcodes, option parsing and Darwin's numbers and layouts are pure logic with host tests,
-//! and `printf`'s formatting and `scanf`'s scanning
+//! programs on x86_64, and x86_64 programs on aarch64 through ahead-of-time translation
+//! (`translated.rs` and `translation.rs`, D191). The Mach-O format, the fat slice, chained
+//! fixups, `LC_DYLD_INFO` opcodes, option parsing and Darwin's numbers and layouts are pure
+//! logic with host tests, and `printf`'s formatting and `scanf`'s scanning
 //! are the shared `eggos-c-format` crate's (D146, D190); `start.rs` loads the
 //! program, standing in for dyld, `libsystem/` implements the libSystem functions it imports,
 //! `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142),
@@ -12,7 +13,7 @@
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(test)]
+#[cfg(any(test, all(target_env = "musl", target_arch = "aarch64")))]
 extern crate alloc;
 
 #[cfg(all(
@@ -154,8 +155,10 @@ mod stream_buffer;
 mod swift;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
+#[cfg(any(test, all(target_env = "musl", target_arch = "aarch64")))]
 mod translated;
+#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+mod translation;
 
 #[cfg(all(
     target_env = "musl",

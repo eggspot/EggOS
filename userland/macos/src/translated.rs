@@ -4,13 +4,18 @@
 //! with every segment readable for jump tables; seeds from the entry point,
 //! `LC_FUNCTION_STARTS`, the exports trie and the rebase targets that land in code), the
 //! pointers that bind imports with their names, and how a variadic export of the layer is
-//! entered, so its bridge can call the function that takes a `va_list` instead.
+//! entered, so its bridge can call the function that takes a `va_list` instead; which bound
+//! pointers get an import stub, each import's bridge arguments, which imports translated code
+//! cannot use natively, and the line and status that end a program whose translated code
+//! trapped or faulted. `translation.rs` maps and runs the result.
 
 use crate::dyld_info::{self, Location, Table};
-use crate::fixups::{ChainedFixups, POINTER_64, Source};
+use crate::fixups::{ChainedFixups, POINTER_64};
 use crate::macho::{self, InvalidMachO, MachO, VM_PROT_EXECUTE, read_u32, read_u64};
 use alloc::vec::Vec;
+use eggos_translate::image::bridge::{ArgumentKind, DEFAULT_ARGUMENTS};
 use eggos_translate::image::{Section, Seed, SeedOrigin, function_starts};
+use eggos_translation_loader::trap::TrapCause;
 
 const HEADER_SIZE: usize = 32;
 const SEGMENT_COMMAND_SIZE: usize = 72;
@@ -31,6 +36,22 @@ const BRANCH_OPCODE: u32 = 0xFC00_0000;
 const BRANCH_OFFSET_BITS: u32 = 26;
 const LAST_ARGUMENT_REGISTER: u32 = 7;
 const INSTRUCTION_BYTES: i64 = 4;
+const INTEGERS: [ArgumentKind; DEFAULT_ARGUMENTS] = [ArgumentKind::Integer; DEFAULT_ARGUMENTS];
+const ONE_INTEGER: [ArgumentKind; 1] = [ArgumentKind::Integer];
+const THREAD_LOCAL_ACCESSOR: &[u8] = b"__tlv_bootstrap";
+const NON_LOCAL_JUMPS: [&[u8]; 6] = [
+    b"_setjmp",
+    b"__setjmp",
+    b"_sigsetjmp",
+    b"_longjmp",
+    b"__longjmp",
+    b"_siglongjmp",
+];
+const REPORT_BYTES: usize = 512;
+const SIGILL: i32 = 4;
+const SIGTRAP: i32 = 5;
+const SIGFPE: i32 = 8;
+const SIGSEGV: i32 = 11;
 
 /// A pointer the loader binds to an imported symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +60,6 @@ pub struct ImportSlot<'a> {
     pub rva: u32,
     /// The symbol's name, with its leading underscore.
     pub name: &'a [u8],
-    /// Where the symbol comes from.
-    pub source: Source,
-    /// Whether nothing defining it is allowed.
-    pub weak: bool,
     /// What the loader adds to the symbol's address; a function's call slot has none.
     pub addend: i64,
 }
@@ -231,8 +248,6 @@ pub fn pointer_fixups<'a>(
                 fixups.binds.push(ImportSlot {
                     rva,
                     name: import.name,
-                    source: import.source,
-                    weak: import.weak,
                     addend: import.addend.wrapping_add(((raw >> 24) & 0xff) as i64),
                 });
             } else {
@@ -271,8 +286,6 @@ pub fn pointer_fixups<'a>(
                 fixups.binds.push(ImportSlot {
                     rva: location_rva(program, bind.location)?,
                     name: bind.name,
-                    source: bind.source,
-                    weak: bind.weak_import,
                     addend: bind.addend,
                 });
                 Ok(())
@@ -341,4 +354,224 @@ pub fn variadic_entry(words: [u32; 2]) -> Option<(u8, i64)> {
         register as u8,
         INSTRUCTION_BYTES + offset * INSTRUCTION_BYTES,
     ))
+}
+
+/// The bound pointers that get an import stub: those without an addend, which may be a
+/// function's call slot (the loader decides from the bound address), one per address.
+pub fn call_slots<'s, 'a>(binds: &'s [ImportSlot<'a>]) -> Vec<&'s ImportSlot<'a>> {
+    let mut slots: Vec<&ImportSlot<'a>> = binds.iter().filter(|bind| bind.addend == 0).collect();
+    slots.sort_by_key(|slot| slot.rva);
+    slots.dedup_by_key(|slot| slot.rva);
+    slots
+}
+
+/// The arguments the bridge of the imported function `name` moves: one integer for the
+/// thread-local variable accessor, whose callers expect every other register kept, else
+/// [`DEFAULT_ARGUMENTS`] integers, which also carry floating-point arguments because System V
+/// and AAPCS64 pass them in the same vector registers.
+pub fn bridge_arguments(name: &[u8]) -> &'static [ArgumentKind] {
+    match name == THREAD_LOCAL_ACCESSOR {
+        true => &ONE_INTEGER,
+        false => &INTEGERS,
+    }
+}
+
+/// Whether translated x86_64 code may call the layer's function for the import `name`:
+/// not the unsuffixed 32-bit-inode `stat` family, whose x86_64 structures are smaller than the
+/// layer's, nor `setjmp` and `longjmp`, which would save and restore the bridge's native
+/// registers rather than the program's.
+pub fn binds_natively(name: &[u8]) -> bool {
+    crate::darwin::bound_symbol(name, true).is_some_and(|bound| !NON_LOCAL_JUMPS.contains(&bound))
+}
+
+/// The signal a program whose translated code trapped with `cause`, or faulted with `signal`
+/// when `cause` is `None`, ends as having received: its status is 128 plus it.
+pub fn fault_signal(cause: Option<TrapCause>, signal: i32) -> i32 {
+    match cause {
+        Some(TrapCause::InvalidOpcode | TrapCause::Refused | TrapCause::Undiscovered) => SIGILL,
+        Some(TrapCause::DivideError) => SIGFPE,
+        Some(TrapCause::Breakpoint) => SIGTRAP,
+        Some(TrapCause::GeneralProtection | TrapCause::FastFail) => SIGSEGV,
+        None => signal,
+    }
+}
+
+/// A line the fault handler writes without allocating.
+#[derive(Debug)]
+pub struct ReportLine {
+    bytes: [u8; REPORT_BYTES],
+    length: usize,
+}
+
+impl Default for ReportLine {
+    fn default() -> Self {
+        Self {
+            bytes: [0; REPORT_BYTES],
+            length: 0,
+        }
+    }
+}
+
+impl ReportLine {
+    fn push(&mut self, text: &[u8]) {
+        let taken = text.len().min(REPORT_BYTES - self.length);
+        self.bytes[self.length..self.length + taken].copy_from_slice(&text[..taken]);
+        self.length += taken;
+    }
+
+    fn push_hex(&mut self, value: u64) {
+        let mut digits = [0u8; 16];
+        let mut count = 0;
+        let mut rest = value;
+        loop {
+            digits[15 - count] = b"0123456789abcdef"[(rest & 0xf) as usize];
+            count += 1;
+            rest >>= 4;
+            if rest == 0 {
+                break;
+            }
+        }
+        self.push(b"0x");
+        self.push(&digits[16 - count..]);
+    }
+
+    fn push_place(&mut self, program: &[u8], guest: u64, image: (u64, u64)) {
+        self.push_hex(guest);
+        let offset = guest.wrapping_sub(image.0);
+        if offset < image.1 {
+            self.push(b" (");
+            self.push(
+                program
+                    .rsplit(|&byte| byte == b'/')
+                    .next()
+                    .unwrap_or(program),
+            );
+            self.push(b"+");
+            self.push_hex(offset);
+            self.push(b")");
+        }
+    }
+
+    /// The line's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
+
+/// The line that ends `program` (loaded at `image`: its base and size) when its translated code
+/// trapped with `cause` or faulted at guest address `guest`.
+pub fn fault_report(
+    program: &[u8],
+    image: (u64, u64),
+    cause: Option<TrapCause>,
+    guest: u64,
+) -> ReportLine {
+    let mut line = ReportLine::default();
+    line.push(b"macos: ");
+    line.push(program);
+    match cause {
+        Some(TrapCause::Refused) => {
+            line.push(b": the program uses an instruction EggOS does not translate yet, at ");
+            line.push_place(program, guest, image);
+        }
+        Some(TrapCause::Undiscovered) => {
+            line.push(b": the program jumped to ");
+            line.push_place(program, guest, image);
+            line.push(b", code EggOS did not find when it translated the program");
+        }
+        cause => {
+            line.push(match cause {
+                Some(TrapCause::InvalidOpcode) => &b": illegal instruction at "[..],
+                Some(TrapCause::DivideError) => b": division by zero at ",
+                Some(TrapCause::Breakpoint) => b": breakpoint at ",
+                Some(_) => b": general protection fault at ",
+                None => b": bad memory access at ",
+            });
+            line.push_place(program, guest, image);
+        }
+    }
+    line.push(b"\n");
+    line
+}
+
+/// The line that ends `program` when the layer called its function at `guest` (an `atexit`
+/// handler, a comparator, a method, ...), which the layer cannot do for a translated program
+/// yet.
+pub fn callback_report(program: &[u8], image: (u64, u64), guest: u64) -> ReportLine {
+    let mut line = ReportLine::default();
+    line.push(b"macos: ");
+    line.push(program);
+    line.push(b": the layer called the program's function at ");
+    line.push_place(program, guest, image);
+    line.push(b", which EggOS does not do for translated programs yet\n");
+    line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bind(rva: u32, name: &'static [u8], addend: i64) -> ImportSlot<'static> {
+        ImportSlot { rva, name, addend }
+    }
+
+    #[test]
+    fn call_slots_are_the_binds_without_an_addend_once_each_in_order() {
+        let binds = [
+            bind(0x4010, b"_puts", 0),
+            bind(0x4000, b"_printf", 0),
+            bind(0x4018, b"_table", 8),
+            bind(0x4010, b"_puts", 0),
+        ];
+        let rvas: Vec<u32> = call_slots(&binds).iter().map(|slot| slot.rva).collect();
+        assert_eq!(rvas, [0x4000, 0x4010]);
+    }
+
+    #[test]
+    fn the_thread_local_accessor_moves_one_argument_and_others_move_all() {
+        assert_eq!(
+            bridge_arguments(b"__tlv_bootstrap"),
+            [ArgumentKind::Integer]
+        );
+        assert_eq!(bridge_arguments(b"_printf").len(), DEFAULT_ARGUMENTS);
+    }
+
+    #[test]
+    fn old_inode_and_non_local_jump_imports_are_not_bound_natively() {
+        assert!(binds_natively(b"_puts"));
+        assert!(binds_natively(b"_stat$INODE64"));
+        assert!(!binds_natively(b"_stat"));
+        assert!(!binds_natively(b"_setjmp"));
+        assert!(!binds_natively(b"_longjmp"));
+    }
+
+    #[test]
+    fn traps_end_the_program_with_the_signal_of_their_cause() {
+        assert_eq!(fault_signal(Some(TrapCause::Refused), SIGTRAP), SIGILL);
+        assert_eq!(fault_signal(Some(TrapCause::DivideError), SIGTRAP), SIGFPE);
+        assert_eq!(fault_signal(None, SIGSEGV), SIGSEGV);
+    }
+
+    #[test]
+    fn a_refused_instruction_s_report_names_the_place() {
+        let image = (0x1_0000_0000, 0x4000);
+        let line = fault_report(
+            b"/apps/hello",
+            image,
+            Some(TrapCause::Refused),
+            0x1_0000_1234,
+        );
+        let text = std::str::from_utf8(line.as_bytes()).unwrap();
+        assert_eq!(
+            text,
+            "macos: /apps/hello: the program uses an instruction EggOS does not translate yet, \
+             at 0x100001234 (hello+0x1234)\n"
+        );
+        let line = fault_report(b"hello", image, None, 0);
+        let text = std::str::from_utf8(line.as_bytes()).unwrap();
+        assert_eq!(text, "macos: hello: bad memory access at 0x0\n");
+        let line = callback_report(b"hello", image, 0x1_0000_0f00);
+        let text = std::str::from_utf8(line.as_bytes()).unwrap();
+        assert!(text.contains("function at 0x100000f00 (hello+0xf00)"));
+    }
 }
