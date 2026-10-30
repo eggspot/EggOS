@@ -76,11 +76,18 @@ pub struct CProgram {
 }
 
 /// The programs built from C sources with Apple's clang.
-pub const C_PROGRAMS: [CProgram; 1] = [CProgram {
-    name: "macos-process",
-    folder: "macos-process",
-    deployment_target: DEPLOYMENT_TARGET,
-}];
+pub const C_PROGRAMS: [CProgram; 2] = [
+    CProgram {
+        name: "macos-process",
+        folder: "macos-process",
+        deployment_target: DEPLOYMENT_TARGET,
+    },
+    CProgram {
+        name: "macos-text",
+        folder: "macos-text",
+        deployment_target: DEPLOYMENT_TARGET,
+    },
+];
 
 const BUNDLE_SUFFIX: &str = ".app";
 /// The bundle's property list, beside an app's `main.m` and in its bundle's `Contents`.
@@ -597,7 +604,7 @@ mod tests {
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 3..], ["-o", "out", "main.c"]);
         let names: Vec<&str> = C_PROGRAMS.iter().map(|program| program.name).collect();
-        assert_eq!(names, ["macos-process"]);
+        assert_eq!(names, ["macos-process", "macos-text"]);
         let source = crate::workspace_root()
             .join("tests")
             .join(program.folder)

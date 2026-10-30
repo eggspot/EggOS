@@ -816,7 +816,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 22] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 23] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -839,6 +839,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 22] = [
     b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
     b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
     b"macos-process; echo MACOS-CONSOLE status $?\r",
+    b"macos-text; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -956,6 +957,19 @@ const SWIFT_PROGRAM_LINES: [&str; 19] = [
     "MACOS-SWIFT characters 12 10 o true true true",
     "MACOS-SWIFT type Node Level random true",
     "MACOS-SWIFT done",
+    "MACOS-CONSOLE status 0",
+];
+
+const TEXT_PROGRAM_LINES: [&str; 10] = [
+    "MACOS-TEXT main",
+    "MACOS-TEXT numbers 10 -42 15 31 16 7 -9000000000 123456789012 44 -2 99",
+    "MACOS-TEXT floats 3 2.500 -125.000 0.125",
+    "MACOS-TEXT strings 5 'hello' 'xy' 'abc123' 18 'tail' 0x1000",
+    "MACOS-TEXT suppressed 1 34",
+    "MACOS-TEXT endings -1 -1 1 2 2 0 'x' 2 5 6",
+    "MACOS-TEXT stream 2 10 20 1 'eggos' 1 1.0 'e' 1 3.5 -1 1",
+    "MACOS-TEXT spans 3 3 '=value; other' 1",
+    "MACOS-TEXT done",
     "MACOS-CONSOLE status 0",
 ];
 
@@ -1096,6 +1110,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-swift"),
             refused("macos-swift"),
             refused("macos-process"),
+            refused("macos-text"),
             end,
         ];
     }
@@ -1186,6 +1201,10 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
         swift_program.next().unwrap_or_default(),
         swift_program.next().unwrap_or_default(),
         PROCESS_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
+        TEXT_PROGRAM_LINES
             .iter()
             .map(|line| Line::Whole((*line).to_owned()))
             .collect(),

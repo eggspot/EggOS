@@ -206,6 +206,62 @@ pub unsafe extern "C" fn strstr(text: *const c_char, needle: *const c_char) -> *
         })
 }
 
+/// The bytes of the NUL-terminated `set`, as 256 bits.
+///
+/// # Safety
+/// `set` must be a NUL-terminated string.
+unsafe fn byte_set(set: *const c_char) -> [u64; 4] {
+    let mut bits = [0u64; 4];
+    // SAFETY: the caller's promise.
+    for &byte in unsafe { c_string(set) } {
+        bits[usize::from(byte >> 6)] |= 1 << (byte & 63);
+    }
+    bits
+}
+
+fn in_byte_set(bits: &[u64; 4], byte: u8) -> bool {
+    bits[usize::from(byte >> 6)] & (1 << (byte & 63)) != 0
+}
+
+/// # Safety
+/// Both must be NUL-terminated strings.
+pub unsafe extern "C" fn strspn(text: *const c_char, accepted: *const c_char) -> usize {
+    // SAFETY: the caller's promise.
+    let bits = unsafe { byte_set(accepted) };
+    // SAFETY: as above.
+    let bytes = unsafe { c_string(text) };
+    bytes
+        .iter()
+        .take_while(|&&byte| in_byte_set(&bits, byte))
+        .count()
+}
+
+/// # Safety
+/// Both must be NUL-terminated strings.
+pub unsafe extern "C" fn strcspn(text: *const c_char, rejected: *const c_char) -> usize {
+    // SAFETY: the caller's promise.
+    let bits = unsafe { byte_set(rejected) };
+    // SAFETY: as above.
+    let bytes = unsafe { c_string(text) };
+    bytes
+        .iter()
+        .take_while(|&&byte| !in_byte_set(&bits, byte))
+        .count()
+}
+
+/// # Safety
+/// Both must be NUL-terminated strings.
+pub unsafe extern "C" fn strpbrk(text: *const c_char, wanted: *const c_char) -> *mut c_char {
+    // SAFETY: the caller's promise.
+    let length = unsafe { strcspn(text, wanted) };
+    // SAFETY: `length` is at most the string's length, so it names its NUL at most.
+    let byte = unsafe { text.add(length).cast::<u8>().read() };
+    match byte {
+        0 => core::ptr::null_mut(),
+        _ => text.wrapping_add(length).cast_mut(),
+    }
+}
+
 /// # Safety
 /// `text` must be a NUL-terminated string.
 pub unsafe extern "C" fn strdup(text: *const c_char) -> *mut c_char {

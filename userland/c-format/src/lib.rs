@@ -7,8 +7,14 @@
 //! `I64`, `I32` and `I`, wide (UTF-16) strings and characters through `%S`, `%C`, `%ls`, `%ws`
 //! and `%lc` (narrow ones through `%hs` and `%hc`), and `%p` as 16 upper-case hex digits. `%n`
 //! writes nothing: it is skipped with its argument, so a format string cannot write to memory.
+//!
+//! [`number`] holds C's text-to-number conversions and [`scan`] `scanf`'s family, which both
+//! layers share too.
 
 #![cfg_attr(not(test), no_std)]
+
+pub mod number;
+pub mod scan;
 
 /// Where the variadic arguments come from.
 pub trait Arguments {
@@ -649,6 +655,29 @@ pub fn extended_to_double(significand: u64, sign_exponent: u16) -> f64 {
     if negative { -magnitude } else { magnitude }
 }
 
+/// The x87 80-bit extended value equal to `value`, as a `long double` holds it: its 64-bit
+/// significand (integer bit explicit) and its sign and exponent (a bias of 16383).
+#[cfg(any(test, target_arch = "x86_64"))]
+pub fn double_to_extended(value: f64) -> (u64, u16) {
+    let bits = value.to_bits();
+    let sign = ((bits >> 63) as u16) << 15;
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1 << 52) - 1);
+    match exponent {
+        0x7ff => (1 << 63 | fraction << 11, sign | 0x7fff),
+        0 if fraction == 0 => (0, sign),
+        0 => {
+            let shift = fraction.leading_zeros() as i32;
+            let biased = 16383 + 63 - 1074 - shift;
+            (fraction << shift, sign | biased as u16)
+        }
+        _ => (
+            1 << 63 | fraction << 11,
+            sign | (exponent - 1023 + 16383) as u16,
+        ),
+    }
+}
+
 struct Buffer<'b> {
     bytes: &'b mut [u8; 400],
     length: usize,
@@ -1045,6 +1074,24 @@ mod tests {
         assert!(extended_to_double(3 << 62, 0x7fff).is_nan());
         assert_eq!(extended_to_double(1 << 63, 0x7ffe), f64::INFINITY);
         assert_eq!(extended_to_double(1 << 63, 1), 0.0);
+        for value in [
+            1.0,
+            -3.0,
+            0.625,
+            1e-310,
+            f64::MAX,
+            f64::INFINITY,
+            -0.0,
+            2.5e-7,
+        ] {
+            let (significand, sign_exponent) = double_to_extended(value);
+            assert_eq!(
+                extended_to_double(significand, sign_exponent),
+                value,
+                "{value}"
+            );
+        }
+        assert_eq!(double_to_extended(1.0), (1 << 63, 16383));
         let mut out = Vec::new();
         struct LongDouble;
         impl Arguments for LongDouble {

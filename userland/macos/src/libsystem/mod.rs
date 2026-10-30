@@ -12,6 +12,7 @@ mod locale;
 mod memory;
 mod options;
 pub mod process;
+mod scanf;
 mod signal;
 pub mod stdio;
 mod string;
@@ -355,7 +356,7 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_setlocale" => locale::setlocale,
         b"_nl_langinfo" => locale::nl_langinfo,
         b"_localeconv" => locale::localeconv,
-        b"___mb_cur_max" => locale::mb_cur_max,
+        b"____mb_cur_max" => locale::mb_cur_max,
         b"_gmtime_r" => time::gmtime_r,
         b"_localtime_r" => time::gmtime_r,
         b"_gmtime" => time::gmtime,
@@ -384,6 +385,9 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_strchr" => string::strchr,
         b"_strrchr" => string::strrchr,
         b"_strstr" => string::strstr,
+        b"_strspn" => string::strspn,
+        b"_strcspn" => string::strcspn,
+        b"_strpbrk" => string::strpbrk,
         b"_strdup" => string::strdup,
         b"_strndup" => string::strndup,
         b"_memchr" => string::memchr,
@@ -415,6 +419,12 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_vsnprintf" => stdio::vsnprintf,
         b"_vasprintf" => stdio::vasprintf,
         b"___vsnprintf_chk" => stdio::vsnprintf_chk,
+        b"_scanf" => scanf::scanf,
+        b"_fscanf" => scanf::fscanf,
+        b"_sscanf" => scanf::sscanf,
+        b"_vscanf" => scanf::vscanf,
+        b"_vfscanf" => scanf::vfscanf,
+        b"_vsscanf" => scanf::vsscanf,
         b"_puts" => stdio::puts,
         b"_fputs" => stdio::fputs,
         b"_fputc" => stdio::fputc,
@@ -564,6 +574,7 @@ fn data(name: &[u8]) -> Option<usize> {
         b"_optopt" => &raw const options::OPTOPT as usize,
         b"_optreset" => &raw const options::OPTRESET as usize,
         b"_environ" => &raw const process::ENVIRON as usize,
+        b"___mb_cur_max" => &raw const locale::MB_CUR_MAX as usize,
         _ => return None,
     })
 }

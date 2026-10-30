@@ -1164,8 +1164,8 @@ extern "efiapi" fn open_os_handle(handle: isize, _flags: i32) -> i32 {
 
 const SECURE_SCANF: u64 = 0x1;
 
-fn write_integer(target: usize, value: u64, size: crate::scan::Size) {
-    use crate::scan::Size;
+fn write_integer(target: usize, value: u64, size: eggos_c_format::scan::Size) {
+    use eggos_c_format::scan::Size;
     // SAFETY: the program's argument for the conversion points at an integer of its size.
     unsafe {
         match size {
@@ -1178,11 +1178,11 @@ fn write_integer(target: usize, value: u64, size: crate::scan::Size) {
 }
 
 fn store_field(
-    field: crate::scan::Field<'_>,
+    field: eggos_c_format::scan::Field<'_>,
     take: &mut dyn FnMut() -> usize,
     secure: bool,
 ) -> bool {
-    use crate::scan::Field;
+    use eggos_c_format::scan::{Field, Precision};
     let target = take();
     if target == 0 {
         return false;
@@ -1192,17 +1192,21 @@ fn store_field(
         Field::Unsigned(value, size) => write_integer(target, value, size),
         Field::Count(count, size) => write_integer(target, count as u64, size),
         // SAFETY: the argument for `%lf` and its family points at a `double`.
-        Field::Float(value, true) => unsafe { (target as *mut f64).write_unaligned(value) },
+        Field::Float(value, Precision::Double | Precision::Extended) => unsafe {
+            (target as *mut f64).write_unaligned(value)
+        },
         // SAFETY: the argument for `%f` and its family points at a `float`.
-        Field::Float(value, false) => unsafe { (target as *mut f32).write_unaligned(value as f32) },
-        Field::Characters(bytes) => {
+        Field::Float(value, Precision::Single) => unsafe {
+            (target as *mut f32).write_unaligned(value as f32)
+        },
+        Field::Characters(bytes) | Field::WideCharacters(bytes) => {
             if secure && (take() as u32 as usize) < bytes.len() {
                 return false;
             }
             // SAFETY: the argument for `%c` points at room for its characters.
             unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len()) };
         }
-        Field::Text(bytes) => {
+        Field::Text(bytes) | Field::WideText(bytes) => {
             if secure {
                 let room = take() as u32 as usize;
                 if room <= bytes.len() {
@@ -1256,7 +1260,14 @@ unsafe extern "efiapi" fn stdio_common_vsscanf(
         next += 1;
         value
     };
-    crate::scan::scan(input, format, &mut |field| {
+    let rules = eggos_c_format::scan::Rules {
+        dialect: eggos_c_format::Dialect::Windows {
+            wide_strings: false,
+        },
+        utf8: true,
+    };
+    let mut source = eggos_c_format::scan::Bytes::new(input);
+    eggos_c_format::scan::scan(&mut source, format, rules, &mut |field| {
         store_field(field, &mut take, secure)
     })
 }

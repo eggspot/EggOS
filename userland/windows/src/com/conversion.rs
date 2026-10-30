@@ -262,7 +262,7 @@ pub fn parse_number(text: &[u16]) -> Option<Number> {
         }
         return Some(Number::Integer(if negative { -value } else { value }));
     }
-    let (value, used) = crate::float::parse_float(ascii);
+    let (value, used) = eggos_c_format::number::parse_float(ascii);
     (used == ascii.len()).then_some(Number::Real(value))
 }
 

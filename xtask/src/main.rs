@@ -2161,6 +2161,10 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
             host: host("macos-process", own),
             path: "bin/macos-process".to_owned(),
         },
+        image::AddedFile {
+            host: host("macos-text", own),
+            path: "bin/macos-text".to_owned(),
+        },
     ];
     let mut extra = vec![(
         "etc/eggos/init.conf",

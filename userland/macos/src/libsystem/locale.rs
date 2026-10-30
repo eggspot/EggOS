@@ -1,6 +1,8 @@
 //! Locales: only the C locale exists. `setlocale` accepts `"C"`, `"POSIX"` and `""` (the
 //! environment's locale, which is C) and refuses others with a null pointer; `nl_langinfo`
-//! and `localeconv` answer for the C locale; one byte is the longest character.
+//! and `localeconv` answer for the C locale; one byte is the longest character, which
+//! `MB_CUR_MAX` reads from `__mb_cur_max`, a variable (`___mb_cur_max()` is the function the
+//! extended-locale headers call).
 
 use super::c_string;
 use core::ffi::{c_char, c_int};
@@ -110,6 +112,9 @@ pub extern "C" fn localeconv() -> *const Conventions {
     &raw const C_CONVENTIONS
 }
 
+/// `__mb_cur_max`: the longest character in bytes.
+pub static MB_CUR_MAX: c_int = 1;
+
 pub extern "C" fn mb_cur_max() -> c_int {
-    1
+    MB_CUR_MAX
 }

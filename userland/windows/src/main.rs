@@ -2,8 +2,8 @@
 //! starts with `MZ`, and it runs that Windows console or GUI program (D129) natively on x86_64
 //! (x64 programs) and aarch64 (ARM64 programs, D124). The PE format, the image's layout,
 //! relocations and imports, UTF-16 text, the command line, the GUI's tables (`gui/`) and the C
-//! runtime's streams, numbers and counted `printf` endings (`stream.rs`, `c_text.rs`,
-//! `counted_print.rs`) and handle flags and peeked pipe bytes (`handle_flags.rs`,
+//! runtime's streams and counted `printf` endings (`stream.rs`, numbers and `scanf` in
+//! `eggos_c_format`, `counted_print.rs`) and handle flags and peeked pipe bytes (`handle_flags.rs`,
 //! `peeked_pipes.rs`, D189), the old C runtime's `FILE` layout, `errno` texts and
 //! `VirtualQuery`'s regions (`msvcrt_layout.rs`, `error_messages.rs`, `memory_regions.rs`,
 //! D189), and the table of named objects shared between processes and the rules of file
@@ -18,8 +18,6 @@
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, runs_windows_programs))]
-mod c_text;
 #[cfg(any(test, runs_windows_programs))]
 mod calendar;
 #[cfg(any(test, runs_windows_programs))]
@@ -82,8 +80,6 @@ mod pending_reads;
 mod process_list;
 #[cfg(any(test, runs_windows_programs))]
 mod queued_calls;
-#[cfg(any(test, runs_windows_programs))]
-mod scan;
 #[cfg(any(test, runs_windows_programs))]
 mod sockets;
 #[cfg(runs_windows_programs)]
