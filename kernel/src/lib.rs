@@ -186,6 +186,12 @@ fn mount_system_file_systems<P: Platform>() {
 
 const HOST_FOLDER: &[u8] = b"/media/host";
 
+const HOST_FOLDER_PLACE: &str = "/media/host";
+
+const PERSISTENT_PLACE: &str = "/home";
+
+const WORK_PLACE: &str = "/work";
+
 const HOST_FOLDER_DEVICE: (u32, u32) = (254, 0);
 
 const PERSISTENT_DEVICE: (u32, u32) = (254, 1);
@@ -208,7 +214,9 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let mut persistent = false;
     let mut work = false;
     let mut host_folder = false;
-    for device in block::take_all().into_iter().flatten() {
+    block::set_deadline(devices::Deadline::after::<P>);
+    let taken = block::take_all().into_iter().enumerate();
+    for (index, device) in taken.filter_map(|(index, device)| Some((index, device?))) {
         let mut disk = vfs::eggfs::BlockDisk::new(device, devices::Deadline::after::<P>);
         let contents = eggos_eggfs::probe(&mut disk);
         let eggfs = contents == Ok(eggos_eggfs::Contents::EggFs);
@@ -225,32 +233,35 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
                         _ => Err(volume),
                     };
                     match placed {
-                        Ok(()) if is_work => work = true,
-                        Ok(()) => persistent = true,
-                        Err(volume) => {
-                            let _ = block::install(volume.into_disk().into_device());
+                        Ok(()) if is_work => {
+                            work = true;
+                            block::mark_mounted(index, WORK_PLACE);
                         }
+                        Ok(()) => {
+                            persistent = true;
+                            block::mark_mounted(index, PERSISTENT_PLACE);
+                        }
+                        Err(volume) => block::put_back(index, volume.into_disk().into_device()),
                     }
                 }
-                Err(disk) => {
-                    let _ = block::install(disk.into_device());
-                }
+                Err(disk) => block::put_back(index, disk.into_device()),
             }
             continue;
         }
         let device = disk.into_device();
         if ours || host_folder {
-            let _ = block::install(device);
+            block::put_back(index, device);
             continue;
         }
         match mount_host_folder::<P>(device) {
             Ok(fat) => {
                 host_folder = true;
+                block::mark_mounted(index, HOST_FOLDER_PLACE);
                 report_host_folder(console, fat)?;
             }
             Err((reason, device)) => {
                 if let Some(device) = device {
-                    let _ = block::install(device);
+                    block::put_back(index, device);
                 }
                 match contents {
                     Ok(eggos_eggfs::Contents::Blank) => {

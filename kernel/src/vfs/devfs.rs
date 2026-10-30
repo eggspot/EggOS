@@ -14,11 +14,16 @@
 //! read-only regular file of the kernel's property service ([`crate::linux::properties`], D188),
 //! `android_log`, the Android log, a read-only regular file of records, and the directory
 //! `socket` with `logdw`, the socket Android programs log to ([`crate::linux::android_log`]).
-//! Each device has Linux's number and mode.
+//! Each device has Linux's number and mode. The disks no file system holds are `vda` to `vdd`
+//! (D192), by the place their driver installed them at: regular files of root's, as large as
+//! the disk, read and written whole ([`crate::block::read_at`]); a mounted disk's file is
+//! listed, but reading or writing it fails.
 
 use super::{
-    Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, StorageError, Usage, magic,
+    Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, Refused, StorageError, Usage,
+    WriteAt, magic,
 };
+use crate::block::{self, MAX_DISKS, SECTOR_SIZE, WholeDiskError};
 use crate::linux::{android_log, properties, pseudo_terminal};
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -151,7 +156,9 @@ const ANDROID_LOG: u64 = 25;
 
 const DEVICE: (u32, u32) = (0, 5);
 
-const FILES: [(&[u8], u64); 19] = [
+const DISKS: [u64; MAX_DISKS] = [26, 27, 28, 29];
+
+const FILES: [(&[u8], u64); 23] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
@@ -169,6 +176,10 @@ const FILES: [(&[u8], u64); 19] = [
     (b"stdout", STDOUT),
     (b"tty", TTY),
     (b"urandom", URANDOM),
+    (b"vda", DISKS[0]),
+    (b"vdb", DISKS[1]),
+    (b"vdc", DISKS[2]),
+    (b"vdd", DISKS[3]),
     (b"window", WINDOW),
     (b"zero", ZERO),
 ];
@@ -197,7 +208,23 @@ pub fn is_android_log(node: Node) -> bool {
 }
 
 fn is_listed(node: u64) -> bool {
-    node != AGENT || crate::agent_channel::is_present()
+    match disk_of(node) {
+        Some(index) => block::facts(index).present,
+        None => node != AGENT || crate::agent_channel::is_present(),
+    }
+}
+
+fn disk_of(node: u64) -> Option<usize> {
+    DISKS.iter().position(|&disk| disk == node)
+}
+
+fn refused(error: WholeDiskError) -> Refused {
+    match error {
+        WholeDiskError::Unavailable => Refused::Busy,
+        WholeDiskError::ReadOnly => Refused::ReadOnly,
+        WholeDiskError::Full => Refused::NoSpace,
+        WholeDiskError::NoMemory | WholeDiskError::Device => Refused::Storage,
+    }
 }
 
 fn listed() -> impl Iterator<Item = &'static (&'static [u8], u64)> {
@@ -215,6 +242,7 @@ fn kind_of(node: u64) -> NodeKind {
     match node {
         ROOT | SHM | PTS | SOCKETS => NodeKind::Directory,
         PROPERTIES | ANDROID_LOG => NodeKind::Regular,
+        _ if disk_of(node).is_some() => NodeKind::Regular,
         LOG_WRITER => NodeKind::Socket,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
         _ => NodeKind::CharacterDevice,
@@ -252,6 +280,7 @@ impl FileSystem for DeviceFiles {
                 PROPERTIES | ANDROID_LOG => 0o444,
                 LOG_WRITER => 0o222,
                 AGENT | CONSOLE => 0o600,
+                _ if disk_of(node).is_some() => 0o600,
                 _ if link_of(node).is_some() => 0o777,
                 _ if pseudo_terminal_of(node).is_some() => 0o620,
                 _ => 0o666,
@@ -260,9 +289,10 @@ impl FileSystem for DeviceFiles {
             links: if directory { 2 } else { 1 },
             owner: 0,
             group: 0,
-            size: match node {
-                PROPERTIES => properties::size(),
-                ANDROID_LOG => android_log::size(),
+            size: match (node, disk_of(node)) {
+                (PROPERTIES, _) => properties::size(),
+                (ANDROID_LOG, _) => android_log::size(),
+                (_, Some(index)) => block::facts(index).sectors * SECTOR_SIZE as u64,
                 _ => 0,
             },
             modified: 0,
@@ -314,11 +344,43 @@ impl FileSystem for DeviceFiles {
     }
 
     fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+        if let Some(index) = disk_of(node) {
+            return block::read_at(index, offset, buffer).map_err(|_| StorageError);
+        }
         Ok(match node {
             PROPERTIES => properties::read_into(offset, buffer),
             ANDROID_LOG => android_log::read_into(offset, buffer),
             _ => 0,
         })
+    }
+
+    fn is_writable(&self) -> bool {
+        true
+    }
+
+    fn write(
+        &self,
+        node: u64,
+        at: WriteAt,
+        bytes: &[u8],
+        _now: u64,
+    ) -> Result<(usize, u64), Refused> {
+        let (Some(index), WriteAt::Offset(offset)) = (disk_of(node), at) else {
+            return Err(Refused::ReadOnly);
+        };
+        let written = block::write_at(index, offset, bytes).map_err(refused)?;
+        Ok((written, offset + written as u64))
+    }
+
+    fn sync(&self) -> Result<(), StorageError> {
+        let mut result = Ok(());
+        for index in (0..MAX_DISKS).filter(|&index| block::facts(index).present) {
+            match block::flush(index) {
+                Ok(()) | Err(WholeDiskError::Unavailable) => {}
+                Err(_) => result = Err(StorageError),
+            }
+        }
+        result
     }
 
     fn character_device(&self, node: u64) -> Option<(u32, u32)> {

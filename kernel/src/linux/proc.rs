@@ -29,6 +29,8 @@
 //! - `driver/devices`: EggOS's own, one line per device the driver model knows, in discovery
 //!   order ([`crate::devices::devices_text`]); `device list`, `device_list` and Settings' About
 //!   read it.
+//! - `driver/disks`: EggOS's own, one line per disk in `/dev` ([`crate::block::disks_text`]);
+//!   `disk list`, `disk_list` and Settings' Storage pane read it (D192).
 //! - `version`, `sys/kernel/osrelease`, `sys/kernel/ostype` and `sys/kernel/hostname`: what
 //!   `uname` reports ([`super::identity`]), each a line as Linux writes it.
 //! - `self`: a link to the directory of the process that reads it.
@@ -102,6 +104,8 @@ const MOUNTS: u64 = 20;
 
 const DRIVER_DEVICES: u64 = 21;
 
+const DRIVER_DISKS: u64 = 22;
+
 const FILES: [(&[u8], u64); 10] = [
     (b"cmdline", CMDLINE),
     (b"driver", DRIVER),
@@ -122,9 +126,14 @@ const NET_FILES: [(&[u8], u64); 4] = [
     (b"route", NET_ROUTE),
 ];
 
-const DRIVER_FILES: [(&[u8], u64); 2] = [(b"devices", DRIVER_DEVICES), (b"rtc", DRIVER_RTC)];
+const DRIVER_FILES: [(&[u8], u64); 3] = [
+    (b"devices", DRIVER_DEVICES),
+    (b"disks", DRIVER_DISKS),
+    (b"rtc", DRIVER_RTC),
+];
 
-const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 1] = [(b"devices", DRIVER_DEVICES)];
+const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 2] =
+    [(b"devices", DRIVER_DEVICES), (b"disks", DRIVER_DISKS)];
 
 const SYS_FILES: [(&[u8], u64); 1] = [(b"kernel", SYS_KERNEL)];
 
@@ -871,6 +880,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             NET_ROUTE => crate::net::routes_text::<P>(),
             NET_ARP => crate::net::neighbours_text::<P>(),
             DRIVER_DEVICES => crate::devices::devices_text(),
+            DRIVER_DISKS => crate::block::disks_text(),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
                 Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
                 _ => return Err(StorageError),
