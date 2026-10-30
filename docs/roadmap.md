@@ -54,8 +54,11 @@ Must-have, in order:
    (item 16); a QEMU test per architecture drives a session on the serial console (D107,
    docs/shell.md). Since then: users can run `a && b`, `a || b` and background jobs `a &`, and
    use `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`, `2>` and `2>&1`, move the cursor within a
-   line and keep their history across sessions (D181). Next: globbing, `$(...)`, functions
-   and control flow (batch part 30).
+   line and keep their history across sessions (D181); and write scripts in the POSIX
+   language: wildcards, `$(...)`, here-documents, subshells, `${NAME:-word}` and the other
+   operators, `$@`, `if`, `while`, `until`, `for`, `case`, functions with `local`, and `test`,
+   `read`, `eval`, `shift` and `set -e` (D182). Next: arithmetic `$((...))`, `printf`, `trap`
+   and `getopts`.
 10. **done** — the core utilities as one multi-call program (`userland/coreutils`, at
     `/bin/coreutils` with `cat`, `echo`, `false`, `halt`, `ls`, `poweroff`, `reboot`, `sleep`,
     `true` and `uname` as hard links to it, which the initramfs now supports: one copy of the

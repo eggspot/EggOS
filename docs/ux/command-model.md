@@ -199,9 +199,11 @@ facts).
 **Kept names:** `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `df` (D171), `echo`, `edit`, `false`, `fetch`,
 `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `ls`, `mkdir`, `mv`, `nslookup`,
 `ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
-`trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `cd`,
-`echo`, `exit`, `export`, `false`, `help`, `pwd`, `set`, `true`, `type`, `unset` (CLI only;
-defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the tests, D165).
+`trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
+`break`, `cd`, `continue`, `echo`, `eval`, `exit`, `export`, `false`, `fg`, `help`, `jobs`,
+`kill`, `local`, `pwd`, `read`, `return`, `set`, `shift`, `test`, `true`, `type`, `unset`,
+`wait` (CLI only; defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the
+tests, D165, D181, D182).
 
 **`wm`'s own verbs:** `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,

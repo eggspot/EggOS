@@ -13395,3 +13395,114 @@ the license, by an explicit instruction recorded here.
   keeps `SIGINT` blocked outside its prompt); `disown`, `suspend` and `set -b`; job reports
   for a terminal whose window wraps the line; history search (`^R`) and `history` the builtin;
   the graphical terminal calling `resize_window` when its grid changes (part 35).
+
+## D182 The shell's language: wildcards, `$(...)` and backquotes, here-documents, subshells, `${NAME:-word}` and the other parameter operators, `$@`, `$*` and `IFS`, `if`, `while`, `until`, `for`, `case`, functions, and the builtins that come with them (`test`, `[`, `read`, `eval`, `local`, `return`, `break`, `continue`, `shift`, `set -e`) (batch part 30; v0.3.0 item 9's follow-up; D107's and D181's "Not yet"; extends D107, D125, D169, D181) — Decided by the build loop (subshells, here-documents, the builtins that come with the language, wildcards, substitution output and function storage decided by research)
+
+- **What users get.** `eggsh` runs scripts in the POSIX shell language (docs/shell.md): `*`,
+  `?` and `[...]` matching file names, `$(...)` and `` `...` ``, `<<word` and `<<-word`,
+  `( list )` and `{ list; }`, `${NAME:-word}`, `:=`, `:?`, `:+` (and without `:`), `${#NAME}`,
+  `#`, `##`, `%`, `%%`, `$@`, `$*`, `${10}`, field splitting by `IFS`, `!`, `if`/`elif`/`else`,
+  `while`, `until`, `for`, `case`, `name() compound-command` with `local` and `return`,
+  redirections on compound commands, a list joined by `&&` or `||` in the background (D181's
+  refusal is gone), and a command after `&&`, `||` or `|` on the next line (part 29's
+  leftover). New builtins: `test` and `[`, `read [-r]`, `eval`, `local`, `return`, `break`,
+  `continue`, `shift`, and `set` with `--`, `-e` and `+e`; `type` names functions and `unset
+  -f` removes them.
+- **Front-ends (D22).** The language is the CLI's; terminals are its GUI; agents get all of it
+  through the MCP tool `run` with `/bin/eggsh -c '...'` (none of it needs a terminal). No new
+  tool: a script is text `run` already takes. The new builtins are defined in
+  `eggos_commands::shell::SHELL_COMMANDS` and `SHELL_BUILTINS` (27 now), as D165 asks.
+- **The grammar walks the text (`shell/script.rs`).** No tree is built: the shell has no
+  allocator (D107). A complete command (a line, or a whole `if`, loop or function definition
+  with its here-documents) is first walked in a check pass (syntax only, nothing expanded; it
+  also finds each here-document's body and keeps where it is in a table of 16), then walked
+  again to run. Parts that do not run (a branch not taken, a pipeline after a failed `&&`, the
+  rest of a `case`) are walked without expanding (`NoParameters`), as D181 skipped pipelines.
+  Before running a compound command the walker reads past it once to find its end and its
+  redirections, which apply before its body runs; loops read their body's text again on each
+  round, and `break`, `continue` and `return` travel back up as a pending `Control`.
+  Reserved words are recognized only as a command's first word, unquoted
+  (`syntax::keyword`). A complete command may be 16 KiB (D107's 4 KiB line grew: a whole
+  function or loop of a script must fit).
+- **Words (`syntax.rs`).** The lexer now takes the parameters mutably, so an expansion can
+  assign (`${NAME:=word}`), fail (`${NAME:?word}`, `SyntaxError::Failed`) and run a command
+  substitution, whose output is fed straight into the word being made, trailing newlines held
+  back and dropped. `Words` keeps a bit per byte saying whether it was quoted, so a quoted `*`
+  stays plain: a word with an unquoted `*`, `?` or `[` is a pattern (`Words::pattern` escapes
+  the quoted ones with `\`), and pathname expansion replaces it with its matches
+  (`Words::replace`, last word first). `IFS` splitting follows POSIX: IFS blanks run together,
+  each other IFS character ends a field, so `a::b` is three fields. `)` and `;;` end a command
+  (left in the text for the grammar), `<<` records the operator's place (the body is read from
+  the text there), `(` in a word is an error, and `$((`, `<<<`, `&>` and `|&` are refused as
+  not supported yet.
+- **Modules.** `pattern.rs` (POSIX pattern matching on whole UTF-8 characters, and the
+  prefix and suffix removal), `glob.rs` (pathname expansion over a `Directories` trait, sorted
+  by bytes, `.` names only for a written `.`), `test.rs` (`test`'s expressions by POSIX's
+  argument-count rules, then by precedence, over a `FileTests` trait), `arguments.rs` (the
+  positional parameters, 8 KiB and 256 words, a frame per function call, 65 frames),
+  `functions.rs` (the definitions' texts, 16 KiB and 64 functions, closed up on redefinition),
+  `shell/language.rs` (the new builtins and `local`'s saved values, 4 KiB and 64).
+- **Subshells (system).** `System::fork` is `clone(SIGCHLD)` with no new stack: a copy-on-write
+  copy of the shell (D169) that continues from the call. It joins the stage's process group as
+  a started program does (the parent calls `setpgid` too, so a later stage can join it at
+  once), resets the signals an interactive shell changed, takes `SIGPIPE`'s default back, and
+  has no terminal or job control; `end_subshell` is `exit_group`. Rust's assumptions hold: the
+  copy has memory of its own, as with any `fork` from a single-threaded program, unlike D107's
+  `vfork` on a shared stack. Here-documents are `memfd_create` files written whole and rewound
+  (`lseek`, new in the runtime with `faccessat`).
+- **Decided by research** (a research subagent, 2026-10-30, POSIX XCU 2 and the behaviour of
+  dash, bash, ksh93, mksh, busybox ash and zsh): (1) `( )`, `$(...)` and every compound
+  command or function call that is one of several commands of a pipeline (or runs with `&`)
+  run in a forked copy, the last stage included (dash and bash's default; ksh93's virtual
+  subshells were weighed and rejected for their size and their history of leaking state, and
+  an in-process stage deadlocks once it writes more than a pipe holds before its reader starts);
+  simple builtins in a pipeline still run in the shell (D125). (2) Here-documents through a
+  memfd, seekable like a file, never a temporary file (the pipe fast path for small bodies was
+  left out: one code path). (3) The builtins scripts need: `test`/`[`, `read`, `shift`,
+  `return`, `break`, `continue`, `set --`, `eval`, `local` and `set -e`; `printf`, `trap`,
+  `getopts`, `set -u` and `set -x` can wait. (4) Wildcards: no match keeps the word, a leading
+  `.` must be written, byte order (EggOS has no locale), `[!...]` and `[^...]`, ASCII classes,
+  only command words (not assignments or redirections), and too many paths is an error, never
+  a cut list. (5) A substitution's output goes into the words' own room; too much is an error
+  (`command substitution: output too long`), the rest drained. (6) Functions as text in one
+  16 KiB store, read again at each call, 64 calls deep at most
+  (`f: functions nested too deeply`).
+- **Decided without research.** Walking the text in passes instead of building a tree; the
+  16 KiB complete command; reading past each compound command once before running it; special
+  builtins before functions, functions before the other builtins (POSIX's order); a `case`
+  pattern inside `$(...)` needing its `(` (the end of `$(` is found by counting parentheses);
+  `$?` after a command of only assignments being its last substitution's status; an expansion
+  error ending a script with status 1 and abandoning the complete command at the prompt;
+  `local` without `=` keeping the value (dash); `break` outside a loop writing an error with
+  status 0 (bash); `return` outside a function or `.` failing with 1; `read` reading a byte at
+  a time and leaving the terminal in its settings while it reads; `>|` as `>`; `[ -t n ]`
+  testing the shell's own redirected descriptors; the limits named above.
+- **Tests.** Host: the pattern matcher, pathname expansion on a fake tree, `test`'s
+  expressions, the positional parameters and their frames, the function store, the lexer
+  (`$@`, `$*`, `IFS`, every parameter operator, substitutions and their ends, here-document
+  operators, delimiters and bodies, reserved words, function definitions, quoted pattern
+  characters, word replacement), and the shell against its fake system (`if`, loops, `break`
+  and `continue`, `case`, functions, `local`, `return`, nesting too deep, redirected brace
+  groups, forked pipeline stages and subshells from both sides of the fork, command
+  substitution from both sides, here-documents in scripts and at the prompt, wildcards,
+  `read`, `test`, parameter operators, `eval`, `set -e`, background lists, continuation lines,
+  compound commands over several prompt lines, grammar errors). QEMU, on aarch64, riscv64 and
+  x86_64, the serial shell session runs `eggsh /usr/share/eggsh/language-test` (a function with
+  `local` and `return`, a wildcard with `case` and `${file##*/}`, nested `$(...)` and
+  backquotes, `while` with `shift`, `if` with `[`, a subshell with `cd`, `read` from a
+  here-document, a pipeline into `while read`, `until`, `${x-default}`) and types a `for` loop
+  at the prompt.
+- **Cost.** No kernel code changes and no hot path in the kernel; the runtime gains two
+  system-call numbers. In the shell, a simple command costs as before plus one IFS lookup and
+  one more read of its text (the and-or list's shape is read before it runs, as D181's
+  `pipeline_end` did); a compound command is read once more before it runs; a subshell or a
+  substitution costs a copy-on-write fork. `eggsh` grows by the grammar, the new modules and
+  builtins (the build phase measures it against D107's 46-52 KiB; the new buffers are on the
+  stack or in the shell's frame, so none is in the file).
+- **Not yet.** Arithmetic expansion `$((...))` and `let`; `printf`; `trap`; `getopts`;
+  `set -u`, `-x`, `-f`, `-n` and `$-`; `command`, `exec`, `times`, `umask`, `readonly`;
+  aliases; `~user` and `~` after `=`; a here-document inside `$(...)` or on the line after a
+  function definition's line; a `case` pattern without its `(` inside `$(...)`; `<<<`;
+  descriptors past 2; `^C` interrupting `read` and `wait`; a cache of where compound commands
+  end, so loops do not read a nested one's text twice a round; the pipe fast path for small
+  here-documents; running the last stage of a pipeline in the shell (bash's `lastpipe`).
