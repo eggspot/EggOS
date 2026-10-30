@@ -184,9 +184,14 @@ Must-have, in order:
     `/dev/__properties__`, sets `/system/build.prop`'s at boot, and `getprop` and `setprop`
     (CLI and MCP tools) read and set them. Users can read their programs' logs (D188): the kernel
     takes liblog's datagrams on `/dev/socket/logdw` (`AF_UNIX` datagram sockets) and keeps a
-    64 KiB log that `logcat` (CLI and MCP tool) prints and clears. Next, as user capabilities:
-    users can run Android programs on riscv64 and dynamically linked ones (with `liblog.so`);
-    then apps (`.apk`).
+    64 KiB log that `logcat` (CLI and MCP tool) prints and clears. Users can run dynamically
+    linked Android programs on aarch64 and x86_64 (D188): Android's own `linker64` and
+    bionic's `libc.so`, `libm.so` and `libdl.so` from AOSP's runtime module, which
+    `cargo xtask image --add` puts under `/system` with a linker configuration for an image
+    with such a program; a QEMU test in CI runs the test program linked dynamically. Next, as
+    user capabilities: users can run Android programs on riscv64 (the kernel first runs the
+    vector extension, which bionic's riscv64 string functions use) and programs that use
+    `liblog.so` and the other platform libraries; then apps (`.apk`).
 18. **done** — Windows, part 1: users can now run Windows console programs from `eggsh` on
     x86_64 (D118, docs/windows-programs.md): an unmodified PE32+ console program runs
     natively through the Windows layer, an optional component at `/usr/lib/eggos/windows` that

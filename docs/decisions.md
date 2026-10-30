@@ -14199,12 +14199,85 @@ the license, by an explicit instruction recorded here.
     by every user and the MCP tool needs no grant, like `cat` of a readable file; clearing
     needs root, like `setprop`; `sendmsg` with control messages on a datagram socket is
     `EOPNOTSUPP` for now.
+- **Slice 36d: dynamically linked Android programs through `linker64`.** An Android program
+  the NDK links dynamically (`PT_INTERP` `/system/bin/linker64`, `libc.so`, `libm.so`,
+  `libdl.so`) runs on aarch64 and x86_64 with Android's own dynamic linker and bionic's own
+  shared libraries, from the shell, MCP `run` and an app, and an image made with `cargo xtask
+  image --add` of such a program gets them.
+  - **Kernel.** Nothing new: going through the linker's and `libc.so`'s start-up against
+    the kernel found every piece in place: `PT_INTERP` with `AT_BASE` and file-backed
+    mappings (D167), `/proc/self/exe` (which the linker reads for the program's path),
+    `mremap`, `madvise`, `memfd_create`, the property area (36b) and logd's socket (36c).
+    `prctl(PR_SET_VMA)` (names for anonymous mappings) stays `EINVAL`, as on a Linux built
+    without `CONFIG_ANON_VMA_NAME`; bionic ignores the error. `LD_LIBRARY_PATH` is the
+    linker's own.
+  - **The runtime (test data).** `xtask/src/android_runtime.rs` (`LINKER_PATH`, `module`,
+    `Module`, `linker_config`, `linker_config_path`, `files`, `Runtime::fetch`,
+    `Runtime::members`): AOSP's prebuilt `com.android.runtime` APEX for `arm64` or `x86_64`
+    from `platform/prebuilts/runtime` at commit `070571b4`, fetched from
+    android.googlesource.com as base64 and checked against the git blob id that commit
+    records (`xtask/src/gitiles.rs`: base64 and SHA-1 from RFC 4648 and FIPS 180-4, git's
+    blob format), kept in `target/android-runtime/<abi>`, never shipped, never committed.
+    Its stored `apex_payload.img` (read with the installer's `.zip` reader, D148) is an ext4
+    image read by `xtask/src/ext4.rs` (superblock, group descriptors, inodes, extent trees,
+    directories, symbolic links; read-only, from the ext4 disk layout documentation).
+    `bin/linker64` goes to `/system/bin/linker64` and every `.so` of `lib64/bionic` and
+    `lib64` to `/system/lib64`; our `/system/etc/ld.config.<abi>.txt` (the first
+    configuration the linker looks for) maps `/system/bin`, `/bin`, `/usr/bin`,
+    `/usr/local/bin`, `/home` and `/tmp` to one section whose default namespace is not
+    isolated and searches `/system/${LIB}`, so the linker prints no warning about a missing
+    generated configuration.
+  - **The check.** `cargo xtask android-dynamic --arch <arch>` (`xtask/src/android_dynamic.rs`,
+    `xtask/src/qemu/android_dynamic.rs`, CI job `android-dynamic` for aarch64 and x86_64 in
+    `check`'s needs): `tests/android-console` linked by the NDK without `-static`
+    (`android::Linkage`), checked to name the linker (`android::interpreter`,
+    `android::is_dynamic_program`), booted with the runtime; the session sets the property
+    it reads, runs it (all of the static test's lines; its new `loader` line, from
+    `AT_BASE`, says `linker64`, and `static` in the static test) and runs it with
+    `LD_LIBRARY_PATH` naming a missing folder to exit 42.
+  - **Front-ends (D22).** The ABI only, as for static Android programs.
+  - **Cost (D24, D78).** Not measured (no builds in this batch). Nothing in the kernel or
+    the base changes; the runtime is only in images that add a dynamic Android program
+    (about 5 MB of libraries).
+  - **Decided by research** (research subagents, 2026-10-30, from AOSP's gitiles listings,
+    `bionic/apex/Android.bp`, `bionic/linker/linker.cpp`, the NDK changelogs r27 to r30,
+    the runner image's software list, Rust's platform support page and bionic's riscv64
+    string functions): the runtime comes from AOSP's prebuilt runtime APEX, the only
+    downloadable, pinnable source of the real `linker64` and `libc.so` (the NDK and
+    `prebuilts/runtime`'s module SDK ship link stubs only; emulator system images need the
+    SDK licence accepted and are hundreds of MB; Termux, Debian, Alpine and Maven ship no
+    bionic); gitiles' `+archive` tarballs are not byte-stable, so a single file at a pinned
+    commit is fetched; with no configuration the linker searches `/system/lib64`,
+    `/odm/lib64` and `/vendor/lib64`, and a missing generated configuration only warns.
+    `liblog.so` is not in the runtime module (it is a platform library), so a program
+    calling `__android_log_print` needs a system image's `liblog.so`; the test keeps
+    logging as liblog does, by datagram. Android on riscv64 stays out: the NDK's riscv64
+    sysroot (r27 and later, API 35) is provisional, Rust's `riscv64-linux-android` is tier 3
+    without a prebuilt standard library (a `#![no_std]` staticlib built for
+    `riscv64gc-unknown-linux-musl` and linked by the NDK's clang would do), and bionic's
+    riscv64 string functions use the vector extension unconditionally, which the kernel
+    does not enable yet (`sstatus.VS` stays Off, no vector state in the context switch or
+    the signal frame), so every Android program would trap on its first `memcpy`; the
+    runtime module for riscv64 is at the same commit (blob `c7d53ea7`).
+  - **Decided without research.** The test program is `tests/android-console` linked a
+    second way rather than a second program, so both builds are held to the same lines;
+    the runtime is checked by git blob id rather than a SHA-256 because the id is what the
+    pinned commit records for those bytes; the libraries go to `/system/lib64` as copies,
+    not under `/apex/com.android.runtime` with links, which nothing in a console program
+    needs; the session does not abort the dynamic build, whose crash handler (`debuggerd`)
+    would look for `crash_dump64`.
 - **Not yet.** A Settings page for Android properties and a log viewer (the GUI front-ends,
   D22, designed by Fable first); `__system_property_set` from programs (the
   `property_service` socket); `persist.` properties kept across boots, values over 91 bytes
   (bionic's long values) and property contexts; `logcat`'s `-b` (buffers), `-f`, `-t`,
   `-g` and the other formats, the binary log buffers, `logdr` and the `logd` control
   socket, per-app log access (`READ_LOGS`), `SCM_RIGHTS` and `SCM_CREDENTIALS` on datagram
-  sockets, `SOCK_SEQPACKET`; dynamically linked Android programs through `linker64` (which
-  also gives programs `liblog.so`'s `__android_log_print`) and Android programs on riscv64
-  (slice 36d); a vDSO; `rseq`, `clone3` and `riscv_hwprobe`.
+  sockets, `SOCK_SEQPACKET`; `liblog.so` (and with it `__android_log_print`) and the
+  other platform libraries (`libutils`, `libbinder_ndk`, ...), from a system image read the
+  same way; `/apex/com.android.runtime` and `/linkerconfig` as Android lays them out, linker
+  namespaces beyond one open default; Android programs on riscv64 (the vector extension in
+  the HAL: `sstatus.VS`, the vector registers, `vtype`, `vl` and `vcsr` saved per thread and
+  in the signal frame, `riscv_hwprobe`, QEMU's `-cpu rv64,v=true,zba=true,zbb=true,zbs=true`;
+  then the riscv64 runtime module, the NDK's `riscv64-linux-android35` and a staticlib built
+  for `riscv64gc-unknown-linux-musl`); `debuggerd`'s `crash_dump64`; `PR_SET_VMA` names in
+  `/proc/<pid>/maps`; a vDSO; `rseq` and `clone3`.

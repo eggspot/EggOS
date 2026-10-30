@@ -226,6 +226,17 @@ holds what used to be written in them.
   glibc (`libc.a`, `crt1.o`, `rcrt1.o`; `rustup target add <arch>-unknown-linux-gnu`), checks
   each is the kind asked for, adds both to the release image and boots it, wanting the Linux
   programs test's lines from each. glibc is test data, never shipped.
+- **`cargo xtask android-dynamic --arch <arch>`** (D188, aarch64 and x86_64, needs the Android
+  NDK as the Android programs boot test does) links `tests/android-console` dynamically with
+  the NDK's clang (`PT_INTERP` `/system/bin/linker64`), downloads AOSP's prebuilt
+  `com.android.runtime` APEX of the pinned `platform/prebuilts/runtime` commit from
+  android.googlesource.com (base64, checked against its git blob id, kept in
+  `target/android-runtime/<abi>`), reads `linker64` and the `lib64` libraries out of its ext4
+  payload, adds them under `/system` with our `/system/etc/ld.config.<abi>.txt`, the shell
+  and `/system/build.prop` to the release image, boots it and wants the Android programs
+  test's lines with `loader linker64`. The runtime is test data, never shipped. `cargo xtask
+  image --add` adds the same runtime when an added file is a dynamically linked Android
+  program.
 - **`cargo xtask hello-crate --arch <arch>`** (D171, Linux hosts, x86_64 and aarch64)
   downloads the pinned release's `rustc` and `cargo` for the architecture's glibc target and
   the standard library of its musl target from static.rust-lang.org (checked against their
@@ -431,7 +442,8 @@ holds what used to be written in them.
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
   programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
   installing the glibc cross compilers and target in the CI image, D167), `static-glibc` (one
-  per architecture: `cargo xtask static-glibc` the same way, D188), `rustc-version` (D168)
+  per architecture: `cargo xtask static-glibc` the same way, D188), `android-dynamic` (D188,
+  aarch64 and x86_64, with the runner's NDK mounted as the `qemu` job mounts it), `rustc-version` (D168)
   and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run),
   `workspace-build` (D173, one per architecture: EggOS and Linux in the same QEMU machine,
   the times in the job summary),

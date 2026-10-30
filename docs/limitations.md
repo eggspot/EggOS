@@ -259,12 +259,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and riscv64 do
   not run yet; the clipboard is each program's own until the shared one comes; names are
   case-sensitive and local time is UTC.
-- **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
-  Android NDK and linked statically against bionic run natively through the Linux layer
-  ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
-  system properties set by programs themselves (`setprop` sets them, D188), no `liblog.so`
-  (static programs log by sending its datagram to `/dev/socket/logdw` themselves; `logcat` shows
-  main, system and crash entries only, no binary buffers, D188), no binder, no riscv64.
+- **Android: console programs only, on aarch64 and x86_64.** Programs built with the Android
+  NDK, linked statically against bionic or dynamically (Android's `linker64` with the runtime
+  module's `libc.so`, `libm.so` and `libdl.so`, D188), run natively through the Linux layer
+  ([Android programs](android-programs.md), D119). No apps (`.apk`), no system properties set
+  by programs themselves (`setprop` sets them, D188), no `liblog.so` or other platform
+  libraries (programs log by sending its datagram to `/dev/socket/logdw` themselves;
+  `logcat` shows main, system and crash entries only, no binary buffers, D188), no binder, no
+  riscv64 (bionic's riscv64 string functions need the vector extension, which the kernel does
+  not enable yet, D188).
 - **macOS: console programs and programmatic AppKit apps, on aarch64 and x86_64 only.**
   Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
