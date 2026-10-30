@@ -306,7 +306,7 @@ const LINUX_MAPPINGS_LINES: [&str; 9] = [
     "LINUX-MAPPINGS status 0",
 ];
 
-const LINUX_EVENTS_LINES: [&str; 8] = [
+const LINUX_EVENTS_LINES: [&str; 9] = [
     "LINUX-EVENTS epoll: timerfd twice, eventfd 3, semaphore 1 1 EAGAIN, signalfd SIGUSR1, a pipe \
      woken by a thread",
     "LINUX-EVENTS select and pselect6 on a pipe: timeout 0, ready 1, woken 1",
@@ -315,6 +315,8 @@ const LINUX_EVENTS_LINES: [&str; 8] = [
     "LINUX-EVENTS /dev/shm: a child's write through MAP_SHARED is the parent's, then unlinked",
     "LINUX-EVENTS MAP_SHARED of a /tmp file: msync then pread sees it, a write is seen through it",
     "LINUX-EVENTS MADV_DONTFORK: the child gets SIGSEGV; MADV_WIPEONFORK: the child reads zeros",
+    "LINUX-EVENTS inotify: CREATE a.txt, MOVED_FROM a.txt and MOVED_TO b.txt with one cookie, \
+     DELETE b.txt, IGNORED after inotify_rm_watch, readable through epoll and FIONREAD",
     "LINUX-EVENTS status 0",
 ];
 

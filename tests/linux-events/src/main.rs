@@ -5,7 +5,8 @@
 //! `pselect6`; and checks what Linux promises of memory across `fork`: private pages copied on
 //! write, `MAP_SHARED` anonymous memory and POSIX shared memory in `/dev/shm` shared, a writable
 //! `MAP_SHARED` mapping of a `/tmp` file written back by `msync` and seeing the file's writes,
-//! and `MADV_DONTFORK` and `MADV_WIPEONFORK`. It writes one `LINUX-EVENTS` line for each check.
+//! and `MADV_DONTFORK` and `MADV_WIPEONFORK`; and watches a `/tmp` folder with `inotify` (D179).
+//! It writes one `LINUX-EVENTS` line for each check.
 //! On other hosts it is an empty program, so the workspace builds everywhere.
 
 #[cfg(target_os = "linux")]

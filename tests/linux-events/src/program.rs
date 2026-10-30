@@ -10,6 +10,7 @@ const PREFIX: &str = "LINUX-EVENTS";
 const PAGE: usize = 4096;
 const SHARED_MEMORY: &str = "/dev/shm/eggos-events";
 const SHARED_FILE: &str = "/tmp/eggos-events.data";
+const WATCHED_FOLDER: &str = "/tmp/eggos-watched";
 
 const PROT_READ: c_int = 1;
 const PROT_WRITE: c_int = 2;
@@ -35,6 +36,16 @@ const SIGSEGV: c_int = 11;
 const EAGAIN: i32 = 11;
 const SIGNALFD_RECORD: usize = 128;
 const FD_SET_WORDS: usize = 16;
+const IN_NONBLOCK: c_int = O_NONBLOCK;
+const IN_CLOEXEC: c_int = O_CLOEXEC;
+const IN_MOVED_FROM: u32 = 0x40;
+const IN_MOVED_TO: u32 = 0x80;
+const IN_CREATE: u32 = 0x100;
+const IN_DELETE: u32 = 0x200;
+const IN_IGNORED: u32 = 0x8000;
+const FIONREAD: c_int = 0x541b;
+const INOTIFY_RECORD: usize = 16;
+const WATCHED: u64 = 5;
 
 #[cfg(target_arch = "x86_64")]
 const SYS_RT_SIGPROCMASK: c_long = 14;
@@ -80,6 +91,10 @@ unsafe extern "C" {
     fn read(fd: c_int, buffer: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buffer: *const c_void, count: usize) -> isize;
     fn close(fd: c_int) -> c_int;
+    fn inotify_init1(flags: c_int) -> c_int;
+    fn inotify_add_watch(fd: c_int, path: *const std::ffi::c_char, mask: u32) -> c_int;
+    fn inotify_rm_watch(fd: c_int, watch: c_int) -> c_int;
+    fn ioctl(fd: c_int, request: c_int, ...) -> c_int;
     fn mmap(
         address: *mut c_void,
         length: usize,
@@ -184,6 +199,7 @@ fn run_checks() -> Checked<()> {
     posix_shared_memory()?;
     shared_file_mapping()?;
     fork_advice()?;
+    inotify_watches_a_folder()?;
     Ok(())
 }
 
@@ -612,6 +628,109 @@ fn fork_advice() -> Checked<()> {
     }
     println!(
         "{PREFIX} MADV_DONTFORK: the child gets SIGSEGV; MADV_WIPEONFORK: the child reads zeros"
+    );
+    Ok(())
+}
+
+fn inotify_records(bytes: &[u8]) -> Vec<(c_int, u32, u32, String)> {
+    let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+    let mut records = Vec::new();
+    let mut at = 0;
+    while at + INOTIFY_RECORD <= bytes.len() {
+        let length = word(at + 12) as usize;
+        let end = (at + INOTIFY_RECORD + length).min(bytes.len());
+        let name = &bytes[at + INOTIFY_RECORD..end];
+        let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
+        records.push((
+            word(at) as c_int,
+            word(at + 4),
+            word(at + 8),
+            String::from_utf8_lossy(name).into_owned(),
+        ));
+        at = end;
+    }
+    records
+}
+
+fn inotify_watches_a_folder() -> Checked<()> {
+    let _ = std::fs::remove_dir_all(WATCHED_FOLDER);
+    std::fs::create_dir(WATCHED_FOLDER).map_err(|error| format!("mkdir: {error}"))?;
+    // SAFETY: creates a descriptor; no memory is passed.
+    let instance = unsafe { inotify_init1(IN_NONBLOCK | IN_CLOEXEC) };
+    let instance = checked(instance, "inotify_init1")?;
+    let path = std::ffi::CString::new(WATCHED_FOLDER).map_err(|error| error.to_string())?;
+    let wanted = IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO;
+    // SAFETY: `path` is a NUL-terminated string this function owns, read by the call.
+    let folder_watch = unsafe { inotify_add_watch(instance, path.as_ptr(), wanted) };
+    let folder_watch = checked(folder_watch, "inotify_add_watch")?;
+    let mut nothing = [0u8; 64];
+    // SAFETY: reads at most 64 bytes into `nothing`, this function's own.
+    let empty = unsafe { read(instance, nothing.as_mut_ptr().cast(), nothing.len()) };
+    if empty != -1 || last_errno() != EAGAIN {
+        return Err(format!(
+            "an empty inotify read gave {empty}, errno {}",
+            last_errno()
+        ));
+    }
+    // SAFETY: creates a descriptor; no memory is passed.
+    let epoll = checked(unsafe { epoll_create1(O_CLOEXEC) }, "epoll_create1")?;
+    watch(epoll, instance, WATCHED)?;
+    let first = format!("{WATCHED_FOLDER}/a.txt");
+    let second = format!("{WATCHED_FOLDER}/b.txt");
+    std::fs::write(&first, b"watched").map_err(|error| format!("write: {error}"))?;
+    std::fs::rename(&first, &second).map_err(|error| format!("rename: {error}"))?;
+    std::fs::remove_file(&second).map_err(|error| format!("remove: {error}"))?;
+    let mut events = [EpollEvent::default(); 1];
+    // SAFETY: `events` holds one `struct epoll_event`, which the call may write.
+    let ready = unsafe { epoll_wait(epoll, events.as_mut_ptr(), 1, 2000) };
+    let ready = checked(ready, "epoll_wait")?;
+    let mut queued: c_int = 0;
+    // SAFETY: `FIONREAD` writes one `int` to `queued`, this function's own.
+    let asked = unsafe { ioctl(instance, FIONREAD, &mut queued as *mut c_int) };
+    checked(asked, "ioctl FIONREAD")?;
+    let mut buffer = [0u8; 1024];
+    // SAFETY: reads at most 1024 bytes into `buffer`, this function's own.
+    let read_bytes = unsafe { read(instance, buffer.as_mut_ptr().cast(), buffer.len()) };
+    if ready != 1 || read_bytes < 0 || read_bytes as c_int != queued {
+        return Err(format!(
+            "epoll_wait gave {ready}, FIONREAD {queued}, the read {read_bytes} (errno {})",
+            last_errno()
+        ));
+    }
+    let records = inotify_records(&buffer[..read_bytes as usize]);
+    // SAFETY: a watch descriptor `inotify_add_watch` gave on `instance`.
+    checked(
+        unsafe { inotify_rm_watch(instance, folder_watch) },
+        "inotify_rm_watch",
+    )?;
+    // SAFETY: reads at most 1024 bytes into `buffer`, this function's own.
+    let ignored = unsafe { read(instance, buffer.as_mut_ptr().cast(), buffer.len()) };
+    let ignored = match ignored {
+        count if count > 0 => inotify_records(&buffer[..count as usize]),
+        _ => Vec::new(),
+    };
+    close_fd(epoll);
+    close_fd(instance);
+    let _ = std::fs::remove_dir(WATCHED_FOLDER);
+    let seen: Vec<(u32, &str)> = records
+        .iter()
+        .map(|(_, mask, _, name)| (*mask, name.as_str()))
+        .collect();
+    let expected = [
+        (IN_CREATE, "a.txt"),
+        (IN_MOVED_FROM, "a.txt"),
+        (IN_MOVED_TO, "b.txt"),
+        (IN_DELETE, "b.txt"),
+    ];
+    let one_cookie = records.len() == 4 && records[1].2 != 0 && records[1].2 == records[2].2;
+    let all_ours = records.iter().all(|record| record.0 == folder_watch);
+    let ended = ignored.len() == 1 && ignored[0].0 == folder_watch && ignored[0].1 == IN_IGNORED;
+    if seen != expected || !one_cookie || !all_ours || !ended {
+        return Err(format!("inotify gave {records:?}, then {ignored:?}"));
+    }
+    println!(
+        "{PREFIX} inotify: CREATE a.txt, MOVED_FROM a.txt and MOVED_TO b.txt with one cookie, \
+         DELETE b.txt, IGNORED after inotify_rm_watch, readable through epoll and FIONREAD"
     );
     Ok(())
 }

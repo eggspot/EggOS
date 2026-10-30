@@ -47,7 +47,9 @@
 //! ([`stat`]), and `sethostname` and `setdomainname` ([`identity`]) (D168), and symbolic and
 //! hard links with `symlinkat`, `linkat` and `openat2`'s `RESOLVE_NO_SYMLINKS`, and
 //! permissions with `fchmodat`, `fchmodat2` and `fchmod` ([`file_changes`], [`files`], D170),
-//! and `sysinfo` ([`sysinfo`]) and `fadvise64` ([`files`]) for GTK apps (D176). Every
+//! and `sysinfo` ([`sysinfo`]) and `fadvise64` ([`files`]) for GTK apps (D176), and
+//! `inotify_init`, `inotify_init1`, `inotify_add_watch` and `inotify_rm_watch` ([`inotify`],
+//! D179) for file watchers such as Qt's and GLib's. Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -65,6 +67,7 @@ pub mod files;
 pub mod fork;
 pub mod futex;
 pub mod identity;
+pub mod inotify;
 pub mod job_control;
 pub mod limits;
 pub mod memfd;
@@ -271,6 +274,10 @@ pub mod number {
         pub const TIMERFD_GETTIME: u64 = 287;
         pub const SIGNALFD4: u64 = 289;
         pub const EVENTFD2: u64 = 290;
+        pub const INOTIFY_INIT: u64 = 253;
+        pub const INOTIFY_ADD_WATCH: u64 = 254;
+        pub const INOTIFY_RM_WATCH: u64 = 255;
+        pub const INOTIFY_INIT1: u64 = 294;
         pub const LINK: u64 = 86;
         pub const SYMLINK: u64 = 88;
         pub const CHMOD: u64 = 90;
@@ -420,6 +427,9 @@ pub mod number {
         pub const SETDOMAINNAME: u64 = 162;
         pub const FACCESSAT2: u64 = 439;
         pub const EVENTFD2: u64 = 19;
+        pub const INOTIFY_INIT1: u64 = 26;
+        pub const INOTIFY_ADD_WATCH: u64 = 27;
+        pub const INOTIFY_RM_WATCH: u64 = 28;
         pub const EPOLL_CREATE1: u64 = 20;
         pub const EPOLL_CTL: u64 = 21;
         pub const EPOLL_PWAIT: u64 = 22;
@@ -620,6 +630,11 @@ pub mod number {
             #[cfg(target_arch = "x86_64")]
             SIGNALFD,
             SIGNALFD4,
+            #[cfg(target_arch = "x86_64")]
+            INOTIFY_INIT,
+            INOTIFY_INIT1,
+            INOTIFY_ADD_WATCH,
+            INOTIFY_RM_WATCH,
             #[cfg(target_arch = "x86_64")]
             LINK,
             #[cfg(target_arch = "x86_64")]
@@ -1134,13 +1149,17 @@ fn out_of_line_call<P: Platform>(
         | number::TIMERFD_CREATE
         | number::TIMERFD_SETTIME
         | number::TIMERFD_GETTIME
-        | number::SIGNALFD4 => poll::call(process, thread, number, context),
+        | number::SIGNALFD4
+        | number::INOTIFY_INIT1
+        | number::INOTIFY_ADD_WATCH
+        | number::INOTIFY_RM_WATCH => poll::call(process, thread, number, context),
         #[cfg(target_arch = "x86_64")]
         number::SELECT
         | number::EPOLL_CREATE
         | number::EPOLL_WAIT
         | number::EVENTFD
-        | number::SIGNALFD => poll::call(process, thread, number, context),
+        | number::SIGNALFD
+        | number::INOTIFY_INIT => poll::call(process, thread, number, context),
         _ => {
             let result = match number {
                 number::CLONE => {
@@ -1741,6 +1760,15 @@ fn ioctl<P: Platform>(
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
             process
                 .write_user_memory(argument, &available.to_ne_bytes())
+                .map(|()| 0)
+                .map_err(|_| Errno::EFAULT)
+        }
+        FileKind::Event(descriptors::EventFile::Inotify(instance))
+            if request as u32 == terminal::request::FIONREAD =>
+        {
+            let queued = i32::try_from(instance.queued_bytes()).unwrap_or(i32::MAX);
+            process
+                .write_user_memory(argument, &queued.to_ne_bytes())
                 .map(|()| 0)
                 .map_err(|_| Errno::EFAULT)
         }

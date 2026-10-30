@@ -6,10 +6,12 @@
 //! `syncfs`, `fsync` and `fdatasync`, which put changes on the disk (D131); `openat` creates and
 //! truncates files through [`create_file`] and [`truncate_on_open`]. Errors are Linux's, in
 //! Linux's order where it has one. User memory is copied through a buffer on the kernel stack,
-//! never while a file system's lock is held. Times are the wall clock's seconds.
+//! never while a file system's lock is held. Times are the wall clock's seconds. Each change is
+//! reported to the `inotify` watches of what it changed ([`inotify`], D179).
 
 use super::descriptors::{FileKind, OpenFile, open_flag};
 use super::files::{PathBuffer, read_path, starting_points, walk_error};
+use super::inotify::{self, mask as watched};
 use super::thread::LinuxThread;
 use super::{Errno, Iovecs, MAX_RW_COUNT, iovec};
 use crate::process::Process;
@@ -160,6 +162,7 @@ pub fn create_file<P: Platform>(
             now::<P>(),
         )
         .map_err(refused)?;
+    inotify::created(directory, name, false);
     vfs::resolve_as(root, directory, name, caller, false)
         .map_err(walk_error)
         .and_then(|node| match node.id() == id {
@@ -182,6 +185,7 @@ pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno
             .truncate(node.id(), 0, now::<P>())
             .map_err(refused)?;
         vfs::shared_pages::truncated(node, 0);
+        inotify::changed(node, watched::MODIFY);
     }
     Ok(())
 }
@@ -189,8 +193,23 @@ pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno
 /// `write` or `writev` of `buffers` to regular file `node` through `file`, at its offset or,
 /// with `O_APPEND`, at the file's end, moving the offset past what was written; `pwrite64`
 /// with `at`, leaving the offset. As Linux: `EFAULT` if nothing could be copied, `ENOSPC`
-/// when memory ran out before the first byte.
+/// when memory ran out before the first byte. A write of at least one byte is `IN_MODIFY` to
+/// the file's watches ([`inotify`]).
 pub(super) fn write_regular<P: Platform>(
+    process: &Process<P>,
+    file: &OpenFile,
+    node: Node,
+    buffers: &Iovecs,
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let written = write_into(process, file, node, buffers, at);
+    if matches!(written, Ok(count) if count > 0) {
+        inotify::changed(node, watched::MODIFY);
+    }
+    written
+}
+
+fn write_into<P: Platform>(
     process: &Process<P>,
     file: &OpenFile,
     node: Node,
@@ -321,6 +340,7 @@ pub fn ftruncate<P: Platform>(thread: &LinuxThread, fd: u64, length: u64) -> Res
         .truncate(node.id(), length, now::<P>())
         .map_err(refused)?;
     vfs::shared_pages::truncated(*node, length);
+    inotify::changed(*node, watched::MODIFY);
     Ok(0)
 }
 
@@ -353,8 +373,9 @@ pub fn mkdirat<P: Platform>(
             permissions,
             now::<P>(),
         )
-        .map(|_| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    inotify::created(directory, name, true);
+    Ok(0)
 }
 
 /// `unlinkat(dirfd, path, flags)`: removes a file, or with `AT_REMOVEDIR` an empty directory.
@@ -387,15 +408,20 @@ pub fn unlinkat<P: Platform>(
     {
         return Err(Errno::EBUSY);
     }
+    let watching = inotify::watching();
+    let last_name = watching && target.attributes().links <= 1;
     directory
         .file_system()
         .remove(directory.id(), name, directories, now::<P>())
-        .map(|()| 0)
         .map_err(|error| match (error, directories) {
             (Refused::ReadOnly, _) => Errno::EROFS,
             (Refused::IsDirectory, false) => Errno::EISDIR,
             (error, _) => refused(error),
-        })
+        })?;
+    if watching {
+        inotify::removed(directory, name, target, last_name);
+    }
+    Ok(0)
 }
 
 /// `renameat2(olddirfd, oldpath, newdirfd, newpath, flags)`: moves a name, replacing what the
@@ -444,8 +470,9 @@ pub fn renameat2<P: Platform>(
             flags & RENAME_NOREPLACE != 0,
             now::<P>(),
         )
-        .map(|()| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    inotify::moved(from, from_name, to, to_name, moved);
+    Ok(0)
 }
 
 /// `symlinkat(target, newdirfd, linkpath)`: makes `linkpath` a symbolic link whose target is
@@ -481,11 +508,12 @@ pub fn symlinkat<P: Platform>(
     }
     file_system
         .symlink(directory.id(), name, target, now::<P>())
-        .map(|_| 0)
         .map_err(|error| match error {
             Refused::ReadOnly | Refused::InvalidArgument => Errno::EPERM,
             error => refused(error),
-        })
+        })?;
+    inotify::created(directory, name, false);
+    Ok(0)
 }
 
 /// `linkat(olddirfd, oldpath, newdirfd, newpath, flags)`: gives the file `olddirfd` and
@@ -545,11 +573,13 @@ pub fn linkat<P: Platform>(
     }
     file_system
         .link(node.id(), directory.id(), name, now::<P>())
-        .map(|()| 0)
         .map_err(|error| match error {
             Refused::ReadOnly => Errno::EPERM,
             error => refused(error),
-        })
+        })?;
+    inotify::created(directory, name, false);
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
 }
 
 /// `fchmodat2(dirfd, path, mode, flags)`: sets the permission bits of the file `dirfd` and
@@ -625,8 +655,9 @@ fn change_mode<P: Platform>(process: &Process<P>, node: Node, mode: u64) -> Resu
     }
     file_system
         .set_permissions(node.id(), mode as u32 & 0o7777)
-        .map(|()| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
 }
 
 /// `utimensat(dirfd, path, times, flags)`: sets when a file last changed, the second of the
@@ -681,8 +712,9 @@ pub fn utimensat<P: Platform>(
     };
     node.file_system()
         .set_modified(node.id(), modified)
-        .map(|()| 0)
-        .map_err(refused)
+        .map_err(refused)?;
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
 }
 
 /// `sync()`: puts every file system's changes on stable storage. As Linux, it cannot fail.

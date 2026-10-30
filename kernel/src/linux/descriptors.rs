@@ -162,6 +162,8 @@ pub enum EventFile {
     SignalFd(Arc<super::signalfd::SignalFd>),
     /// An `epoll` instance ([`super::epoll`]).
     Epoll(Arc<super::epoll::Epoll>),
+    /// An `inotify` instance ([`super::inotify`], D179).
+    Inotify(Arc<super::inotify::Inotify>),
 }
 
 impl EventFile {
@@ -172,6 +174,7 @@ impl EventFile {
             Self::TimerFd(_) => b"anon_inode:[timerfd]",
             Self::SignalFd(_) => b"anon_inode:[signalfd]",
             Self::Epoll(_) => b"anon_inode:[eventpoll]",
+            Self::Inotify(_) => b"anon_inode:inotify",
         }
     }
 
@@ -182,6 +185,7 @@ impl EventFile {
             Self::TimerFd(timer) => timer.wake_list(),
             Self::SignalFd(signals) => signals.wake_list(),
             Self::Epoll(epoll) => epoll.wake_list(),
+            Self::Inotify(instance) => instance.wake_list(),
         }
     }
 }
@@ -193,6 +197,7 @@ impl PartialEq for EventFile {
             (Self::TimerFd(this), Self::TimerFd(that)) => Arc::ptr_eq(this, that),
             (Self::SignalFd(this), Self::SignalFd(that)) => Arc::ptr_eq(this, that),
             (Self::Epoll(this), Self::Epoll(that)) => Arc::ptr_eq(this, that),
+            (Self::Inotify(this), Self::Inotify(that)) => Arc::ptr_eq(this, that),
             _ => false,
         }
     }
@@ -332,6 +337,9 @@ impl OpenFile {
 impl Drop for OpenFile {
     fn drop(&mut self) {
         super::file_locks::description_closed(self);
+        if let FileKind::Regular(node) = &self.kind {
+            super::inotify::closed(*node, self.is_writable());
+        }
         if let Some(node) = self.kind.node() {
             node.release();
         }

@@ -29,7 +29,8 @@ use super::signals::{self, Interrupted};
 use super::terminal::Waited;
 use super::thread::{LinuxThread, unless_signalled_or_ended};
 use super::{
-    Errno, Iovecs, ends_in_user_space, epoll, eventfd, iovec, limits, number, signalfd, timerfd,
+    Errno, Iovecs, ends_in_user_space, epoll, eventfd, inotify, iovec, limits, number, signalfd,
+    timerfd,
 };
 use crate::console;
 use crate::process::Process;
@@ -448,7 +449,9 @@ pub fn uses_input_key(kind: &FileKind) -> bool {
 /// through the input key, an `epoll` instance's own such files), or it keeps no list.
 pub fn needs_looking_at(kind: &FileKind) -> bool {
     match kind {
-        FileKind::Event(EventFile::EventFd(_)) | FileKind::Pipe(_) | FileKind::Socket(_) => false,
+        FileKind::Event(EventFile::EventFd(_) | EventFile::Inotify(_))
+        | FileKind::Pipe(_)
+        | FileKind::Socket(_) => false,
         _ => true,
     }
 }
@@ -512,6 +515,7 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         FileKind::InetSocket(socket) => socket.events(requested),
         FileKind::Event(EventFile::EventFd(counter)) => counter.events(requested),
         FileKind::Event(EventFile::SignalFd(signals)) => signals.events(requested, pending()),
+        FileKind::Event(EventFile::Inotify(instance)) => instance.events(requested),
         FileKind::Event(_) => 0,
     }
 }
@@ -1381,7 +1385,8 @@ pub(super) fn blocking<P: Platform>(
 
 /// `read` or `readv` of `buffers` from the event file `event` of `file`, which the caller
 /// checked is open for reading: an `eventfd`'s counter, a `timerfd`'s expirations, a
-/// `signalfd`'s signals; `EINVAL` from an `epoll` instance, as on Linux. Sets the call's result.
+/// `signalfd`'s signals, an `inotify` instance's records; `EINVAL` from an `epoll` instance, as
+/// on Linux. Sets the call's result.
 pub(super) fn read_event<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
@@ -1397,6 +1402,9 @@ pub(super) fn read_event<P: Platform>(
         EventFile::TimerFd(timer) => timerfd::read(process, thread, context, file, timer, buffers),
         EventFile::SignalFd(signal_file) => {
             signalfd::read(process, thread, context, file, signal_file, buffers)
+        }
+        EventFile::Inotify(instance) => {
+            inotify::read(process, thread, context, file, instance, buffers)
         }
         EventFile::Epoll(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
@@ -1420,7 +1428,10 @@ pub(super) fn write_event<P: Platform>(
         EventFile::EventFd(counter) => {
             eventfd::write(process, thread, context, file, counter, buffers)
         }
-        EventFile::TimerFd(_) | EventFile::SignalFd(_) | EventFile::Epoll(_) => {
+        EventFile::TimerFd(_)
+        | EventFile::SignalFd(_)
+        | EventFile::Epoll(_)
+        | EventFile::Inotify(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
             ControlFlow::Continue(())
         }
@@ -1429,7 +1440,8 @@ pub(super) fn write_event<P: Platform>(
 
 /// The calls of the event files and `select`, `pselect6`: `epoll_create`, `epoll_create1`,
 /// `epoll_ctl`, `epoll_wait`, `epoll_pwait`, `epoll_pwait2`, `eventfd`, `eventfd2`,
-/// `timerfd_create`, `timerfd_settime`, `timerfd_gettime`, `signalfd` and `signalfd4`, with
+/// `timerfd_create`, `timerfd_settime`, `timerfd_gettime`, `signalfd`, `signalfd4`,
+/// `inotify_init`, `inotify_init1`, `inotify_add_watch` and `inotify_rm_watch`, with
 /// the program's registers `context`, whose result it sets. One function out of line for all
 /// of them, as `socket::call`, so the system-call path stays as it was. The calls that wait
 /// deliver the signals due after them; breaks when one ends the process.
@@ -1473,6 +1485,13 @@ pub fn call<P: Platform>(
         number::SIGNALFD4 => signalfd::signalfd4(process, thread, first, second, third, fourth),
         #[cfg(target_arch = "x86_64")]
         number::SIGNALFD => signalfd::signalfd4(process, thread, first, second, third, 0),
+        number::INOTIFY_INIT1 => inotify::inotify_init1(process, thread, first),
+        #[cfg(target_arch = "x86_64")]
+        number::INOTIFY_INIT => inotify::inotify_init1(process, thread, 0),
+        number::INOTIFY_ADD_WATCH => {
+            inotify::inotify_add_watch(process, thread, first, second, third)
+        }
+        number::INOTIFY_RM_WATCH => inotify::inotify_rm_watch(thread, first, second),
         _ => Err(Errno::ENOSYS),
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
