@@ -14728,3 +14728,53 @@ the license, by an explicit instruction recorded here.
   `toupper`, `towupper` and `towlower` beyond ASCII, `%x` for `en_US`, `strptime`; slice 38b2);
   hexadecimal floating-point input (`%a` reads decimal only) and `nan(...)`; `strtod` and
   `atof` in the macOS layer (the shared `number::parse_float` is ready for them).
+- **Slice 38b2: locales other than C.** `setlocale` (rewritten in `libsystem/locale.rs` on the
+  pure `darwin_locale::settings`) accepts `C`, `POSIX`, `C.UTF-8` and `en_US.UTF-8` for every
+  category and `UTF-8` for `LC_CTYPE` only, per category; `""` takes `LC_ALL`, then the
+  category's own variable, then `LANG` (the first set and not empty), else C, and fails whole
+  when one category's name is refused; `LC_ALL` answers one name when the six categories share
+  it, else the six joined by `/` (collate, ctype, monetary, numeric, time, messages), which
+  `LC_ALL` accepts back. The six choices are packed in one atomic word, so the character
+  functions read their locale with one load. `MB_CUR_MAX` (`__mb_cur_max`, now an atomic) is 4
+  in the UTF-8 locales. `nl_langinfo` answers per category (`CODESET` `UTF-8`, `D_FMT`
+  `%m/%d/%Y`, `D_T_FMT` `%a %b %e %X %Y`, `THOUSEP` `,`, `YESEXPR`, `NOEXPR`, `YESSTR`,
+  `NOSTR` and `CRNCYSTR` `-$` for en_US; `YESSTR` and `NOSTR` are now `yes` and `no` in C, as
+  on a Mac) and `localeconv` from four constant tables (numbers and money each C or en_US:
+  `,`, grouping 3, `USD `, `$`, two fraction digits). The multibyte functions
+  (`libsystem/multibyte.rs` on the pure `darwin_locale::multibyte`): `mbrtowc`, `mbrlen`,
+  `mbsinit`, `wcrtomb`, `mbsrtowcs`, `wcsrtombs`, `mbtowc`, `mblen`, `wctomb`, `mbstowcs`,
+  `wcstombs`, `btowc` and `wctob`, a byte per character in C and POSIX (a wide character above
+  0xFF has none) and UTF-8 elsewhere, refusing overlong forms, surrogates, values above U+10FFFF
+  and five-byte leads with `EILSEQ`; a partial character stays in the first eight bytes of the
+  program's `mbstate_t` (or the function's own when it passes none), so a character split
+  across calls completes. Character classes (`darwin_locale::ctype`): `__DefaultRuneLocale` is
+  Darwin's 3208-byte `_RuneLocale` with the C locale's tables (classes with a hexadecimal
+  digit's value in the low byte, and ASCII case), which the ctype macros read for ASCII in
+  every locale; `___maskrune`, `___runetype`, `___toupper` and `___tolower` (and `toupper`,
+  `tolower`, `towupper`, `towlower`, `wctype` as functions) answer for the `LC_CTYPE` locale:
+  Latin-1's Unicode classes in C.UTF-8 and en_US.UTF-8 (where digits also carry bit
+  0x400000, as on a Mac), ASCII's in UTF-8, C and POSIX, and Latin-1's case mappings in every
+  UTF-8 locale (`ÿ` to U+0178, `µ` to U+039C). `strftime`'s `%x` and `%c` follow `LC_TIME`
+  (`calendar::TimeFormats`; English names only, as the only locales are C and en_US), and
+  `strptime` (`calendar::parse`) reads the same conversions, case-insensitive names in full or
+  abbreviated, `%y` 69-99 as 19xx and 00-68 as 20xx, `%C`, `%j`, `%s`, `%z` and `%Z` (`UTC`,
+  `GMT`), changes only the fields the format sets, and fills the day of the year and the
+  weekday when the year and the date are known, as a Mac does (it refuses `"  5"` with `%d`
+  but `%e` skips spaces). `scanf` now reads `%lc`, `%ls` and `%l[` as UTF-8 characters in a
+  UTF-8 locale. The check: `tests/macos-text/main.c` grows eleven lines (names, the
+  environment, en_US's information and conventions, `strftime` and `strptime`, classes and
+  case, the multibyte functions, a wide `scanf` and the return to C), whose expected values are
+  that program's output on macOS 26 (arm64), in the macOS programs boot test on aarch64 and
+  x86_64; host tests cover the pure modules and `strptime` against the cases a research program
+  ran on a Mac. Front-ends: the macOS ABI only. Cost: a program that never calls `setlocale`
+  pays one atomic load per class or case call above ASCII; `__DefaultRuneLocale` is 3208 bytes
+  of constant data. Decided without research: Latin-1 only for classes and case (U+0178 back to
+  `ÿ` aside), as D190's research recorded the Latin-1 facts; a byte of a `%ls` field that is
+  not a UTF-8 character is stored as its value rather than failing the conversion; `wcsrtombs`
+  ignores its `mbstate_t` (no encoding here has shift states); `%z` sets `tm_gmtoff` only (a
+  Mac also changes the date with `TZ=UTC`, a quirk not copied). Decided by research (D190's
+  research subagent, plus the slice's own test runs on this Mac): every value above. Not yet:
+  classes and case mappings above U+00FF (CJK, Greek, Cyrillic, `wcwidth`), locales other than
+  these five (`de_DE.UTF-8` and the rest are refused with a null pointer), `strcoll` and
+  `strxfrm` by locale, `printf`'s `%ls` and `%lc` through the locale's encoding, the `_l`
+  extended-locale functions (`newlocale`, `uselocale`, `isalpha_l`), and time zones.

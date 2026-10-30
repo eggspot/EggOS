@@ -304,10 +304,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   blocks, `__weak` and exceptions (frames only DWARF describes, and exceptions passing through
   the layer's own code, end the program as uncaught). Nibs and storyboards, scroll views,
   tables, images, Auto Layout, Swift apps, most of Foundation beyond its core (no NSFileManager
-  or NSNotification), a signal handler's `ucontext_t` (D190), locales other than C (D190),
-  other frameworks and riscv64 do not run yet; programs handle signals and start other
-  programs (`fork`, `exec`, `posix_spawn`, pipes, `popen`, `system`; D190) and read input with
-  `scanf` (D190). Swift
+  or NSNotification), a signal handler's `ucontext_t` (D190), locales other than C, POSIX,
+  C.UTF-8, en_US.UTF-8 and UTF-8, character classes above U+00FF (D190), other frameworks and
+  riscv64 do not run yet; programs handle signals and start other programs (`fork`, `exec`,
+  `posix_spawn`, pipes, `popen`, `system`; D190), read input with `scanf`, and choose the
+  UTF-8 and en_US locales, with UTF-8 multibyte functions and `strptime` (D190). Swift
   console programs run on the layer's own Swift runtime (D180) without Foundation's Swift
   overlay, the Dispatch and CoreGraphics overlays, casts to protocols, the program's own
   generic types named in metadata and printing beyond strings, `Bool` and numbers; strings

@@ -109,8 +109,9 @@ its arguments, an environment variable, a file, `/bin`'s listing, a missing file
 | Signals | `sigaction`, `__sigaction`, `signal`, `sigaltstack`, `sigprocmask`, `pthread_sigmask`, `sigsuspend`, `sigpending`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset`, `sigismember`, `pause`, `killpg` |
 | Other programs | `fork`, `vfork` (as `fork`), `execve`, `execv`, `execvp`, `execvP`, `execl`, `execle`, `execlp`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_init`, `_destroy`, `_addopen`, `_addclose`, `_adddup2`, `_addinherit_np`, `_addchdir_np`, `_addfchdir_np` (and the unsuffixed `addchdir`, `addfchdir`), `posix_spawnattr_init`, `_destroy`, `_setflags`, `_getflags`, `_setpgroup`, `_getpgroup`, `_setsigmask`, `_getsigmask`, `_setsigdefault`, `_getsigdefault`, `wait`, `waitpid`, `wait3`, `wait4`, `popen`, `pclose`, `system` |
 | Memory | `mmap` (Darwin's flags), `munmap`, `mprotect`, `madvise` (a hint: accepted) |
-| Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep`, `gmtime_r`, `gmtime`, `localtime_r`, `localtime`, `timegm`, `mktime`, `strftime`, `tzset` |
-| Locale | `setlocale`, `nl_langinfo`, `localeconv`, the `__mb_cur_max` variable and `___mb_cur_max` (the C locale only) |
+| Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep`, `gmtime_r`, `gmtime`, `localtime_r`, `localtime`, `timegm`, `mktime`, `strftime`, `strptime`, `tzset` |
+| Locale | `setlocale` (C, POSIX, C.UTF-8, en_US.UTF-8, and UTF-8 for `LC_CTYPE`), `nl_langinfo`, `localeconv`, the `__mb_cur_max` variable and `___mb_cur_max` |
+| Characters | `__DefaultRuneLocale`, `___maskrune`, `___runetype`, `___toupper`, `___tolower` (so the `isalpha` and `iswalpha` families, `toupper`, `towupper` and their kin work), `toupper`, `tolower`, `towupper`, `towlower`, `wctype`; `mbrtowc`, `mbrlen`, `mbsinit`, `wcrtomb`, `mbsrtowcs`, `wcsrtombs`, `mbtowc`, `mblen`, `wctomb`, `mbstowcs`, `wcstombs`, `btowc`, `wctob` |
 | dyld | `_dyld_image_count`, `_dyld_get_image_header`, `_dyld_get_image_vmaddr_slide`, `_dyld_get_image_name`, `dlsym` (the layer's own functions), `dlopen` (loads nothing), `dlclose`, `dlerror` |
 
 Darwin's numbers become Linux's at the boundary: `open`'s flags, error numbers (`EAGAIN` is
@@ -135,8 +136,8 @@ points at, holding its `errno`, its copy of the program's thread-local template
 (`__thread_data` and `__thread_bss`) and its `pthread_key_t` values; `_tlv_bootstrap`, which
 every thread-local variable's descriptor calls, is the accessor itself: three instructions that
 return the calling thread's copy plus the variable's offset. Locks are futexes in the program's
-own memory. Time is UTC (`localtime_r` is `gmtime_r`, `%Z` is `UTC`), and the only locale is C
-(`nl_langinfo(CODESET)` is `US-ASCII`, as on a Mac).
+own memory. Time is UTC (`localtime_r` is `gmtime_r`, `%Z` is `UTC`). A program starts in the C locale
+(`nl_langinfo(CODESET)` is `US-ASCII`, as on a Mac) and can choose others (see "Locales").
 
 ### Signals and other programs
 
@@ -170,8 +171,24 @@ width and the sizes `hh h l ll q j z t L` (`l` is 64 bits, `%Lf` stores x87's 80
 x86_64). A field is the longest prefix of a number; what the number does not use goes back to
 the input, as on a Mac (`"0xg"` with `%x%c` reads 0 and `x`, `"1e"` with `%f%c` reads 1 and
 `e`), and a stream keeps up to eight bytes put back, so the next read sees them. `%lc`, `%ls`
-and `%l[` store a `wchar_t` per byte, the C locale's characters. The test program
-`tests/macos-text/main.c` checks them, with `strspn`, `strcspn` and `strpbrk`.
+and `%l[` store a `wchar_t` per character: a byte in C and POSIX, a UTF-8 sequence in the UTF-8
+locales. The test program `tests/macos-text/main.c` checks them, with `strspn`, `strcspn` and
+`strpbrk`.
+
+### Locales
+
+`setlocale` (D190, slice 38b2) accepts `C`, `POSIX`, `C.UTF-8` and `en_US.UTF-8` for every
+category and `UTF-8` for `LC_CTYPE` only, as a Mac does; `""` reads `LC_ALL`, then the
+category's variable (`LC_CTYPE`, `LC_TIME`, ...), then `LANG`. When the categories differ,
+`setlocale(LC_ALL, NULL)` answers the six names joined by `/` (`C/UTF-8/C/C/C/C`), which
+`LC_ALL` accepts back. In a UTF-8 locale `MB_CUR_MAX` is 4, the multibyte functions read and
+write UTF-8 (refusing overlong forms, surrogates and values above U+10FFFF with `EILSEQ`), and
+`isalpha`, `iswalpha`, `toupper`, `towupper` and their kin know Latin-1 (`é` is a lowercase
+letter whose uppercase is `É`); in C and POSIX each byte is a character and only ASCII has
+classes. en_US.UTF-8 gives `nl_langinfo` and `localeconv` the United States' values (`D_FMT`
+`%m/%d/%Y`, `THOUSEP` `,`, `USD ` and `$`), and `strftime`'s `%x` four-digit years.
+`strptime` reads the conversions `strftime` writes, as a Mac does. `tests/macos-text/main.c`
+checks all of it.
 
 ## Objective-C programs
 
@@ -391,8 +408,9 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   layer's can hang the child), `execvp` does not run a file without a format through the
   shell, and `posix_spawn` copies the process before it runs the program instead of sharing
   its memory as `vfork` does.
-- **Time zones** (all times are UTC), **locales other than C** (`setlocale` refuses them
-  with a null pointer, so `%ls` reads bytes, not UTF-8 characters), hexadecimal floating-point
+- **Time zones** (all times are UTC), **locales other than C, POSIX, C.UTF-8, en_US.UTF-8 and
+  UTF-8** (`setlocale` refuses them with a null pointer), character classes and case above
+  U+00FF, `printf`'s `%ls` and `%lc`, the `_l` extended-locale functions, hexadecimal floating-point
   input (`%a` reads only decimal), `nan(...)`, and stdio streams shared between threads (each
   stream assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`

@@ -273,9 +273,12 @@ Must-have, in order:
     boot test on aarch64 and x86_64. Slice 38b: `scanf`, `fscanf`, `sscanf` and their
     `va_list` forms on the scanner the Windows layer now shares, with Darwin's sizes and
     what a number does not use put back, and `strspn`, `strcspn` and `strpbrk`, checked by
-    `macos-text`. Next: locales other than C (`setlocale` names, UTF-8 `mbrtowc` and its
-    family, `isalpha` and `towupper` beyond ASCII, `strptime`; slice 38b2) and programs
-    without chained fixups (slice 38c).
+    `macos-text`. Slice 38b2: locales other than C: `setlocale` per category with C.UTF-8,
+    en_US.UTF-8 and UTF-8, names from the environment and composite names, en_US's
+    `nl_langinfo`, `localeconv` and `%x`, UTF-8 `mbrtowc` and its family, `isalpha` and
+    `towupper` over Latin-1 through `__DefaultRuneLocale` and `___maskrune`, `strptime`, and
+    wide `scanf` fields as UTF-8, checked by `macos-text`. Next: programs without chained
+    fixups, a program for macOS 11 and `getopt_long` reordering words (slice 38c).
 22. **done** — users can now pipe commands and redirect input and output from `eggsh` (D125,
     docs/shell.md): `a | b | c` runs its programs at the same time, piped, in one process
     group that `^C` reaches, with the last one's status; `<`, `>` and `>>` on builtins and
