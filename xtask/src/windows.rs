@@ -1,13 +1,16 @@
-//! Windows programs built with Microsoft's C compiler (D146): `tests/windows-crt/eggpad.c`, our
-//! own C notepad, is test data that MSVC's `cl.exe` builds as a `/MD` program (on the C
-//! runtime's DLLs) for x64 and ARM64. Only a Windows host with Visual Studio's C++ tools can
-//! build it, found through `vswhere`; CI builds it on its Windows runner and hands it to the
-//! Linux job through `EGGOS_WINDOWS_PROGRAMS`. It is never shipped.
+//! Windows programs built with Microsoft's C compiler (D146, D177): `tests/windows-crt/eggpad.c`,
+//! our own C notepad, and `tests/windows-crt/eggcpp.cpp`, our own C++ program that throws and
+//! catches C++ exceptions and handles faults with `__try`, are test data that MSVC's `cl.exe`
+//! builds as `/MD` programs (on the C runtime's DLLs) for x64 and ARM64; `eggcpp-fh3` is
+//! `eggcpp.cpp` built for `__CxxFrameHandler3` on x64 (`/d2FH4-`), whose default is
+//! `__CxxFrameHandler4`. Only a Windows host with Visual Studio's C++ tools can build them,
+//! found through `vswhere`; CI builds them on its Windows runner and hands them to the Linux
+//! job through `EGGOS_WINDOWS_PROGRAMS`. They are never shipped.
 
 use std::path::{Path, PathBuf};
 
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_WINDOWS_PROGRAMS";
-pub const PROGRAMS: [&str; 1] = ["eggpad"];
+pub const PROGRAMS: [&str; 3] = ["eggpad", "eggcpp", "eggcpp-fh3"];
 const TARGETS: [&str; 2] = ["x64", "arm64"];
 const VISUAL_STUDIO_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
@@ -83,13 +86,15 @@ fn build_programs(target_directory: &Path) -> Result<Option<Programs>, String> {
             let source = crate::workspace_root()
                 .join("tests")
                 .join("windows-crt")
-                .join(format!("{program}.c"));
+                .join(source_file(program));
             let output = Programs {
                 directory: directory.clone(),
             }
             .path(program, target);
             let status = std::process::Command::new(&compiler)
-                .args(compiler_arguments(&source, &output, &objects))
+                .args(compiler_arguments(
+                    program, target, &source, &output, &objects,
+                ))
                 .env_clear()
                 .envs(environment.iter().map(|(name, value)| (name, value)))
                 .status()
@@ -195,10 +200,26 @@ pub fn environment_lines(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The `cl.exe` arguments that build `source` into `output` as a GUI program on the C
-/// runtime's DLLs (`/MD`), optimized, with warnings as errors, its objects in `objects`.
-pub fn compiler_arguments(source: &Path, output: &Path, objects: &Path) -> Vec<String> {
-    [
+/// The source file `program` is built from.
+pub fn source_file(program: &str) -> &'static str {
+    match program {
+        "eggpad" => "eggpad.c",
+        _ => "eggcpp.cpp",
+    }
+}
+
+/// The `cl.exe` arguments that build `program` from `source` into `output` for MSVC's
+/// `target` on the C runtime's DLLs (`/MD`), optimized, with warnings as errors, its objects
+/// in `objects`: eggpad as a GUI program; the C++ programs as console programs with C++
+/// exceptions (`/EHsc`), `eggcpp-fh3` on x64 with `__CxxFrameHandler3`'s data (`/d2FH4-`).
+pub fn compiler_arguments(
+    program: &str,
+    target: &str,
+    source: &Path,
+    output: &Path,
+    objects: &Path,
+) -> Vec<String> {
+    let common = [
         "/nologo",
         "/O2",
         "/MD",
@@ -206,21 +227,28 @@ pub fn compiler_arguments(source: &Path, output: &Path, objects: &Path) -> Vec<S
         "/WX",
         "/utf-8",
         "/D_CRT_SECURE_NO_WARNINGS",
-        "/DUNICODE",
-        "/D_UNICODE",
-    ]
-    .iter()
-    .map(|argument| argument.to_string())
-    .chain([
-        format!("/Fo{}\\", objects.display()),
-        format!("/Fe{}", output.display()),
-        source.display().to_string(),
-        "/link".to_owned(),
-        "/SUBSYSTEM:WINDOWS".to_owned(),
-        "user32.lib".to_owned(),
-        "gdi32.lib".to_owned(),
-    ])
-    .collect()
+    ];
+    let language: &[&str] = match (program, target) {
+        ("eggpad", _) => &["/DUNICODE", "/D_UNICODE"],
+        ("eggcpp-fh3", "x64") => &["/EHsc", "/d2FH4-"],
+        _ => &["/EHsc"],
+    };
+    let link: &[&str] = match program {
+        "eggpad" => &["/SUBSYSTEM:WINDOWS", "user32.lib", "gdi32.lib"],
+        _ => &["/SUBSYSTEM:CONSOLE"],
+    };
+    common
+        .iter()
+        .chain(language)
+        .map(|argument| argument.to_string())
+        .chain([
+            format!("/Fo{}\\", objects.display()),
+            format!("/Fe{}", output.display()),
+            source.display().to_string(),
+            "/link".to_owned(),
+        ])
+        .chain(link.iter().map(|argument| argument.to_string()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -267,6 +295,8 @@ mod tests {
     #[test]
     fn eggpad_builds_with_the_c_runtime_s_dlls_as_a_gui_program() {
         let arguments = compiler_arguments(
+            "eggpad",
+            "x64",
             Path::new("eggpad.c"),
             Path::new("eggpad-x64.exe"),
             Path::new("objects"),
@@ -285,6 +315,43 @@ mod tests {
         let link = arguments.iter().position(|argument| argument == "/link");
         let source = arguments.iter().position(|argument| argument == "eggpad.c");
         assert!(source < link);
-        assert_eq!(PROGRAMS, ["eggpad"]);
+        assert!(!arguments.contains(&"/EHsc".to_owned()));
+        assert_eq!(PROGRAMS, ["eggpad", "eggcpp", "eggcpp-fh3"]);
+    }
+
+    #[test]
+    fn the_cpp_programs_build_as_console_programs_with_cpp_exceptions() {
+        let objects = Path::new("objects");
+        for (program, target) in [
+            ("eggcpp", "x64"),
+            ("eggcpp", "arm64"),
+            ("eggcpp-fh3", "arm64"),
+        ] {
+            let arguments = compiler_arguments(
+                program,
+                target,
+                Path::new("eggcpp.cpp"),
+                Path::new("out.exe"),
+                objects,
+            );
+            for wanted in ["/MD", "/EHsc", "/WX", "/SUBSYSTEM:CONSOLE", "eggcpp.cpp"] {
+                assert!(arguments.contains(&wanted.to_owned()), "{program} {wanted}");
+            }
+            assert!(
+                !arguments.contains(&"/d2FH4-".to_owned()),
+                "{program} {target}"
+            );
+            assert!(!arguments.contains(&"user32.lib".to_owned()));
+        }
+        let frame_handler_3 = compiler_arguments(
+            "eggcpp-fh3",
+            "x64",
+            Path::new("eggcpp.cpp"),
+            Path::new("out.exe"),
+            objects,
+        );
+        assert!(frame_handler_3.contains(&"/d2FH4-".to_owned()));
+        assert_eq!(source_file("eggpad"), "eggpad.c");
+        assert_eq!(source_file("eggcpp-fh3"), "eggcpp.cpp");
     }
 }

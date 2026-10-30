@@ -209,7 +209,13 @@ pub enum Expect {
     /// typed letters and Enter appear, Ctrl+S saves (its status line says so) and the close
     /// control closes it (D146); then the program's lines in the file (its arguments, the bytes
     /// it opened and saved, the keys it took and its `atexit` handler), the saved file read
-    /// back by `cat`, and its status 0.
+    /// back by `cat`, and its status 0. Then `eggcpp.exe`, our own C++ program (D177), built
+    /// for `__CxxFrameHandler4` and, as `eggcpp-fh3.exe`, for `__CxxFrameHandler3`: its lines
+    /// say it caught by type, through a base class, by value and with `catch (...)`, ran the
+    /// destructors of the frames it left, rethrew, threw from a catch block, took an access
+    /// violation, a division by zero and an illegal instruction in `__try` blocks, ran a
+    /// `__finally` block, continued from a vectored handler and a filter and raised a signal;
+    /// and an uncaught exception ends it through `terminate` with status 3.
     WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
@@ -523,11 +529,32 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 4] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 7] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
+    b"eggcpp.exe; echo EGGCPP status $?\r",
+    b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
+    b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
     b"exit 7\r",
+];
+
+const EGGCPP_LINES: [&str; 15] = [
+    "EGGCPP caught int 7",
+    "EGGCPP caught derived through base, destroyed 1",
+    "EGGCPP caught deep after 4 destructors",
+    "EGGCPP rethrowing",
+    "EGGCPP rethrown 42",
+    "EGGCPP caught by value 9 copied",
+    "EGGCPP caught 2.5 from a catch block, destroyed 2",
+    "EGGCPP access violation c0000005 write 1",
+    "EGGCPP divide by zero c0000094",
+    "EGGCPP finally ran 1 before except",
+    "EGGCPP vectored continued 1 removed 1",
+    "EGGCPP filter continued 1",
+    "EGGCPP illegal instruction c000001d",
+    "EGGCPP signal 2",
+    "EGGCPP done",
 ];
 
 const EGGPAD_LINES: [&str; 5] = [
@@ -545,10 +572,22 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             .map(|line| Line::Whole(line.to_string()))
             .collect()
     };
+    let with_status = |status: &str| -> Vec<Line> {
+        let mut lines = whole(&EGGCPP_LINES);
+        lines.push(Line::Whole(status.to_owned()));
+        lines
+    };
     [
         whole(&["EGGPAD status 0"]),
         whole(&EGGPAD_LINES),
         whole(&["Hello from the shell", "abc"]),
+        with_status("EGGCPP status 0"),
+        with_status("EGGCPP-FH3 status 0"),
+        whole(&[
+            "EGGCPP throwing uncaught",
+            "windows: the program called terminate",
+            "EGGCPP uncaught status 3",
+        ]),
         whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
     ]
 }
@@ -3753,6 +3792,20 @@ mod tests {
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &lost).is_err());
         let failed = ok.replace("EGGPAD status 0", "EGGPAD status 126");
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_the_cpp_program_s_exceptions_and_its_frame_handlers() {
+        let ok = windows_crt_console();
+        let uncaught = ok.replace("EGGCPP uncaught status 3", "EGGCPP uncaught status 99");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &uncaught).is_err());
+        let fh3_failed = ok.replace("EGGCPP-FH3 status 0", "EGGCPP-FH3 status 139");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &fh3_failed).is_err());
+        let once = ok.replacen("EGGCPP rethrown 42\r\n", "", 1);
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &once).is_err());
+        let twice = ok.replace("EGGCPP divide by zero c0000094\r\n", "");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &twice).is_err());
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &ok).is_ok());
     }
 
     #[test]

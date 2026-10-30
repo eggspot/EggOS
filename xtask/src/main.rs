@@ -1371,7 +1371,11 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
     build_release_kernel(arch, &initramfs)
 }
 
-const EGGPAD: (&str, &str) = ("eggpad", "bin/eggpad.exe");
+const WINDOWS_CRT_PROGRAMS: [(&str, &str); 3] = [
+    ("eggpad", "bin/eggpad.exe"),
+    ("eggcpp", "bin/eggcpp.exe"),
+    ("eggcpp-fh3", "bin/eggcpp-fh3.exe"),
+];
 
 fn windows_crt_boot_test(arch: &Arch) -> Result<(), String> {
     let Some(kernel) = build_windows_crt_test_kernel(arch)? else {
@@ -1417,14 +1421,16 @@ fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBu
         );
         return Ok(None);
     };
-    let (program, path) = EGGPAD;
-    let added = [image::AddedFile {
-        host: programs
-            .path(program, target)
-            .to_string_lossy()
-            .into_owned(),
-        path: path.to_owned(),
-    }];
+    let added: Vec<image::AddedFile> = WINDOWS_CRT_PROGRAMS
+        .iter()
+        .map(|(program, path)| image::AddedFile {
+            host: programs
+                .path(program, target)
+                .to_string_lossy()
+                .into_owned(),
+            path: (*path).to_owned(),
+        })
+        .collect();
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
