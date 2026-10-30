@@ -4,8 +4,9 @@
 //! checks (and for wait-all takes) every object under the lock and otherwise sleeps on one
 //! process-wide futex word, the wake sequence, which every state change bumps, so a wake can
 //! never be lost between the check and the sleep; a process's end bumps nothing, so a wait for
-//! one looks again every 10 ms. Critical sections, SRW locks, condition variables, one-time initialisation and
-//! `WaitOnAddress` are futexes on the caller's own memory and need no handle.
+//! one looks again every 10 ms, as does a wait on the event of an overlapped read in progress
+//! (`overlapped.rs`). Critical sections, SRW locks, condition variables, one-time
+//! initialisation and `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
 use crate::handle_flags;
@@ -403,6 +404,7 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
     let caller = thread_environment::thread_id();
     let mut deadline = None;
     loop {
+        let reading = super::overlapped::finish_ready_reads(handles);
         let (sequence, polling) = match check(handles, wait_all, caller) {
             Err(code) => return fail(code, WAIT_FAILED),
             Ok(Check::Done(result)) => return result,
@@ -414,7 +416,7 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
             _ => remaining(*deadline.get_or_insert_with(|| deadline_after(milliseconds))),
         };
         if left != Some(0) {
-            let slice = match polling {
+            let slice = match polling || reading {
                 true => Some(left.map_or(PROCESS_POLL_NANOSECONDS, |left| {
                     left.min(PROCESS_POLL_NANOSECONDS)
                 })),
@@ -433,7 +435,14 @@ extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u
     wait(&[handle], false, milliseconds)
 }
 
-extern "efiapi" fn wait_for_single_object_ex(handle: usize, milliseconds: u32, _: Bool) -> u32 {
+extern "efiapi" fn wait_for_single_object_ex(
+    handle: usize,
+    milliseconds: u32,
+    alertable: Bool,
+) -> u32 {
+    if alertable != FALSE && super::overlapped::run_queued_calls() {
+        return super::overlapped::WAIT_IO_COMPLETION;
+    }
     wait(&[handle], false, milliseconds)
 }
 
@@ -456,8 +465,11 @@ unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
     handles: *const usize,
     wait_all: Bool,
     milliseconds: u32,
-    _alertable: Bool,
+    alertable: Bool,
 ) -> u32 {
+    if alertable != FALSE && super::overlapped::run_queued_calls() {
+        return super::overlapped::WAIT_IO_COMPLETION;
+    }
     // SAFETY: the same contract as `WaitForMultipleObjects`'.
     unsafe { wait_for_multiple_objects(count, handles, wait_all, milliseconds) }
 }
@@ -486,6 +498,17 @@ extern "efiapi" fn create_event_ex_w(_: usize, _: usize, flags: u32, _access: u3
         manual_reset: flags & CREATE_EVENT_MANUAL_RESET != 0,
         signaled: flags & CREATE_EVENT_INITIAL_SET != 0,
     })
+}
+
+/// Sets or resets event `handle` without touching the last error; nothing when it is no event.
+pub fn set_event_quietly(handle: usize, state: bool) {
+    let _ = change(handle, |kind| match kind {
+        Kind::Event { signaled, .. } => {
+            *signaled = state;
+            ((), state)
+        }
+        _ => ((), false),
+    });
 }
 
 fn set_event_state(handle: usize, state: bool) -> Bool {

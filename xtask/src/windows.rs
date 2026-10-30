@@ -5,14 +5,20 @@
 //! `eggcpp.cpp` built for `__CxxFrameHandler3` on x64 (`/d2FH4-`), whose default is
 //! `__CxxFrameHandler4`; `tests/windows-crt/eggspawn.c`, our own C program that starts copies of
 //! itself through `CreateProcessW` and `CreateProcessA` and reads one's output through a pipe
-//! (D189), builds as a console program for both. Only a Windows host with Visual Studio's C++
-//! tools can build them, found through `vswhere`; CI builds them on its Windows runner and
-//! hands them to the Linux job through `EGGOS_WINDOWS_PROGRAMS`. They are never shipped.
+//! (D189), builds as a console program for both. `tests/windows-rust`, our own Rust program
+//! on Rust's standard library (`eggrust`, D189), builds with `cargo` for
+//! `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by MSVC's linker. Only a
+//! Windows host with Visual Studio's C++ tools can build them, found through `vswhere`; CI
+//! builds them on its Windows runner and hands them to the Linux job through
+//! `EGGOS_WINDOWS_PROGRAMS`. They are never shipped.
 
 use std::path::{Path, PathBuf};
 
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_WINDOWS_PROGRAMS";
 pub const PROGRAMS: [&str; 4] = ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn"];
+/// The test programs built from our own Rust source on Rust's standard library (D189).
+pub const RUST_PROGRAMS: [&str; 1] = ["eggrust"];
+const RUST_PACKAGE: &str = "windows-rust";
 const TARGETS: [&str; 2] = ["x64", "arm64"];
 const VISUAL_STUDIO_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
@@ -53,7 +59,7 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
             directory: PathBuf::from(directory),
         };
         crate::ci_artifact::fetch_when_built("windows-programs", &programs.directory)?;
-        for program in PROGRAMS {
+        for program in PROGRAMS.iter().chain(RUST_PROGRAMS.iter()) {
             for target in TARGETS {
                 let path = programs.path(program, target);
                 if !path.is_file() {
@@ -105,8 +111,63 @@ fn build_programs(target_directory: &Path) -> Result<Option<Programs>, String> {
                 return Err(format!("cl.exe {}: {status}", source.display()));
             }
         }
+        build_rust_programs(target, target_directory, &directory)?;
     }
     Ok(Some(Programs { directory }))
+}
+
+fn build_rust_programs(
+    target: &str,
+    target_directory: &Path,
+    directory: &Path,
+) -> Result<(), String> {
+    let manifest = crate::workspace_root()
+        .join("tests")
+        .join(RUST_PACKAGE)
+        .join("Cargo.toml");
+    let build_directory = target_directory.join(RUST_PACKAGE);
+    let arguments = rust_build_arguments(target, &manifest, &build_directory);
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    crate::cargo_with_env(&arguments, &[])?;
+    for program in RUST_PROGRAMS {
+        let built = build_directory
+            .join(rust_target(target))
+            .join("release")
+            .join(format!("{program}.exe"));
+        let output = Programs {
+            directory: directory.to_owned(),
+        }
+        .path(program, target);
+        std::fs::copy(&built, &output)
+            .map_err(|e| format!("{} -> {}: {e}", built.display(), output.display()))?;
+    }
+    Ok(())
+}
+
+/// Rust's target for MSVC's `target` (`x64`, `arm64`).
+pub fn rust_target(target: &str) -> &'static str {
+    match target {
+        "arm64" => "aarch64-pc-windows-msvc",
+        _ => "x86_64-pc-windows-msvc",
+    }
+}
+
+/// The `cargo` arguments that build the package at `manifest` optimized for MSVC's `target`,
+/// into `target_directory`.
+pub fn rust_build_arguments(target: &str, manifest: &Path, target_directory: &Path) -> Vec<String> {
+    [
+        "build",
+        "--release",
+        "--manifest-path",
+        &manifest.display().to_string(),
+        "--target",
+        rust_target(target),
+        "--target-dir",
+        &target_directory.display().to_string(),
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect()
 }
 
 fn visual_studio() -> Result<PathBuf, String> {
@@ -259,6 +320,21 @@ pub fn compiler_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rust_programs_build_optimized_for_each_msvc_target() {
+        let manifest = Path::new("tests").join("windows-rust").join("Cargo.toml");
+        let arguments = rust_build_arguments("arm64", &manifest, Path::new("out"));
+        assert_eq!(arguments[..2], ["build", "--release"]);
+        let target = arguments.iter().position(|argument| argument == "--target");
+        assert_eq!(
+            target.map(|at| arguments[at + 1].as_str()),
+            Some("aarch64-pc-windows-msvc")
+        );
+        assert!(arguments.contains(&manifest.display().to_string()));
+        assert_eq!(rust_target("x64"), "x86_64-pc-windows-msvc");
+        assert_eq!(RUST_PROGRAMS, ["eggrust"]);
+    }
 
     #[test]
     fn programs_have_one_file_per_program_and_target() {

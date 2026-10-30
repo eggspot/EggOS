@@ -229,6 +229,13 @@ pub enum Expect {
     /// `TerminateProcess` ended a waiting child with code 9, `CreateProcessA` with
     /// `CREATE_SUSPENDED` ran a child that `ResumeThread` let go, and a missing program is
     /// `ERROR_FILE_NOT_FOUND`; then its status 0.
+    /// Then `eggrust.exe`, our own Rust program on Rust's standard library (D189): its lines say
+    /// `Command::output` ran a copy of itself with its arguments and took its output, error
+    /// and exit code through pipes, a piped child's output was read as it came, a file was
+    /// written, rewritten, cut and removed, four threads shared a `Mutex` and a `Condvar`
+    /// with their own thread-locals, `thread::sleep` and the clocks worked and a `HashMap` was
+    /// seeded; then its status 0; and `eggrust.exe panic` prints the panic on standard error
+    /// and ends with status 101.
     WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
@@ -566,7 +573,7 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 8] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 10] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
@@ -574,6 +581,8 @@ const WINDOWS_CRT_SESSION: [&[u8]; 8] = [
     b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
     b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
+    b"eggrust.exe; echo EGGRUST status $?\r",
+    b"eggrust.exe panic; echo EGGRUST panic status $?\r",
     b"exit 7\r",
 ];
 
@@ -610,6 +619,18 @@ const EGGSPAWN_LINES: [&str; 12] = [
     "EGGSPAWN status 0",
 ];
 
+const EGGRUST_LINES: [&str; 9] = [
+    "EGGRUST hello from Rust's standard library",
+    "EGGRUST output: two words|q\"uote; error: child error line; exit 7",
+    "EGGRUST piped: read|end; exit 7",
+    "EGGRUST file read back short, cut to sho, length 3, removed true",
+    "EGGRUST threads 4 added 4000, thread-local 5 main 0",
+    "EGGRUST slept at least 20 ms true, system time after 2020 true",
+    "EGGRUST hash map 3 entries",
+    "EGGRUST done",
+    "EGGRUST status 0",
+];
+
 const EGGPAD_LINES: [&str; 5] = [
     "EGGPAD arguments 2 C:\\tmp\\note.txt",
     "EGGPAD opened 21 bytes",
@@ -642,6 +663,13 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             "EGGCPP uncaught status 3",
         ]),
         whole(&EGGSPAWN_LINES),
+        whole(&EGGRUST_LINES),
+        vec![
+            Line::Around("thread 'main'", ":"),
+            Line::Whole("EGGRUST panicking on purpose".to_owned()),
+            Line::Around("note: run with `RUST_BACKTRACE=1`", "backtrace"),
+            Line::Whole("EGGRUST panic status 101".to_owned()),
+        ],
         whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
     ]
 }
@@ -4031,9 +4059,13 @@ mod tests {
             let command = String::from_utf8_lossy(typed);
             console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
             for line in output {
-                if let Line::Whole(whole) = line {
-                    console.push_str(&format!("{whole}\r\n"));
-                }
+                let text = match line {
+                    Line::Whole(whole) => whole,
+                    Line::Around(start, end) => {
+                        format!("{start} (5) panicked at src\\main.rs{end}")
+                    }
+                };
+                console.push_str(&format!("{text}\r\n"));
             }
         }
         console

@@ -7,7 +7,8 @@
 //! `InitCommonControls` (D174) and the common controls (D178); the C runtime of MSVC's `/MD`
 //! programs is `vcruntime140` and the Universal C Runtime, `ucrtbase`, which programs import
 //! through the API sets `api-ms-win-crt-*` (D146); GDI+, COM (`ole32`, `oleaut32`) and the
-//! smaller system libraries a real app imports (D178) are the layer's too.
+//! smaller system libraries a real app imports (D178) are the layer's too; programs built
+//! on Rust's standard library also import `bcryptprimitives` and `userenv` (D189).
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -35,11 +36,13 @@ pub enum Library {
     Shlwapi,
     UxTheme,
     Dwmapi,
+    BcryptPrimitives,
+    Userenv,
 }
 
 impl Library {
     /// Every library, in a fixed order (a module handle is its place in it).
-    pub const ALL: [Library; 21] = [
+    pub const ALL: [Library; 23] = [
         Library::Kernel32,
         Library::Ntdll,
         Library::Shell32,
@@ -61,6 +64,8 @@ impl Library {
         Library::Shlwapi,
         Library::UxTheme,
         Library::Dwmapi,
+        Library::BcryptPrimitives,
+        Library::Userenv,
     ];
 
     /// Its name, as [`library`] finds it.
@@ -87,11 +92,13 @@ impl Library {
             Library::Shlwapi => b"shlwapi",
             Library::UxTheme => b"uxtheme",
             Library::Dwmapi => b"dwmapi",
+            Library::BcryptPrimitives => b"bcryptprimitives",
+            Library::Userenv => b"userenv",
         }
     }
 }
 
-const SMALLER_LIBRARIES: usize = 12;
+const SMALLER_LIBRARIES: usize = 14;
 
 /// One function a library exports: its name and its address in the layer.
 #[derive(Debug, Clone, Copy)]
@@ -187,6 +194,15 @@ mod tests {
         assert_eq!(library(b"WSOCK32.dll"), Some(Library::Wsock32));
         assert_eq!(library(b"UxTheme.dll"), Some(Library::UxTheme));
         assert_eq!(library(b"PSAPI.DLL"), Some(Library::Psapi));
+        assert_eq!(
+            library(b"bcryptprimitives.dll"),
+            Some(Library::BcryptPrimitives)
+        );
+        assert_eq!(library(b"USERENV.dll"), Some(Library::Userenv));
+        assert_eq!(
+            library(b"api-ms-win-core-synch-l1-2-0.dll"),
+            Some(Library::Kernel32)
+        );
         for library_of_all in Library::ALL {
             assert_eq!(library(library_of_all.name()), Some(library_of_all));
         }

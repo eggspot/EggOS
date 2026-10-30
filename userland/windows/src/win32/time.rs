@@ -1,7 +1,10 @@
 //! Time: the tick counts and performance counter from the monotonic clock (the counter at
 //! 10 MHz, the frequency Windows reports), the system time as a `FILETIME` (100 ns intervals
 //! since 1601) from the real-time clock, its calendar form (`SYSTEMTIME`, in UTC: local time is
-//! UTC until EggOS has time zones), and `Sleep`.
+//! UTC until EggOS has time zones), `Sleep`, and `SleepEx`, which runs the calls
+//! queued for the thread when alertable (D189). Waitable timers are not there yet:
+//! `CreateWaitableTimerExW` fails with `ERROR_NOT_SUPPORTED`, so Rust's `thread::sleep` uses
+//! `Sleep`.
 
 use super::{Bool, FALSE, TRUE, error, fail};
 use crate::calendar::{self, SystemTime};
@@ -93,13 +96,38 @@ extern "efiapi" fn sleep(milliseconds: u32) {
     }
 }
 
-extern "efiapi" fn sleep_ex(milliseconds: u32, _alertable: Bool) -> u32 {
+extern "efiapi" fn sleep_ex(milliseconds: u32, alertable: Bool) -> u32 {
+    if alertable != FALSE && super::overlapped::run_queued_calls() {
+        return super::overlapped::WAIT_IO_COMPLETION;
+    }
     sleep(milliseconds);
     0
 }
 
+extern "efiapi" fn create_waitable_timer_ex_w(
+    _attributes: usize,
+    _name: *const u16,
+    _flags: u32,
+    _access: u32,
+) -> usize {
+    fail(error::NOT_SUPPORTED, 0)
+}
+
+extern "efiapi" fn set_waitable_timer(
+    _timer: usize,
+    _due: *const i64,
+    _period: i32,
+    _routine: usize,
+    _argument: usize,
+    _resume: Bool,
+) -> Bool {
+    fail(error::INVALID_HANDLE, FALSE)
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"GetTickCount64" => get_tick_count64,
+    b"CreateWaitableTimerExW" => create_waitable_timer_ex_w,
+    b"SetWaitableTimer" => set_waitable_timer,
     b"GetTickCount" => get_tick_count,
     b"QueryPerformanceCounter" => query_performance_counter,
     b"QueryPerformanceFrequency" => query_performance_frequency,

@@ -14,6 +14,7 @@ use crate::library::Export;
 use crate::linux::{self, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 use crate::text;
 use core::ffi::c_void;
+use eggos_runtime::errno::Errno;
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
@@ -84,7 +85,10 @@ unsafe extern "efiapi" fn read_file(
     overlapped: *mut c_void,
 ) -> Bool {
     if !overlapped.is_null() {
-        return fail(error::NOT_SUPPORTED, FALSE);
+        // SAFETY: `ReadFile`'s contract, with a writable `OVERLAPPED`.
+        return unsafe {
+            super::overlapped::read_file(handle, buffer, length, read, overlapped as usize)
+        };
     }
     // SAFETY: `ReadFile`'s contract: `buffer` holds `length` writable bytes.
     let Some(count) = (unsafe { read_into(handle, buffer, length as usize) }) else {
@@ -109,7 +113,10 @@ unsafe extern "efiapi" fn write_file(
     overlapped: *mut c_void,
 ) -> Bool {
     if !overlapped.is_null() {
-        return fail(error::NOT_SUPPORTED, FALSE);
+        // SAFETY: `WriteFile`'s contract, with a writable `OVERLAPPED`.
+        return unsafe {
+            super::overlapped::write_file(handle, buffer, length, written, overlapped as usize)
+        };
     }
     // SAFETY: `WriteFile`'s contract: `buffer` holds `length` readable bytes.
     let bytes = unsafe { core::slice::from_raw_parts(buffer, length as usize) };
@@ -161,12 +168,32 @@ fn open_flags(access: u32, disposition: u32) -> Option<usize> {
     Some(mode | creation)
 }
 
+/// Opens `path` with `flags`; the descriptor and, when the flags may create the file, whether it
+/// was there already.
+fn open_noting_existing(path: &[u8], flags: usize) -> Result<(usize, bool), Errno> {
+    if flags & O_CREAT == 0 || flags & O_EXCL != 0 {
+        return linux::open(path, flags).map(|fd| (fd, false));
+    }
+    match linux::open(path, flags | O_EXCL) {
+        Ok(fd) => Ok((fd, false)),
+        Err(Errno::EEXIST) => linux::open(path, flags).map(|fd| (fd, true)),
+        Err(errno) => Err(errno),
+    }
+}
+
 fn create_file(path: &[u8], access: u32, disposition: u32, inherit: bool) -> usize {
     let Some(flags) = open_flags(access, disposition) else {
         return fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE);
     };
-    let fd = match linux::open(path, flags | super::pipe::close_on_exec_unless(inherit)) {
-        Ok(fd) => fd,
+    let fd = match open_noting_existing(path, flags | super::pipe::close_on_exec_unless(inherit)) {
+        Ok((fd, existed)) => {
+            let reported = matches!(disposition, CREATE_ALWAYS | OPEN_ALWAYS) && existed;
+            super::thread_environment::set_last_error(match reported {
+                true => error::ALREADY_EXISTS,
+                false => error::SUCCESS,
+            });
+            fd
+        }
         Err(errno) => {
             return fail(
                 super::directory::path_error(path, errno),

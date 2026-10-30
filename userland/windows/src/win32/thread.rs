@@ -254,8 +254,33 @@ extern "efiapi" fn set_thread_description(_handle: usize, _description: *const u
     0
 }
 
+unsafe extern "efiapi" fn set_thread_stack_guarantee(size: *mut u32) -> Bool {
+    if size.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let field = (thread_environment::current() + thread_environment::teb::GUARANTEED_STACK_BYTES)
+        as *mut u32;
+    // SAFETY: the field is inside the calling thread's TEB, 4-byte aligned, and only this
+    // thread writes it; `SetThreadStackGuarantee`'s contract: a readable and writable size.
+    unsafe {
+        let previous = field.read();
+        let requested = size.read();
+        if requested > previous {
+            field.write(requested);
+        }
+        size.write(previous);
+    }
+    TRUE
+}
+
+extern "efiapi" fn is_thread_a_fiber() -> Bool {
+    FALSE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"CreateThread" => create_thread,
+    b"SetThreadStackGuarantee" => set_thread_stack_guarantee,
+    b"IsThreadAFiber" => is_thread_a_fiber,
     b"ExitThread" => exit_thread,
     b"GetExitCodeThread" => get_exit_code_thread,
     b"GetThreadId" => get_thread_id,

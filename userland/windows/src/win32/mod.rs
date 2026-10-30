@@ -38,6 +38,7 @@ mod elements;
 mod environment;
 mod exception;
 mod file;
+mod file_information;
 mod file_picker;
 mod gdi;
 mod gdiplus;
@@ -52,7 +53,9 @@ mod message_box;
 mod messages;
 mod module;
 mod monitor;
+mod native_files;
 mod nls;
+mod overlapped;
 mod paint;
 mod placement;
 mod private_profile;
@@ -60,6 +63,7 @@ mod process;
 mod pipe;
 mod processes;
 mod psapi;
+mod random;
 mod resource;
 mod send_input;
 mod shell;
@@ -77,6 +81,7 @@ mod time;
 mod timer;
 mod toolhelp;
 mod user32;
+mod userenv;
 mod uxtheme;
 mod version;
 mod volume;
@@ -217,12 +222,15 @@ const KERNEL32: &[&[Export]] = &[
     pipe::EXPORTS,
     toolhelp::EXPORTS,
     volume::EXPORTS,
+    overlapped::EXPORTS,
+    file_information::EXPORTS,
 ];
 
 const NTDLL: &[&[Export]] = &[
     memory::NTDLL_EXPORTS,
     system::NTDLL_EXPORTS,
     exception::NTDLL_EXPORTS,
+    native_files::EXPORTS,
 ];
 
 const SHELL32: &[&[Export]] = &[
@@ -289,6 +297,10 @@ const UXTHEME: &[&[Export]] = &[uxtheme::EXPORTS];
 
 const DWMAPI: &[&[Export]] = &[dwmapi::EXPORTS];
 
+const BCRYPTPRIMITIVES: &[&[Export]] = &[random::EXPORTS];
+
+const USERENV: &[&[Export]] = &[userenv::EXPORTS];
+
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
         Library::Kernel32 => KERNEL32,
@@ -312,6 +324,8 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Shlwapi => SHLWAPI,
         Library::UxTheme => UXTHEME,
         Library::Dwmapi => DWMAPI,
+        Library::BcryptPrimitives => BCRYPTPRIMITIVES,
+        Library::Userenv => USERENV,
     }
 }
 

@@ -15,6 +15,8 @@ pub mod number {
     pub const MUNMAP: usize = 11;
     pub const RT_SIGACTION: usize = 13;
     pub const IOCTL: usize = 16;
+    pub const PREAD64: usize = 17;
+    pub const PWRITE64: usize = 18;
     pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
     pub const GETPID: usize = 39;
@@ -36,6 +38,7 @@ pub mod number {
     pub const NEWFSTATAT: usize = 262;
     pub const UNLINKAT: usize = 263;
     pub const PPOLL: usize = 271;
+    pub const GETRANDOM: usize = 318;
     pub const PIPE2: usize = 293;
     pub const RENAMEAT2: usize = 316;
     pub const SOCKET: usize = 41;
@@ -67,11 +70,14 @@ pub mod number {
     pub const READ: usize = 63;
     pub const WRITE: usize = 64;
     pub const PPOLL: usize = 73;
+    pub const PREAD64: usize = 67;
+    pub const PWRITE64: usize = 68;
     pub const NEWFSTATAT: usize = 79;
     pub const FSTAT: usize = 80;
     pub const EXIT: usize = 93;
     pub const EXIT_GROUP: usize = 94;
     pub const FUTEX: usize = 98;
+    pub const GETRANDOM: usize = 278;
     pub const CLOCK_GETTIME: usize = 113;
     pub const CLOCK_NANOSLEEP: usize = 115;
     pub const SCHED_GETAFFINITY: usize = 123;
@@ -824,6 +830,76 @@ pub fn bytes_to_read(fd: usize) -> Result<usize, Errno> {
         )
     }?;
     Ok(count.max(0) as usize)
+}
+
+/// Reads up to `buffer.len()` bytes of file `fd` from byte `offset`, leaving its position.
+pub fn read_at(fd: usize, buffer: &mut [u8], offset: u64) -> Result<usize, Errno> {
+    // SAFETY: `pread64` writes at most `buffer.len()` bytes into the borrowed buffer.
+    unsafe {
+        syscall(
+            number::PREAD64,
+            [
+                fd,
+                buffer.as_mut_ptr() as usize,
+                buffer.len(),
+                offset as usize,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+/// Writes all of `bytes` to file `fd` from byte `offset` on, leaving its position.
+pub fn write_all_at(fd: usize, mut bytes: &[u8], mut offset: u64) -> Result<(), Errno> {
+    while !bytes.is_empty() {
+        // SAFETY: `pwrite64` reads at most `bytes.len()` bytes from the borrowed slice.
+        let written = unsafe {
+            syscall(
+                number::PWRITE64,
+                [
+                    fd,
+                    bytes.as_ptr() as usize,
+                    bytes.len(),
+                    offset as usize,
+                    0,
+                    0,
+                ],
+            )
+        };
+        match written {
+            Ok(0) => return Err(Errno::EIO),
+            Ok(count) => {
+                bytes = &bytes[count..];
+                offset += count as u64;
+            }
+            Err(Errno::EINTR) => {}
+            Err(errno) => return Err(errno),
+        }
+    }
+    Ok(())
+}
+
+/// Fills `buffer` with random bytes from the kernel's generator (`getrandom`).
+pub fn random_bytes(buffer: &mut [u8]) -> Result<(), Errno> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        let rest = &mut buffer[filled..];
+        // SAFETY: `getrandom` writes at most `rest.len()` bytes into the borrowed slice.
+        let read = unsafe {
+            syscall(
+                number::GETRANDOM,
+                [rest.as_mut_ptr() as usize, rest.len(), 0, 0, 0, 0],
+            )
+        };
+        match read {
+            Ok(0) => return Err(Errno::EIO),
+            Ok(count) => filled += count,
+            Err(Errno::EINTR) => {}
+            Err(errno) => return Err(errno),
+        }
+    }
+    Ok(())
 }
 
 /// Sets the length of file `fd` to `length` bytes.

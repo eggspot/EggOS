@@ -132,10 +132,12 @@ pub fn write_utf8(units: &[u16], out: &mut [u8]) -> (usize, usize) {
 }
 
 pub const PATH_CAPACITY: usize = 4096;
+const NULL_DEVICE_NAMES: [&[u8]; 2] = [b"NUL", b"//./NUL"];
+const NULL_DEVICE: &[u8] = b"/dev/null\0";
 
 /// Writes the Windows path `chars` as a NUL-terminated EggOS path into `out` (`\\` is `/`,
 /// and a drive letter or the `\\?\\` prefix goes); its length with the NUL, or `None` if it
-/// does not fit.
+/// does not fit. The null device `NUL` (also `\\.\NUL`) is `/dev/null`.
 pub fn eggos_path(
     chars: impl Iterator<Item = char>,
     out: &mut [u8; PATH_CAPACITY],
@@ -148,6 +150,13 @@ pub fn eggos_path(
         }
         c.encode_utf8(&mut out[length..]);
         length += c.len_utf8();
+    }
+    let null_device = NULL_DEVICE_NAMES
+        .iter()
+        .any(|name| out[..length].eq_ignore_ascii_case(name));
+    if null_device {
+        out[..NULL_DEVICE.len()].copy_from_slice(NULL_DEVICE);
+        return Some(NULL_DEVICE.len());
     }
     let mut path = &out[..length];
     if path.starts_with(b"//?/") {
@@ -386,6 +395,14 @@ mod tests {
         assert_eq!(path("C:").as_deref(), Some(""));
         assert!(path(&"a".repeat(PATH_CAPACITY)).is_none());
         assert!(path(&"a".repeat(PATH_CAPACITY - 1)).is_some());
+    }
+
+    #[test]
+    fn the_null_device_is_dev_null() {
+        assert_eq!(path("NUL").as_deref(), Some("/dev/null"));
+        assert_eq!(path("nul").as_deref(), Some("/dev/null"));
+        assert_eq!(path(r"\\.\NUL").as_deref(), Some("/dev/null"));
+        assert_eq!(path("NULL").as_deref(), Some("NULL"));
     }
 
     #[test]

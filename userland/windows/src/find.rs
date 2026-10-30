@@ -172,6 +172,43 @@ pub fn fill_file_information(out: &mut [u8; FILE_INFORMATION_SIZE], entry: &Entr
     put_u32(out, 48, entry.index as u32);
 }
 
+/// The size of `FILE_BASIC_INFO`.
+pub const BASIC_INFORMATION_SIZE: usize = 40;
+/// The size of `FILE_STANDARD_INFO`.
+pub const STANDARD_INFORMATION_SIZE: usize = 24;
+/// The size of `FILE_ATTRIBUTE_TAG_INFO`.
+pub const ATTRIBUTE_TAG_INFORMATION_SIZE: usize = 8;
+
+/// Fills `out`, a `FILE_BASIC_INFO` (`GetFileInformationByHandleEx`'s `FileBasicInfo`): the
+/// creation, access, write and change times and the attributes.
+pub fn fill_basic_information(out: &mut [u8; BASIC_INFORMATION_SIZE], entry: &Entry) {
+    out.fill(0);
+    put_u64(out, 0, entry.creation_time);
+    put_u64(out, 8, entry.last_access_time);
+    put_u64(out, 16, entry.last_write_time);
+    put_u64(out, 24, entry.creation_time);
+    put_u32(out, 32, entry.attributes);
+}
+
+/// Fills `out`, a `FILE_STANDARD_INFO`: the size as both the allocation and the end of the
+/// file, the links, never a pending delete, and whether it is a directory.
+pub fn fill_standard_information(out: &mut [u8; STANDARD_INFORMATION_SIZE], entry: &Entry) {
+    out.fill(0);
+    put_u64(out, 0, entry.size);
+    put_u64(out, 8, entry.size);
+    put_u32(out, 16, entry.links);
+    out[21] = u8::from(entry.attributes & attribute::DIRECTORY != 0);
+}
+
+/// Fills `out`, a `FILE_ATTRIBUTE_TAG_INFO`: the attributes and no reparse tag.
+pub fn fill_attribute_tag_information(
+    out: &mut [u8; ATTRIBUTE_TAG_INFORMATION_SIZE],
+    entry: &Entry,
+) {
+    put_u32(out, 0, entry.attributes);
+    put_u32(out, 4, 0);
+}
+
 /// Fills `out`, a `WIN32_FILE_ATTRIBUTE_DATA` (`GetFileAttributesExW`'s standard level).
 pub fn fill_attribute_data(out: &mut [u8; ATTRIBUTE_DATA_SIZE], entry: &Entry) {
     put_u32(out, 0, entry.attributes);
@@ -296,5 +333,34 @@ mod tests {
         let mut data = [0u8; ATTRIBUTE_DATA_SIZE];
         fill_attribute_data(&mut data, &entry);
         assert_eq!(&data[32..36], &7u32.to_le_bytes());
+    }
+
+    #[test]
+    fn the_handle_information_classes_have_windows_layout() {
+        let entry = Entry {
+            attributes: attribute::DIRECTORY,
+            creation_time: 3,
+            last_access_time: 4,
+            last_write_time: 5,
+            size: 7,
+            links: 2,
+            ..Entry::default()
+        };
+        let mut basic = [0xffu8; BASIC_INFORMATION_SIZE];
+        fill_basic_information(&mut basic, &entry);
+        assert_eq!(&basic[0..8], &3u64.to_le_bytes());
+        assert_eq!(&basic[8..16], &4u64.to_le_bytes());
+        assert_eq!(&basic[16..24], &5u64.to_le_bytes());
+        assert_eq!(&basic[24..32], &3u64.to_le_bytes());
+        assert_eq!(&basic[32..40], &[0x10, 0, 0, 0, 0, 0, 0, 0]);
+        let mut standard = [0xffu8; STANDARD_INFORMATION_SIZE];
+        fill_standard_information(&mut standard, &entry);
+        assert_eq!(&standard[0..8], &7u64.to_le_bytes());
+        assert_eq!(&standard[8..16], &7u64.to_le_bytes());
+        assert_eq!(&standard[16..20], &2u32.to_le_bytes());
+        assert_eq!(&standard[20..24], &[0, 1, 0, 0]);
+        let mut tag = [0xffu8; ATTRIBUTE_TAG_INFORMATION_SIZE];
+        fill_attribute_tag_information(&mut tag, &entry);
+        assert_eq!(tag, [0x10, 0, 0, 0, 0, 0, 0, 0]);
     }
 }

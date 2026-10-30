@@ -71,6 +71,12 @@ pub mod code {
     pub const INVALID_HOOK_FILTER: u32 = 1426;
     pub const INVALID_THREAD_ID: u32 = 1444;
     pub const MENU_ITEM_NOT_FOUND: u32 = 1456;
+    pub const GEN_FAILURE: u32 = 31;
+    pub const HANDLE_EOF: u32 = 38;
+    pub const MR_MID_NOT_FOUND: u32 = 317;
+    pub const OPERATION_ABORTED: u32 = 995;
+    pub const IO_INCOMPLETE: u32 = 996;
+    pub const IO_PENDING: u32 = 997;
 }
 
 /// The Win32 error code for Linux error number `errno`.

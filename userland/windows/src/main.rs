@@ -57,9 +57,15 @@ mod low_level_io;
 #[cfg(any(test, runs_windows_programs))]
 mod pe;
 #[cfg(any(test, runs_windows_programs))]
+mod nt_status;
+#[cfg(any(test, runs_windows_programs))]
 mod peeked_pipes;
 #[cfg(any(test, runs_windows_programs))]
+mod pending_reads;
+#[cfg(any(test, runs_windows_programs))]
 mod process_list;
+#[cfg(any(test, runs_windows_programs))]
+mod queued_calls;
 #[cfg(any(test, runs_windows_programs))]
 mod scan;
 #[cfg(any(test, runs_windows_programs))]

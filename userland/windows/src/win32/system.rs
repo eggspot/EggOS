@@ -241,6 +241,8 @@ extern "efiapi" fn decode_pointer(pointer: usize) -> usize {
 pub(super) const EXPORTS: &[Export] = exports![
     b"GetComputerNameW" => get_computer_name_w,
     b"GetSystemWindowsDirectoryW" => get_system_windows_directory_w,
+    b"GetSystemDirectoryW" => get_system_windows_directory_w,
+    b"GetWindowsDirectoryW" => get_system_windows_directory_w,
     b"GetSystemDirectoryA" => get_system_directory_a,
     b"OutputDebugStringW" => output_debug_string_w,
     b"Beep" => beep,

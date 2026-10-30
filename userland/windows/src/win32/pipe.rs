@@ -63,8 +63,8 @@ pub(super) fn take_peeked(fd: usize, buffer: &mut [u8]) -> usize {
     })
 }
 
-/// Readies `fd` for `CloseHandle`: drops the bytes kept for it; `false`, and nothing done,
-/// when its handle is protected from closing.
+/// Readies `fd` for `CloseHandle`: drops the bytes kept for it and cancels its overlapped
+/// reads; `false`, and nothing done, when its handle is protected from closing.
 pub(super) fn closing(fd: usize) -> bool {
     let protected =
         ANY_PROTECTED.load(Ordering::Acquire) && PROTECTED.with(|protected| protected.contains(fd));
@@ -77,7 +77,14 @@ pub(super) fn closing(fd: usize) -> bool {
             ANY_PEEKED.store(!pipes.is_empty(), Ordering::Release);
         });
     }
+    super::overlapped::closing(fd);
+    super::native_files::closing(fd);
     true
+}
+
+/// Whether `PeekNamedPipe` kept bytes of `fd` that `ReadFile` has not taken yet.
+pub(super) fn has_peeked(fd: usize) -> bool {
+    ANY_PEEKED.load(Ordering::Acquire) && PEEKED.with(|pipes| !pipes.kept(fd).is_empty())
 }
 
 unsafe extern "efiapi" fn create_pipe(

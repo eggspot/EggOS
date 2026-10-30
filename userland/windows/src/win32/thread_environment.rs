@@ -29,6 +29,7 @@ pub mod teb {
     pub const LAST_ERROR: usize = 0x68;
     pub const TLS_SLOTS: usize = 0x1480;
     pub const TLS_SLOT_COUNT: usize = 64;
+    pub const GUARANTEED_STACK_BYTES: usize = 0x1748;
     pub const DOCUMENTED_END: usize = 0x1838;
     pub const FLS_SLOTS: usize = 0x1c00;
     pub const FLS_SLOT_COUNT: usize = 64;
