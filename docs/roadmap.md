@@ -623,8 +623,20 @@ The release path (the release-path review's issues #141-#145, after the items ab
   unwind information, and NSProcessInfo, NSDate, NSError, NSData, NSSet and `rangeOfString:`;
   CI's `cocoa-app` job moves its player, eats the food, opens its About panel, reads its element
   trees, quits with Cmd+Q and compares the frames, and the macOS programs test runs the new
-  Objective-C `language` and `uncaught` cases. Next: a real GTK app (part 24), then Windows
-  programs on C++ (part 25); nib loading for apps like UDCalc (D175's "Not yet").
+  Objective-C `language` and `uncaught` cases. Its sixth step, a real GTK app installs and
+  runs, **written, unchecked** (D176): Mousepad 0.7.0 on GTK 3.24.52 (chosen by research; GTK 3
+  draws with cairo into `wl_shm` buffers, so it needs no GPU; Alpine's builds for x86_64 and
+  aarch64), listed in docs/compatibility.md; eggway's `wl_data_device_manager` and
+  `zwp_primary_selection_device_manager_v1` (copy and paste between and inside apps, through
+  the source's pipe), `xdg_activation_v1` (a token from the focused app raises a window once),
+  `zwp_text_input_manager_v3` (the focused text field in the window's element tree, a
+  password's text left out) and KDE's server decorations (GTK 3 then draws no title bar of
+  its own); an app's environment (`environment=`, `app install --environment`, `app_install`'s
+  `environment`), `/etc/fonts/fonts.conf` in the base and the installer linking the fonts an
+  app carries into `/Applications/.fonts`; `sysinfo` and `fadvise64`; CI's `gtk-app` job
+  compiles its schemas inside EggOS, types, copies and pastes, saves and quits, and reads the
+  note back. Next: Windows programs on C++ (part 25); nib loading for apps like UDCalc (D175's
+  "Not yet"); a real Qt app (part 27).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

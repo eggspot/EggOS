@@ -124,11 +124,23 @@ draws the title bar), cursor surfaces (`wl_pointer.set_cursor`; a null one hides
 over the window) and `wp_cursor_shape_manager_v1` (1; the text, resize and default shapes
 EggOS draws), and `wp_viewporter` (1; a source rectangle and a destination size, scaled to
 the nearest pixel). A toplevel's subsurfaces and popups are drawn from the buffers they hold,
-blended by their alpha over the toplevel, which is shown opaque, at scale 1.
+blended by their alpha over the toplevel, which is shown opaque, at scale 1. Since D176 also:
+`wl_data_device_manager` (3; copy and paste: the app with the keyboard focus is offered the
+selection with every MIME type, and reading it passes its pipe to the app that copied; drag
+and drop is refused), `zwp_primary_selection_device_manager_v1` (1; the same for what is
+selected), `xdg_activation_v1` (1; a token from the app with the keyboard focus raises and
+focuses a window once, within ten seconds), `zwp_text_input_manager_v3` (1; the focused text
+field joins the window's element tree with the text around its cursor, a password's left out;
+no input method sends text yet) and KDE's `org_kde_kwin_server_decoration_manager` (1;
+always the server's, so GTK 3 draws no title bar of its own). An app's own environment comes
+from its manifest (`environment=`, D176), and `/etc/fonts/fonts.conf` points fontconfig at
+`/usr/share/fonts`, `~/.local/share/fonts` and the fonts installed apps carry
+(`/Applications/.fonts`).
 
 A dynamically linked program installs with its loader and libraries beside it: put them in a
 `.zip` with the program (`app install`, [apps](apps.md)), and it opens through them. The
-first real app that runs this way is Brogue CE, an SDL game ([compatibility](compatibility.md)).
+first real apps that run this way are Brogue CE, an SDL game, and Mousepad, a GTK 3 editor
+([compatibility](compatibility.md)).
 
 `tests/linux-gui` is a complete example: `linux-paint` is a static Rust program that speaks the
 wire protocol itself; the Linux GUI boot test opens its window, clicks, types, drags, maximises
@@ -136,8 +148,8 @@ and closes it on every architecture.
 
 ### What real toolkits need next
 
-SDL apps run (D172, [compatibility](compatibility.md)); GTK, Qt, browsers and Electron apps do
-not yet. What they need, roughly in the order it unlocks them:
+SDL apps run (D172) and GTK 3 apps run (D176, [compatibility](compatibility.md)); Qt,
+GTK 4, browsers and Electron apps do not yet. What they need, roughly in the order it unlocks them:
 
 | Need | Who needs it |
 |------|--------------|
@@ -148,14 +160,14 @@ not yet. What they need, roughly in the order it unlocks them:
 | (`wl_subcompositor`: done, D172) | GTK, Qt, libdecor (SDL) |
 | (`xdg-decoration`, server-side decorations: done, D172) | apps that would draw their own title bars |
 | (`xdg_popup` placement: done inside the toplevel's window, D172) | menus and tooltips |
-| `wl_data_device_manager` and the primary selection | copy and paste, drag and drop |
+| (`wl_data_device_manager` and the primary selection: copy and paste done, D176); drag and drop | copy and paste, drag and drop |
 | (cursor surfaces and `cursor-shape-v1`: done with EggOS's shapes, D172); a cursor surface's own image, the hand and busy shapes | the program's own pointer shapes |
 | (`wp_viewporter`: done, D172); fractional scale, buffer scales above 1 | scaling |
 | `linux-dmabuf` and a GPU driver stack | EGL and Vulkan through Mesa |
-| `text-input-v3` | input methods |
-| `xdg-activation` | apps that raise their own windows |
+| (`text-input-v3`: served, D176); an input method to send text through it | input methods |
+| (`xdg-activation`: done, D176) | apps that raise their own windows |
 | relative pointer and pointer constraints | games |
-| `/etc/fonts` and D-Bus with the desktop portals | most toolkit apps |
+| (`/etc/fonts`: done, D176); D-Bus with the desktop portals | most toolkit apps |
 | seccomp, namespaces and `clone3` | browser sandboxes |
 | alpha compositing | translucent windows |
 
@@ -192,8 +204,9 @@ not yet. What they need, roughly in the order it unlocks them:
   [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`), ping sockets and
   TCP (`std::net::TcpStream` and `TcpListener`: `connect`, `listen`, `accept`, `poll`,
   `shutdown`, timeouts), and names through musl's resolver; IPv6 and `AF_UNIX` datagrams do
-  not yet. Wayland GUI programs work through `eggway` (D140, above), and SDL apps on it (D172);
-  GTK and Qt not yet.
+  not yet. Wayland GUI programs work through `eggway` (D140, above), and SDL apps (D172) and GTK 3
+  apps (D176) on it; Qt not yet. `sysinfo` and `fadvise64` work (D176); `inotify`, `chown`,
+  `copy_file_range`, `splice` and extended attributes do not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

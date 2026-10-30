@@ -12351,3 +12351,176 @@ the license, by an explicit instruction recorded here.
   still end the program at once instead of being catchable; C++ exceptions and
   `__gxx_personality_v0`. UDCalc and apps like it (Sparkle and other bundled frameworks,
   `LC_DYLD_INFO` fixups on x86_64). riscv64 (the layer runs on aarch64 and x86_64 only).
+
+## D176 A real GTK app installs and runs: Mousepad on GTK 3 through `eggway` with copy and paste over `wl_data_device_manager` and the primary selection, `xdg_activation_v1`, `zwp_text_input_v3` fields in the element tree and KDE's server decorations; an app's environment, `/etc/fonts` and the fonts apps carry; `sysinfo` and `fadvise64`; CI's `gtk-app` job (the Real apps track's sixth step, its first GTK app; extends D18, D21, D22, D133, D134, D140, D148, D161, D167, D169, D172) — Decided by the build loop (the app, which GTK, where its pieces come from and what it needs at run time decided by research)
+- **Why.** The Real apps track (roadmap) checks EggOS against applications people use. After an
+  SDL game (D172) the next Linux toolkit is GTK, the toolkit of GNOME, Xfce and most Linux
+  desktop apps, which asks for what SDL did not: copy and paste, raising windows, text input,
+  server-side decorations it understands, fonts through fontconfig, and its own data found
+  through its environment. The plan's part 24 names the kind of app, not the app: research
+  picked it.
+- **The app** (decided by research, below): Mousepad 0.7.0, Xfce's text editor
+  (GPL-2.0-or-later), on GTK 3.24.52 and GtkSourceView 4.8.4, as Alpine Linux `v3.24` builds
+  them against musl for x86_64 and aarch64, with GLib 2.88.1, Pango 1.57.1, cairo 1.18.4,
+  HarfBuzz 13.2.1, fontconfig 2.17.1, FreeType 2.14.3, the accessibility libraries and the X11
+  libraries GTK is linked against (loaded, never used on Wayland), Wayland 1.25.0's client
+  libraries, `libxkbcommon` 1.13.1, musl 1.2.6's loader and DejaVu 2.37's fonts: 57 packages,
+  64 libraries (about 30 MB). GTK 3, not 4: GTK 3 draws with cairo into `wl_shm` buffers, while
+  Alpine's GTK 4 links Vulkan, GStreamer and graphene and expects a GPU. It is test data:
+  downloaded by CI on every run, checked against SHA-256s pinned in `xtask/src/gtk_app.rs`,
+  never shipped in an image or committed. docs/compatibility.md lists it.
+- **Copy and paste** (`userland/eggway/src/selection.rs`; `wayland/src/protocol.rs` global 10,
+  `wl_data_device_manager` 3, and global 11, `zwp_primary_selection_device_manager_v1` 1): a
+  client's source collects MIME types (12 at most, each 64 bytes at most, duplicates once),
+  becomes the selection with `set_selection` (once: `used_source` after), and the previous
+  source is told `cancelled`. The client with the keyboard focus (the one whose window last got
+  `FOCUS_IN`) is offered the selection before its keyboard `enter` and whenever it changes:
+  `data_offer` with a new object from the compositor's id range (`ClientSlot::
+  create_server_object`, 32 per client, freed when the client destroys it), one `offer` per
+  type, then `selection`; a null selection is `selection(null)`. `receive(type, fd)` on an
+  offer that is still the selection's hands the pipe's write end to the source's client in
+  `send(type, fd)` (the compositor closes its copy once sent, so the reader sees the end when
+  the writer closes); a stale offer's pipe is closed at once. Work for another client than the
+  one whose request made it (announcing, cancelling, sending) is queued in `Selections` (8 at
+  most) and done by the compositor after that request (`Compositor::deliver`); a client that
+  goes ends its selections and drops what waited for it, closing its pipes. The primary
+  selection works the same through its own device, offer and source. Drag and drop is not
+  served: a drag's source is cancelled at once; `wl_data_offer.finish` on a selection's offer
+  is `invalid_finish`.
+- **Raising windows** (`activation.rs`, global 12, `xdg_activation_v1` 1): a token object's
+  `commit` gives a token (`eggway-` and 16 hex digits, unguessable from the outside: a mixed
+  counter and clock), once (`already_used` after); `activate(token, surface)` raises and
+  focuses the surface's window through the window server's `MANAGE_WINDOW` focus action
+  (`System::focus_window`) when the token was given to the client with the keyboard focus, is
+  at most ten seconds old and was not used before; anything else is ignored, as the protocol
+  lets the compositor choose, so a program in the background cannot take the focus. Eight
+  tokens wait at once; a new one replaces the oldest.
+- **Text input** (`text_input.rs`, global 13, `zwp_text_input_manager_v3` 1): each text input
+  (4 per client) is told `enter` and `leave` as the keyboard focus enters and leaves its
+  client's surfaces; `enable`, `disable`, `set_surrounding_text` (the 240 bytes around the
+  cursor kept, cut at whole UTF-8 characters), `set_content_type` and `set_cursor_rectangle`
+  are double-buffered until `commit`. EggOS has no input method yet, so the compositor sends
+  no text through it (keys still arrive as keys, and GTK's Wayland input method falls back to
+  its simple one). What a field commits makes the focused field part of its window's element
+  tree (D161): a `TextField` child of the window, at the cursor's rectangle, named by its
+  purpose (`text`, `email`, `url`, ...), focused, its value the text around the cursor, except
+  a password's or a PIN's or text the field calls hidden or sensitive, whose value is empty.
+- **Server decorations GTK 3 understands** (global 14, KDE's
+  `org_kde_kwin_server_decoration_manager` 1): GTK 3.24 does not speak
+  `zxdg_decoration_manager_v1` but draws its own title bar and shadows unless the compositor
+  says, through KDE's protocol, that decorations are the server's. `eggway` announces
+  `default_mode` server and answers every `create` and `request_mode` with mode server, as
+  EggOS draws every window's chrome; a mode past server is a protocol error.
+- **An app's environment** (`app-manifest`, `drivers/src/desktop/catalogue.rs`, `userland/app`,
+  `userland/commands`, `userland/mcp`): the manifest's optional `environment=` key holds
+  `NAME=value` words, single spaces between, names of letters, digits and `_` not starting
+  with a digit, values of letters, digits and `-_./:=+,@%`, at most 128 bytes
+  (`manifest::is_environment`), so nothing reaches the shell as anything but assignments;
+  opening the app types them before the program on its launch line (eggsh sets them for that
+  program alone). `app install --environment <variables>`, the installer's window's command
+  line and the MCP tool `app_install`'s `environment` (stored after `arguments` in the words
+  buffer, passed to its twin as `--environment`) write it; a bad value is
+  `Problem::InvalidEnvironment` (`app`) or `BadAppEnvironment` (MCP). Mousepad needs
+  `XDG_DATA_DIRS=/Applications/mousepad/share` (GLib finds its schemas and GtkSourceView its
+  languages there) and `NO_AT_BRIDGE=1` (no accessibility bus: EggOS has no D-Bus).
+- **Fonts** (`initramfs/etc/fonts/fonts.conf`, `userland/app/src/installer.rs`): the base
+  holds a fontconfig configuration (1 131 bytes) listing `/usr/share/fonts`,
+  `/Applications/.fonts` and `~/.local/share/fonts`, caching in `~/.cache/fontconfig` or
+  `/tmp/fontconfig`, mapping `sans` and `mono` to `sans-serif` and `monospace` and preferring
+  DejaVu for the generic families. The installer links an app's `share/fonts` folder, when it
+  carries one, as `/Applications/.fonts/<name>` before writing its manifest (so a failed
+  install leaves no link), and removes the link, and the folder once empty, when the app is
+  uninstalled; `.fonts` is no app's name. Every program that uses fontconfig thus finds the
+  fonts of every installed app, and scanning reads only fonts, not the apps' libraries.
+- **What GTK hits in the kernel**, from research's reading of the libraries' imports against
+  `kernel/src/linux.rs`: `sysinfo` (x86_64 99, generic 179; `kernel/src/linux/sysinfo.rs`:
+  uptime rounded up to whole seconds, total and free memory in bytes from the frame allocator,
+  the process count, no load averages, swap or high memory), which musl's and glibc's
+  `sysconf(_SC_PHYS_PAGES)` and GLib's memory monitor read, and `fadvise64` (x86_64 221,
+  generic 223; `files::fadvise64`): every valid advice taken and changing nothing, as EggOS
+  reads file pages on demand and keeps no read-ahead (`ESPIPE` for a pipe, `EINVAL` for a
+  socket, an event file, a negative length or an unknown advice). The plan's parts 15 to 23
+  leave missing, all with fallbacks GLib takes: `inotify_init1`, `inotify_add_watch` and
+  `inotify_rm_watch` (GLib polls files instead), `chown`, `fchown` and `lchown` (GIO keeps a
+  file's owner on save only when it differs from the user's), `copy_file_range` and `splice`
+  (GIO copies with `read` and `write`), the extended attribute calls, `prctl`'s `PR_SET_NAME`
+  (`EINVAL`, thread names), `/proc/self/mountinfo` (GIO reads `/proc/mounts`), `/sys` and
+  `/etc/passwd` (GLib takes the home folder from `HOME`).
+- **Front-ends (D22).** GUI: the app's icon and launcher row open it, Files and the installer's
+  window install it (the window takes `--environment` and `--arguments` on its command line);
+  copy and paste inside and between Wayland apps. CLI: `app install --entry --environment
+  --arguments`, `app open`, `app list`, `wm list`, `wm show` (the focused text field). MCP:
+  `app_install` with `entry`, `environment` and `arguments`, `app_open`, `wm_list`, `wm_show`.
+- **The check** (`cargo xtask gtk-app --arch <arch>`, `xtask/src/qemu/gtk_app.rs`; CI's
+  `gtk-app` job, x86_64 and aarch64, in `check`'s needs): packs `mousepad.zip` (the editor,
+  `libexec/glib-compile-schemas`, `lib/`, `share/glib-2.0/schemas`, `share/gtksourceview-4`,
+  `share/fonts`), boots the release image on a blank disk with 1 GiB, installs it with `--entry
+  mousepad --environment ... --arguments '--disable-server /tmp/note.txt'`, lists it, compiles
+  its schemas inside EggOS with its own `glib-compile-schemas` (GSettings reads compiled
+  schemas, which only GLib's tool writes), writes `alpha` into the note, opens it from `/tmp`
+  with `app open`, finds its window by where the screen changed, clicks its title bar, presses
+  Ctrl+End and types `beta` (the window must change), presses Ctrl+A, Ctrl+C, Ctrl+End and
+  Ctrl+V (it must change again), saves with Ctrl+S and quits with Ctrl+Q, then wants the note to
+  hold `alpha` and `beta` twice with the copy right after the first `beta` (true whether or not
+  GtkSourceView hides the file's last newline), `mousepad` in `/Applications/.fonts`, no
+  Mousepad window in `wm list`, a clean power-off and the manifest's `loader`, `libraries`,
+  `arguments` and `environment` on the disk.
+- **Tests.** wayland: the new interfaces' tables and globals, a nullable string read as null
+  for a length of 0. eggway (fake machine): two clients copying and pasting (the focused one
+  offered every type, its pipe handed to the source's client, a replaced source cancelled, a
+  stale offer's pipe closed, the selection ending with its client), a source set twice, a
+  selection offer's `finish` and a drag cancelled, the primary selection offered, read and
+  ended, activation tokens from a background and a focused client (one raise, then nothing,
+  `already_used`), tokens expiring and replaced, a focused text field in the element tree after
+  its commit, a password's text left out, `leave` and no field once the focus left, excerpts
+  around the cursor cut at whole characters, KDE decorations always the server's. kernel:
+  `struct sysinfo`'s layout and the uptime's rounding, `sysinfo` and `fadvise64` through the
+  calls. manifest: an environment read back and every unsafe one refused. app: `--environment`
+  parsed, the environment written and an app's fonts linked and unlinked, `.fonts` refused as a
+  name. drivers: the environment first on the launch line. mcp: `environment` checked and kept.
+  xtask: the pinned packages, the archive's members, the typed lines and the verdict.
+- **Decided by research** (a research subagent read Alpine `v3.24`'s package index, downloaded
+  and hashed every package for both architectures, followed `DT_NEEDED` from the programs
+  through every library with its own ELF reader, read the GTK 3 and GTK 4 libraries' imports
+  and the registry code of `libgdk-3`'s binary, and checked the libraries' system calls against
+  the kernel's table; it read no GTK or GLib source). Its recommendation, followed: Mousepad,
+  because its interface is built into its program, it needs no D-Bus with `--disable-server`,
+  it saves a file given on its command line without a dialog (so the check reads the result
+  back), and GTK 3 draws without a GPU; runner-up Geany 2.1 (its interface file sits at a fixed
+  `/usr/share/geany`). GTK 3 binds `wl_data_device_manager` up to 3, both primary selection
+  managers, `xdg_activation_v1`, `zwp_text_input_manager_v3`, KDE's server decoration manager
+  and `wp_cursor_shape_manager_v1`, and needs only `wl_compositor`, `wl_shm` and `xdg_wm_base`;
+  it takes modifiers from `wl_keyboard.modifiers` (sent before keys already). The environment
+  (`XDG_DATA_DIRS` and `NO_AT_BRIDGE` alone: musl's default locale is UTF-8, GTK's default
+  theme is built in, Wayland comes first); the schemas compiled inside EggOS with the carried
+  tool; four DejaVu fonts; the kernel's missing calls listed above. Left to the job: whether
+  glycin's failed image loads (it starts loader programs) stay harmless, whether GTK pastes
+  its own selection in-process or through `receive`, and Mousepad's behaviour without its
+  plugin folder.
+- **Decided without research.** Copy and paste between clients through deliveries queued after
+  each request (rather than a second pass over every client); offers from the compositor's id
+  range, the lowest free one, so libwayland's sequential map accepts them; the focused client
+  as the one whose window last got `FOCUS_IN`; refusing drag and drop by cancelling its
+  source; the activation policy (focused client, ten seconds, once); the text field in the
+  element tree as text input's use until input methods exist, and leaving out concealed text;
+  answering KDE's protocol (which the plan did not name) so GTK 3 shows EggOS's chrome; the
+  manifest's `environment` and its character set, typed before the program; fonts linked into
+  `/Applications/.fonts` rather than listing `/Applications` in fonts.conf (which would make
+  fontconfig open every library) or an environment variable (the launch line has 256 bytes);
+  `sysinfo` and `fadvise64` as the calls worth adding now. The owner can overrule any of these.
+- **Performance and size (D24).** No kernel hot path changes: `sysinfo` and `fadvise64` are
+  out-of-line calls. The base grows by `/etc/fonts/fonts.conf` (1 131 bytes) and the eggway
+  and installer code; eggway's per-client memory grows by 8 selection sources (about 6.5 KiB),
+  4 text inputs (about 2 KiB) and 32 compositor objects. A client that copies costs one queued
+  delivery per change; data never passes through the compositor. No benchmark is added.
+- **Not yet.** Drag and drop (`start_drag`, `enter`, `motion`, `drop`, actions); one clipboard
+  for every app, Windows' and macOS' layers and EggOS's own toolkit included (part 45);
+  selections kept after their client ends (a clipboard manager); an input method behind
+  `text-input-v3` (part 33), `preedit_string` and `commit_string`; GTK's icons and images
+  (glycin's loaders, or a gdk-pixbuf with built-in PNG); `inotify`, `chown`, `fchown`,
+  `lchown`, `copy_file_range`, `splice`, extended attributes, `PR_SET_NAME`,
+  `/proc/self/mountinfo`, `/sys` and `/etc/passwd`; D-Bus (accessibility, portals,
+  single-instance apps); GTK 4 (a GPU stack or GSK's cairo renderer without Vulkan linked); a
+  field in Files or the launcher for an app's environment; compiling an app's schemas when it
+  is installed; riscv64 (Alpine `v3.24` has no riscv64 build pinned); whatever the first CI run
+  finds missing for GTK, GLib and Mousepad (listed above), to be recorded in the roadmap.

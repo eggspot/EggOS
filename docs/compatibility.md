@@ -12,6 +12,7 @@ works.
 | [Brogue: Community Edition](https://github.com/tmewett/BrogueCE), a roguelike game | 1.15.1 (Alpine `v3.24`'s `brogue-1.15.1-r0`), on `sdl2-compat` 2.32.68 and SDL `main` at `328edfc1` | AGPL-3.0-or-later (code), CC BY-SA 4.0 (tiles) | Linux, SDL 2 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader and libraries, opens from its icon or `app open` in its own window, plays turns from the keyboard, saves and quits | `sdl3`, `sdl-app` (D172) |
 | [Pegs](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/pegs.html) from Simon Tatham's Portable Puzzle Collection, a peg solitaire game | `20260923.616da16` (the collection's official `pegs.exe`) | MIT | Windows, classic Win32 (ANSI, MSVC's `/MD` C runtime) | x86_64 (the collection publishes x64 Windows builds only) | installs from its `.exe`, opens from its icon or `app open`, plays by dragging pegs, undoes and redoes, changes its board from its `Type` menu (the window resizes, the tick moves), opens its About box and its Custom dialog with a drop-down list, quits | `win32-app` (D174) |
 | [CocoaGame](https://github.com/reallukee/cocoagame), a small Objective-C board game | 1.0.0 (the author's release `CocoaGame.zip`) | MIT | macOS, Objective-C on AppKit (built in code, no nib), linking the Cocoa umbrella | aarch64, x86_64 (a universal binary) | installs from its `.zip`, opens from its icon or `app open` in its own window, moves its player with `w`, `a`, `s`, `d` and the arrow keys, eats the food, shows its About panel from its app menu, answers agents with its views as an element tree, quits with Cmd+Q | `cocoa-app` (D175) |
+| [Mousepad](https://docs.xfce.org/apps/mousepad/start), Xfce's text editor | 0.7.0 (Alpine `v3.24`'s `mousepad-0.7.0-r0`), on GTK 3.24.52 and GtkSourceView 4.8.4 | GPL-2.0-or-later (Mousepad; GTK and its libraries LGPL and others; DejaVu fonts free) | Linux, GTK 3 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader, libraries, schemas and fonts and its environment, opens from its icon or `app open` in its own window with EggOS's title bar, edits text from the keyboard, copies and pastes inside the app (Ctrl+A, Ctrl+C, Ctrl+V), saves and quits | `gtk-app` (D176) |
 
 ## Brogue CE (Linux, SDL)
 
@@ -123,3 +124,58 @@ works.
 - **Known limits.** The game has no sound and no saved state, so nothing else is exercised. The
   layer's AppKit is the core of AppKit (`docs/macos-programs.md`): apps with nibs, table and
   scroll views or images, like the runner-up UDCalc, do not run yet (D175's "Not yet").
+
+## Mousepad (Linux, GTK 3)
+
+- **Where it comes from.** `cargo xtask gtk-app` downloads Alpine Linux `v3.24`'s package
+  `mousepad` and the 56 packages its program and libraries need (GTK 3, GLib, Pango, cairo,
+  HarfBuzz, fontconfig, FreeType, GtkSourceView 4, the accessibility and X11 libraries GTK is
+  linked against, Wayland's client libraries, `libxkbcommon`, musl and DejaVu's fonts), each
+  checked against a SHA-256 pinned in `xtask/src/gtk_app.rs` (Alpine's mirror keeps only a
+  package's latest build, so a rebuilt package is pinned again by hand). It is test data:
+  never shipped in an image, never committed. The pieces go into `mousepad.zip`: `mousepad`,
+  `libexec/glib-compile-schemas`, `lib/` (musl's loader and 64 libraries, about 30 MB),
+  `share/glib-2.0/schemas` (Mousepad's and GTK's GSettings schemas), `share/gtksourceview-4`
+  (its languages and colour styles) and `share/fonts` (four DejaVu fonts).
+- **Why it.** Research chose it as the first GTK app: a real, maintained, freely licensed
+  editor whose interface is built into its program (no files at fixed paths but schemas and
+  data that `XDG_DATA_DIRS` moves), that runs on GTK 3, which draws with cairo into `wl_shm`
+  buffers (GTK 4 links Vulkan and GStreamer and wants a GPU first), that needs no D-Bus with
+  `--disable-server`, and whose main feature, editing a file, can be driven by keys and
+  checked by reading the file back. Runner-up: Geany 2.1 (no schemas, but its interface file
+  sits at a fixed `/usr/share/geany`).
+- **Installing it.** `app install --entry mousepad --environment
+  'XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1' --arguments '--disable-server
+  /tmp/note.txt' /media/host/mousepad.zip` (or the MCP tool `app_install` with `entry`,
+  `environment` and `arguments`): the archive holds two programs, so `--entry` names the
+  editor; the installer finds its loader and libraries as for Brogue, writes the
+  `environment=` and `arguments=` lines, and links the fonts it carries
+  (`/Applications/mousepad/share/fonts`) as `/Applications/.fonts/mousepad`, which
+  `/etc/fonts/fonts.conf` lists, so fontconfig finds them. GSettings reads compiled schemas,
+  which the archive carries as XML: compile them once with the tool it carries,
+  `/Applications/mousepad/lib/ld-musl-<arch>.so.1 --library-path /Applications/mousepad/lib
+  /Applications/mousepad/libexec/glib-compile-schemas
+  /Applications/mousepad/share/glib-2.0/schemas`, as a packager would.
+- **Opening it.** Its icon, `app open mousepad` or the MCP tool `app_open` types
+  `XDG_DATA_DIRS=... NO_AT_BRIDGE=1 /Applications/mousepad/lib/ld-musl-<arch>.so.1
+  --library-path /Applications/mousepad/lib /Applications/mousepad/mousepad --disable-server
+  /tmp/note.txt` in the terminal. GTK connects to `eggway`, asks for KDE's server-side
+  decorations (so it draws no title bar of its own and the window wears EggOS's), draws with
+  cairo into `wl_shm` buffers, its menus as popups, and copies and pastes through
+  `wl_data_device_manager` and the primary selection; its text view tells `eggway` about the
+  focused text field through `zwp_text_input_v3`, which agents see in `wm show`.
+- **What CI does** (`gtk-app`, x86_64 and aarch64): installs it on a blank disk, lists it,
+  compiles its schemas inside EggOS with its own `glib-compile-schemas`, writes `alpha` into
+  `/tmp/note.txt`, opens it from `/tmp`, finds its window where the screen changed, clicks its
+  title bar, presses Ctrl+End and types `beta` (the window must change), presses Ctrl+A,
+  Ctrl+C, Ctrl+End and Ctrl+V (it must change again), saves with Ctrl+S and quits with Ctrl+Q,
+  then wants the note to hold `alpha` and `beta` twice with the copy pasted right after the
+  first `beta`, `mousepad` in `/Applications/.fonts`, no Mousepad window in `wm list`, and the
+  manifest's loader, libraries, arguments and environment on the disk after the power-off.
+- **Known limits.** Icons and images are blank: Alpine's gdk-pixbuf 2.44 loads PNG and JPEG
+  only through glycin, which starts sandboxed loader programs EggOS does not ship; there is no
+  D-Bus, so no accessibility bus, no single instance across windows and no portals; files are
+  not watched for changes made by other programs (`inotify` is not there, so GLib polls);
+  saving keeps the file's owner only when it is the user's (`chown` is not there yet); drag and
+  drop is refused; text input methods have nothing to talk to yet. What EggOS still lacks for
+  it is in D176's "Not yet".

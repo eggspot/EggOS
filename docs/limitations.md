@@ -192,20 +192,27 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   pipe opens that pipe again (D173), as jobserver clients do; links to sockets, event files
   and memory files cannot be opened, and a pipe cannot be opened for reading and writing at
   once (`EINVAL`).
-- **Linux GUI programs: Wayland clients and SDL apps, not GTK or Qt yet.** `eggway` (D140,
-  D172) shows a program's `xdg_toplevel`s as desktop windows with their subsurfaces and popups
-  drawn in, and an SDL app installed from a `.zip` with its loader and libraries runs (Brogue
-  CE, [compatibility](compatibility.md)); GTK, Qt and browsers need protocols and libraries
-  eggway does not serve yet ([Linux programs](linux-programs.md) lists them). It serves one
+- **Linux GUI programs: Wayland clients, SDL apps and GTK 3 apps, not Qt yet.** `eggway` (D140,
+  D172, D176) shows a program's `xdg_toplevel`s as desktop windows with their subsurfaces and
+  popups drawn in, and an SDL app or a GTK 3 app installed from a `.zip` with its loader and
+  libraries runs (Brogue CE and Mousepad, [compatibility](compatibility.md)); Qt, GTK 4 and
+  browsers need protocols and libraries eggway does not serve yet ([Linux programs](linux-programs.md) lists them). It serves one
   seat and one output (whose mode is the work area's size, at scale 1), shows toplevels opaque
   and ignores buffer scale and transform and the window menu request; popups stay inside their
   toplevel's window, input regions are not used for hit-testing, and a subsurface's restacking
   takes effect at once instead of on its parent's commit; a cursor surface shows the arrow (its
   own image is not drawn) and the cursor shapes EggOS has no drawing for (a hand, busy) show the
-  arrow; there is no clipboard, touch, `xdg-activation` or `text-input`; at most 16 clients, 16
-  surfaces, 8 pools and 8 positioners each, pools of 32 MiB at most and 48 MiB for all clients,
-  and the terminal waits while a Wayland program opened from it runs, which also writes its
-  files into the terminal's current folder.
+  arrow; copy and paste works through the clipboard and the primary selection, but not drag
+  and drop, and a selection offered as more than 12 MIME types offers the first 12; tokens of
+  `xdg-activation` work once, for ten seconds, and only from the app with the keyboard focus;
+  `text-input` has no input method behind it, so no composed text comes from EggOS (keys still
+  do), and only the text around the cursor (240 bytes) joins the element tree; there is no
+  touch; GTK apps' images and icons are blank (gdk-pixbuf 2.44 loads them through glycin's
+  sandboxed loaders, which EggOS does not ship), and there is no D-Bus (accessibility, portals,
+  single-instance apps), `inotify` (GLib polls instead) or `chown`; at most 16 clients, 16
+  surfaces, 8 pools, 8 positioners, 8 selection sources and 4 text inputs each, pools of 32
+  MiB at most and 48 MiB for all clients, and the terminal waits while a Wayland program opened
+  from it runs, which also writes its files into the terminal's current folder.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, from the host

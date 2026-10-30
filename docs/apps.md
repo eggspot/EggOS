@@ -37,7 +37,7 @@ the app appears there and on the desktop.
 `app` is the command; the installer's window is the same capability with dialogs (D22, D134).
 
 ```
-app install [--name <name>] [--entry <path>] [--arguments <words>] [--window] [--] <path>
+app install [--name <name>] [--entry <path>] [--arguments <words>] [--environment <variables>] [--window] [--] <path>
 app uninstall [--window] [--dry-run] [--] <name>   (app remove is the same)
 app open [--] <name>
 app list [--json] [--limit <count>] [--after <cursor>]
@@ -119,6 +119,17 @@ is built on a Mac (Apple's linker builds it).
   only, at most 128 bytes`), so nothing in them can reach the shell as anything but words.
   The MCP tool `app_install` takes them as `arguments`; the installer's window takes them on
   its command line (`/usr/libexec/app-window install --arguments ...`).
+- **`--environment <variables>`** (D176) gives `NAME=value` words set in the program's
+  environment when the app opens, written as the manifest's `environment` and typed before the
+  program on its launch line: names of letters, digits and `_` (not starting with a digit),
+  values of letters, digits and `-_./:=+,@%`, single spaces between words, at most 128 bytes
+  (anything else is refused). A toolkit app uses it to find the data it carries (GTK's
+  schemas through `XDG_DATA_DIRS=/Applications/<name>/share`). The MCP tool `app_install`
+  takes it as `environment`, the installer's window on its command line.
+- **Fonts** (D176): an app that carries fonts in `share/fonts` gets a link to that folder at
+  `/Applications/.fonts/<name>`, made before its manifest and removed when it is
+  uninstalled; `/etc/fonts/fonts.conf` lists `/Applications/.fonts`, so every program that uses
+  fontconfig finds the fonts of every installed app. No app may be called `.fonts`.
 - **Symbolic links** (D170) in an `.app` folder or a `.zip` (a macOS framework's
   `Versions/Current -> A` and `Foo -> Versions/Current/Foo`) are made again as links with the
   same target, not followed. A link whose target is absolute, or whose `..` parts climb above
@@ -240,6 +251,7 @@ and the installer share it.
 | `loader` | no | A Linux program's dynamic loader, relative to the folder, with `run`'s rules (D172): the app opens through it. |
 | `libraries` | no | The folders the loader finds the program's libraries in, relative to the folder and separated by `:`, at most 128 bytes, no spaces (D172). |
 | `arguments` | no | Words the program opens with, after its path: letters, digits, spaces and `-_./:=+,@%`, at most 128 bytes, not starting with a space (D172). |
+| `environment` | no | `NAME=value` words set in the program's environment when the app opens, typed before it on its launch line: names of letters, digits and `_`, values of letters, digits and `-_./:=+,@%`, single spaces between, at most 128 bytes (D176). |
 | `icon` | no | The app's own icon file (D148), relative to the folder, with `run`'s rules: [`app.icon`](../app-manifest/src/icon.rs), exactly 13 312 bytes, the 48x48 then the 32x32 image as premultiplied `0xAARRGGBB`, little-endian. The shell draws it, without a badge, wherever the app's icon shows; without the key, or with a file of another size, the app wears the letter tile and its source's badge. |
 
 A manifest that is not this format, is longer than 1024 bytes, lacks a required key, has an
@@ -255,7 +267,7 @@ are kept.
 | Settings, Files | Focuses its window if it has one, else starts `/bin/settings` or `/bin/files` as a process. Without `/bin/files` (D18), Files says `Files is not installed.` |
 | Text Editor | Starts `/bin/text-editor` on an untitled document, a new window each time (D149); the dock's icon of running editors focuses them. Without it, `Text Editor is not installed.` |
 | Host share | Starts Files on `/media/host` (`/bin/files /media/host`, D135); without Files it focuses the terminal and runs `ls /media/host` in it. |
-| An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first; a program with a `loader` runs through it (`<loader> --library-path <libraries> <program>`, each absolute in the app's folder) and the app's `arguments` follow (D172). The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D147) opens its window, a console program writes in the terminal. |
+| An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first; a program with a `loader` runs through it (`<loader> --library-path <libraries> <program>`, each absolute in the app's folder) and the app's `arguments` follow (D172); the app's `environment` comes first on the line (D176). The program runs through its layer as at the prompt: a Windows GUI program or a macOS app (an `.app`, D147) opens its window, a console program writes in the terminal. |
 | `Install from host share...` | Starts the installer's window on `/media/host` (above). |
 
 The kernel reads the catalogue when the desktop starts, each time the launcher opens and when
