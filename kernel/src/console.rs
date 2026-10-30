@@ -49,8 +49,10 @@ pub fn receive_input<P: Platform>() {
 
 /// Passes `bytes` a keyboard typed through the line discipline exactly as [`receive_input`]
 /// passes the UART's, with the same code: the two share the discipline's input, so both can be
-/// typed on at once.
+/// typed on at once. The graphical terminal's cursor starts its blink again
+/// ([`crate::terminal::note_typing`]).
 pub fn receive_from_keyboard<P: Platform>(bytes: &[u8]) {
+    crate::terminal::note_typing();
     receive::<P>(Some(bytes));
 }
 

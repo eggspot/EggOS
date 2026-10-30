@@ -43,7 +43,7 @@ use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, Part, WindowId, colou
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::input::keymap::Modifiers;
 use eggos_drivers::input::{AxisRange, key, scale_to_screen};
-use eggos_drivers::terminal::Terminal;
+use eggos_drivers::terminal::{CursorLook, Terminal};
 
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
@@ -1601,6 +1601,10 @@ const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
 const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
 
+/// What the kernel says as it starts init and lights the boot screen's third stage (D186):
+/// `init::BOOT_INIT_LINE`.
+const BOOT_INIT_LINE: &str = "boot: init";
+
 /// What the kernel says when it shows its display at 1280x800, the default mode.
 pub const DISPLAY_LINE_1280X800: &str = "boot: display 1280x800";
 
@@ -2411,6 +2415,11 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
              interrupts"
         ));
     }
+    if !lines.contains(&BOOT_INIT_LINE) {
+        return Err(format!(
+            "{arch}: no `{BOOT_INIT_LINE}`: the boot screen's init stage was not reached"
+        ));
+    }
     if !lines.contains(&DISPLAY_LINE_1280X800) {
         return Err(format!(
             "{arch}: no `{DISPLAY_LINE_1280X800}`: the virtio GPU was not shown"
@@ -2538,11 +2547,28 @@ fn window_pattern(colours: [u32; 2], x: u32, y: u32) -> u32 {
 /// What a `width` by `height` display shows once the release kernel's desktop is in
 /// `desktop`'s state with its clock at `up 0:00` and its terminal was fed `stream`, rendered
 /// by the same desktop and terminal engine on the host; `windows` are the programs' windows
-/// and what each shows.
+/// and what each shows. The cursor is the block while the terminal's window is focused, else
+/// its outline; the person's pointer is not in it, since the GPU's cursor draws it outside the
+/// framebuffer QEMU's `screendump` saves (D186).
 pub fn desktop_picture(
     desktop: &Desktop,
     stream: &[u8],
     windows: &[(WindowId, WindowContent)],
+) -> Option<Picture> {
+    let look = match desktop.focused() {
+        true => CursorLook::Block,
+        false => CursorLook::Outline,
+    };
+    desktop_picture_with(desktop, stream, windows, look)
+}
+
+/// [`desktop_picture`] with the terminal's cursor drawn as `look`: [`CursorLook::Blinked`] is
+/// the second half of each blink.
+pub fn desktop_picture_with(
+    desktop: &Desktop,
+    stream: &[u8],
+    windows: &[(WindowId, WindowContent)],
+    look: CursorLook,
 ) -> Option<Picture> {
     let screen = desktop.screen();
     let (width, height) = (screen.width, screen.height);
@@ -2550,6 +2576,7 @@ pub fn desktop_picture(
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
     terminal.feed(stream);
+    terminal.set_cursor_look(look);
     let mut grid =
         vec![eggos_drivers::terminal::TERM_BACKGROUND; GRID_SIZE.0 as usize * GRID_SIZE.1 as usize];
     terminal.render(&mut grid, GRID_SIZE.0 as usize, 0, 0, &mut Damage::new());
@@ -2559,7 +2586,7 @@ pub fn desktop_picture(
         windows,
     };
     let mut pixels = vec![0; width as usize * height as usize];
-    desktop.draw(&mut pixels, width as usize, screen, &contents);
+    desktop.draw_scene(&mut pixels, width as usize, screen, &contents);
     Some(Picture {
         width,
         height,
@@ -3283,6 +3310,14 @@ fn check_desktop_frame_masked(
                 desktop_picture(desktop, stream, windows)
                     .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
             );
+            if desktop.focused() {
+                candidates.extend(desktop_picture_with(
+                    desktop,
+                    stream,
+                    windows,
+                    CursorLook::Blinked,
+                ));
+            }
         }
         let host = host_seconds();
         let matched = candidates.iter_mut().any(|expected| {
@@ -4232,7 +4267,7 @@ mod tests {
 
     fn prompt_console(arch: &str) -> String {
         let mut console = format!(
-            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{INPUT_ON_INTERRUPTS_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{INPUT_ON_INTERRUPTS_LINE}\r\n{BOOT_INIT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
         for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
             let command = shown_command(&PROMPT_SESSION, index);
@@ -4279,6 +4314,8 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_input).is_err());
         let polled = ok.replace(INPUT_ON_INTERRUPTS_LINE, "input: polled");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &polled).is_err());
+        let no_init_stage = ok.replacen(&format!("{BOOT_INIT_LINE}\r\n"), "", 1);
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_init_stage).is_err());
         let unshifted = ok.replace("Typed_On+Virtio:OK\r\n", "typed-on=virtio;ok\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
         let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");
@@ -4317,6 +4354,10 @@ mod tests {
             picture,
             desktop_picture(&desktop, b"eggsh:/#", &[]).unwrap()
         );
+        let blinked = desktop_picture_with(&desktop, b"eggsh:/# ", &[], CursorLook::Blinked);
+        let blinked = blinked.unwrap();
+        let at = (area.y as usize) * 1024 + area.x as usize + 9 * 8;
+        assert_eq!(blinked.pixels[at], eggos_drivers::terminal::TERM_BACKGROUND);
     }
 
     #[test]

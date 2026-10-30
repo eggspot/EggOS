@@ -44,7 +44,7 @@ const REBOOT_MAGIC2: usize = 0x2812_1969;
 
 const ENVIRONMENT: [&[u8]; 5] = [
     b"HOME=/home/root\0",
-    b"TERM=linux\0",
+    b"TERM=xterm\0",
     b"PATH=/bin\0",
     b"XDG_RUNTIME_DIR=/run/user/0\0",
     b"WAYLAND_DISPLAY=wayland-0\0",

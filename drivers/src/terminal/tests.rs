@@ -629,6 +629,51 @@ fn the_cursor_is_a_block_with_the_glyph_in_the_background_colour() {
 }
 
 #[test]
+fn a_blinked_cursor_shows_the_cell_and_an_unfocused_one_its_outline() {
+    let width = 4 * 8 + 16;
+    let mut terminal = fed(4, 1, b"ab\x1b[1;1H");
+    let mut pixels = pixels_of(&mut terminal, width, 32);
+    let render = |terminal: &mut Terminal, pixels: &mut Vec<u32>| {
+        terminal.render(pixels, width, PADDING, PADDING, &mut Damage::new());
+        pixels.clone()
+    };
+    terminal.set_cursor_look(CursorLook::Blinked);
+    assert_eq!(terminal.cursor_look(), CursorLook::Blinked);
+    let blinked = render(&mut terminal, &mut pixels);
+    let mut plain = fed(4, 1, b"ab\x1b[1;1H\x1b[?25l");
+    let without_cursor = pixels_of(&mut plain, width, 32);
+    assert_eq!(blinked, without_cursor);
+    terminal.set_cursor_look(CursorLook::Outline);
+    let outlined = render(&mut terminal, &mut pixels);
+    for row in 0..16 {
+        for column in 0..8 {
+            let at = (8 + row) * width + 8 + column;
+            let edge = row == 0 || row == 15 || column == 0 || column == 7;
+            match edge {
+                true => assert_eq!(outlined[at], TERM_CURSOR, "({column}, {row})"),
+                false => assert_eq!(outlined[at], without_cursor[at], "({column}, {row})"),
+            }
+        }
+    }
+    assert_eq!(
+        outlined[8 * width + 8 + 8],
+        without_cursor[8 * width + 8 + 8]
+    );
+}
+
+#[test]
+fn the_cursor_blinks_only_while_shown_blinking_and_live() {
+    let mut terminal = fed(4, 4, b"ab");
+    assert!(terminal.cursor_blinks());
+    terminal.feed(b"\x1b[?12l");
+    assert!(!terminal.cursor_blinks());
+    terminal.feed(b"\x1b[?12h\x1b[?25l");
+    assert!(!terminal.cursor_blinks());
+    terminal.feed(b"\x1b[?25h");
+    assert!(terminal.cursor_blinks());
+}
+
+#[test]
 fn a_render_draws_only_the_damaged_cells_and_reports_them() {
     let mut terminal = terminal(10, 4);
     let (width, height) = (10 * 8 + 16, 4 * 16 + 16);

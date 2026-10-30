@@ -1383,7 +1383,13 @@ fn cursor_shapes_and_a_hidden_cursor_set_the_window_s_pointer() {
     session.pump();
     session.record(record::POINTER_ENTER, [5, 5, 0, 0]);
     let serial = session.of(POINTER, pointer::ENTER.opcode)[0].word(0);
-    for shape in [cursor_shape::TEXT, cursor_shape::NWSE_RESIZE, 4] {
+    for shape in [
+        cursor_shape::TEXT,
+        cursor_shape::NWSE_RESIZE,
+        cursor_shape::POINTER,
+        cursor_shape::WAIT,
+        cursor_shape::PROGRESS,
+    ] {
         session.send(CURSOR_DEVICE, 1, &[Value::Uint(serial), Value::Uint(shape)]);
     }
     session.send(
@@ -1397,7 +1403,10 @@ fn cursor_shapes_and_a_hidden_cursor_set_the_window_s_pointer() {
         ],
     );
     session.pump();
-    assert_eq!(session.fake.windows[&window].pointer_shapes, [1, 4, 0, 6]);
+    assert_eq!(
+        session.fake.windows[&window].pointer_shapes,
+        [1, 4, 7, 8, 0, 6]
+    );
     session.send(
         CURSOR_DEVICE,
         1,

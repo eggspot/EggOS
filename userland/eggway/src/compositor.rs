@@ -90,6 +90,8 @@ mod pointer_shape {
     pub const NORTH_WEST_SOUTH_EAST: u32 = 4;
     pub const NORTH_EAST_SOUTH_WEST: u32 = 5;
     pub const HIDDEN: u32 = 6;
+    pub const HAND: u32 = 7;
+    pub const BUSY: u32 = 8;
 }
 
 mod window_state {
@@ -2968,6 +2970,8 @@ fn pointer_shape_of(shape: u32) -> u32 {
         cursor_shape::NE_RESIZE | cursor_shape::SW_RESIZE | cursor_shape::NESW_RESIZE => {
             pointer_shape::NORTH_EAST_SOUTH_WEST
         }
+        cursor_shape::POINTER => pointer_shape::HAND,
+        cursor_shape::WAIT => pointer_shape::BUSY,
         _ => pointer_shape::ARROW,
     }
 }

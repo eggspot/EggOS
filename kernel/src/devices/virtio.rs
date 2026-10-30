@@ -379,14 +379,19 @@ pub use gpu::GPU_DRIVER;
 mod gpu {
     use super::*;
     use crate::display::{Mode, Rect, Scanout};
-    use eggos_drivers::virtio::gpu::{FALLBACK_MODE, MEMORY_BYTES, Released, VirtioGpu};
+    use eggos_drivers::virtio::gpu::{
+        CURSOR_BYTES, CURSOR_SIDE, FALLBACK_MODE, MEMORY_BYTES, Released, VirtioGpu,
+    };
 
     type Gpu = VirtioGpu<AnyTransport, DmaRegion>;
+
+    const _: () = assert!(CURSOR_SIDE == eggos_drivers::desktop::CURSOR_SIDE);
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
     /// The polled virtio GPU (virtio 1.2, 5.7), 2D: one framebuffer on scanout 0, installed as
-    /// the kernel's display ([`crate::display`]).
+    /// the kernel's display ([`crate::display`]), and the cursor, which draws the desktop's
+    /// pointer when the device has a cursor queue (D186).
     pub static GPU_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-gpu",
         pass: ProbePass::Device,
@@ -397,6 +402,7 @@ mod gpu {
     struct GpuScanout {
         gpu: Gpu,
         mode: Mode,
+        cursor: bool,
     }
 
     impl Scanout for GpuScanout {
@@ -415,6 +421,41 @@ mod gpu {
         ) -> Result<usize, &'static str> {
             self.gpu
                 .flush(rects, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+
+        fn draws_pointer(&self) -> bool {
+            self.cursor
+        }
+
+        fn pointer_image(&mut self) -> Option<&mut [u32]> {
+            self.gpu.cursor_pixels()
+        }
+
+        fn show_pointer(
+            &mut self,
+            hotspot: (u32, u32),
+            at: (u32, u32),
+            deadline: &mut Deadline,
+        ) -> Result<(), &'static str> {
+            self.gpu
+                .show_cursor(hotspot, at, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+
+        fn move_pointer(
+            &mut self,
+            at: (u32, u32),
+            deadline: &mut Deadline,
+        ) -> Result<(), &'static str> {
+            self.gpu
+                .move_cursor(at, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+
+        fn hide_pointer(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
+            self.gpu
+                .hide_cursor(&mut || deadline.keep_waiting())
                 .map_err(virtio::Error::description)
         }
     }
@@ -450,8 +491,9 @@ mod gpu {
             }
         };
         let shown = attach_framebuffer(&mut gpu, &mut deadline);
+        let cursor = shown.is_ok() && attach_cursor(&mut gpu, &mut deadline);
         let refused = match shown {
-            Ok(mode) => match crate::display::install(GpuScanout { gpu, mode }) {
+            Ok(mode) => match crate::display::install(GpuScanout { gpu, mode, cursor }) {
                 Ok(()) => return Ok(()),
                 Err(scanout) => (scanout.gpu, "a display is already in use"),
             },
@@ -483,17 +525,41 @@ mod gpu {
             })
     }
 
+    fn attach_cursor(gpu: &mut Gpu, deadline: &mut Deadline) -> bool {
+        if !gpu.has_cursor_queue() {
+            return false;
+        }
+        let Ok(image) = DmaRegion::allocate(CURSOR_BYTES) else {
+            return false;
+        };
+        match gpu.attach_cursor(image, &mut || deadline.keep_waiting()) {
+            Ok(()) => true,
+            Err((_, image)) => {
+                if let Some(image) = image {
+                    // SAFETY: handed back by `attach_cursor`, which does so only when the device
+                    // was never given it.
+                    unsafe { image.free() };
+                }
+                false
+            }
+        }
+    }
+
     fn release(gpu: Gpu, identity: &Identity, deadline: &mut Deadline) {
         match gpu.reset(&mut || deadline.keep_waiting()) {
             Ok(Released {
                 transport,
                 control,
                 framebuffer,
+                cursor,
                 reset,
             }) => {
                 control.free_after_reset(&reset);
                 if let Some(framebuffer) = framebuffer {
                     framebuffer.free_after_reset(&reset);
+                }
+                if let Some(cursor) = cursor {
+                    cursor.free_after_reset(&reset);
                 }
                 give_back_transport(identity, transport);
             }

@@ -446,6 +446,7 @@ pub fn wait_for_input<P: Platform>(
         }
         #[cfg(feature = "qemu-boot-clock")]
         crate::boot_clock::report_first_wait::<P>();
+        crate::terminal::console_waited::<P>();
         let unless_signalled_or_ended = unless_signalled_or_ended(process, thread);
         let waited = futex::wait_interruptibly::<P>(
             console::INPUT_KEY,

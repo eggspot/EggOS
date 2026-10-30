@@ -105,6 +105,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 }
                 report_display(console, display::show_first_frame::<P>())?;
                 report_input(console, input::summary())?;
+                let _ = display::light_boot_stages::<P>(display::BOOT_STAGE_INPUT);
                 match console::enable_input::<P>() {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,

@@ -31,6 +31,12 @@ struct FakeGpu {
     transfers: RefCell<Vec<(Rect, u64)>>,
     flushes: RefCell<Vec<Rect>>,
     scanout: RefCell<Option<(Rect, u32)>>,
+    no_cursor_queue: bool,
+    cursor_device: RefCell<Option<DeviceSide>>,
+    cursor_resource: RefCell<Option<(u32, u32)>>,
+    cursor_backing: Cell<u64>,
+    cursor_image: RefCell<Vec<u32>>,
+    cursor_log: RefCell<Vec<Vec<u32>>>,
 }
 
 fn read32(address: u64) -> u32 {
@@ -104,7 +110,53 @@ impl FakeGpu {
         }
     }
 
+    fn process_cursor(&self) {
+        let mut device = self.cursor_device.borrow_mut();
+        let device = device.as_mut().unwrap();
+        while let Some(head) = device.next_available() {
+            let (request, len, flags, _) = device.descriptor(head);
+            assert_eq!(flags & crate::virtio::queue::DESCRIPTOR_WRITE, 0);
+            assert_eq!(len as usize, UPDATE_CURSOR_BYTES);
+            let words = (0..14).map(|word| read32(request.get() + 4 * word));
+            self.cursor_log.borrow_mut().push(words.collect());
+            device.put_used(head, 0);
+        }
+    }
+
+    fn answer_cursor(&self, kind: u32, request: u64, len: u32) -> u32 {
+        match kind {
+            command::RESOURCE_CREATE_2D => {
+                assert_eq!(read32(request + 28), FORMAT_B8G8R8A8_UNORM);
+                let (width, height) = (read32(request + 32), read32(request + 36));
+                *self.cursor_resource.borrow_mut() = Some((width, height));
+                *self.cursor_image.borrow_mut() = vec![0; (width * height) as usize];
+            }
+            command::RESOURCE_ATTACH_BACKING => {
+                assert_eq!(read32(request + 40) as usize, CURSOR_BYTES);
+                self.cursor_backing.set(read64(request + 32));
+            }
+            command::TRANSFER_TO_HOST_2D => {
+                assert_eq!(len as usize, TRANSFER_TO_HOST_2D_BYTES);
+                assert_eq!(read_rect(request + 24), Rect::new(0, 0, 64, 64));
+                let mut image = self.cursor_image.borrow_mut();
+                for (index, pixel) in image.iter_mut().enumerate() {
+                    *pixel = read32(self.cursor_backing.get() + 4 * index as u64);
+                }
+            }
+            _ => return ERR_INVALID_PARAMETER,
+        }
+        response::OK_NODATA
+    }
+
     fn answer(&self, kind: u32, request: u64, len: u32, response: u64) -> u32 {
+        let resource = match kind {
+            command::RESOURCE_CREATE_2D | command::RESOURCE_ATTACH_BACKING => read32(request + 24),
+            command::TRANSFER_TO_HOST_2D => read32(request + 48),
+            _ => 0,
+        };
+        if resource == CURSOR_RESOURCE_ID {
+            return self.answer_cursor(kind, request, len);
+        }
         match kind {
             command::GET_DISPLAY_INFO => {
                 assert_eq!(len as usize, HEADER_BYTES);
@@ -185,17 +237,29 @@ impl Transport for FakeGpu {
         assert_eq!(features, feature::VERSION_1);
     }
     fn max_queue_size(&self, queue: u16) -> u16 {
-        if queue < 2 { self.max_queue_size } else { 0 }
+        match queue {
+            CONTROL_QUEUE => self.max_queue_size,
+            CURSOR_QUEUE if !self.no_cursor_queue => self.max_queue_size,
+            _ => 0,
+        }
     }
     fn set_up_queue(&self, queue: u16, size: u16, addresses: &QueueAddresses) -> Result<(), Error> {
-        assert_eq!(queue, CONTROL_QUEUE);
         let memory = addresses.descriptors.get() as *mut u8;
         // SAFETY: the queue lives in the test's HostDma, whose device address is its host
         // address, for as long as the fake device is used.
-        *self.device.borrow_mut() = Some(unsafe { DeviceSide::new(memory, size) });
+        let device = Some(unsafe { DeviceSide::new(memory, size) });
+        match queue {
+            CONTROL_QUEUE => *self.device.borrow_mut() = device,
+            CURSOR_QUEUE => *self.cursor_device.borrow_mut() = device,
+            _ => panic!("no queue {queue}"),
+        }
         Ok(())
     }
     fn notify(&self, queue: u16) {
+        if queue == CURSOR_QUEUE {
+            self.process_cursor();
+            return;
+        }
         assert_eq!(queue, CONTROL_QUEUE);
         self.notifies.set(self.notifies.get() + 1);
         self.process();
@@ -494,4 +558,85 @@ fn devices_the_driver_cannot_drive_are_refused() {
     let refused = VirtioGpu::new(silent, HostDma::zeroed(1), &mut polls(3)).unwrap_err();
     assert_eq!((refused.0, refused.2.is_some()), (Error::TimedOut, true));
     assert_eq!(refused.1.status.get(), 0);
+}
+
+#[test]
+fn a_cursor_is_attached_shown_moved_and_hidden_through_the_cursor_queue() {
+    let (mut gpu, _) = shown(FakeGpu::new(Some((64, 48))));
+    assert!(gpu.has_cursor_queue());
+    assert!(gpu.cursor_pixels().is_none());
+    assert_eq!(
+        gpu.show_cursor((0, 0), (1, 1), &mut polls(10)),
+        Err(Error::NoCursor)
+    );
+    gpu.attach_cursor(HostDma::zeroed(4), &mut polls(10))
+        .unwrap();
+    let pixels = gpu.cursor_pixels().unwrap();
+    assert_eq!(pixels.len(), 64 * 64);
+    pixels[0] = 0xff00_0000;
+    pixels[65] = 0xffff_ffff;
+    gpu.show_cursor((4, 8), (100, 50), &mut polls(10)).unwrap();
+    gpu.move_cursor((120, 60), &mut polls(10)).unwrap();
+    gpu.hide_cursor(&mut polls(10)).unwrap();
+    let fake = gpu.transport();
+    assert_eq!(*fake.cursor_resource.borrow(), Some((64, 64)));
+    assert_eq!(fake.cursor_image.borrow()[0], 0xff00_0000);
+    assert_eq!(fake.cursor_image.borrow()[65], 0xffff_ffff);
+    assert_eq!(
+        fake.commands()[4..],
+        [
+            command::RESOURCE_CREATE_2D,
+            command::RESOURCE_ATTACH_BACKING,
+            command::TRANSFER_TO_HOST_2D
+        ]
+    );
+    let log = fake.cursor_log.borrow();
+    let fields = |words: &Vec<u32>| {
+        (
+            words[0], words[7], words[8], words[10], words[11], words[12],
+        )
+    };
+    assert_eq!(log.len(), 3);
+    assert_eq!(
+        fields(&log[0]),
+        (command::UPDATE_CURSOR, 100, 50, CURSOR_RESOURCE_ID, 4, 8)
+    );
+    assert_eq!(
+        fields(&log[1]),
+        (command::MOVE_CURSOR, 120, 60, CURSOR_RESOURCE_ID, 0, 0)
+    );
+    assert_eq!(
+        fields(&log[2]),
+        (command::UPDATE_CURSOR, 0, 0, NO_RESOURCE, 0, 0)
+    );
+    drop(log);
+    let released = gpu.reset(&mut polls(10)).unwrap();
+    assert!(released.cursor.is_some() && released.framebuffer.is_some());
+}
+
+#[test]
+fn a_cursor_needs_the_cursor_queue_and_enough_memory() {
+    let mut without = FakeGpu::new(Some((64, 48)));
+    without.no_cursor_queue = true;
+    let (mut gpu, _) = shown(without);
+    assert!(!gpu.has_cursor_queue());
+    let (error, memory) = gpu
+        .attach_cursor(HostDma::zeroed(4), &mut polls(10))
+        .unwrap_err();
+    assert_eq!((error, memory.is_some()), (Error::NoCursor, true));
+    assert_eq!(
+        gpu.move_cursor((1, 1), &mut polls(10)),
+        Err(Error::NoCursor)
+    );
+    let (mut gpu, _) = shown(FakeGpu::new(Some((64, 48))));
+    let (error, memory) = gpu
+        .attach_cursor(HostDma::zeroed(1), &mut polls(10))
+        .unwrap_err();
+    assert_eq!((error, memory.is_some()), (Error::MemoryTooSmall, true));
+    gpu.attach_cursor(HostDma::zeroed(4), &mut polls(10))
+        .unwrap();
+    let (error, memory) = gpu
+        .attach_cursor(HostDma::zeroed(4), &mut polls(10))
+        .unwrap_err();
+    assert_eq!((error, memory.is_some()), (Error::NoCursor, true));
 }

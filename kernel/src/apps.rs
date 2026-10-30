@@ -25,7 +25,7 @@ pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
 
 const ENVIRONMENT: [&[u8]; 4] = [
     b"HOME=/",
-    b"TERM=linux",
+    b"TERM=xterm",
     b"XDG_RUNTIME_DIR=/run/user/0",
     b"WAYLAND_DISPLAY=wayland-0",
 ];

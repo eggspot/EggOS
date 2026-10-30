@@ -15,6 +15,7 @@
 //! sets a menu ([`Desktop::set_menu`]).
 
 mod agent;
+pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
 mod events;
@@ -63,6 +64,7 @@ pub use launcher::{
 };
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
+pub use pointer::{CURSOR_SIDE, write_cursor_image};
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
@@ -212,6 +214,8 @@ const FIRST_GENERATION: u16 = 1;
 const GENERATIONS: u16 = 1 << (16 - SLOT_BITS);
 const BUTTON_CODES: [u16; 3] = [button::LEFT, button::RIGHT, button::MIDDLE];
 const CONTENT_CORNER_ROWS: u32 = 3;
+/// How much of a window's title bar's width a person's move keeps inside the work area.
+pub const HANGING_TITLE_KEPT: u32 = 48;
 
 /// What a pointer or key event asks of the machine, beyond redrawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +302,7 @@ pub struct Desktop {
     pointer: (u32, u32),
     pointer_visible: bool,
     pointer_drawn: Option<(u32, u32, PointerShape)>,
+    pointer_on_display: bool,
     profile: Profile,
     layout: Layout,
     catalogue: Catalogue,
@@ -384,6 +389,7 @@ impl Desktop {
             pointer: (0, 0),
             pointer_visible: false,
             pointer_drawn: None,
+            pointer_on_display: false,
             profile: Profile::default(),
             layout: layout(width, height, 1, Profile::default()),
             catalogue: Catalogue::new(),
@@ -1291,8 +1297,35 @@ impl Desktop {
         (x as u32, y as u32)
     }
 
+    fn hanging_clamped(&self, slot: usize, x: i64, y: i64) -> (u32, u32) {
+        let outside = self.window_at(slot).outside();
+        let work = self.work_area();
+        let kept = HANGING_TITLE_KEPT.min(outside.width);
+        let x = x.clamp(
+            i64::from(work.x),
+            i64::from(work.right().saturating_sub(kept).max(work.x)),
+        );
+        let y = y.clamp(
+            i64::from(work.y),
+            i64::from(work.bottom().saturating_sub(TITLE_HEIGHT + 1).max(work.y)),
+        );
+        (x as u32, y as u32)
+    }
+
     fn move_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
-        let (x, y) = self.clamped(slot, x, y);
+        let at = self.clamped(slot, x, y);
+        self.place_window(slot, at, damage);
+    }
+
+    /// Moves window `slot` as a person does, by its title bar or the window menu's `Move`: it
+    /// may hang off the work area's right and bottom edges, keeping [`HANGING_TITLE_KEPT`]
+    /// pixels and the whole height of its title bar inside (docs/ux/desktop-v0.3-gui.md 3.5).
+    fn drag_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
+        let at = self.hanging_clamped(slot, x, y);
+        self.place_window(slot, at, damage);
+    }
+
+    fn place_window(&mut self, slot: usize, (x, y): (u32, u32), damage: &mut Damage) {
         let window = self.window_at(slot);
         if (x, y) == (window.x, window.y) {
             return;
@@ -1591,7 +1624,7 @@ impl Desktop {
             self.unmaximise(drag.window, damage, events);
             self.drag = Some(drag);
         }
-        self.move_window(
+        self.drag_window(
             drag.window,
             i64::from(x) - drag.from_pointer_x,
             i64::from(y) - drag.from_pointer_y,
@@ -2026,6 +2059,47 @@ impl Desktop {
     /// rectangle inside the content of the top window there is only copied from that window's
     /// buffer, under the pointer. Paints nothing outside the screen or `pixels`.
     pub fn draw(&self, pixels: &mut [u32], stride: usize, clip: Rect, contents: &dyn Contents) {
+        self.paint(pixels, stride, clip, contents, !self.pointer_on_display);
+    }
+
+    /// As [`Self::draw`], never with the person's pointer: the picture a display that draws the
+    /// pointer itself shows, and what QEMU's `screendump` of it holds.
+    pub fn draw_scene(
+        &self,
+        pixels: &mut [u32],
+        stride: usize,
+        clip: Rect,
+        contents: &dyn Contents,
+    ) {
+        self.paint(pixels, stride, clip, contents, false);
+    }
+
+    /// Whether the display draws the pointer itself (a GPU's cursor, D186): the desktop then
+    /// neither draws it nor damages anything when it moves; the kernel shows [`Self::pointer`]
+    /// on the display instead. The agent's pointer (D156) is drawn either way.
+    pub fn set_pointer_on_display(&mut self, on_display: bool, damage: &mut Damage) {
+        if on_display == self.pointer_on_display {
+            return;
+        }
+        self.pointer_on_display = on_display;
+        if let Some((x, y, shape)) = self.pointer_drawn {
+            damage.add(pointer::area(shape, x, y).clipped(self.width, self.height));
+        }
+    }
+
+    /// Whether the display draws the pointer itself ([`Self::set_pointer_on_display`]).
+    pub fn pointer_on_display(&self) -> bool {
+        self.pointer_on_display
+    }
+
+    fn paint(
+        &self,
+        pixels: &mut [u32],
+        stride: usize,
+        clip: Rect,
+        contents: &dyn Contents,
+        with_pointer: bool,
+    ) {
         let clip = clip.clipped(self.width, self.height);
         let Some(mut canvas) = Canvas::new(pixels, stride, clip) else {
             return;
@@ -2033,7 +2107,9 @@ impl Desktop {
         if let Some(slot) = self.content_holding(clip) {
             self.draw_content(&mut canvas, self.window_at(slot), contents);
             self.draw_agent_pointer(&mut canvas);
-            self.draw_pointer(&mut canvas);
+            if with_pointer {
+                self.draw_pointer(&mut canvas);
+            }
             return;
         }
         self.draw_wallpaper(&mut canvas);
@@ -2057,7 +2133,9 @@ impl Desktop {
         self.draw_popups(&mut canvas);
         self.draw_tooltip(&mut canvas);
         self.draw_agent_pointer(&mut canvas);
-        self.draw_pointer(&mut canvas);
+        if with_pointer {
+            self.draw_pointer(&mut canvas);
+        }
     }
 
     fn draw_pointer(&self, canvas: &mut Canvas<'_>) {

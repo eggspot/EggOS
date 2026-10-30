@@ -725,6 +725,9 @@ pub mod decoration {
 pub mod cursor_shape {
     pub const INVALID_SHAPE: u32 = 1;
     pub const DEFAULT: u32 = 1;
+    pub const POINTER: u32 = 4;
+    pub const PROGRESS: u32 = 5;
+    pub const WAIT: u32 = 6;
     pub const TEXT: u32 = 9;
     pub const VERTICAL_TEXT: u32 = 10;
     pub const E_RESIZE: u32 = 18;

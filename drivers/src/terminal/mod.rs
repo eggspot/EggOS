@@ -114,6 +114,19 @@ impl TextArea {
     }
 }
 
+/// How [`Terminal::render`] draws the cursor (docs/ux/terminal-v0.3.md, "Cursor").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorLook {
+    /// A block in [`TERM_CURSOR`] with the cell's glyph in [`TERM_BACKGROUND`] on it: a focused
+    /// terminal, and the first half of each blink.
+    #[default]
+    Block,
+    /// The cell as it is, with no cursor: the second half of each blink.
+    Blinked,
+    /// The cell as it is inside a 1 px [`TERM_CURSOR`] outline: a terminal without focus.
+    Outline,
+}
+
 /// A move of the scrollback view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMove {
@@ -252,6 +265,7 @@ pub struct Terminal {
     dirty: Box<[Span]>,
     shift: Option<Shift>,
     drawn_cursor: Option<(u16, u16)>,
+    cursor_look: CursorLook,
     replies: [u8; REPLY_CAPACITY],
     reply_length: usize,
 }
@@ -306,6 +320,7 @@ impl Terminal {
             dirty: filled(usize::from(rows), Span::CLEAN)?,
             shift: None,
             drawn_cursor: None,
+            cursor_look: CursorLook::Block,
             replies: [0; REPLY_CAPACITY],
             reply_length: 0,
         };
@@ -331,6 +346,23 @@ impl Terminal {
     /// Whether a program asked for a blinking cursor (`CSI ? 12 h`, the default).
     pub fn cursor_blinking(&self) -> bool {
         self.modes.cursor_blinking
+    }
+
+    /// How the cursor is drawn.
+    pub fn cursor_look(&self) -> CursorLook {
+        self.cursor_look
+    }
+
+    /// Draws the cursor as `look` from the next [`Self::render`] on, which always draws the
+    /// cursor's cell.
+    pub fn set_cursor_look(&mut self, look: CursorLook) {
+        self.cursor_look = look;
+    }
+
+    /// Whether the cursor blinks where it is drawn: shown (`CSI ? 25 h`), blinking (`CSI ? 12
+    /// h`) and on the live screen, not scrolled back.
+    pub fn cursor_blinks(&self) -> bool {
+        self.modes.cursor_blinking && self.shown_cursor().is_some()
     }
 
     /// Whether the arrow keys send their application forms (`CSI ? 1 h`).
@@ -945,16 +977,22 @@ impl Terminal {
             for column in span.start..span.end.min(self.columns) {
                 let cell = line[usize::from(column)];
                 let at = top * stride + area.x as usize + usize::from(column) * GLYPH_WIDTH;
-                let (foreground, background) = if cursor == Some((row, column)) {
-                    (TERM_BACKGROUND, TERM_CURSOR)
-                } else {
-                    cell.colours()
+                let look = match cursor == Some((row, column)) {
+                    true => Some(self.cursor_look),
+                    false => None,
+                };
+                let (foreground, background) = match look {
+                    Some(CursorLook::Block) => (TERM_BACKGROUND, TERM_CURSOR),
+                    _ => cell.colours(),
                 };
                 let underline =
-                    cell.flags & cell_flags::UNDERLINE != 0 && cursor != Some((row, column));
+                    cell.flags & cell_flags::UNDERLINE != 0 && look != Some(CursorLook::Block);
                 font::draw_glyph(
                     pixels, stride, at, cell.glyph, foreground, background, underline,
                 );
+                if look == Some(CursorLook::Outline) {
+                    outline_cell(pixels, stride, at);
+                }
             }
             band = band.union(Rect::new(
                 area.x + u32::from(span.start) * GLYPH_WIDTH as u32,
@@ -992,6 +1030,21 @@ impl Terminal {
         for pixel_row in first..first + (height - lines) * GLYPH_HEIGHT {
             let to = pixel_row * stride + area.x as usize;
             pixels.copy_within(to + distance..to + distance + width, to);
+        }
+    }
+}
+
+fn outline_cell(pixels: &mut [u32], stride: usize, at: usize) {
+    for row in 0..GLYPH_HEIGHT {
+        let start = at + row * stride;
+        let Some(line) = pixels.get_mut(start..start + GLYPH_WIDTH) else {
+            return;
+        };
+        if row == 0 || row == GLYPH_HEIGHT - 1 {
+            line.fill(TERM_CURSOR);
+        } else {
+            line[0] = TERM_CURSOR;
+            line[GLYPH_WIDTH - 1] = TERM_CURSOR;
         }
     }
 }

@@ -13,7 +13,7 @@ use eggos_hal::Platform;
 /// The program the kernel starts as process 1: Linux's default for an initramfs.
 pub const PATH: &[u8] = b"/init";
 
-const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
+const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=xterm"];
 
 const CPU_START_TIMEOUT_MS: u64 = 1000;
 
@@ -21,6 +21,10 @@ const CPU_START_TIMEOUT_MS: u64 = 1000;
 /// its window's grid's columns and rows (`80x24`): from the next line on, the serial console and the
 /// terminal receive the same bytes. Must match the QEMU runner's.
 pub const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
+
+/// The line the kernel writes as it starts init, when the boot screen lights its third stage
+/// (docs/ux/desktop-v0.3.md section 1). Must match the QEMU runner's.
+pub const BOOT_INIT_LINE: &str = "boot: init";
 
 /// Why init could not run, or how it ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,8 @@ pub fn run<P: Platform, W: Write>(
         }
     };
     terminal::load_saved_settings();
+    writeln!(console, "{BOOT_INIT_LINE}")?;
+    let _ = crate::display::light_boot_stages::<P>(crate::display::BOOT_STAGE_INIT);
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
         writeln!(
             console,

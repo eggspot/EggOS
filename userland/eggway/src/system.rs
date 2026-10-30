@@ -123,7 +123,7 @@ pub trait System {
         tree: &[u8],
     ) -> Result<(), Errno>;
     /// Sets the pointer shape `SET_POINTER` draws over the window's content: 0 arrow to 5 the
-    /// diagonal resize, 6 none.
+    /// diagonal resize, 6 none, 7 the hand, 8 busy.
     fn set_pointer(&mut self, device: Fd, window: u32, shape: u32) -> Result<(), Errno>;
     /// Sets the smallest content the window may be resized to.
     fn set_minimum_size(

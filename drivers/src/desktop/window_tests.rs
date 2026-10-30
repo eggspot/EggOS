@@ -492,7 +492,7 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.set_pointer(CLIENT, window, 6, &mut damage),
+        desktop.set_pointer(CLIENT, window, 9, &mut damage),
         Err(WindowError::Invalid)
     );
     assert_eq!(desktop.set_pointer(CLIENT, window, 1, &mut damage), Ok(()));

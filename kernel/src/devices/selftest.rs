@@ -295,29 +295,34 @@ pub(crate) fn display_shows_the_first_frame<P: Platform>(
         return Err("the display's mode is not the 1280x800 xtask asks QEMU for");
     }
     let first_frame = || display::draw(|framebuffer| display::pixel_hash(framebuffer.pixels()));
-    if display::flushes() == 0 || first_frame() != Some(display::FIRST_FRAME_HASH_1280X800) {
-        return Err("the first frame was not drawn and shown");
+    let boot_screen =
+        display::boot_screen_hash().ok_or("the first frame is not the boot screen")?;
+    if display::flushes() == 0 || first_frame() != Some(boot_screen) {
+        return Err("the boot screen was not drawn and shown");
     }
     let flushes = display::flushes();
-    for colour in [None, Some(display::FIRST_FRAME_COLOUR)] {
-        display::draw(|framebuffer| {
-            for (rect, pattern) in TEST_PATTERN {
-                framebuffer.fill(rect, colour.unwrap_or(pattern));
-            }
-        });
-        if display::flush::<P>() != Ok(TEST_PATTERN.len()) {
-            return Err("the display did not show a test pattern's three rectangles");
+    display::draw(|framebuffer| {
+        for (rect, pattern) in TEST_PATTERN {
+            framebuffer.fill(rect, pattern);
         }
-        let last = (mode.height - 1) as usize * mode.width as usize + (mode.width - 1) as usize;
-        let pattern = display::draw(|framebuffer| framebuffer.pixels()[last]);
-        if colour.is_none() && pattern != Some(0x00e6_eaf0) {
-            return Err("the test pattern was not drawn clipped to the screen");
-        }
+    });
+    if display::flush::<P>() != Ok(TEST_PATTERN.len()) {
+        return Err("the display did not show a test pattern's three rectangles");
     }
-    if display::flushes() != flushes + 2
-        || first_frame() != Some(display::FIRST_FRAME_HASH_1280X800)
-    {
-        return Err("the first frame did not come back after the test pattern");
+    let last = (mode.height - 1) as usize * mode.width as usize + (mode.width - 1) as usize;
+    if display::draw(|framebuffer| framebuffer.pixels()[last]) != Some(0x00e6_eaf0) {
+        return Err("the test pattern was not drawn clipped to the screen");
+    }
+    display::draw(|framebuffer| {
+        for (rect, _) in TEST_PATTERN {
+            framebuffer.redraw_boot_screen(rect);
+        }
+    });
+    if display::flush::<P>() != Ok(TEST_PATTERN.len()) {
+        return Err("the display did not show the boot screen's three rectangles again");
+    }
+    if display::flushes() != flushes + 2 || first_frame() != Some(boot_screen) {
+        return Err("the boot screen did not come back after the test pattern");
     }
     Ok(())
 }

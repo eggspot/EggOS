@@ -128,6 +128,7 @@ pub fn shortcut(
         key::M if only(super_key) && profile == Profile::Macos => Shortcut::Minimise,
         key::H if only(super_key) && profile == Profile::Linux => Shortcut::Minimise,
         key::D if only(super_key) => Shortcut::ShowDesktop,
+        key::F11 if only(Modifiers::NONE) && profile == Profile::Macos => Shortcut::ShowDesktop,
         key::X if only(super_key) => Shortcut::PowerMenu,
         key::SPACE if only(super_key) && profile == Profile::Macos => Shortcut::Launcher,
         _ => return None,

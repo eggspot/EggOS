@@ -122,6 +122,8 @@ pub enum Error {
     NoHardwareAddress,
     /// A frame longer than the network device's buffers.
     FrameTooLong,
+    /// The GPU has no cursor queue, or the driver has not set its cursor up.
+    NoCursor,
 }
 
 impl Error {
@@ -156,6 +158,7 @@ impl Error {
             Error::NoPort => "the console device offers no named port with multiport support",
             Error::NoHardwareAddress => "the network device does not say its hardware address",
             Error::FrameTooLong => "a frame longer than the network device's buffers",
+            Error::NoCursor => "the GPU has no cursor queue, or its cursor is not set up",
         }
     }
 }

@@ -287,10 +287,15 @@ pub enum PointerShape {
     /// No pointer at all over the window's content (D172): what a Wayland program's null
     /// cursor surface asks for.
     Hidden,
+    /// A pointing hand, over links and things that act on a click (D186).
+    Hand,
+    /// An hourglass: the window does not take input now (D186). The server shows it itself over
+    /// a window that does not answer.
+    Busy,
 }
 
 impl PointerShape {
-    /// The shape numbered `value`, 0 to 6 in the order above.
+    /// The shape numbered `value`, 0 to 8 in the order above.
     pub const fn from_value(value: u32) -> Option<Self> {
         Some(match value {
             0 => Self::Arrow,
@@ -300,6 +305,8 @@ impl PointerShape {
             4 => Self::ResizeNorthWestSouthEast,
             5 => Self::ResizeNorthEastSouthWest,
             6 => Self::Hidden,
+            7 => Self::Hand,
+            8 => Self::Busy,
             _ => return None,
         })
     }

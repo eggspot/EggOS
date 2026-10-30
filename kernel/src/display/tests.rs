@@ -8,12 +8,14 @@ use std::sync::{Arc, Mutex};
 struct Shown {
     flushed: Vec<Vec<Rect>>,
     failing: bool,
+    pointer: Vec<(&'static str, (u32, u32), (u32, u32))>,
 }
 
 struct FakeScanout {
     mode: Mode,
     pixels: Vec<u32>,
     shown: Arc<Mutex<Shown>>,
+    pointer_image: Option<Vec<u32>>,
 }
 
 impl Scanout for FakeScanout {
@@ -31,6 +33,38 @@ impl Scanout for FakeScanout {
         shown.flushed.push(rects.to_vec());
         Ok(rects.len())
     }
+    fn draws_pointer(&self) -> bool {
+        self.pointer_image.is_some()
+    }
+    fn pointer_image(&mut self) -> Option<&mut [u32]> {
+        self.pointer_image.as_deref_mut()
+    }
+    fn show_pointer(
+        &mut self,
+        hotspot: (u32, u32),
+        at: (u32, u32),
+        _: &mut Deadline,
+    ) -> Result<(), &'static str> {
+        let mut shown = self.shown.lock().unwrap();
+        shown.pointer.push(("show", hotspot, at));
+        Ok(())
+    }
+    fn move_pointer(&mut self, at: (u32, u32), _: &mut Deadline) -> Result<(), &'static str> {
+        self.shown
+            .lock()
+            .unwrap()
+            .pointer
+            .push(("move", (0, 0), at));
+        Ok(())
+    }
+    fn hide_pointer(&mut self, _: &mut Deadline) -> Result<(), &'static str> {
+        self.shown
+            .lock()
+            .unwrap()
+            .pointer
+            .push(("hide", (0, 0), (0, 0)));
+        Ok(())
+    }
 }
 
 fn display(width: u32, height: u32) -> (Display, Arc<Mutex<Shown>>) {
@@ -39,6 +73,7 @@ fn display(width: u32, height: u32) -> (Display, Arc<Mutex<Shown>>) {
         mode: Mode::new(width, height),
         pixels: vec![0; (width * height) as usize],
         shown: Arc::clone(&shown),
+        pointer_image: None,
     };
     (Display::new(Box::new(scanout)), shown)
 }
@@ -96,4 +131,93 @@ fn the_first_frame_hash_is_the_one_the_qemu_tests_check() {
     assert_eq!(pixel_hash(&frame), FIRST_FRAME_HASH_1280X800);
     assert_eq!(pixel_hash(&[]), 0xcbf2_9ce4_8422_2325);
     assert_eq!(pixel_hash(&[0x6463_6261]), 0xfc17_9f83_ee07_24dd);
+}
+
+#[test]
+fn the_first_frame_is_the_boot_screen_whose_stages_light_until_the_desktop_ends_it() {
+    let (mut display, shown) = display(1280, 800);
+    display.draw(|framebuffer| framebuffer.show_boot_screen());
+    let screen = BootScreen::new(1280, 800).unwrap();
+    let mut expected = vec![0; 1280 * 800];
+    screen.draw(&mut expected, 1280, Rect::new(0, 0, 1280, 800));
+    let hash = display.draw(|framebuffer| pixel_hash(framebuffer.pixels()));
+    assert_eq!(hash, pixel_hash(&expected));
+    assert_eq!(display.boot_screen_hash(), Some(hash));
+    assert_ne!(hash, FIRST_FRAME_HASH_1280X800);
+    assert_eq!(display.flush(&mut deadline()), Ok(1));
+    display.draw(|framebuffer| framebuffer.light_boot_stages(2));
+    assert_eq!(display.damage.rects(), &[screen.segment(1)]);
+    assert_eq!(display.flush(&mut deadline()), Ok(1));
+    let lit = display.draw(|framebuffer| pixel_hash(framebuffer.pixels()));
+    assert_eq!(display.boot_screen_hash(), Some(lit));
+    assert_ne!(lit, hash);
+    display.draw(|framebuffer| {
+        assert!(framebuffer.boot_screen_shown());
+        framebuffer.end_boot_screen();
+        framebuffer.light_boot_stages(3);
+        assert!(!framebuffer.boot_screen_shown());
+    });
+    assert!(display.damage.is_empty());
+    assert_eq!(display.boot_screen_hash(), None);
+    assert_eq!(shown.lock().unwrap().flushed.len(), 2);
+}
+
+#[test]
+fn a_display_too_small_for_the_boot_screen_starts_in_the_background_colour() {
+    let (mut display, _) = display(16, 4);
+    display.draw(|framebuffer| framebuffer.show_boot_screen());
+    let pixels = display.draw(|framebuffer| framebuffer.pixels().to_vec());
+    assert!(pixels.iter().all(|&pixel| pixel == FIRST_FRAME_COLOUR));
+    assert_eq!(display.boot_screen_hash(), None);
+}
+
+#[test]
+fn a_hash_taken_a_row_at_a_time_is_the_whole_frame_s() {
+    let frame: Vec<u32> = (0..64).map(|pixel| pixel * 0x0101_0101).collect();
+    let rows = frame
+        .chunks(8)
+        .fold(PIXEL_HASH_START, |hash, row| continue_pixel_hash(hash, row));
+    assert_eq!(rows, pixel_hash(&frame));
+}
+
+#[test]
+fn a_display_that_draws_the_pointer_gets_an_image_per_shape_and_moves_otherwise() {
+    let (mut display, shown) = display(64, 64);
+    let mut deadline = deadline();
+    assert_eq!(
+        display.show_pointer(Some((1, 2, PointerShape::Arrow)), &mut deadline),
+        Ok(())
+    );
+    assert!(shown.lock().unwrap().pointer.is_empty());
+    let shown = Arc::new(Mutex::new(Shown::default()));
+    let mut display = Display::new(Box::new(FakeScanout {
+        mode: Mode::new(64, 64),
+        pixels: vec![0; 64 * 64],
+        shown: Arc::clone(&shown),
+        pointer_image: Some(vec![0; 64 * 64]),
+    }));
+    assert!(display.draws_pointer());
+    for wanted in [
+        Some((10, 20, PointerShape::Arrow)),
+        Some((10, 20, PointerShape::Arrow)),
+        Some((11, 21, PointerShape::Arrow)),
+        Some((11, 21, PointerShape::IBeam)),
+        Some((12, 22, PointerShape::Hidden)),
+        Some((13, 23, PointerShape::Hidden)),
+        Some((14, 24, PointerShape::Hand)),
+        None,
+    ] {
+        display.show_pointer(wanted, &mut deadline).unwrap();
+    }
+    assert_eq!(
+        shown.lock().unwrap().pointer,
+        [
+            ("show", (0, 0), (10, 20)),
+            ("move", (0, 0), (11, 21)),
+            ("show", (4, 8), (11, 21)),
+            ("hide", (0, 0), (0, 0)),
+            ("show", (5, 0), (14, 24)),
+            ("hide", (0, 0), (0, 0)),
+        ]
+    );
 }

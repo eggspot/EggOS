@@ -705,6 +705,53 @@ fn close_keys_follow_the_profile_and_spare_a_window_that_takes_ctrl_keys() {
 }
 
 #[test]
+fn a_window_that_does_not_answer_shows_the_busy_pointer_over_its_content_only() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    let content = desktop.content_rect(window).unwrap();
+    let title = desktop.title_bar_of(window).unwrap();
+    move_to(
+        &mut desktop,
+        content.x + 50,
+        content.y + 50,
+        &mut DiscardEvents,
+    );
+    desktop.set_time(10_000);
+    tap(&mut desktop, key::F4, Modifiers::ALT, &mut DiscardEvents);
+    desktop.tick(10_500, &mut Damage::new(), &mut DiscardEvents);
+    assert!(desktop.is_not_responding(window));
+    assert_eq!(
+        desktop.pointer(),
+        Some((content.x + 50, content.y + 50, PointerShape::Busy))
+    );
+    move_to(
+        &mut desktop,
+        title.x + 100,
+        title.y + 10,
+        &mut DiscardEvents,
+    );
+    assert_eq!(
+        desktop.pointer().map(|(_, _, shape)| shape),
+        Some(PointerShape::Arrow)
+    );
+    move_to(
+        &mut desktop,
+        content.x + 60,
+        content.y + 60,
+        &mut DiscardEvents,
+    );
+    assert_eq!(
+        desktop.pointer().map(|(_, _, shape)| shape),
+        Some(PointerShape::Busy)
+    );
+    desktop.close_answered(CLIENT, &mut Damage::new());
+    assert_eq!(
+        desktop.pointer().map(|(_, _, shape)| shape),
+        Some(PointerShape::Arrow)
+    );
+}
+
+#[test]
 fn an_unanswered_close_request_says_not_responding_and_closes_after_2_s() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let window = shown(&mut desktop, 400, 300);
@@ -983,6 +1030,23 @@ fn super_d_minimises_every_window_and_again_restores_them() {
     tap(&mut desktop, key::D, Modifiers::SUPER, &mut DiscardEvents);
     assert!(!desktop.minimised() && !desktop.is_minimised(window));
     assert_eq!(desktop.focused_window(), Some(window));
+}
+
+#[test]
+fn f11_shows_the_desktop_in_the_macos_profile_only() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    tap(&mut desktop, key::F11, Modifiers::NONE, &mut DiscardEvents);
+    assert!(desktop.is_minimised(window));
+    tap(&mut desktop, key::F11, Modifiers::NONE, &mut DiscardEvents);
+    assert!(!desktop.is_minimised(window));
+    for profile in [Profile::Windows, Profile::Linux] {
+        assert_eq!(shortcut(key::F11, Modifiers::NONE, profile, false), None);
+    }
+    assert_eq!(
+        shortcut(key::F11, Modifiers::SHIFT, Profile::Macos, false),
+        None
+    );
 }
 
 #[test]

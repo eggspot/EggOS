@@ -151,7 +151,7 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
 }
 
 #[test]
-fn dragging_the_title_bar_moves_the_window_within_the_screen() {
+fn dragging_the_title_bar_moves_the_window_and_lets_it_hang_off_the_right_and_bottom() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
     desktop.pointer_moved(600, 174, &mut damage, &mut DiscardEvents);
@@ -160,10 +160,26 @@ fn dragging_the_title_bar_moves_the_window_within_the_screen() {
     assert_eq!(desktop.window(), Rect::new(411, 213, 658, 430));
     assert!(!damage.is_empty());
     desktop.pointer_moved(5000, 0, &mut damage, &mut DiscardEvents);
-    assert_eq!(desktop.window(), Rect::new(1280 - 658, 28, 658, 430));
+    let work = desktop.work_area();
+    assert_eq!(
+        desktop.window(),
+        Rect::new(work.right() - HANGING_TITLE_KEPT, work.y, 658, 430)
+    );
+    desktop.pointer_moved(5000, 5000, &mut damage, &mut DiscardEvents);
+    assert_eq!(
+        desktop.window(),
+        Rect::new(
+            work.right() - HANGING_TITLE_KEPT,
+            work.bottom() - TITLE_HEIGHT - 1,
+            658,
+            430
+        )
+    );
+    let pixels = painted(&desktop);
+    assert_eq!(pixels.len(), 1280 * 800);
     desktop.left_button(false, &mut damage, &mut DiscardEvents);
     desktop.pointer_moved(0, 600, &mut damage, &mut DiscardEvents);
-    assert_eq!(desktop.window().x, 1280 - 658);
+    assert_eq!(desktop.window().x, work.right() - HANGING_TITLE_KEPT);
 }
 
 #[test]
@@ -336,4 +352,25 @@ fn the_egg_is_taller_above_its_equator_and_square_roots_are_exact() {
     assert_eq!(egg_half_width(800, 464), 288);
     assert!(egg_half_width(800, 300) > egg_half_width(800, 700));
     assert_eq!(egg_half_width(800, 800), 0);
+}
+
+#[test]
+fn a_pointer_the_display_draws_is_neither_painted_nor_damaged_but_still_followed() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut damage = Damage::new();
+    desktop.pointer_moved(20, 600, &mut damage, &mut DiscardEvents);
+    let with_pointer = painted(&desktop);
+    assert_eq!(at(&with_pointer, 20, 600), 0);
+    let mut scene = vec![0; 1280 * 800];
+    desktop.draw_scene(&mut scene, 1280, desktop.screen(), &BlankTerminal);
+    assert_ne!(at(&scene, 20, 600), 0);
+    let mut damage = Damage::new();
+    desktop.set_pointer_on_display(true, &mut damage);
+    assert!(desktop.pointer_on_display());
+    assert!(damage.rects().iter().any(|rect| contains(*rect, 20, 600)));
+    assert!(painted(&desktop) == scene);
+    let mut damage = Damage::new();
+    desktop.pointer_moved(400, 500, &mut damage, &mut DiscardEvents);
+    assert!(!damage.rects().iter().any(|rect| contains(*rect, 400, 500)));
+    assert_eq!(desktop.pointer(), Some((400, 500, PointerShape::Arrow)));
 }

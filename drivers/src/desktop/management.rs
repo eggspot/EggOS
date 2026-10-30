@@ -584,6 +584,7 @@ impl Desktop {
                 damage.add(self.window_at(slot).title_bar());
             }
         }
+        self.update_pointer(damage);
     }
 
     /// The clock reached `now_ms`: windows whose close request went unread for
@@ -593,6 +594,7 @@ impl Desktop {
     pub fn tick(&mut self, now_ms: u32, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
         self.now_ms = now_ms;
         let mut destroyed = false;
+        let mut stopped_answering = false;
         for slot in 0..self.windows.len() {
             let Some(window) = self.windows[slot] else {
                 continue;
@@ -606,12 +608,13 @@ impl Desktop {
                 destroyed = true;
             } else if waited >= NOT_RESPONDING_AFTER_MS && !window.not_responding {
                 self.window_mut(slot).not_responding = true;
+                stopped_answering = true;
                 if self.is_visible(slot) {
                     damage.add(window.title_bar());
                 }
             }
         }
-        if destroyed {
+        if destroyed || stopped_answering {
             self.update_pointer(damage);
         }
         self.tick_notice(damage);
@@ -780,6 +783,7 @@ impl Desktop {
             return PointerShape::IBeam;
         }
         match self.content_under(hit) {
+            Some(slot) if self.window_at(slot).not_responding => PointerShape::Busy,
             Some(slot) => self.window_at(slot).pointer_shape,
             None => PointerShape::Arrow,
         }
@@ -823,6 +827,10 @@ impl Desktop {
         let (x, y) = self.pointer;
         let drawn = Some((x, y, self.wanted_pointer(hit)));
         if drawn == self.pointer_drawn {
+            return;
+        }
+        if self.pointer_on_display {
+            self.pointer_drawn = drawn;
             return;
         }
         if let Some((old_x, old_y, old_shape)) = self.pointer_drawn {
@@ -885,7 +893,7 @@ impl Desktop {
         };
         let window = *self.window_at(slot);
         if !sizing {
-            self.move_window(
+            self.drag_window(
                 slot,
                 i64::from(window.x) + dx,
                 i64::from(window.y) + dy,
