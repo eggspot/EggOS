@@ -1,4 +1,8 @@
 use crate::cache::Cache;
+use crate::index::{
+    DirectoryIndex, DirectoryIndexes, DirectoryKey, INDEXED_ABOVE_BLOCKS, MAX_CANDIDATES,
+    MAX_INDEXED_ENTRIES, name_hash,
+};
 use crate::layout::{
     BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, FIRST_FREE_INODE, Geometry, Inode,
     InodeKind, MAX_DIRECTORY_BLOCKS, MAX_LINK_TARGET, MAX_LINKS, MAX_NAME, POINTERS_PER_BLOCK,
@@ -111,6 +115,7 @@ pub struct Volume<D: Disk> {
     listing: Option<Listing>,
     changes: u64,
     holds: BTreeMap<u32, u32>,
+    pub(crate) indexes: DirectoryIndexes,
 }
 
 impl<D: Disk> core::fmt::Debug for Volume<D> {
@@ -188,6 +193,7 @@ impl<D: Disk> Volume<D> {
             listing: None,
             changes: 0,
             holds: BTreeMap::new(),
+            indexes: DirectoryIndexes::new(),
         }
     }
 
@@ -229,6 +235,16 @@ impl<D: Disk> Volume<D> {
     /// The on-disk format version the superblock names now: 1 until a change needs version 2.
     pub fn version(&self) -> u32 {
         self.geometry.version
+    }
+
+    /// The volume's name as [`crate::format_with`] wrote it, empty for none.
+    pub fn label(&self) -> &[u8] {
+        let label = &self.geometry.label;
+        let length = label
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(label.len());
+        &label[..length]
     }
 
     pub(crate) fn inode(&mut self, number: u32) -> Result<Inode, Error> {
@@ -286,7 +302,7 @@ impl<D: Disk> Volume<D> {
             || (self.freed_waiting > 0 && allocatable < LOW_SPACE_BLOCKS)
     }
 
-    fn ensure_room(&mut self) -> Result<(), Error> {
+    pub(crate) fn ensure_room(&mut self) -> Result<(), Error> {
         if self.needs_commit() {
             self.commit()?;
         }
@@ -335,7 +351,7 @@ impl<D: Disk> Volume<D> {
         }
     }
 
-    fn allocate_block(&mut self) -> Result<u32, Error> {
+    pub(crate) fn allocate_block(&mut self) -> Result<u32, Error> {
         let bitmaps = self.geometry.block_bitmap_blocks;
         let cursor = self.block_cursor.min(self.geometry.blocks - 1);
         let first = cursor / BITS_PER_BLOCK;
@@ -471,7 +487,12 @@ impl<D: Disk> Volume<D> {
         Ok(block)
     }
 
-    fn set_mapping(&mut self, inode: &mut Inode, index: u64, value: u32) -> Result<u32, Error> {
+    pub(crate) fn set_mapping(
+        &mut self,
+        inode: &mut Inode,
+        index: u64,
+        value: u32,
+    ) -> Result<u32, Error> {
         let (level, within) = Self::path(index)?;
         if level == usize::MAX {
             let previous = inode.direct[within as usize];
@@ -630,27 +651,99 @@ impl<D: Disk> Volume<D> {
         }
     }
 
+    fn find_in_block(
+        &mut self,
+        directory: &Inode,
+        index: u64,
+        name: &[u8],
+        inode: Option<u32>,
+    ) -> Result<Option<Found>, Error> {
+        let block = self.directory_block(directory, index)?;
+        let data = self.cache.get(&mut self.disk, block)?;
+        let mut offset = 0;
+        while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
+            if record.name == name && inode.is_none_or(|wanted| wanted == record.inode) {
+                return Ok(Some(Found {
+                    inode: record.inode,
+                    kind: record.kind,
+                    block,
+                    offset,
+                    length: record.length,
+                }));
+            }
+            offset += record.length;
+        }
+        Ok(None)
+    }
+
+    fn build_index(
+        &mut self,
+        key: DirectoryKey,
+        directory: &Inode,
+        blocks: u64,
+    ) -> Result<(), Error> {
+        let mut index = DirectoryIndex::for_entries(key, directory.entries as usize);
+        for block_index in 0..blocks {
+            let block = self.directory_block(directory, block_index)?;
+            let data = self.cache.get(&mut self.disk, block)?;
+            let mut offset = 0;
+            while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
+                if !index.insert(name_hash(record.name), block_index) {
+                    return Ok(());
+                }
+                offset += record.length;
+            }
+        }
+        self.indexes.keep(index);
+        Ok(())
+    }
+
+    fn indexed_candidates(
+        &mut self,
+        number: u32,
+        directory: &Inode,
+        blocks: u64,
+        name: &[u8],
+        out: &mut [u64; MAX_CANDIDATES],
+    ) -> Result<Option<usize>, Error> {
+        if blocks <= INDEXED_ABOVE_BLOCKS || directory.entries > MAX_INDEXED_ENTRIES {
+            return Ok(None);
+        }
+        let key = DirectoryKey {
+            inode: number,
+            generation: directory.generation,
+        };
+        if self.indexes.find(key).is_none() {
+            self.build_index(key, directory, blocks)?;
+        }
+        Ok(self
+            .indexes
+            .find(key)
+            .and_then(|index| index.candidates(name_hash(name), &mut out[..])))
+    }
+
     fn find_entry(
         &mut self,
+        number: u32,
         directory: &Inode,
         name: &[u8],
         inode: Option<u32>,
     ) -> Result<Option<Found>, Error> {
-        for index in 0..Self::directory_blocks(directory)? {
-            let block = self.directory_block(directory, index)?;
-            let data = self.cache.get(&mut self.disk, block)?;
-            let mut offset = 0;
-            while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
-                if record.name == name && inode.is_none_or(|wanted| wanted == record.inode) {
-                    return Ok(Some(Found {
-                        inode: record.inode,
-                        kind: record.kind,
-                        block,
-                        offset,
-                        length: record.length,
-                    }));
+        let blocks = Self::directory_blocks(directory)?;
+        let mut candidates = [0u64; MAX_CANDIDATES];
+        if let Some(count) =
+            self.indexed_candidates(number, directory, blocks, name, &mut candidates)?
+        {
+            for &index in candidates[..count].iter().filter(|&&index| index < blocks) {
+                if let Some(found) = self.find_in_block(directory, index, name, inode)? {
+                    return Ok(Some(found));
                 }
-                offset += record.length;
+            }
+            return Ok(None);
+        }
+        for index in 0..blocks {
+            if let Some(found) = self.find_in_block(directory, index, name, inode)? {
+                return Ok(Some(found));
             }
         }
         Ok(None)
@@ -715,20 +808,30 @@ impl<D: Disk> Volume<D> {
 
     fn add_entry(
         &mut self,
+        number: u32,
         directory: &mut Inode,
         name: &[u8],
         inode: u32,
         kind: InodeKind,
     ) -> Result<(), Error> {
+        let key = DirectoryKey {
+            inode: number,
+            generation: directory.generation,
+        };
         let needed = record_length(name);
         let blocks = Self::directory_blocks(directory)?;
-        for index in 0..blocks {
+        let last_first = blocks
+            .checked_sub(1)
+            .into_iter()
+            .chain(0..blocks.saturating_sub(1));
+        for index in last_first {
             let block = self.directory_block(directory, index)?;
             let end = records_end(&self.cache.get(&mut self.disk, block)?[..])
                 .map_err(|()| Error::Corrupt)?;
             if end + needed <= BLOCK_SIZE {
                 let data = self.cache.get_mut(&mut self.disk, block, false)?;
                 write_record(&mut data[..], end, inode, kind, name);
+                self.indexes.note_entry(key, name, index);
                 self.changes += 1;
                 return Ok(());
             }
@@ -744,8 +847,42 @@ impl<D: Disk> Volume<D> {
             return Err(error);
         }
         directory.size += BLOCK_SIZE as u64;
+        self.indexes.note_entry(key, name, blocks);
         self.changes += 1;
         Ok(())
+    }
+
+    pub(crate) fn adopt(
+        &mut self,
+        directory: u32,
+        name: &[u8],
+        number: u32,
+        now: u64,
+    ) -> Result<(), Error> {
+        self.ensure_room()?;
+        let mut parent = self.inode(directory)?;
+        let mut child = self.inode(number)?;
+        if parent.kind != InodeKind::Directory || child.kind == InodeKind::Free {
+            return Err(Error::Corrupt);
+        }
+        if self.find_entry(directory, &parent, name, None)?.is_some() {
+            return Err(Error::Exists);
+        }
+        let added = self.add_entry(directory, &mut parent, name, number, child.kind);
+        if added.is_ok() {
+            parent.entries = parent.entries.saturating_add(1);
+            if child.kind == InodeKind::Directory {
+                parent.child_directories = parent.child_directories.saturating_add(1);
+            }
+            parent.modified = now;
+        }
+        self.write_inode(directory, &parent)?;
+        added?;
+        child.parent = directory;
+        child.more_names = 0;
+        child.orphan = false;
+        child.next_orphan = 0;
+        self.write_inode(number, &child)
     }
 
     fn remove_found(&mut self, found: Found) -> Result<(), Error> {
@@ -780,8 +917,8 @@ impl<D: Disk> Volume<D> {
 
     /// The node `name` names in `directory`, if there is one.
     pub fn lookup(&mut self, directory: u64, name: &[u8]) -> Result<Option<u64>, Error> {
-        let (_, inode) = self.live_directory(directory)?;
-        match self.find_entry(&inode, name, None)? {
+        let (number, inode) = self.live_directory(directory)?;
+        match self.find_entry(number, &inode, name, None)? {
             Some(found) => self.child_node(&found).map(Some),
             None => Ok(None),
         }
@@ -926,7 +1063,7 @@ impl<D: Disk> Volume<D> {
         Ok(length)
     }
 
-    fn upgrade(&mut self) -> Result<(), Error> {
+    pub(crate) fn upgrade(&mut self) -> Result<(), Error> {
         if self.geometry.version >= VERSION {
             return Ok(());
         }
@@ -964,7 +1101,10 @@ impl<D: Disk> Volume<D> {
         self.writable()?;
         self.ensure_room()?;
         let (parent_number, mut parent) = self.live_directory(directory)?;
-        if self.find_entry(&parent, name, None)?.is_some() {
+        if self
+            .find_entry(parent_number, &parent, name, None)?
+            .is_some()
+        {
             return Err(Error::Exists);
         }
         let first_block = match contents.is_empty() {
@@ -985,7 +1125,7 @@ impl<D: Disk> Volume<D> {
             Err(_) => 1,
         };
         let is_directory = kind == InodeKind::Directory;
-        if let Err(error) = self.add_entry(&mut parent, name, number, kind) {
+        if let Err(error) = self.add_entry(parent_number, &mut parent, name, number, kind) {
             self.release_inode_number(number)?;
             if first_block != 0 {
                 self.free_block(first_block)?;
@@ -1047,13 +1187,16 @@ impl<D: Disk> Volume<D> {
             return Err(Error::NotFound);
         }
         let (parent_number, mut parent) = self.live_directory(directory)?;
-        if self.find_entry(&parent, name, None)?.is_some() {
+        if self
+            .find_entry(parent_number, &parent, name, None)?
+            .is_some()
+        {
             return Err(Error::Exists);
         }
         if inode.more_names.saturating_add(1) >= MAX_LINKS {
             return Err(Error::TooManyLinks);
         }
-        if let Err(error) = self.add_entry(&mut parent, name, number, inode.kind) {
+        if let Err(error) = self.add_entry(parent_number, &mut parent, name, number, inode.kind) {
             self.write_inode(parent_number, &parent)?;
             return Err(error);
         }
@@ -1369,7 +1512,7 @@ impl<D: Disk> Volume<D> {
         self.ensure_room()?;
         let (parent_number, parent) = self.live_directory(directory)?;
         let found = self
-            .find_entry(&parent, name, None)?
+            .find_entry(parent_number, &parent, name, None)?
             .ok_or(Error::NotFound)?;
         self.child_node(&found)?;
         let is_directory = found.kind == InodeKind::Directory;
@@ -1427,7 +1570,7 @@ impl<D: Disk> Volume<D> {
         self.ensure_room()?;
         let (from_number, from_inode) = self.live_directory(from)?;
         let moved = self
-            .find_entry(&from_inode, from_name, None)?
+            .find_entry(from_number, &from_inode, from_name, None)?
             .ok_or(Error::NotFound)?;
         self.child_node(&moved)?;
         let moved_directory = moved.kind == InodeKind::Directory;
@@ -1435,7 +1578,7 @@ impl<D: Disk> Volume<D> {
         if moved_directory && self.is_ancestor(moved.inode, to_number)? {
             return Err(Error::InvalidArgument);
         }
-        let replaced = self.find_entry(&to_inode, to_name, None)?;
+        let replaced = self.find_entry(to_number, &to_inode, to_name, None)?;
         if let Some(replaced) = replaced {
             if replaced.inode == moved.inode {
                 return Ok(());
@@ -1462,13 +1605,14 @@ impl<D: Disk> Volume<D> {
                 }
                 let to_inode = self.inode(to_number)?;
                 let entry = self
-                    .find_entry(&to_inode, to_name, Some(replaced.inode))?
+                    .find_entry(to_number, &to_inode, to_name, Some(replaced.inode))?
                     .ok_or(Error::Corrupt)?;
                 self.point_record(entry, moved.inode, moved.kind)?;
             }
             None => {
                 let mut to_inode = to_inode;
-                let added = self.add_entry(&mut to_inode, to_name, moved.inode, moved.kind);
+                let added =
+                    self.add_entry(to_number, &mut to_inode, to_name, moved.inode, moved.kind);
                 if let Err(error) = added {
                     self.write_inode(to_number, &to_inode)?;
                     return Err(error);
@@ -1485,7 +1629,7 @@ impl<D: Disk> Volume<D> {
         self.write_inode(to_number, &to_inode)?;
         let from_inode = self.inode(from_number)?;
         let old = self
-            .find_entry(&from_inode, from_name, Some(moved.inode))?
+            .find_entry(from_number, &from_inode, from_name, Some(moved.inode))?
             .ok_or(Error::Corrupt)?;
         self.remove_found(old)?;
         let mut from_inode = self.inode(from_number)?;

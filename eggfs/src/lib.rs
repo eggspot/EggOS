@@ -19,6 +19,11 @@
 //!   [`Volume::mount`] mounts one, and a [`Volume`]'s methods read and change it; changes are
 //!   committed by [`Volume::commit`] and, before an operation, when the journal would not hold
 //!   more. [`Volume::check`] verifies everything a mounted volume holds.
+//! - **Checking and formatting disks** (D192): [`check_disk`] checks an unmounted volume and
+//!   finds every problem, read-only or repairing what is safe; [`format_with`] formats part
+//!   of a disk with a label, which [`Volume::label`] reads back.
+//! - **Big directories.** A directory of more than four blocks gets an index in memory,
+//!   built at its first lookup, so looking a name up reads one block, not all of them.
 //! - **Files removed while open.** [`Volume::hold`] keeps a file from being freed when its
 //!   last name goes: it becomes an orphan, still usable through its node until
 //!   [`Volume::release`] lets go of its last hold; mounting frees the orphans a crash left.
@@ -36,18 +41,23 @@ extern crate alloc;
 mod cache;
 mod check;
 mod checksum;
+mod index;
 mod journal;
 mod layout;
 pub mod memory;
+mod repair;
 mod volume;
 mod work_disk;
 
 #[cfg(test)]
+mod repair_tests;
+#[cfg(test)]
 mod tests;
 
 pub use check::{CheckReport, Inconsistency};
-pub use journal::{Contents, FormatError, format, probe};
-pub use layout::{BLOCK_SIZE, MAX_LINK_TARGET, MAX_LINKS, MAX_NAME, VERSION};
+pub use journal::{Contents, FormatError, FormatOptions, format, format_with, probe};
+pub use layout::{BLOCK_SIZE, MAX_LABEL, MAX_LINK_TARGET, MAX_LINKS, MAX_NAME, VERSION};
+pub use repair::{CheckError, CheckMode, DiskCheck, Finding, Outcome, Problem, check_disk};
 pub use volume::{Attributes, DirectoryEntry, Volume};
 pub use work_disk::{WORK_DISK_MARKER, WORK_FOLDER, is_work_disk, make_work_disk, work_folder};
 

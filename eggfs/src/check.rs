@@ -54,18 +54,18 @@ struct Names {
     first_directory: u32,
 }
 
-struct Bits(Vec<u64>);
+pub(crate) struct Bits(Vec<u64>);
 
 impl Bits {
-    fn new(bits: u32) -> Self {
+    pub(crate) fn new(bits: u32) -> Self {
         Self(alloc::vec![0; (bits as usize).div_ceil(64)])
     }
 
-    fn get(&self, bit: u32) -> bool {
+    pub(crate) fn get(&self, bit: u32) -> bool {
         self.0[(bit / 64) as usize] & 1 << (bit % 64) != 0
     }
 
-    fn set(&mut self, bit: u32) {
+    pub(crate) fn set(&mut self, bit: u32) {
         self.0[(bit / 64) as usize] |= 1 << (bit % 64);
     }
 }
@@ -92,7 +92,7 @@ fn io(inode: u32, block: u32) -> impl Fn(Error) -> Inconsistency {
     }
 }
 
-fn valid_name(name: &[u8]) -> bool {
+pub(crate) fn valid_name(name: &[u8]) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME
         && name != b"."

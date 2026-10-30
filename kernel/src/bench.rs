@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 60] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 61] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -109,6 +109,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 60] {
         ("eggfs_read_4k", |_, n| eggfs_read_4k::<P>(n)),
         ("eggfs_create", |_, n| eggfs_create::<P>(n)),
         ("eggfs_commit", |_, n| eggfs_commit::<P>(n)),
+        ("eggfs_lookup_10k", |_, n| eggfs_lookup_10k::<P>(n)),
         ("input_key_to_bytes", |_, n| input_key_to_bytes(n)),
         ("input_event_queue_push_pop", |_, n| {
             input_event_queue_push_pop(n)
@@ -763,6 +764,65 @@ fn eggfs_commit<P: Platform>(n: u64) {
     for i in 0..n {
         black_box(folder.set_modified(*file, i).ok());
         black_box(folder.sync().ok());
+    }
+}
+
+const EGGFS_BIG_DIRECTORY_NAMES: u64 = 10_000;
+
+static EGGFS_BIG_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+fn eggfs_entry_name(index: u64, out: &mut [u8; 8]) -> &[u8] {
+    let mut digits = [0u8; 7];
+    let mut length = 0;
+    let mut value = index;
+    loop {
+        digits[length] = b'0' + (value % 10) as u8;
+        length += 1;
+        value /= 10;
+        if value == 0 || length == digits.len() {
+            break;
+        }
+    }
+    out[0] = b'n';
+    for (position, digit) in digits[..length].iter().rev().enumerate() {
+        out[1 + position] = *digit;
+    }
+    &out[..=length]
+}
+
+fn eggfs_big_directory<P: Platform>() -> u64 {
+    use crate::vfs::{FileSystem, NodeKind};
+    let made = EGGFS_BIG_DIRECTORY.load(Ordering::Acquire);
+    if made != 0 {
+        return made;
+    }
+    let (folder, file) = eggfs_folder::<P>();
+    let Ok(directory) = folder.create(folder.root(), b"big", NodeKind::Directory, 0o755, 0) else {
+        panic!("eggfs: the big directory could not be made");
+    };
+    let mut buffer = [0u8; 8];
+    for index in 0..EGGFS_BIG_DIRECTORY_NAMES {
+        let name = eggfs_entry_name(index, &mut buffer);
+        if folder.link(*file, directory, name, 0).is_err() {
+            panic!("eggfs: the big directory could not be filled");
+        }
+    }
+    if folder.sync().is_err() {
+        panic!("eggfs: the big directory could not be committed");
+    }
+    EGGFS_BIG_DIRECTORY.store(directory, Ordering::Release);
+    directory
+}
+
+fn eggfs_lookup_10k<P: Platform>(n: u64) {
+    use crate::vfs::FileSystem;
+    let (folder, _) = eggfs_folder::<P>();
+    let directory = eggfs_big_directory::<P>();
+    let mut buffer = [0u8; 8];
+    for i in 0..n {
+        let index = i.wrapping_mul(7919) % EGGFS_BIG_DIRECTORY_NAMES;
+        let name = eggfs_entry_name(index, &mut buffer);
+        black_box(folder.lookup(directory, black_box(name)));
     }
 }
 

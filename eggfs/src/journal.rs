@@ -1,8 +1,8 @@
 use crate::checksum::Crc64;
 use crate::layout::{
     BITS_PER_BLOCK, BLOCK_SIZE, Block, DESCRIPTOR_MAGIC, Descriptor, FIRST_FREE_INODE,
-    FORMATTING_MAGIC, Geometry, Inode, InodeKind, ROOT_INODE, commit_matches, encode_commit,
-    u64_at, zeroed_block,
+    FORMATTING_MAGIC, Geometry, Inode, InodeKind, MAX_LABEL, ROOT_INODE, commit_matches,
+    encode_commit, u64_at, zeroed_block,
 };
 use crate::volume::Volume;
 use crate::{Disk, DiskError, Error, MountError, Mounted};
@@ -54,6 +54,20 @@ pub enum FormatError {
     TooSmall,
     /// The disk failed a write.
     Io,
+    /// The size asked for is larger than the disk.
+    LargerThanDisk,
+    /// The label is longer than [`crate::MAX_LABEL`] bytes or holds NUL.
+    BadLabel,
+}
+
+/// How [`format_with`] makes a file system.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FormatOptions<'a> {
+    /// The blocks of [`crate::BLOCK_SIZE`] bytes to use from the start of the disk; all of it
+    /// when `None`.
+    pub blocks: Option<u64>,
+    /// The volume's name, empty for none.
+    pub label: &'a str,
 }
 
 fn bitmap_block(index: u32, used_below: u32, total: u32) -> alloc::boxed::Box<Block> {
@@ -72,7 +86,26 @@ fn bitmap_block(index: u32, used_below: u32, total: u32) -> alloc::boxed::Box<Bl
 /// stamped `now`. The superblock goes last, after a marker that [`probe`] reads as blank, so a
 /// format that stops midway is done again rather than mounted.
 pub fn format<D: Disk + ?Sized>(disk: &mut D, now: u64) -> Result<(), FormatError> {
-    let geometry = Geometry::for_disk(disk.blocks(), now).ok_or(FormatError::TooSmall)?;
+    format_with(disk, now, &FormatOptions::default())
+}
+
+/// Writes an empty EggFS file system as [`format`] does, on the part of `disk` and with the
+/// label `options` ask for.
+pub fn format_with<D: Disk + ?Sized>(
+    disk: &mut D,
+    now: u64,
+    options: &FormatOptions<'_>,
+) -> Result<(), FormatError> {
+    let blocks = options.blocks.unwrap_or(disk.blocks());
+    if blocks > disk.blocks() {
+        return Err(FormatError::LargerThanDisk);
+    }
+    let label = options.label.as_bytes();
+    if label.len() > MAX_LABEL || label.contains(&0) {
+        return Err(FormatError::BadLabel);
+    }
+    let mut geometry = Geometry::for_disk(blocks, now).ok_or(FormatError::TooSmall)?;
+    geometry.label[..label.len()].copy_from_slice(label);
     let io = |_: DiskError| FormatError::Io;
     let mut marker = zeroed_block();
     marker[..8].copy_from_slice(&FORMATTING_MAGIC);
@@ -109,7 +142,7 @@ fn is_same_superblock(geometry: &Geometry, image: &[u8]) -> bool {
     Geometry::decode(image).is_some_and(|upgraded| geometry.same_layout(&upgraded))
 }
 
-fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), MountError> {
+pub(crate) fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), MountError> {
     let io = |_: DiskError| MountError::Io;
     let journal = u64::from(geometry.journal);
     let mut block = zeroed_block();
@@ -170,7 +203,7 @@ fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), Moun
     Ok((next, recovered))
 }
 
-fn count_clear<D: Disk>(
+pub(crate) fn count_clear<D: Disk>(
     disk: &mut D,
     start: u32,
     blocks: u32,

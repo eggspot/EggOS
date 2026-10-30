@@ -18,6 +18,9 @@ pub const OLDEST_VERSION: u32 = 1;
 pub const MAX_LINK_TARGET: usize = 4095;
 /// The most names a regular file or a symbolic link has.
 pub const MAX_LINKS: u32 = 65000;
+/// The longest name a volume has, in bytes of UTF-8.
+pub const MAX_LABEL: usize = 64;
+const LABEL_AT: usize = 128;
 pub const MIN_BLOCKS: u64 = 256;
 pub const MAX_BLOCKS: u64 = u32::MAX as u64 - BITS_PER_BLOCK as u64;
 pub const MIN_JOURNAL_BLOCKS: u32 = 64;
@@ -80,6 +83,7 @@ pub struct Geometry {
     pub inode_table_blocks: u32,
     pub data_start: u32,
     pub created: u64,
+    pub label: [u8; MAX_LABEL],
 }
 
 const SUPERBLOCK_CHECKSUM: usize = BLOCK_SIZE - 4;
@@ -117,6 +121,7 @@ impl Geometry {
             inode_table_blocks,
             data_start,
             created,
+            label: [0; MAX_LABEL],
         };
         geometry.is_consistent().then_some(geometry)
     }
@@ -186,6 +191,7 @@ impl Geometry {
             put_u32(&mut block[..], 24 + 4 * index, value);
         }
         put_u64(&mut block[..], 64, self.created);
+        block[LABEL_AT..LABEL_AT + MAX_LABEL].copy_from_slice(&self.label);
         let checksum = crc32c(&block[..SUPERBLOCK_CHECKSUM]);
         put_u32(&mut block[..], SUPERBLOCK_CHECKSUM, checksum);
         block
@@ -214,6 +220,9 @@ impl Geometry {
             inode_table_blocks: field(7),
             data_start: field(8),
             created: u64_at(block, 64),
+            label: block[LABEL_AT..LABEL_AT + MAX_LABEL]
+                .try_into()
+                .unwrap_or([0; MAX_LABEL]),
         };
         geometry.is_consistent().then_some(geometry)
     }
