@@ -78,6 +78,8 @@ pub mod number {
     pub const OPENAT2: usize = 437;
     pub const FCHMODAT: usize = 268;
     pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 137;
+    pub const FSTATFS: usize = 138;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -155,6 +157,8 @@ pub mod number {
     pub const OPENAT2: usize = 437;
     pub const FCHMODAT: usize = 53;
     pub const FCHMODAT2: usize = 452;
+    pub const STATFS: usize = 43;
+    pub const FSTATFS: usize = 44;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

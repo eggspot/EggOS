@@ -1,11 +1,11 @@
 use super::{
     BACK_BUTTON, COLUMN_GAP, FilesWindow, Focus, HEADER_HEIGHT, HOST_SHARE, Hover, Location,
-    NAME_X, Place, Pressed, ROW_HEIGHT, SIDEBAR_WIDTH, SIZE_END_FROM_RIGHT, SIZE_WIDTH, TIME_WIDTH,
-    UP_BUTTON, WORK, text_of,
+    NAME_X, Place, Pressed, ROW_HEIGHT, SIDEBAR_WIDTH, SIZE_END_FROM_RIGHT, SIZE_WIDTH,
+    STATUS_TEXT_X, TIME_WIDTH, UP_BUTTON, WORK, text_of,
 };
 use crate::clock::list_time;
 use crate::kind::Link;
-use crate::listing::{items_text, size_text};
+use crate::listing::{free_space_text, items_text, size_text};
 use crate::names;
 use eggos_app_manifest::Source;
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
@@ -18,7 +18,6 @@ const TEXT_TOP: i32 = 4;
 const PLACES_HEADING: (i32, i32) = (12, 40);
 const MARK_X: i32 = 8;
 const PLACE_TEXT_X: i32 = 24;
-const STATUS_TEXT_X: i32 = 12;
 const BADGE: i32 = 6;
 const BADGE_GAP: i32 = 8;
 const BADGE_TOP: i32 = 9;
@@ -410,6 +409,11 @@ impl FilesWindow {
             colour::TEXT_DIM,
             1,
         );
+        if let (Some(rect), Some(free)) =
+            (self.free_space_rect(), free_space_text(self.free_space()))
+        {
+            canvas.text(rect.x, rect.y, free.as_str(), colour::TEXT_DIM, 1);
+        }
     }
 
     /// Where the notice shown is, if one is.

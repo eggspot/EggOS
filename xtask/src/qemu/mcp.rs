@@ -75,7 +75,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 10] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 11] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -94,6 +94,11 @@ pub const TWIN_CALLS: [(&str, &str, &str); 10] = [
     ),
     ("settings_list", "{}", "shell.profile="),
     ("settings_get", r#"{"key":"keyboard.layout"}"#, "us"),
+    (
+        "df",
+        r#"{"path":"/media/host"}"#,
+        "\"mounted_on\":\"/media/host\"",
+    ),
 ];
 
 /// Every call of a reading tool whose result depends on the network the machine was started

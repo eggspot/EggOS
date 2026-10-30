@@ -1,7 +1,8 @@
 //! The Files window (docs/ux/desktop-v0.3-gui.md sections 8 and 8.1, D135, and its links
 //! addendum docs/ux/files-links-v0.3.md, D170): the toolbar with
 //! back, up and the path field, the sidebar's places, the list of the folder's entries, the
-//! status bar, and the context menus, dialogs, notices and rename field drawn inside it. It is
+//! status bar with the free space (docs/ux/files-free-space-v0.3.md, D171), and the context
+//! menus, dialogs, notices and rename field drawn inside it. It is
 //! pure state over [`Files`]: it reads and changes the file systems through the trait and asks
 //! the program for what only the system does ([`Request`]), so host tests and the QEMU test's
 //! expected frames run the same code the program shows.
@@ -12,12 +13,13 @@ mod paint;
 mod tests;
 
 pub use elements::{
-    ENTRIES_ELEMENT, FIRST_ENTRY_ELEMENT, FIRST_PLACE_ELEMENT, PATH_ELEMENT, PLACES_ELEMENT,
+    ENTRIES_ELEMENT, FIRST_ENTRY_ELEMENT, FIRST_PLACE_ELEMENT, FREE_SPACE_ELEMENT, ITEMS_ELEMENT,
+    PATH_ELEMENT, PLACES_ELEMENT,
 };
 
 use crate::job::{Job, STEP_BYTES, Step, Work};
 use crate::kind::{self, Kind, Link};
-use crate::listing::{Listing, items_text, size_text};
+use crate::listing::{FreeSpace, Listing, free_space_text, items_text, size_text};
 use crate::names::{
     self, Name, copy_name, extension_start, free_path, is_valid, is_within, joined, link_name,
     link_target_path, new_folder_name, parent, resolved,
@@ -88,6 +90,10 @@ pub(crate) const SIZE_END_FROM_RIGHT: i32 = 144;
 pub(crate) const TIME_WIDTH: i32 = 128;
 pub(crate) const COLUMN_GAP: i32 = 8;
 pub(crate) const SIZE_WIDTH: i32 = 80;
+pub(crate) const STATUS_TEXT_X: i32 = 12;
+pub(crate) const STATUS_TEXT_TOP: i32 = 4;
+pub(crate) const STATUS_END_FROM_RIGHT: i32 = 12;
+pub(crate) const STATUS_GAP: i32 = 16;
 const DOUBLE_CLICK_MS: u32 = 400;
 const CARET_BLINK_MS: u32 = 500;
 const TYPE_AHEAD_MS: u32 = 1000;
@@ -348,6 +354,7 @@ pub struct FilesWindow {
     history: [Location; HISTORY],
     history_length: usize,
     listing: Listing,
+    free_space: FreeSpace,
     selected: Option<usize>,
     offset: i32,
     focus: Focus,
@@ -412,6 +419,7 @@ impl FilesWindow {
             history: [home; HISTORY],
             history_length: 0,
             listing: Listing::new(),
+            free_space: FreeSpace::Unknown,
             selected: None,
             offset: 0,
             focus: Focus::List,
@@ -782,6 +790,7 @@ impl FilesWindow {
             Location::Folder(folder) => self.listing.read_folder(files, &folder),
             Location::Trash => self.listing.read_trash(files, &self.trash),
         }
+        self.free_space = self.read_free_space(files);
         self.selected = keep.and_then(|name| self.listing.find(name.as_bytes()));
         if self
             .rename
@@ -794,6 +803,67 @@ impl FilesWindow {
         }
         self.clamp_offset();
         self.damage_all();
+    }
+
+    fn read_free_space(&self, files: &mut impl Files) -> FreeSpace {
+        if self.listing.error().is_some() {
+            return FreeSpace::Unknown;
+        }
+        let folder = match &self.location {
+            Location::Folder(folder) => folder.as_bytes(),
+            Location::Trash => HOME,
+        };
+        let detached = (is_within(folder, HOST_SHARE)
+            && !self.places().contains(&Place::HostShare))
+            || (is_within(folder, WORK) && !self.places().contains(&Place::WorkDisk));
+        if detached {
+            return FreeSpace::Unknown;
+        }
+        match files.space(folder) {
+            Ok(space) if space.read_only => FreeSpace::ReadOnly,
+            Ok(space) if space.total > 0 => FreeSpace::Bytes(space.available),
+            _ => FreeSpace::Unknown,
+        }
+    }
+
+    /// What the status bar says about the folder's file system (D171).
+    pub fn free_space(&self) -> FreeSpace {
+        self.free_space
+    }
+
+    /// Where the status bar's left text, `N items`, is.
+    pub fn items_rect(&self) -> Rect {
+        let status = self.status_bar();
+        let text = items_text(self.listing.len());
+        Rect::new(
+            STATUS_TEXT_X,
+            status.y + STATUS_TEXT_TOP,
+            eggos_toolkit::text::width(text.as_str()),
+            widget::LINE_HEIGHT,
+        )
+    }
+
+    /// Where the status bar's right text may be, whatever it says: what a test that cannot
+    /// know the guest's disks leaves out of a frame it compares.
+    pub fn free_space_area(&self) -> Rect {
+        let items = self.items_rect();
+        let left = items.right() + STATUS_GAP;
+        let right = self.width - STATUS_END_FROM_RIGHT;
+        Rect::new(left, items.y, (right - left).max(0), items.height)
+    }
+
+    /// Where the status bar's right text, the free space, is: the cell a test that cannot know
+    /// the guest's disk skips; `None` when nothing is drawn there, for want of something to say
+    /// or of room beside `N items`.
+    pub fn free_space_rect(&self) -> Option<Rect> {
+        let text = free_space_text(self.free_space)?;
+        let width = eggos_toolkit::text::width(text.as_str());
+        let x = self.width - STATUS_END_FROM_RIGHT - width;
+        let items = self.items_rect();
+        if x < items.right() + STATUS_GAP {
+            return None;
+        }
+        Some(Rect::new(x, items.y, width, items.height))
     }
 
     fn clamp_offset(&mut self) {

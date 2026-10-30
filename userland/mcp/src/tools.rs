@@ -125,6 +125,8 @@ pub enum Kind {
     SettingsSet,
     /// `ln`: makes a symbolic or hard link (D170).
     Ln,
+    /// `df`: how full the file system holding a path is (D171).
+    Df,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -316,7 +318,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 40] = [
+pub const TOOLS: [Tool; 41] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -491,6 +493,18 @@ pub const TOOLS: [Tool; 40] = [
         &registry::LN,
         Kind::Ln,
         twin("/bin/ln", &["-T"], Operand::Path(LINK_PATH)),
+    ),
+    tool(
+        &registry::DF,
+        Kind::Df,
+        twin(
+            "/bin/df",
+            &["--json"],
+            Operand::Path(PathArgument {
+                default: Some("/home"),
+                ..READ_PATH
+            }),
+        ),
     ),
 ];
 

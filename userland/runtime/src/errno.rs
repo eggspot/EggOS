@@ -73,6 +73,8 @@ impl Errno {
     pub const EMLINK: Self = Self(31);
     /// `ELOOP`.
     pub const ELOOP: Self = Self(40);
+    /// `ENOSYS`: no such system call.
+    pub const ENOSYS: Self = Self(38);
 
     /// A system call's result: the non-negative value it returned, or the error of a negative
     /// one.

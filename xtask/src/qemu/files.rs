@@ -152,6 +152,7 @@ impl FilesTest<'_> {
             windows.push((*id, WindowContent::Pixels { width, pixels }));
             if let Some(content) = self.shell.screen.desktop.content_rect(*id) {
                 masks.push(to_screen(content, files.time_column()));
+                masks.push(to_screen(content, files.free_space_area()));
             }
         }
         if let Some((id, dialog)) = &self.installer {

@@ -289,6 +289,29 @@ pub fn size_text(size: u64) -> Stamp {
     stamp
 }
 
+/// What the status bar says about the file system of the folder shown (D171,
+/// docs/ux/files-free-space-v0.3.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeSpace {
+    /// Nothing honest to say: no blocks, no answer, or a folder that could not be shown.
+    Unknown,
+    /// The bytes that can still be written there.
+    Bytes(u64),
+    /// Nothing can be written there.
+    ReadOnly,
+}
+
+/// The status bar's right text for `free`: `12.3 GB free`, `Read-only`, or nothing.
+pub fn free_space_text(free: FreeSpace) -> Option<Stamp> {
+    let mut stamp = Stamp::new();
+    match free {
+        FreeSpace::Unknown => return None,
+        FreeSpace::Bytes(bytes) => write!(stamp, "{} free", size_text(bytes).as_str()).ok()?,
+        FreeSpace::ReadOnly => stamp.write_str("Read-only").ok()?,
+    }
+    Some(stamp)
+}
+
 /// A count of bytes with thousands separated: `4,321 bytes`, `1 byte`.
 pub fn bytes_text(size: u64) -> Stamp {
     let mut digits = [0u8; 20];
@@ -338,6 +361,19 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn free_space_reads_as_the_size_column_writes_sizes() {
+        let text = |free| free_space_text(free).map(|stamp| stamp.as_str().to_owned());
+        assert_eq!(text(FreeSpace::Bytes(512)).as_deref(), Some("512 B free"));
+        assert_eq!(text(FreeSpace::Bytes(0)).as_deref(), Some("0 B free"));
+        assert_eq!(
+            text(FreeSpace::Bytes(12_300 * (1 << 20))).as_deref(),
+            Some("12.0 GB free")
+        );
+        assert_eq!(text(FreeSpace::ReadOnly).as_deref(), Some("Read-only"));
+        assert_eq!(text(FreeSpace::Unknown), None);
     }
 
     #[test]

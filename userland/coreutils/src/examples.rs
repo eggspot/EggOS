@@ -1,4 +1,5 @@
 use crate::fake::{Fake, FakeWindow};
+use crate::system::FileSystemUsage;
 use crate::utilities::{Utility, run};
 use core::ffi::CStr;
 use eggos_commands::COMMANDS;
@@ -18,8 +19,24 @@ fn machine() -> Fake {
             0,
         )
         .with_file("/proc/uptime", 0o444, b"3725.42 0.00\n", 0)
+        .with_file(
+            "/proc/mounts",
+            0o444,
+            b"rootfs / rootfs ro 0 0\neggfs /home eggfs rw 0 0\n",
+            0,
+        )
         .with_link("/proc/self", "7");
     fake.now = 1_793_282_709;
+    fake.file_systems = vec![(
+        b"/home".to_vec(),
+        FileSystemUsage {
+            block_size: 4096,
+            blocks: 262_144,
+            free: 196_608,
+            available: 196_608,
+            read_only: false,
+        },
+    )];
     fake.windows = vec![FakeWindow {
         id: 129,
         state: 0,

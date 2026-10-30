@@ -1,6 +1,7 @@
 use crate::system::{
-    CapturedRows, DatagramKind, Duration, STATX_SIZE, Sender, Status, SymbolicLinks, System,
-    SystemName, UTSNAME_SIZE, WindowTree, folder_and_leaf, refuses_symbolic_links,
+    CapturedRows, DatagramKind, Duration, FileSystemUsage, STATFS_SIZE, STATX_SIZE, Sender, Status,
+    SymbolicLinks, System, SystemName, UTSNAME_SIZE, WindowTree, folder_and_leaf,
+    refuses_symbolic_links,
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
@@ -363,6 +364,21 @@ impl System for Linux {
             let leaf = leaf.as_ptr() as usize;
             call(number::UTIMENSAT, [folder, leaf, 0, 0, 0, 0]).map(|_| ())
         })
+    }
+
+    fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno> {
+        let mut record = [0u8; STATFS_SIZE];
+        let buffer = record.as_mut_ptr() as usize;
+        if self.no_symlinks {
+            let descriptor = open_refusing_links(AT_FDCWD, path, O_PATH | O_RDONLY_CLOEXEC, 0)?;
+            let result = call(number::FSTATFS, [descriptor, buffer, 0, 0, 0, 0]);
+            self.close(descriptor);
+            result?;
+        } else {
+            let path = path.as_ptr() as usize;
+            call(number::STATFS, [path, buffer, 0, 0, 0, 0])?;
+        }
+        Ok(FileSystemUsage::from_statfs(&record))
     }
 
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {

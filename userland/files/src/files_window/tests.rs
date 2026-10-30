@@ -1232,3 +1232,97 @@ fn a_link_to_an_installed_app_opens_it_and_is_trashed_not_uninstalled() {
     );
     assert!(driver.files.node("/Applications/Hello").is_some());
 }
+
+const GIBIBYTE: u64 = 1 << 30;
+
+fn sized_disk() -> MemoryFiles {
+    let mut files = disk();
+    files
+        .sized("/home", 16 * GIBIBYTE, 12_300 * (1 << 20))
+        .sized("/tmp", 0, 0);
+    files
+}
+
+#[test]
+fn the_status_bar_shows_the_free_space_of_the_folder_s_file_system() {
+    let mut driver = Driver::on(sized_disk());
+    assert_eq!(
+        driver.window.free_space(),
+        FreeSpace::Bytes(12_300 * (1 << 20))
+    );
+    let free = driver.window.free_space_rect().unwrap();
+    assert_eq!(
+        free.right(),
+        driver.window.status_bar().right() - STATUS_END_FROM_RIGHT
+    );
+    assert_eq!(free.y, driver.window.status_bar().y + STATUS_TEXT_TOP);
+    assert_eq!(free.width, eggos_toolkit::text::width("12.0 GB free"));
+    driver.place(Place::HostShare);
+    assert_eq!(driver.window.free_space(), FreeSpace::ReadOnly);
+    driver.place(Place::System);
+    assert_eq!(
+        driver.window.free_space(),
+        FreeSpace::Unknown,
+        "no size: ENOSYS"
+    );
+    driver.place(Place::Tmp);
+    assert_eq!(driver.window.free_space(), FreeSpace::Unknown, "no blocks");
+    assert_eq!(driver.window.free_space_rect(), None);
+    driver.place(Place::Trash);
+    assert_eq!(
+        driver.window.free_space(),
+        FreeSpace::Bytes(12_300 * (1 << 20)),
+        "the Trash is on home's file system"
+    );
+}
+
+#[test]
+fn the_free_space_is_read_once_a_reload_and_never_by_the_clock() {
+    let mut driver = Driver::on(sized_disk());
+    let after_opening = driver.files.space_calls;
+    assert_eq!(after_opening, 1);
+    for _ in 0..100 {
+        driver.now += 100;
+        driver.window.tick(&mut driver.files, driver.now, CLOCK);
+    }
+    assert_eq!(driver.files.space_calls, after_opening);
+    driver.window.reload(&mut driver.files);
+    assert_eq!(driver.files.space_calls, after_opening + 1);
+    driver.window.resize(480, 324);
+    assert_eq!(driver.files.space_calls, after_opening + 1);
+    assert!(
+        driver.window.free_space_rect().is_some(),
+        "room at the minimum size"
+    );
+}
+
+#[test]
+fn an_agent_reads_the_status_bar_s_texts() {
+    use eggos_toolkit::elements::{MAX_TREE_BYTES, Role, TreeWriter, elements};
+    let mut files = sized_disk();
+    let window = window(&mut files);
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut tree = TreeWriter::new(&mut bytes);
+    window.describe(&mut tree);
+    let read: Vec<_> = elements(tree.bytes()).map(Result::unwrap).collect();
+    let text = |id| {
+        read.iter()
+            .find(|element| element.id == id)
+            .map(|element| (element.role, element.name.to_vec()))
+    };
+    assert_eq!(text(ITEMS_ELEMENT).map(|(role, _)| role), Some(Role::Text));
+    assert_eq!(
+        text(FREE_SPACE_ELEMENT),
+        Some((Role::Text, b"12.0 GB free".to_vec()))
+    );
+    let mut plain = disk();
+    let window = super::FilesWindow::new(&mut plain, None, Architecture::X86_64, false, CLOCK);
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut tree = TreeWriter::new(&mut bytes);
+    window.describe(&mut tree);
+    assert!(
+        elements(tree.bytes())
+            .map(Result::unwrap)
+            .all(|element| element.id != FREE_SPACE_ELEMENT)
+    );
+}

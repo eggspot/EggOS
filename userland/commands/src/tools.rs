@@ -464,6 +464,14 @@ const LS_ARGUMENTS: [Argument; 3] = [
 
 const CAT_ARGUMENTS: [Argument; 1] = [path(READ_PATH)];
 
+const DF_ARGUMENTS: [Argument; 1] = [defaulting(
+    described(
+        optional("path", JsonType::String, Mapping::Operand),
+        READ_PATH,
+    ),
+    DefaultValue::Text("/home"),
+)];
+
 const NET_PING_ARGUMENTS: [Argument; 2] = [
     required(described(
         optional("host", JsonType::String, Mapping::Operand),
@@ -755,6 +763,19 @@ pub const NET_LOOKUP: ToolDefinition = reading(
     &["nslookup"],
     &[],
     &NET_LOOKUP_ARGUMENTS,
+);
+
+/// `df` (D171).
+pub const DF: ToolDefinition = reading(
+    "df",
+    "Show free disk space",
+    "Shows how full the file system holding a path in /home, /media/host (the host's shared \
+         folder) or /work (the work disk) is, as `df --json` writes it: a JSON record with the \
+         file system, its type, where it is mounted, its size, used and available bytes, and \
+         whether it is read-only.",
+    &["df"],
+    &["--json"],
+    &DF_ARGUMENTS,
 );
 
 /// `tee`.
@@ -1437,7 +1458,7 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's and D170's.
-pub const TOOLS: [ToolDefinition; 40] = [
+pub const TOOLS: [ToolDefinition; 41] = [
     LS,
     CAT,
     PS,
@@ -1478,6 +1499,7 @@ pub const TOOLS: [ToolDefinition; 40] = [
     SETTINGS_GET,
     SETTINGS_SET,
     LN,
+    DF,
 ];
 
 impl ToolDefinition {

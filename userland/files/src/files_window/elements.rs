@@ -1,10 +1,12 @@
 //! The Files window as an element tree for an agent (D161, docs/windows.md "Element trees"):
-//! the sidebar's places, the path field and the folder's entries as list items, each with its
-//! name and whether it is a folder, a file, a link to either or a broken link. Invoking an entry
+//! the sidebar's places, the path field, the status bar's texts (`N items` and the free space,
+//! D171) and the folder's entries as list items, each with its name and whether it is a
+//! folder, a file, a link to either or a broken link. Invoking an entry
 //! opens it as a double-click does, selecting it selects it, and invoking a place goes there.
 
 use super::{FilesWindow, Focus};
 use crate::kind::Link;
+use crate::listing::{free_space_text, items_text};
 use crate::names;
 use eggos_app::files::Files;
 use eggos_toolkit::elements::{Action, Bounds, Element, Outcome, Role, TreeWriter, flags};
@@ -18,6 +20,10 @@ pub const PLACES_ELEMENT: u32 = 10;
 pub const PATH_ELEMENT: u32 = 20;
 /// The list of the folder's entries.
 pub const ENTRIES_ELEMENT: u32 = 30;
+/// The status bar's `N items`.
+pub const ITEMS_ELEMENT: u32 = 40;
+/// The status bar's free space (`12.3 GB free`, `Read-only`), while it is drawn (D171).
+pub const FREE_SPACE_ELEMENT: u32 = 41;
 /// Place `i` is element `FIRST_PLACE_ELEMENT + i`.
 pub const FIRST_PLACE_ELEMENT: u32 = 11;
 /// Entry `i` is element `FIRST_ENTRY_ELEMENT + i`.
@@ -83,6 +89,26 @@ impl FilesWindow {
         .flagged(flags::FOCUSABLE | self.focused_on(Focus::List));
         if !tree.push(&path) || !tree.push(&entries) {
             return;
+        }
+        let items_text = items_text(self.listing.len());
+        let items = Element::new(
+            ITEMS_ELEMENT,
+            ROOT_ELEMENT,
+            Role::Text,
+            bounds(self.items_rect()),
+        )
+        .named(items_text.as_str().as_bytes());
+        if !tree.push(&items) {
+            return;
+        }
+        if let (Some(rect), Some(text)) =
+            (self.free_space_rect(), free_space_text(self.free_space()))
+        {
+            let free = Element::new(FREE_SPACE_ELEMENT, ROOT_ELEMENT, Role::Text, bounds(rect))
+                .named(text.as_str().as_bytes());
+            if !tree.push(&free) {
+                return;
+            }
         }
         let mut shown = [0u8; names::NAME_CAPACITY * 2];
         for index in 0..self.listing.len() {

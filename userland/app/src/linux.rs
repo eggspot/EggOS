@@ -3,7 +3,7 @@
 //! the standard output and error, and starting the installer's window.
 
 use crate::architecture::Architecture;
-use crate::files::{Files, Handle, Kind, PATH_CAPACITY, Path, Status};
+use crate::files::{Files, Handle, Kind, PATH_CAPACITY, Path, Space, Status};
 use core::ffi::CStr;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -27,6 +27,13 @@ const STATX_FILE_SIZE: usize = 40;
 const STATX_MODIFIED: usize = 112;
 const STATX_DEVICE_MAJOR: usize = 136;
 const STATX_DEVICE_MINOR: usize = 140;
+const STATFS_SIZE: usize = 120;
+const STATFS_BLOCK_SIZE: usize = 8;
+const STATFS_BLOCKS: usize = 16;
+const STATFS_AVAILABLE: usize = 32;
+const STATFS_FRAGMENT_SIZE: usize = 72;
+const STATFS_FLAGS: usize = 80;
+const STATFS_READ_ONLY: u64 = 0x1;
 const FILE_TYPE: u32 = 0o170_000;
 const REGULAR: u32 = 0o100_000;
 const DIRECTORY: u32 = 0o040_000;
@@ -298,6 +305,23 @@ impl Drop for LinuxFiles {
     }
 }
 
+fn space_of(record: &[u8; STATFS_SIZE]) -> Space {
+    let word = |at: usize| {
+        let mut value = [0u8; 8];
+        value.copy_from_slice(&record[at..at + 8]);
+        u64::from_ne_bytes(value)
+    };
+    let block = match word(STATFS_FRAGMENT_SIZE) {
+        0 => word(STATFS_BLOCK_SIZE),
+        fragment => fragment,
+    };
+    Space {
+        total: word(STATFS_BLOCKS).saturating_mul(block),
+        available: word(STATFS_AVAILABLE).saturating_mul(block),
+        read_only: word(STATFS_FLAGS) & STATFS_READ_ONLY != 0,
+    }
+}
+
 fn status_with(path: &[u8], flags: usize) -> Result<Status, Errno> {
     let path = CPath::new(path)?;
     let mut record = [0u8; STATX_SIZE];
@@ -338,6 +362,16 @@ fn status_with(path: &[u8], flags: usize) -> Result<Status, Errno> {
 impl Files for LinuxFiles {
     fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
         status_with(path, AT_SYMLINK_NOFOLLOW)
+    }
+
+    fn space(&mut self, path: &[u8]) -> Result<Space, Errno> {
+        let path = CPath::new(path)?;
+        let mut record = [0u8; STATFS_SIZE];
+        call(
+            number::STATFS,
+            [path.pointer(), record.as_mut_ptr() as usize, 0, 0, 0, 0],
+        )?;
+        Ok(space_of(&record))
     }
 
     fn status_following(&mut self, path: &[u8]) -> Result<Status, Errno> {

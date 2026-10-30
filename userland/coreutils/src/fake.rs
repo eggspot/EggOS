@@ -1,7 +1,7 @@
 use crate::system::{
-    CapturedRows, DIRECTORY, DatagramKind, Duration, FILE_TYPE, MAX_LINK_HOPS, STANDARD_ERROR,
-    STANDARD_INPUT, STANDARD_OUTPUT, SYMBOLIC_LINK, Sender, Status, SymbolicLinks, System,
-    SystemName, UTSNAME_FIELD, UTSNAME_SIZE, WindowTree,
+    CapturedRows, DIRECTORY, DatagramKind, Duration, FILE_TYPE, FileSystemUsage, MAX_LINK_HOPS,
+    STANDARD_ERROR, STANDARD_INPUT, STANDARD_OUTPUT, SYMBOLIC_LINK, Sender, Status, SymbolicLinks,
+    System, SystemName, UTSNAME_FIELD, UTSNAME_SIZE, WindowTree,
 };
 use core::ffi::CStr;
 use eggos_net::{Ipv4Address, dns, icmp, sntp};
@@ -198,6 +198,7 @@ pub struct Fake {
     pub window_server: bool,
     pub working_directory: String,
     pub network: FakeNetwork,
+    pub file_systems: Vec<(Vec<u8>, FileSystemUsage)>,
     open: Vec<Option<OpenFile>>,
     next_inode: u64,
 }
@@ -254,6 +255,7 @@ impl Default for Fake {
             window_server: true,
             working_directory: "/".to_owned(),
             network: FakeNetwork::default(),
+            file_systems: Vec::new(),
             open: Vec::new(),
             next_inode: 1,
         }
@@ -719,6 +721,26 @@ impl System for Fake {
         let link = Node::Link(target.to_bytes().to_vec());
         self.nodes.insert(path, (link, status));
         Ok(())
+    }
+
+    fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno> {
+        let path = self.through_links(&self.resolve(path.to_bytes()), true)?;
+        if !self.nodes.contains_key(&path) && path != b"/" {
+            return Err(Errno::ENOENT);
+        }
+        let holds = |point: &[u8]| {
+            point == b"/"
+                || path == point
+                || path
+                    .strip_prefix(point)
+                    .is_some_and(|rest| rest.starts_with(b"/"))
+        };
+        self.file_systems
+            .iter()
+            .filter(|(point, _)| holds(point))
+            .max_by_key(|(point, _)| point.len())
+            .map(|&(_, usage)| usage)
+            .ok_or(Errno(38))
     }
 
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {

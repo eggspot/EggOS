@@ -1,10 +1,10 @@
 //! A file system in memory behind [`Files`], for the host tests and for the QEMU test's
 //! expected frames: folders, files with their times, symbolic links (D170) followed through
 //! paths as the kernel follows them, several devices (a rename between two is `EXDEV`),
-//! read-only places (`EROFS`) and a size limit (`ENOSPC`).
+//! read-only places (`EROFS`), a size limit (`ENOSPC`) and the space places report (D171).
 
 use crate::names::{MOST_LINKS, normalized};
-use eggos_app::files::{Files, Handle, Kind, Status};
+use eggos_app::files::{Files, Handle, Kind, Space, Status};
 use eggos_runtime::errno::Errno;
 use std::collections::BTreeMap;
 use std::vec::Vec;
@@ -46,6 +46,9 @@ pub struct MemoryFiles {
     pub space: Option<usize>,
     /// How many times [`Files::sync`] was called.
     pub syncs: usize,
+    sizes: Vec<(Vec<u8>, u64, u64)>,
+    /// How many times [`Files::space`] was called.
+    pub space_calls: usize,
 }
 
 fn parent(path: &[u8]) -> &[u8] {
@@ -154,6 +157,14 @@ impl MemoryFiles {
     /// Makes everything in `folder` another file system, numbered `device`.
     pub fn device(&mut self, folder: &str, device: u64) -> &mut Self {
         self.devices.push((folder.as_bytes().to_vec(), device));
+        self
+    }
+
+    /// Makes everything in `folder` report a file system of `total` bytes with `available`
+    /// still to write ([`Files::space`]); a place no folder sizes answers `ENOSYS`.
+    pub fn sized(&mut self, folder: &str, total: u64, available: u64) -> &mut Self {
+        self.sizes
+            .push((folder.as_bytes().to_vec(), total, available));
         self
     }
 
@@ -305,6 +316,28 @@ impl MemoryFiles {
 }
 
 impl Files for MemoryFiles {
+    fn space(&mut self, path: &[u8]) -> Result<Space, Errno> {
+        self.space_calls += 1;
+        let path = self.resolve(path, true)?;
+        self.status_at(&path)?;
+        if self.read_only.iter().any(|folder| within(&path, folder)) {
+            return Ok(Space {
+                read_only: true,
+                ..Space::default()
+            });
+        }
+        self.sizes
+            .iter()
+            .filter(|(folder, _, _)| within(&path, folder))
+            .max_by_key(|(folder, _, _)| folder.len())
+            .map(|&(_, total, available)| Space {
+                total,
+                available,
+                read_only: false,
+            })
+            .ok_or(Errno::ENOSYS)
+    }
+
     fn status(&mut self, path: &[u8]) -> Result<Status, Errno> {
         let path = self.resolve(path, false)?;
         self.status_at(&path)

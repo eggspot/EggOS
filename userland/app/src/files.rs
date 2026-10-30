@@ -31,6 +31,17 @@ pub struct Status {
     pub device: u64,
 }
 
+/// How full the file system holding a path is (`statfs`, D171), in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Space {
+    /// Its size.
+    pub total: u64,
+    /// What a program may still write (`f_bavail` blocks).
+    pub available: u64,
+    /// Whether nothing can be written to it.
+    pub read_only: bool,
+}
+
 /// An open file.
 pub type Handle = usize;
 
@@ -79,6 +90,12 @@ pub trait Files {
     fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), Errno>;
     /// Commits every file system's changes to its disk.
     fn sync(&mut self);
+    /// How full the file system holding `path` is, following symbolic links (`statfs`, D171);
+    /// `ENOSYS` from one that cannot say.
+    fn space(&mut self, path: &[u8]) -> Result<Space, Errno> {
+        let _ = path;
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// A path of at most [`PATH_CAPACITY`] bytes.

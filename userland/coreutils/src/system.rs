@@ -17,6 +17,51 @@ pub const SYMBOLIC_LINK: u32 = 0o120_000;
 
 pub const MAX_LINK_HOPS: usize = 40;
 
+pub const STATFS_SIZE: usize = 120;
+
+const STATFS_READ_ONLY: u64 = 0x1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileSystemUsage {
+    pub block_size: u64,
+    pub blocks: u64,
+    pub free: u64,
+    pub available: u64,
+    pub read_only: bool,
+}
+
+impl FileSystemUsage {
+    pub fn from_statfs(bytes: &[u8; STATFS_SIZE]) -> Self {
+        let word = |offset: usize| {
+            let mut value = [0; 8];
+            value.copy_from_slice(&bytes[offset..offset + 8]);
+            u64::from_ne_bytes(value)
+        };
+        let fragment = word(72);
+        Self {
+            block_size: if fragment == 0 { word(8) } else { fragment },
+            blocks: word(16),
+            free: word(24),
+            available: word(32),
+            read_only: word(80) & STATFS_READ_ONLY != 0,
+        }
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.blocks.saturating_mul(self.block_size)
+    }
+
+    pub fn used_bytes(&self) -> u64 {
+        self.blocks
+            .saturating_sub(self.free)
+            .saturating_mul(self.block_size)
+    }
+
+    pub fn available_bytes(&self) -> u64 {
+        self.available.saturating_mul(self.block_size)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Status {
     pub mode: u32,
@@ -169,6 +214,7 @@ pub trait System {
     fn make_link(&mut self, target: &CStr, path: &CStr) -> Result<(), Errno>;
     fn make_hard_link(&mut self, existing: &CStr, path: &CStr) -> Result<(), Errno>;
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
+    fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno>;
     fn now(&mut self) -> u64;
     fn now_with_nanoseconds(&mut self) -> Duration;
     fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno>;
@@ -310,6 +356,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
         (**self).set_mode(path, mode)
+    }
+
+    fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno> {
+        (**self).file_system_usage(path)
     }
 
     fn now(&mut self) -> u64 {

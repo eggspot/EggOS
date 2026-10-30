@@ -987,6 +987,17 @@ pub const FREE_FIELDS: [Field; 5] = [
     nullable("reserve_bytes", FieldType::Integer),
 ];
 
+/// `df --json`'s records: one per file system (D171).
+pub const DF_FIELDS: [Field; 7] = [
+    field("file_system", FieldType::Text),
+    field("type", FieldType::Text),
+    field("mounted_on", FieldType::Text),
+    field("size_bytes", FieldType::Integer),
+    field("used_bytes", FieldType::Integer),
+    field("available_bytes", FieldType::Integer),
+    field("read_only", FieldType::Boolean),
+];
+
 /// `uptime --json`'s object (D163).
 pub const UPTIME_FIELDS: [Field; 1] = [field("uptime_ms", FieldType::Integer)];
 
@@ -1431,6 +1442,62 @@ pub const WC: CommandDefinition = CommandDefinition {
         ),
     ],
     surface: Surface::NoGui("a count for scripts; people read the file in the Text Editor"),
+};
+
+/// `df` (D171).
+pub const DF: CommandDefinition = CommandDefinition {
+    words: &["df"],
+    summary: "Shows how full file systems are.",
+    description: "Shows each file system's size, used and available space, how much of it is \
+                  used and where it is mounted, in KiB (-h in K, M and G), for the file systems \
+                  holding the paths given, or every mounted one with blocks (-a: all, the ones \
+                  in memory with no blocks too); -T adds each one's type; --json writes one \
+                  record per file system, in bytes.",
+    options: &[
+        flag(b'a', "Show every file system, those without blocks too."),
+        flag(b'h', "Show sizes in K, M and G."),
+        flag(b'k', "Show sizes in KiB (the default)."),
+        flag(b'T', "Show each file system's type."),
+        JSON_OPTION,
+    ],
+    operands: &[operand("path", ValueType::Path, Count::ZeroOrMore)],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&DF_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&NOT_A_FOLDER, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example(
+            "df /home/root",
+            concat!(
+                "Filesystem      1K-blocks       Used  Available Use% Mounted on\n",
+                "eggfs             1048576     262144     786432  25% /home\n",
+            ),
+        ),
+        example(
+            "df -h /home/root",
+            concat!(
+                "Filesystem           Size       Used      Avail Use% Mounted on\n",
+                "eggfs                1.0G       256M       768M  25% /home\n",
+            ),
+        ),
+        example(
+            "df --json /home/root",
+            concat!(
+                "{\"file_system\":\"eggfs\",\"type\":\"eggfs\",\"mounted_on\":\"/home\",",
+                "\"size_bytes\":1073741824,\"used_bytes\":268435456,",
+                "\"available_bytes\":805306368,\"read_only\":false}\n",
+            ),
+        ),
+    ],
+    surface: Surface::Gui("Files: the free space in the status bar"),
 };
 
 /// `date`.
@@ -2022,7 +2089,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 62] = [
+pub const COMMANDS: [CommandDefinition; 63] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
@@ -2032,6 +2099,7 @@ pub const COMMANDS: [CommandDefinition; 62] = [
     CHMOD,
     CP,
     DATE,
+    DF,
     ECHO,
     EDIT,
     FALSE,

@@ -2,6 +2,7 @@ use crate::agentlog::agentlog;
 use crate::cat::cat;
 use crate::chmod::chmod;
 use crate::date::date;
+use crate::df::df;
 use crate::echo::echo;
 use crate::fetch::fetch;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
@@ -39,6 +40,7 @@ pub enum Utility {
     Chmod,
     Cp,
     Date,
+    Df,
     Echo,
     False,
     Fetch,
@@ -74,12 +76,13 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::Agentlog,
         Self::Cat,
         Self::Chmod,
         Self::Cp,
         Self::Date,
+        Self::Df,
         Self::Echo,
         Self::False,
         Self::Fetch,
@@ -121,6 +124,7 @@ impl Utility {
             Self::Chmod => b"chmod",
             Self::Cp => b"cp",
             Self::Date => b"date",
+            Self::Df => b"df",
             Self::Echo => b"echo",
             Self::False => b"false",
             Self::Fetch => b"fetch",
@@ -167,6 +171,7 @@ impl Utility {
             Self::Chmod => chmod(output, arguments),
             Self::Cp => cp(output, arguments),
             Self::Date => date(output, arguments),
+            Self::Df => df(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
             Self::Fetch => fetch(output, arguments),
