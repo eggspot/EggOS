@@ -1,0 +1,13 @@
+[package]
+name = "eggos-build-timer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "build-timer"
+path = "src/main.rs"
+
+[lints]
+workspace = true

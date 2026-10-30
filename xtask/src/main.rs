@@ -22,6 +22,7 @@ mod sdl_app;
 mod sha256;
 mod windows;
 mod work_disk;
+mod workspace_build;
 mod zip;
 
 use std::process::{Command, ExitCode};
@@ -110,6 +111,12 @@ commands:
                          run tests/hello-crate with them here on Linux, then inside EggOS
                          from a work disk, and check both print the same (x86_64 and
                          aarch64)
+  workspace-build --arch <arch>
+                         build tests/multi-crate with the same toolchain and a job per CPU
+                         inside EggOS and inside Linux booted in the same QEMU machine (its
+                         kernel from Alpine: test data, pinned SHA-256), check both build
+                         and print the same, and report each phase's time against Linux's
+                         (and the job summary in CI; x86_64 and aarch64; Linux hosts)
   sdl3 --arch <arch>     build SDL's pinned commit (test data, checked against its pinned
                          SHA-256) as libSDL3.so.0 for Alpine's musl, with its Wayland video
                          driver and no GPU, in an alpine:3.24 Docker container, into
@@ -305,6 +312,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-linux-udp",
     "eggos-linux-tcp",
     "eggos-linux-gui-tests",
+    "eggos-build-timer",
     "eggos-windows",
     "eggos-windows-gui",
     "eggos-macos",
@@ -522,6 +530,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("hello-crate") => {
             for arch in arch()? {
                 hello_crate::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("workspace-build") => {
+            for arch in arch()? {
+                workspace_build::check(arch)?;
             }
             Ok(())
         }

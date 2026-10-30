@@ -69,7 +69,8 @@ pub fn cargo_config(target: &str) -> String {
 
 /// The environment `cargo` runs in, for a toolchain at `toolchain`, a cargo home at
 /// `cargo_home` and temporary files in `temporary`; `libraries` for glibc's loader when the
-/// toolchain's libraries are elsewhere than the host's.
+/// toolchain's libraries are elsewhere than the host's. cargo runs a job per CPU, its default
+/// (D173 lifted D171's one job).
 pub fn cargo_environment(
     toolchain: &str,
     cargo_home: &str,
@@ -81,7 +82,6 @@ pub fn cargo_environment(
         ("CARGO_HOME", cargo_home.to_owned()),
         ("TMPDIR", temporary.to_owned()),
         ("CARGO_INCREMENTAL", "0".to_owned()),
-        ("CARGO_BUILD_JOBS", "1".to_owned()),
         ("CARGO_NET_OFFLINE", "true".to_owned()),
         ("CARGO_TERM_COLOR", "never".to_owned()),
         ("CARGO_TERM_PROGRESS_WHEN", "never".to_owned()),
@@ -244,7 +244,7 @@ pub fn compare(
     Ok(())
 }
 
-fn make_new_folder(folder: &Path) -> Result<(), String> {
+pub(crate) fn make_new_folder(folder: &Path) -> Result<(), String> {
     if folder.exists() {
         std::fs::remove_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     }
@@ -255,7 +255,7 @@ fn pinned_component(kind: &str, target: &str) -> Result<Component, String> {
     pinned(kind, target).ok_or_else(|| format!("no pinned {kind} for {target}"))
 }
 
-fn assemble_toolchain(
+pub(crate) fn assemble_toolchain(
     root: &Path,
     scratch: &Path,
     host: &str,
@@ -306,7 +306,7 @@ fn copy_crate(into: &Path, target: &str) -> Result<(), String> {
     std::fs::write(&file, cargo_config(target)).map_err(|e| format!("{}: {e}", file.display()))
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
         let entry = entry.map_err(|e| format!("{}: {e}", from.display()))?;
         let path = entry.path();
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn cargo_runs_offline_with_one_job_and_the_toolchain_s_rustc() {
+    fn cargo_runs_offline_with_a_job_per_cpu_and_the_toolchain_s_rustc() {
         let environment = cargo_environment(
             "/work/rustc",
             "/work/cargo-home",
@@ -477,7 +477,7 @@ mod tests {
         };
         assert_eq!(value("RUSTC"), Some("/work/rustc/bin/rustc"));
         assert_eq!(value("CARGO_NET_OFFLINE"), Some("true"));
-        assert_eq!(value("CARGO_BUILD_JOBS"), Some("1"));
+        assert_eq!(value("CARGO_BUILD_JOBS"), None);
         assert_eq!(value("LD_LIBRARY_PATH"), Some("/work/glibc"));
         assert_eq!(value("TMPDIR"), Some("/work/tmp"));
         assert!(

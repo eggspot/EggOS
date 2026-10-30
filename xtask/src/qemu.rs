@@ -23,6 +23,7 @@ mod win_controls;
 mod windows_crt;
 mod windows_gui;
 pub mod work_disk;
+pub mod workspace_build;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
 use crate::{Arch, elf};
