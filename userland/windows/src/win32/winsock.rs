@@ -11,6 +11,7 @@ use super::file::{fd_of, handle_of};
 use super::{SpinLock, fail, thread_environment};
 use crate::library::Export;
 use crate::linux::{self, AF_INET, MSG_NOSIGNAL, O_NONBLOCK};
+use crate::ordinals::{self, Winsock};
 use crate::sockets::{self, code};
 use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_net::dns::{self, ResponseError};
@@ -619,32 +620,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"WSACleanup" => wsa_cleanup,
 ];
 
-/// The function Winsock 1.1's ordinal `ordinal` names, if the layer has it.
-pub(super) fn by_ordinal(ordinal: u16) -> Option<*const ()> {
-    let name: &[u8] = match ordinal {
-        3 => b"closesocket",
-        4 => b"connect",
-        8 => b"htonl",
-        9 => b"htons",
-        10 => b"inet_addr",
-        11 => b"inet_ntoa",
-        12 => b"ioctlsocket",
-        15 => b"ntohs",
-        16 => b"recv",
-        19 => b"send",
-        22 => b"shutdown",
-        23 => b"socket",
-        51 => b"gethostbyaddr",
-        52 => b"gethostbyname",
-        55 => b"getservbyname",
-        56 => b"getservbyport",
-        57 => b"gethostname",
-        101 => b"WSAAsyncSelect",
-        111 => b"WSAGetLastError",
-        112 => b"WSASetLastError",
-        115 => b"WSAStartup",
-        116 => b"WSACleanup",
-        _ => return None,
-    };
-    crate::library::find(&[EXPORTS], name)
+/// The function Winsock 1.1's ordinal `ordinal` names in `library`, if the layer has it.
+pub(super) fn by_ordinal(library: Winsock, ordinal: u16) -> Option<*const ()> {
+    crate::library::find(&[EXPORTS], ordinals::winsock_function(library, ordinal)?)
 }

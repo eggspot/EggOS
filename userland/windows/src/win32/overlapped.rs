@@ -33,16 +33,54 @@ static ANY_QUEUED: AtomicBool = AtomicBool::new(false);
 /// Queues `routine(arguments)` for the calling thread's next alertable wait; `false` when the
 /// queue is full.
 pub(super) fn queue_call(routine: usize, arguments: [usize; 3]) -> bool {
+    queue_call_for(thread_environment::thread_id(), routine, arguments)
+}
+
+/// Queues `routine(arguments)` for the next alertable wait of the thread whose id is
+/// `thread`, waking the waits so that one it is in already runs it; `false` when the queue is
+/// full.
+fn queue_call_for(thread: u32, routine: usize, arguments: [usize; 3]) -> bool {
     let call = QueuedCall {
-        thread: thread_environment::thread_id(),
+        thread,
         routine,
         arguments,
     };
-    QUEUED.with(|queue| {
+    let queued = QUEUED.with(|queue| {
         let queued = queue.push(call);
         ANY_QUEUED.store(!queue.is_empty(), Ordering::Release);
         queued
-    })
+    });
+    if queued {
+        sync::wake_waiters();
+    }
+    queued
+}
+
+/// Drops the calls still queued for the calling thread, which is ending.
+pub(super) fn forget_queued_calls() {
+    if !ANY_QUEUED.load(Ordering::Acquire) {
+        return;
+    }
+    let thread = thread_environment::thread_id();
+    QUEUED.with(|queue| {
+        while queue.take_for(thread).is_some() {}
+        ANY_QUEUED.store(!queue.is_empty(), Ordering::Release);
+    });
+}
+
+extern "efiapi" fn queue_user_apc(routine: usize, thread: usize, data: usize) -> u32 {
+    let target = match thread {
+        super::CURRENT_THREAD => Some((sync::STILL_ACTIVE, thread_environment::thread_id())),
+        handle => sync::thread_state(handle),
+    };
+    match target {
+        _ if routine == 0 => fail(error::INVALID_PARAMETER, 0),
+        Some((sync::STILL_ACTIVE, id)) => match queue_call_for(id, routine, [data, 0, 0]) {
+            true => 1,
+            false => fail(error::NOT_ENOUGH_MEMORY, 0),
+        },
+        _ => fail(error::INVALID_HANDLE, 0),
+    }
 }
 
 /// Runs the calls queued for the calling thread, oldest first; whether there were any.
@@ -460,4 +498,5 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"CancelIo" => cancel_io,
     b"ReadFileEx" => read_file_ex,
     b"WriteFileEx" => write_file_ex,
+    b"QueueUserAPC" => queue_user_apc,
 ];

@@ -5,10 +5,11 @@
 //! `eggcpp.cpp` built for `__CxxFrameHandler3` on x64 (`/d2FH4-`), whose default is
 //! `__CxxFrameHandler4`; `tests/windows-crt/eggspawn.c`, our own C program that starts copies of
 //! itself through `CreateProcessW` and `CreateProcessA` and reads one's output through a pipe
-//! (D189), builds as a console program for both. `tests/windows-rust`, our own Rust program
-//! on Rust's standard library (`eggrust`, D189), builds with `cargo` for
-//! `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by MSVC's linker; and
-//! `tests/windows-mingw/eggmingw.c`, our own C program on MinGW's `msvcrt.dll` (D189), builds
+//! (D189), and `tests/windows-crt/eggsync.c`, our own C program for APCs, abandoned mutexes,
+//! ordinal imports and DOS wildcards (D189), build as console programs for both.
+//! `tests/windows-rust`, our own Rust program on Rust's standard library (`eggrust`, D189),
+//! builds with `cargo` for `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by
+//! MSVC's linker; and `tests/windows-mingw/eggmingw.c`, our own C program on MinGW's `msvcrt.dll` (D189), builds
 //! with llvm-mingw's msvcrt toolchain (`x86_64-w64-mingw32-clang`, `aarch64-w64-mingw32-clang`,
 //! on `PATH` or in `EGGOS_LLVM_MINGW`). Only a
 //! Windows host with Visual Studio's C++ tools can build them, found through `vswhere`; CI
@@ -18,7 +19,7 @@
 use std::path::{Path, PathBuf};
 
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_WINDOWS_PROGRAMS";
-pub const PROGRAMS: [&str; 4] = ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn"];
+pub const PROGRAMS: [&str; 5] = ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn", "eggsync"];
 /// The test programs built from our own Rust source on Rust's standard library (D189).
 pub const RUST_PROGRAMS: [&str; 1] = ["eggrust"];
 /// The test programs built from our own C source by llvm-mingw against MinGW's `msvcrt.dll`
@@ -339,6 +340,7 @@ pub fn source_file(program: &str) -> &'static str {
     match program {
         "eggpad" => "eggpad.c",
         "eggspawn" => "eggspawn.c",
+        "eggsync" => "eggsync.c",
         _ => "eggcpp.cpp",
     }
 }
@@ -347,7 +349,7 @@ pub fn source_file(program: &str) -> &'static str {
 /// `target` on the C runtime's DLLs (`/MD`), optimized, with warnings as errors, its objects
 /// in `objects`: eggpad as a GUI program; the C++ programs as console programs with C++
 /// exceptions (`/EHsc`), `eggcpp-fh3` on x64 with `__CxxFrameHandler3`'s data (`/d2FH4-`).
-/// `eggspawn` is a C console program.
+/// `eggspawn` and `eggsync` are C console programs, `eggsync` with user32's waits.
 pub fn compiler_arguments(
     program: &str,
     target: &str,
@@ -366,12 +368,13 @@ pub fn compiler_arguments(
     ];
     let language: &[&str] = match (program, target) {
         ("eggpad", _) => &["/DUNICODE", "/D_UNICODE"],
-        ("eggspawn", _) => &[],
+        ("eggspawn" | "eggsync", _) => &[],
         ("eggcpp-fh3", "x64") => &["/EHsc", "/d2FH4-"],
         _ => &["/EHsc"],
     };
     let link: &[&str] = match program {
         "eggpad" => &["/SUBSYSTEM:WINDOWS", "user32.lib", "gdi32.lib"],
+        "eggsync" => &["/SUBSYSTEM:CONSOLE", "user32.lib"],
         _ => &["/SUBSYSTEM:CONSOLE"],
     };
     common
@@ -495,7 +498,10 @@ mod tests {
         let source = arguments.iter().position(|argument| argument == "eggpad.c");
         assert!(source < link);
         assert!(!arguments.contains(&"/EHsc".to_owned()));
-        assert_eq!(PROGRAMS, ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn"]);
+        assert_eq!(
+            PROGRAMS,
+            ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn", "eggsync"]
+        );
     }
 
     #[test]
@@ -550,5 +556,23 @@ mod tests {
             assert!(!arguments.contains(&"/EHsc".to_owned()), "{target}");
         }
         assert_eq!(source_file("eggspawn"), "eggspawn.c");
+    }
+
+    #[test]
+    fn eggsync_builds_as_a_c_console_program_with_user32() {
+        for target in TARGETS {
+            let arguments = compiler_arguments(
+                "eggsync",
+                target,
+                Path::new("eggsync.c"),
+                Path::new("out.exe"),
+                Path::new("objects"),
+            );
+            for wanted in ["/WX", "/SUBSYSTEM:CONSOLE", "user32.lib", "eggsync.c"] {
+                assert!(arguments.contains(&wanted.to_owned()), "{target} {wanted}");
+            }
+            assert!(!arguments.contains(&"/EHsc".to_owned()), "{target}");
+        }
+        assert_eq!(source_file("eggsync"), "eggsync.c");
     }
 }

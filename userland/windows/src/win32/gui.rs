@@ -832,6 +832,18 @@ pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) ->
     }
 }
 
+/// Whether the calling thread has a message waiting, without taking it and without starting
+/// the GUI's state in a program that has none.
+pub fn has_message() -> bool {
+    let any = Filter {
+        window: 0,
+        first: 0,
+        last: 0,
+        thread: 0,
+    };
+    !GUI.load(Ordering::Acquire).is_null() && next_message(any, false, false).is_some()
+}
+
 /// The calling thread's next message `filter` accepts: [`wait_for`] with nothing else to wait
 /// for.
 pub fn next_message(filter: Filter, remove: bool, wait: bool) -> Option<Message> {

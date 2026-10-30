@@ -65,6 +65,8 @@ mod msvcrt_layout;
 #[cfg(any(test, runs_windows_programs))]
 mod nt_status;
 #[cfg(any(test, runs_windows_programs))]
+mod ordinals;
+#[cfg(any(test, runs_windows_programs))]
 mod pe;
 #[cfg(any(test, runs_windows_programs))]
 mod peeked_pipes;

@@ -173,6 +173,7 @@ extern "C" fn thread_main(object: usize) -> ! {
 /// Ends the calling thread with exit code `code`, as `ExitThread` does: the process ends,
 /// with that code, when it was its last thread.
 pub fn finish(code: u32) -> ! {
+    super::overlapped::forget_queued_calls();
     thread_environment::leave();
     let object = thread_environment::thread_object() as *mut Object;
     if !object.is_null() {

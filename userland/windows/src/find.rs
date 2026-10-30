@@ -1,7 +1,7 @@
 //! Directory listing as `FindFirstFileW` does it: a search path splits into the directory and
-//! the last component's wildcard pattern (`*` any run of characters, `?` one character,
-//! compared ignoring ASCII case as Windows compares names, and `*.*` everything), and each
-//! entry that matches fills a `WIN32_FIND_DATAW` from its `stat`.
+//! the last component's wildcard pattern, matched with DOS's rules ([`matches`]: `*`, `?`,
+//! `*.*`, `*.` and the DOS wildcards `<`, `>` and `"`, compared ignoring ASCII case as Windows
+//! compares names), and each entry that matches fills a `WIN32_FIND_DATAW` from its `stat`.
 
 use crate::text;
 
@@ -69,17 +69,59 @@ pub fn split(path: &[u8]) -> (&[u8], &[u8]) {
     }
 }
 
-/// Whether `name` matches the wildcard `pattern` (UTF-8 both).
+/// Whether `name` matches the wildcard `pattern` (UTF-8 both) as `FindFirstFileW` matches
+/// names, ignoring ASCII case: `*` any run of characters, `?` one character or none before a
+/// dot or the end, a `.` before a wildcard or at the end a dot or the end (`*.*` everything,
+/// `readme.*` `readme` too), `*.` a name without an extension, and the DOS wildcards `<` (any
+/// run up to the last dot), `>` (as `?`) and `"` (a dot or the end). A pattern without
+/// wildcards names one entry, its trailing dots dropped.
 pub fn matches(pattern: &[u8], name: &[u8]) -> bool {
-    if pattern == b"*.*" || pattern == b"*" {
+    if pattern == b"*" || pattern == b"*.*" {
         return true;
     }
-    if let Some(stem) = pattern.strip_suffix(b".*")
-        && matches_exactly(stem, name)
-    {
-        return true;
+    if name.len() > MAX_NAME_BYTES {
+        return false;
     }
-    matches_exactly(pattern, name)
+    if !pattern.iter().any(|byte| b"*?<>\"".contains(byte)) {
+        let literal = match pattern.iter().rposition(|byte| *byte != b'.') {
+            Some(last) => &pattern[..=last],
+            None => pattern,
+        };
+        return literal.eq_ignore_ascii_case(name);
+    }
+    let last_dot = name.iter().rposition(|byte| *byte == b'.');
+    let mut reached = Positions::none();
+    reached.add(0);
+    for index in 0..pattern.len() {
+        reached = reached.step(wildcard(pattern, index), name, last_dot);
+    }
+    reached.has(name.len())
+}
+
+const MAX_NAME_BYTES: usize = 1023;
+const POSITION_WORDS: usize = (MAX_NAME_BYTES + 1) / 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wildcard {
+    AnyRun,
+    RunToLastDot,
+    OneOrNone,
+    DotOrEnd,
+    Byte(u8),
+}
+
+fn wildcard(pattern: &[u8], index: usize) -> Wildcard {
+    let next = pattern.get(index + 1).copied();
+    let last = index + 1 == pattern.len();
+    match pattern[index] {
+        b'*' if next == Some(b'.') && index + 2 == pattern.len() => Wildcard::RunToLastDot,
+        b'*' => Wildcard::AnyRun,
+        b'<' => Wildcard::RunToLastDot,
+        b'?' | b'>' => Wildcard::OneOrNone,
+        b'.' if last || matches!(next, Some(b'*' | b'?')) => Wildcard::DotOrEnd,
+        b'"' => Wildcard::DotOrEnd,
+        byte => Wildcard::Byte(byte),
+    }
 }
 
 fn char_length(bytes: &[u8]) -> usize {
@@ -91,41 +133,67 @@ fn char_length(bytes: &[u8]) -> usize {
     }
 }
 
-fn matches_exactly(pattern: &[u8], name: &[u8]) -> bool {
-    let (mut p, mut n) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while n < name.len() {
-        match pattern.get(p) {
-            Some(b'*') => {
-                star = Some((p + 1, n));
-                p += 1;
-                continue;
+fn starts_char(name: &[u8], at: usize) -> bool {
+    name.get(at).is_none_or(|byte| !(0x80..0xc0).contains(byte))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Positions([u64; POSITION_WORDS]);
+
+impl Positions {
+    const fn none() -> Self {
+        Self([0; POSITION_WORDS])
+    }
+
+    fn add(&mut self, at: usize) {
+        self.0[at / 64] |= 1 << (at % 64);
+    }
+
+    fn has(&self, at: usize) -> bool {
+        self.0[at / 64] & (1 << (at % 64)) != 0
+    }
+
+    fn add_run(&mut self, name: &[u8], from: usize, to: usize) {
+        for at in from..=to {
+            if starts_char(name, at) {
+                self.add(at);
             }
-            Some(b'?') => {
-                p += 1;
-                n += char_length(&name[n..]);
-                continue;
-            }
-            Some(byte) if byte.eq_ignore_ascii_case(&name[n]) => {
-                p += 1;
-                n += 1;
-                continue;
-            }
-            _ => {}
-        }
-        match star {
-            Some((after, from)) => {
-                let next = from + char_length(&name[from..]);
-                star = Some((after, next));
-                p = after;
-                n = next;
-            }
-            None => return false,
         }
     }
-    pattern[p.min(pattern.len())..]
-        .iter()
-        .all(|byte| *byte == b'*')
+
+    fn step(&self, wildcard: Wildcard, name: &[u8], last_dot: Option<usize>) -> Self {
+        let mut next = Self::none();
+        for from in (0..=name.len()).filter(|at| self.has(*at)) {
+            match wildcard {
+                Wildcard::AnyRun => {
+                    next.add_run(name, from, name.len());
+                    break;
+                }
+                Wildcard::RunToLastDot => {
+                    let end = last_dot.filter(|dot| *dot >= from).unwrap_or(name.len());
+                    next.add_run(name, from, end);
+                }
+                Wildcard::OneOrNone => match name.get(from) {
+                    None | Some(b'.') => next.add(from),
+                    Some(_) => next.add(from + char_length(&name[from..])),
+                },
+                Wildcard::DotOrEnd => match name.get(from) {
+                    None => next.add(from),
+                    Some(b'.') => next.add(from + 1),
+                    Some(_) => {}
+                },
+                Wildcard::Byte(byte) => {
+                    if name
+                        .get(from)
+                        .is_some_and(|own| own.eq_ignore_ascii_case(&byte))
+                    {
+                        next.add(from + 1);
+                    }
+                }
+            }
+        }
+        next
+    }
 }
 
 fn put_u32(out: &mut [u8], at: usize, value: u32) {
@@ -239,6 +307,18 @@ mod tests {
             (b"readme.*", b"readme"),
             (b"*", b""),
             (b"**", b"x"),
+            (b"a??", b"a"),
+            (b"a??", b"abc"),
+            (b"a?.txt", b"a.txt"),
+            (b"*.", b"README"),
+            (b"readme.", b"readme"),
+            (b"FILE.TXT", b"file.txt"),
+            (b"..", b".."),
+            (b"<.txt", b"a.b.txt"),
+            (b"a\"txt", b"a.txt"),
+            (b"a\"", b"a"),
+            (b">>>.c", b"ab.c"),
+            (b"a*.*", b"abc"),
         ] {
             assert!(
                 matches(pattern, name),
@@ -252,10 +332,16 @@ mod tests {
             (b"windows-?ools.exe", b"windows-console.exe"),
             (b"host???", b"hostname"),
             (b"a*b*c", b"aXXbYY"),
-            (b"?", b""),
             (b"abc", b"abcd"),
             (b"", b"x"),
             (b"??ber.txt", "über.txt".as_bytes()),
+            (b"a??", b"abcd"),
+            (b"a?", b"a.b"),
+            (b"*.", b"a.txt"),
+            (b"..", b"."),
+            (b"<.txt", b"a.txt.bak"),
+            (b"a\"txt", b"abtxt"),
+            (b"?", b"ab"),
         ] {
             assert!(
                 !matches(pattern, name),

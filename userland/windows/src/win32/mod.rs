@@ -95,6 +95,7 @@ mod winmm;
 mod winsock;
 
 use crate::library::{self, Export, Library};
+use crate::ordinals::Winsock;
 use eggos_runtime::errno::Errno;
 
 pub use abi::call_program;
@@ -242,6 +243,7 @@ const SHELL32: &[&[Export]] = &[
 
 const USER32: &[&[Export]] = &[
     strings::USER32_EXPORTS,
+    sync::USER32_EXPORTS,
     user32::EXPORTS,
     paint::USER32_EXPORTS,
     message_box::EXPORTS,
@@ -327,6 +329,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::BcryptPrimitives => BCRYPTPRIMITIVES,
         Library::Userenv => USERENV,
         Library::Msvcrt => crt::MSVCRT,
+        Library::Ws2_32 => WSOCK32,
     }
 }
 
@@ -338,12 +341,13 @@ pub fn resolve(library: &[u8], function: &[u8]) -> Option<u64> {
 
 /// The address of the function an import names by `ordinal` in `library` (D174: comctl32's
 /// `InitCommonControls`; D178: oleaut32's and wsock32's functions, which programs import only
-/// so).
+/// so; D189: ws2_32's, numbered apart, `ordinals.rs`).
 pub fn resolve_ordinal(library: &[u8], ordinal: u16) -> Option<u64> {
     let address = match library::library(library)? {
         Library::Comctl32 => common_controls::by_ordinal(ordinal),
         Library::OleAut32 => com::oleaut32_by_ordinal(ordinal),
-        Library::Wsock32 => winsock::by_ordinal(ordinal),
+        Library::Wsock32 => winsock::by_ordinal(Winsock::Wsock32, ordinal),
+        Library::Ws2_32 => winsock::by_ordinal(Winsock::Ws2_32, ordinal),
         _ => None,
     };
     address.map(|address| address as u64)

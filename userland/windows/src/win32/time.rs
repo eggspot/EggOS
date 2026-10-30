@@ -97,8 +97,8 @@ extern "efiapi" fn sleep(milliseconds: u32) {
 }
 
 extern "efiapi" fn sleep_ex(milliseconds: u32, alertable: Bool) -> u32 {
-    if alertable != FALSE && super::overlapped::run_queued_calls() {
-        return super::overlapped::WAIT_IO_COMPLETION;
+    if alertable != FALSE {
+        return super::sync::sleep_alertably(milliseconds);
     }
     sleep(milliseconds);
     0

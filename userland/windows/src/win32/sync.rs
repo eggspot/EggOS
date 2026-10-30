@@ -20,6 +20,7 @@ const MAX_OBJECTS: usize = 4096;
 const MAX_PENDING_THREADS: usize = 256;
 pub const INFINITE: u32 = u32::MAX;
 const WAIT_OBJECT_0: u32 = 0;
+const WAIT_ABANDONED_0: u32 = 0x80;
 const WAIT_TIMEOUT: u32 = 0x102;
 const WAIT_FAILED: u32 = u32::MAX;
 const MAXIMUM_WAIT_OBJECTS: usize = 64;
@@ -44,9 +45,19 @@ pub struct Thread {
 
 #[derive(Debug)]
 pub enum Kind {
-    Event { manual_reset: bool, signaled: bool },
-    Mutex { owner: u32, recursion: u32 },
-    Semaphore { count: i32, maximum: i32 },
+    Event {
+        manual_reset: bool,
+        signaled: bool,
+    },
+    Mutex {
+        owner: u32,
+        recursion: u32,
+        abandoned: bool,
+    },
+    Semaphore {
+        count: i32,
+        maximum: i32,
+    },
     Thread(Thread),
     Process(super::processes::ProcessObject),
     Token,
@@ -222,6 +233,12 @@ pub fn change<R>(handle: usize, work: impl FnOnce(&mut Kind) -> (R, bool)) -> Op
 pub fn thread_ended(pointer: *mut Object, exit_code: u32) {
     TABLE.with(|table| {
         // SAFETY: the running thread holds a reference to its own object.
+        let id = match unsafe { &(*pointer).kind } {
+            Kind::Thread(thread) => thread.id.load(Ordering::Acquire),
+            _ => 0,
+        };
+        abandon_mutexes_of(table, id);
+        // SAFETY: as above; no other reference to the object is alive.
         let object = unsafe { &mut *pointer };
         if let Kind::Thread(thread) = &mut object.kind {
             thread.ended = true;
@@ -235,6 +252,28 @@ pub fn thread_ended(pointer: *mut Object, exit_code: u32) {
     });
     if SLEEPERS.load(Ordering::Acquire) != 0 {
         linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
+    }
+}
+
+fn abandon_mutexes_of(table: &mut Table, thread: u32) {
+    if thread == 0 {
+        return;
+    }
+    for pointer in table.objects.iter().filter(|pointer| !pointer.is_null()) {
+        // SAFETY: a non-null slot points to a live object, which the table's lock (held by
+        // the caller, who lent `table`) guards.
+        let kind = unsafe { &mut (**pointer).kind };
+        if let Kind::Mutex {
+            owner,
+            recursion,
+            abandoned,
+        } = kind
+            && *owner == thread
+        {
+            *owner = 0;
+            *recursion = 0;
+            *abandoned = true;
+        }
     }
 }
 
@@ -303,19 +342,25 @@ fn is_signaled(kind: &Kind, caller: u32) -> bool {
     }
 }
 
-fn acquire(kind: &mut Kind, caller: u32) {
+fn acquire(kind: &mut Kind, caller: u32) -> bool {
     match kind {
         Kind::Event {
             manual_reset: false,
             signaled,
         } => *signaled = false,
-        Kind::Mutex { owner, recursion } => {
+        Kind::Mutex {
+            owner,
+            recursion,
+            abandoned,
+        } => {
             *owner = caller;
             *recursion += 1;
+            return core::mem::take(abandoned);
         }
         Kind::Semaphore { count, .. } => *count -= 1,
         Kind::Event { .. } | Kind::Thread(_) | Kind::Process(_) | Kind::Token => {}
     }
+    false
 }
 
 enum Check {
@@ -356,12 +401,18 @@ fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
                 } else {
                     &handles[first..=first]
                 };
-                for handle in taken {
-                    if let Some(object) = object(table, *handle) {
-                        acquire(&mut object.kind, caller);
+                let mut abandoned = None;
+                for (index, handle) in taken.iter().enumerate() {
+                    if let Some(object) = object(table, *handle)
+                        && acquire(&mut object.kind, caller)
+                    {
+                        abandoned.get_or_insert(first + index);
                     }
                 }
-                Ok(Check::Done(WAIT_OBJECT_0 + first as u32))
+                Ok(Check::Done(match abandoned {
+                    Some(index) => WAIT_ABANDONED_0 + index as u32,
+                    None => WAIT_OBJECT_0 + first as u32,
+                }))
             }
             None => {
                 let polling = handles.iter().any(|handle| {
@@ -397,7 +448,7 @@ pub fn remaining(deadline: Option<u64>) -> Option<u64> {
         .map(|deadline| deadline.saturating_sub(linux::clock_nanoseconds(linux::CLOCK_MONOTONIC)))
 }
 
-fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
+fn wait(handles: &[usize], wait_all: bool, milliseconds: u32, alertable: bool) -> u32 {
     if handles.is_empty() || handles.len() > MAXIMUM_WAIT_OBJECTS {
         return fail(error::INVALID_PARAMETER, WAIT_FAILED);
     }
@@ -410,6 +461,10 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
             Ok(Check::Done(result)) => return result,
             Ok(Check::Sleep { sequence, polling }) => (sequence, polling),
         };
+        if alertable && super::overlapped::run_queued_calls() {
+            SLEEPERS.fetch_sub(1, Ordering::AcqRel);
+            return super::overlapped::WAIT_IO_COMPLETION;
+        }
         let left = match milliseconds {
             0 => Some(0),
             INFINITE => None,
@@ -431,8 +486,40 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
     }
 }
 
+/// Wakes every wait so that it looks again: a call was queued for an alertable one.
+pub fn wake_waiters() {
+    TABLE.with(|_| WAKE_SEQUENCE.fetch_add(1, Ordering::Release));
+    if SLEEPERS.load(Ordering::Acquire) != 0 {
+        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
+    }
+}
+
+/// `SleepEx` with `bAlertable`: sleeps `milliseconds` unless calls are queued for the thread,
+/// or get queued meanwhile, which it runs; `WAIT_IO_COMPLETION` after running them, else 0.
+pub fn sleep_alertably(milliseconds: u32) -> u32 {
+    let deadline = deadline_after(milliseconds);
+    loop {
+        let sequence = TABLE.with(|_| {
+            SLEEPERS.fetch_add(1, Ordering::AcqRel);
+            WAKE_SEQUENCE.load(Ordering::Acquire)
+        });
+        let ran = super::overlapped::run_queued_calls();
+        let left = remaining(deadline);
+        if !ran && left != Some(0) {
+            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, left);
+        }
+        SLEEPERS.fetch_sub(1, Ordering::AcqRel);
+        if ran {
+            return super::overlapped::WAIT_IO_COMPLETION;
+        }
+        if remaining(deadline) == Some(0) {
+            return 0;
+        }
+    }
+}
+
 extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
-    wait(&[handle], false, milliseconds)
+    wait(&[handle], false, milliseconds, false)
 }
 
 extern "efiapi" fn wait_for_single_object_ex(
@@ -440,10 +527,16 @@ extern "efiapi" fn wait_for_single_object_ex(
     milliseconds: u32,
     alertable: Bool,
 ) -> u32 {
-    if alertable != FALSE && super::overlapped::run_queued_calls() {
-        return super::overlapped::WAIT_IO_COMPLETION;
+    wait(&[handle], false, milliseconds, alertable != FALSE)
+}
+
+unsafe fn handle_list<'a>(count: u32, handles: *const usize, most: usize) -> Option<&'a [usize]> {
+    match count {
+        0 => Some(&[]),
+        _ if handles.is_null() || count as usize > most => None,
+        // SAFETY: the wait functions' contract: `handles` holds `count` handles.
+        _ => Some(unsafe { core::slice::from_raw_parts(handles, count as usize) }),
     }
-    wait(&[handle], false, milliseconds)
 }
 
 unsafe extern "efiapi" fn wait_for_multiple_objects(
@@ -452,12 +545,8 @@ unsafe extern "efiapi" fn wait_for_multiple_objects(
     wait_all: Bool,
     milliseconds: u32,
 ) -> u32 {
-    if handles.is_null() || count as usize > MAXIMUM_WAIT_OBJECTS {
-        return fail(error::INVALID_PARAMETER, WAIT_FAILED);
-    }
-    // SAFETY: `WaitForMultipleObjects`' contract: `handles` holds `count` handles.
-    let handles = unsafe { core::slice::from_raw_parts(handles, count as usize) };
-    wait(handles, wait_all != FALSE, milliseconds)
+    // SAFETY: `WaitForMultipleObjects`' contract, which the caller keeps.
+    unsafe { wait_for_multiple_objects_ex(count, handles, wait_all, milliseconds, FALSE) }
 }
 
 unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
@@ -467,11 +556,68 @@ unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
     milliseconds: u32,
     alertable: Bool,
 ) -> u32 {
-    if alertable != FALSE && super::overlapped::run_queued_calls() {
-        return super::overlapped::WAIT_IO_COMPLETION;
+    // SAFETY: `WaitForMultipleObjectsEx`' contract, which the caller keeps.
+    match unsafe { handle_list(count, handles, MAXIMUM_WAIT_OBJECTS) } {
+        Some(handles) => wait(handles, wait_all != FALSE, milliseconds, alertable != FALSE),
+        None => fail(error::INVALID_PARAMETER, WAIT_FAILED),
     }
-    // SAFETY: the same contract as `WaitForMultipleObjects`'.
-    unsafe { wait_for_multiple_objects(count, handles, wait_all, milliseconds) }
+}
+
+const MWMO_WAITALL: u32 = 1;
+const MWMO_ALERTABLE: u32 = 2;
+
+/// `MsgWaitForMultipleObjectsEx`: waits for the objects, a message in the thread's queue
+/// (`WAIT_OBJECT_0 + count`) or, when alertable, a queued call, looking every 10 ms while
+/// the queue is empty, as waits on processes do.
+unsafe extern "efiapi" fn msg_wait_for_multiple_objects_ex(
+    count: u32,
+    handles: *const usize,
+    milliseconds: u32,
+    _wake_mask: u32,
+    flags: u32,
+) -> u32 {
+    // SAFETY: `MsgWaitForMultipleObjectsEx`' contract, which the caller keeps.
+    let Some(handles) = (unsafe { handle_list(count, handles, MAXIMUM_WAIT_OBJECTS - 1) }) else {
+        return fail(error::INVALID_PARAMETER, WAIT_FAILED);
+    };
+    let deadline = deadline_after(milliseconds);
+    loop {
+        if !handles.is_empty() {
+            match wait(handles, flags & MWMO_WAITALL != 0, 0, false) {
+                WAIT_TIMEOUT => {}
+                result => return result,
+            }
+        }
+        if super::gui::has_message() {
+            return WAIT_OBJECT_0 + count;
+        }
+        if flags & MWMO_ALERTABLE != 0 && super::overlapped::run_queued_calls() {
+            return super::overlapped::WAIT_IO_COMPLETION;
+        }
+        let left = remaining(deadline);
+        if left == Some(0) {
+            return WAIT_TIMEOUT;
+        }
+        let sequence = TABLE.with(|_| {
+            SLEEPERS.fetch_add(1, Ordering::AcqRel);
+            WAKE_SEQUENCE.load(Ordering::Acquire)
+        });
+        let slice = left.unwrap_or(u64::MAX).min(PROCESS_POLL_NANOSECONDS);
+        let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, Some(slice));
+        SLEEPERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+unsafe extern "efiapi" fn msg_wait_for_multiple_objects(
+    count: u32,
+    handles: *const usize,
+    wait_all: Bool,
+    milliseconds: u32,
+    wake_mask: u32,
+) -> u32 {
+    let flags = if wait_all != FALSE { MWMO_WAITALL } else { 0 };
+    // SAFETY: `MsgWaitForMultipleObjects`' contract, which the caller keeps.
+    unsafe { msg_wait_for_multiple_objects_ex(count, handles, milliseconds, wake_mask, flags) }
 }
 
 fn new_object(kind: Kind) -> usize {
@@ -542,6 +688,7 @@ fn create_mutex(initial_owner: bool) -> usize {
     new_object(Kind::Mutex {
         owner,
         recursion: u32::from(initial_owner),
+        abandoned: false,
     })
 }
 
@@ -556,7 +703,9 @@ extern "efiapi" fn create_mutex_ex_w(_: usize, _: usize, flags: u32, _access: u3
 extern "efiapi" fn release_mutex(handle: usize) -> Bool {
     let caller = thread_environment::thread_id();
     let result = change(handle, |kind| match kind {
-        Kind::Mutex { owner, recursion } if *owner == caller && *recursion > 0 => {
+        Kind::Mutex {
+            owner, recursion, ..
+        } if *owner == caller && *recursion > 0 => {
             *recursion -= 1;
             if *recursion == 0 {
                 *owner = 0;
@@ -1211,4 +1360,10 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"WaitOnAddress" => wait_on_address,
     b"WakeByAddressSingle" => wake_by_address_single,
     b"WakeByAddressAll" => wake_by_address_all,
+];
+
+/// user32's waits that also wake for the thread's messages.
+pub(super) const USER32_EXPORTS: &[Export] = exports![
+    b"MsgWaitForMultipleObjects" => msg_wait_for_multiple_objects,
+    b"MsgWaitForMultipleObjectsEx" => msg_wait_for_multiple_objects_ex,
 ];

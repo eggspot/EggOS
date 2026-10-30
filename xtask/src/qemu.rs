@@ -229,6 +229,13 @@ pub enum Expect {
     /// `TerminateProcess` ended a waiting child with code 9, `CreateProcessA` with
     /// `CREATE_SUSPENDED` ran a child that `ResumeThread` let go, and a missing program is
     /// `ERROR_FILE_NOT_FOUND`; then its status 0.
+    /// Then `eggsync.exe`, our own C program (D189): its lines say APCs ran in `SleepEx` on the
+    /// thread itself and woke another thread's infinite alertable sleep, an alertable wait
+    /// returned `WAIT_IO_COMPLETION` before its event was set, mutexes whose owners ended came
+    /// back `WAIT_ABANDONED` (alone and among others), `ReleaseMutex` by a non-owner failed with
+    /// `ERROR_NOT_OWNER`, `MsgWaitForMultipleObjects(Ex)` took an object, timed out and ran an
+    /// APC, ws2_32's and wsock32's ordinals agree with their names, and `FindFirstFileW`
+    /// matched DOS wildcards (`*.txt`, `*.`, `??.c`, `<.c`, `A?.TXT`); then its status 0.
     /// Then `eggrust.exe`, our own Rust program on Rust's standard library (D189): its lines say
     /// `Command::output` ran a copy of itself with its arguments and took its output, error
     /// and exit code through pipes, a piped child's output was read as it came, a file was
@@ -577,7 +584,7 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 11] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 12] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
@@ -585,6 +592,7 @@ const WINDOWS_CRT_SESSION: [&[u8]; 11] = [
     b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
     b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
+    b"eggsync.exe; echo EGGSYNC status $?\r",
     b"eggrust.exe; echo EGGRUST status $?\r",
     b"eggrust.exe panic; echo EGGRUST panic status $?\r",
     b"GREETING=hi eggmingw.exe one 'two words'; echo EGGMINGW status $?\r",
@@ -636,6 +644,19 @@ const EGGRUST_LINES: [&str; 9] = [
     "EGGRUST status 0",
 ];
 
+const EGGSYNC_LINES: [&str; 10] = [
+    "EGGSYNC apc on self ran 7, sleep 192",
+    "EGGSYNC apc woke a sleeping thread with 11, its sleep 192",
+    "EGGSYNC alertable wait 192 after 13, then the event 0",
+    "EGGSYNC abandoned 128, owner released 1, then 0 with 288",
+    "EGGSYNC wait any abandoned 129",
+    "EGGSYNC message waits 0, 258, alertable 192 after 17",
+    "EGGSYNC ordinals ws2_32 1 1, wsock32 1, missing 1 127",
+    "EGGSYNC found *.txt 2, *. 1, ??.c 1, <.c 1, A?.TXT 1",
+    "EGGSYNC no match -2, end 18",
+    "EGGSYNC status 0",
+];
+
 const EGGMINGW_LINES: [&str; 10] = [
     "EGGMINGW hello from msvcrt.dll, arguments 2: one|two words",
     "EGGMINGW greeting hi",
@@ -681,6 +702,7 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             "EGGCPP uncaught status 3",
         ]),
         whole(&EGGSPAWN_LINES),
+        whole(&EGGSYNC_LINES),
         whole(&EGGRUST_LINES),
         vec![
             Line::Around("thread 'main'", ":"),
