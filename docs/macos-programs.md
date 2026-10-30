@@ -96,8 +96,8 @@ its arguments, an environment variable, a file, `/bin`'s listing, a missing file
 
 | Area | Functions |
 |------|-----------|
-| stdio | `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf`, `asprintf`, `vprintf`, `vfprintf`, `vdprintf`, `vsprintf`, `vsnprintf`, `vasprintf`, `puts`, `fputs`, `fputc`, `putc`, `putchar`, `fwrite`, `fread`, `fgetc`, `getc`, `getchar`, `ungetc`, `fgets`, `fflush`, `fopen`, `fdopen`, `fclose`, `fileno`, `feof`, `ferror`, `clearerr`, `fseek`, `fseeko`, `ftell`, `ftello`, `rewind`, `setvbuf`, `perror`, and `__stdinp`, `__stdoutp`, `__stderrp` |
-| Strings and memory | `strlen`, `strnlen`, `strcmp`, `strncmp`, `strcasecmp`, `strncasecmp`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strlcpy`, `strchr`, `strrchr`, `strstr`, `strdup`, `strndup`, `strerror`, `memchr`, `memcmp`, `bcmp`, `memcpy`, `memmove`, `memset`, `bzero`, and the `_FORTIFY_SOURCE` checks `__memcpy_chk`, `__memmove_chk`, `__memset_chk`, `__strcpy_chk`, `__strncpy_chk`, `__strcat_chk`, `__sprintf_chk`, `__snprintf_chk`, `__vsnprintf_chk` |
+| stdio | `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf`, `asprintf`, `vprintf`, `vfprintf`, `vdprintf`, `vsprintf`, `vsnprintf`, `vasprintf`, `scanf`, `fscanf`, `sscanf`, `vscanf`, `vfscanf`, `vsscanf`, `puts`, `fputs`, `fputc`, `putc`, `putchar`, `fwrite`, `fread`, `fgetc`, `getc`, `getchar`, `ungetc` (eight bytes back), `fgets`, `fflush`, `fopen`, `fdopen`, `fclose`, `fileno`, `feof`, `ferror`, `clearerr`, `fseek`, `fseeko`, `ftell`, `ftello`, `rewind`, `setvbuf`, `perror`, and `__stdinp`, `__stdoutp`, `__stderrp` |
+| Strings and memory | `strlen`, `strnlen`, `strcmp`, `strncmp`, `strcasecmp`, `strncasecmp`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strlcpy`, `strchr`, `strrchr`, `strstr`, `strspn`, `strcspn`, `strpbrk`, `strdup`, `strndup`, `strerror`, `memchr`, `memcmp`, `bcmp`, `memcpy`, `memmove`, `memset`, `bzero`, and the `_FORTIFY_SOURCE` checks `__memcpy_chk`, `__memmove_chk`, `__memset_chk`, `__strcpy_chk`, `__strncpy_chk`, `__strcat_chk`, `__sprintf_chk`, `__snprintf_chk`, `__vsnprintf_chk` |
 | Heap | `malloc`, `calloc`, `realloc`, `reallocf`, `free`, `malloc_size`, `posix_memalign`, `aligned_alloc`, `valloc` |
 | Numbers | `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul`, `strtoull`, `abs`, `labs`, `llabs`, `qsort`, `bsearch`, `rand`, `srand`, `arc4random`, `arc4random_buf`, `arc4random_uniform` |
 | Files | `open`, `close`, `read`, `write`, `lseek`, `stat`, `lstat`, `fstat` (on x86_64 only their `$INODE64` names: the unsuffixed ones are the old 32-bit-inode ABI, and calling them stops with status 127), `isatty`, `access`, `getcwd`, `chdir`, `unlink`, `rmdir`, `mkdir`, `opendir`, `readdir` (`readdir$INODE64` on x86_64, likewise), `closedir`, `dirfd` |
@@ -110,7 +110,7 @@ its arguments, an environment variable, a file, `/bin`'s listing, a missing file
 | Other programs | `fork`, `vfork` (as `fork`), `execve`, `execv`, `execvp`, `execvP`, `execl`, `execle`, `execlp`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_init`, `_destroy`, `_addopen`, `_addclose`, `_adddup2`, `_addinherit_np`, `_addchdir_np`, `_addfchdir_np` (and the unsuffixed `addchdir`, `addfchdir`), `posix_spawnattr_init`, `_destroy`, `_setflags`, `_getflags`, `_setpgroup`, `_getpgroup`, `_setsigmask`, `_getsigmask`, `_setsigdefault`, `_getsigdefault`, `wait`, `waitpid`, `wait3`, `wait4`, `popen`, `pclose`, `system` |
 | Memory | `mmap` (Darwin's flags), `munmap`, `mprotect`, `madvise` (a hint: accepted) |
 | Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep`, `gmtime_r`, `gmtime`, `localtime_r`, `localtime`, `timegm`, `mktime`, `strftime`, `tzset` |
-| Locale | `setlocale`, `nl_langinfo`, `localeconv`, `__mb_cur_max` (the C locale only) |
+| Locale | `setlocale`, `nl_langinfo`, `localeconv`, the `__mb_cur_max` variable and `___mb_cur_max` (the C locale only) |
 | dyld | `_dyld_image_count`, `_dyld_get_image_header`, `_dyld_get_image_vmaddr_slide`, `_dyld_get_image_name`, `dlsym` (the layer's own functions), `dlopen` (loads nothing), `dlclose`, `dlerror` |
 
 Darwin's numbers become Linux's at the boundary: `open`'s flags, error numbers (`EAGAIN` is
@@ -162,6 +162,16 @@ runs the program in the caller) then the file actions in order, and reports a fa
 `SIGINT` and `SIGQUIT` and blocks `SIGCHLD` while it waits, as a Mac does. The test program
 `tests/macos-process/main.c`, built by `cargo xtask macos-programs` with
 `clang -mmacosx-version-min=13.0`, checks all of it in the macOS programs boot test.
+
+`scanf`, `fscanf`, `sscanf` and their `va_list` forms (D190, slice 38b) read Darwin's
+conversions with the shared scanner (`eggos_c_format::scan`, also the Windows layer's):
+`%d %i %u %o %x %p`, the `%e %f %g` family, `%c`, `%s`, `%[...]`, `%n` and `%%`, with `*`, a
+width and the sizes `hh h l ll q j z t L` (`l` is 64 bits, `%Lf` stores x87's 80 bits on
+x86_64). A field is the longest prefix of a number; what the number does not use goes back to
+the input, as on a Mac (`"0xg"` with `%x%c` reads 0 and `x`, `"1e"` with `%f%c` reads 1 and
+`e`), and a stream keeps up to eight bytes put back, so the next read sees them. `%lc`, `%ls`
+and `%l[` store a `wchar_t` per byte, the C locale's characters. The test program
+`tests/macos-text/main.c` checks them, with `strspn`, `strcspn` and `strpbrk`.
 
 ## Objective-C programs
 
@@ -381,9 +391,10 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   layer's can hang the child), `execvp` does not run a file without a format through the
   shell, and `posix_spawn` copies the process before it runs the program instead of sharing
   its memory as `vfork` does.
-- **`scanf`**, **time zones** (all times are UTC), **locales other than C** (`setlocale`
-  refuses them with a null pointer), and stdio streams shared between threads (each stream
-  assumes one thread at a time).
+- **Time zones** (all times are UTC), **locales other than C** (`setlocale` refuses them
+  with a null pointer, so `%ls` reads bytes, not UTF-8 characters), hexadecimal floating-point
+  input (`%a` reads only decimal), `nan(...)`, and stdio streams shared between threads (each
+  stream assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
   does, so options after an operand stay operands; `getopt_long_only` is missing.
 - **AppKit beyond its core** (D147's and D175's "Not yet"): nibs and storyboards, flipped

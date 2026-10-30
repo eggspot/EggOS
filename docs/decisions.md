@@ -14680,3 +14680,51 @@ the license, by an explicit instruction recorded here.
   a format through the shell; `posix_spawn_file_actions_addclosefrom_np`; slices 38b (`scanf`,
   locales other than C) and 38c (programs without chained fixups, a program for macOS 11,
   `getopt_long` reordering words).
+- **Slice 38b: `scanf`.** `scanf`, `fscanf`, `sscanf`, `vscanf`, `vfscanf` and `vsscanf`
+  (`libsystem/scanf.rs`, variadic entries as `printf`'s) read Darwin's conversions: `%d %i %u
+  %o %x %X %p`, `%e %f %g %a` (and capitals), `%c`, `%s`, `%[...]` with ranges, negation and a
+  leading `]`, `%n` and `%%`, with `*`, a width and the sizes `hh h l ll q j z t L`; `l`, `q`,
+  `j`, `z` and `t` are 64 bits, `%lf` a `double`, `%Lf` a `long double` (a double on arm64,
+  x87's 80 bits on x86_64, through `eggos_c_format::double_to_extended`), and `%lc`, `%ls`,
+  `%l[`, `%C` and `%S` are wide. It returns the fields stored (`%n` not counted) or `EOF` when
+  the input ends before the first conversion. The scanner is now shared: the Windows layer's
+  `scan.rs`, `c_text.rs` and `strtod`'s text reading moved into `eggos-c-format` as `scan` and
+  `number`, where a `Rules { dialect, utf8 }` says whose sizes apply (Windows' `l` stays 32
+  bits) and a `Source` trait reads bytes from memory (`Bytes`) or, in the macOS layer, from a
+  stream a byte at a time. A field is the longest prefix of a number (a sign, `0x` when the
+  base allows it, digits; a point and an exponent; `inf`, `infinity`, `nan`), and what the
+  number does not use goes back to the input, as a Mac does (a research subagent ran the
+  cases on macOS: `"0xg"` with `%x%c` gives 0 and `x`, `"1e"` with `%f%c` gives 1.0 and `e`,
+  `"0x"` with `%x` gives 0); a stream now keeps up to eight bytes put back (`ungetc` too,
+  where it kept one), which `fseek` and `ftell` count. A short `%5c` stores the characters
+  there were and counts, as BSD's `__fread` does. `strspn`, `strcspn` and `strpbrk` (a
+  256-bit set each) are added, and `___mb_cur_max` is now bound to the `__mb_cur_max`
+  variable that `MB_CUR_MAX` reads (it was bound to a function, so a program read code
+  bytes); `____mb_cur_max` is the function the extended-locale headers call. The check:
+  `tests/macos-text/main.c` (`macos::C_PROGRAMS`), run as `/bin/macos-text` in the macOS
+  programs boot test on aarch64 and x86_64: every size, the floats, strings, sets, `%n`, `%p`,
+  suppression, `EOF`, a mismatch, `vsscanf`, the put-back cases, `fscanf` over a pipe with
+  `fgetc` seeing the put-back `e` and `feof` after the end, and the three string functions.
+  Front-ends: the macOS ABI only. Cost: `scanf` only runs when a program calls it; a stream
+  grows by eight bytes; `fscanf` keeps a field in a heap block (64 bytes, doubling) that it
+  releases before it returns. Decided by research (a research subagent, 2026-10-31, from test
+  programs run on macOS 26 on arm64): the put-back behaviour above, `%ls` being supported, `MB_CUR_MAX` 4 and
+  `__mb_cur_max` a variable, and the facts slice 38b2 will use (`setlocale("POSIX")` returns
+  `"POSIX"`; `"UTF-8"` and `"C.UTF-8"` are `LC_CTYPE` locales, `"UTF-8"` refused for `LC_ALL`;
+  the composite name is six names joined by `/` in the order collate, ctype, monetary, numeric,
+  time, messages; `en_US.UTF-8`'s `nl_langinfo`, `localeconv` and `%x` (`%m/%d/%Y`) values;
+  ctype's imports `__DefaultRuneLocale`, `___maskrune`, `___toupper`, `___tolower` and
+  `_RuneLocale`'s layout (3208 bytes, `__runetype` at 60); the Latin-1 classes and case
+  mappings, `ÿ` to U+0178 and `µ` to U+039C; UTF-8 refusing surrogates, overlong forms and
+  five-byte sequences; the C locale mapping each byte to itself and refusing wide characters
+  above 0xFF). Decided without research: the scanner shared rather than a second copy (the
+  brief's rule to reuse pure logic between layers); a `Source` with `give_back` rather than
+  copying the whole input, so `fscanf` never reads ahead of what it uses; `%lc`, `%ls` and
+  `%l[` store a `wchar_t` per byte while the only locale is C (`Rules.utf8` false), and their
+  width counts characters (UTF-8 sequences once a UTF-8 locale exists). Not yet: locales other
+  than C (`setlocale` names and environment, `localeconv` and `nl_langinfo` for
+  `en_US.UTF-8`, `MB_CUR_MAX` 4, `mbstowcs`, `wcstombs`, `mbrtowc`, `wcrtomb`, `mbtowc`,
+  `wctomb` with UTF-8, `isalpha`'s family through `__DefaultRuneLocale` and `___maskrune`,
+  `toupper`, `towupper` and `towlower` beyond ASCII, `%x` for `en_US`, `strptime`; slice 38b2);
+  hexadecimal floating-point input (`%a` reads decimal only) and `nan(...)`; `strtod` and
+  `atof` in the macOS layer (the shared `number::parse_float` is ready for them).

@@ -270,8 +270,12 @@ Must-have, in order:
     family, `posix_spawn` and `posix_spawnp` with file actions and attributes, pipes, `dup2`,
     `waitpid` and `wait4`, and `popen` and `system` through EggOS's shell, checked by
     `macos-process` from our own C source, built by Apple's clang in CI, in the macOS programs
-    boot test on aarch64 and x86_64. Next: `scanf` and locales other than C (slice 38b), and
-    programs without chained fixups (slice 38c).
+    boot test on aarch64 and x86_64. Slice 38b: `scanf`, `fscanf`, `sscanf` and their
+    `va_list` forms on the scanner the Windows layer now shares, with Darwin's sizes and
+    what a number does not use put back, and `strspn`, `strcspn` and `strpbrk`, checked by
+    `macos-text`. Next: locales other than C (`setlocale` names, UTF-8 `mbrtowc` and its
+    family, `isalpha` and `towupper` beyond ASCII, `strptime`; slice 38b2) and programs
+    without chained fixups (slice 38c).
 22. **done** — users can now pipe commands and redirect input and output from `eggsh` (D125,
     docs/shell.md): `a | b | c` runs its programs at the same time, piped, in one process
     group that `^C` reaches, with the last one's status; `<`, `>` and `>>` on builtins and
