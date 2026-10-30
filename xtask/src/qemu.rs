@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod android_dynamic;
 pub mod autohotkey;
 pub mod cocoa_app;
 pub mod dynamic_linking;
@@ -1058,8 +1059,25 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             "setprop: ro.build.version.sdk: a read-only property keeps its first value",
             "ANDROID-PROPERTIES status 1",
         ]),
-        whole(&[
-            "ANDROID-CONSOLE android-console args a|b c",
+        android_console_lines("android-console", "static"),
+        vec![
+            Line::Around("I/eggos-test(", "): hello from android-console"),
+            Line::Whole("ANDROID-LOG status 0".to_string()),
+        ],
+        whole(&["ANDROID-LOG status 0"]),
+        whole(&["ANDROID-CONSOLE status 42"]),
+        whole(&["Aborted", "ANDROID-CONSOLE status 134"]),
+        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
+    ]
+}
+
+/// What `tests/android-console` writes when the shell runs it as `name` with `a 'b c'` and
+/// `GREETING=hi`, after `setprop eggos.test.greeting hello`, then the shell's status line: its
+/// `loader` line says `static` or `linker64`.
+fn android_console_lines(name: &str, loader: &str) -> Vec<Line> {
+    let mut lines = vec![Line::Whole(format!("ANDROID-CONSOLE {name} args a|b c"))];
+    lines.extend(
+        [
             "ANDROID-CONSOLE env GREETING=hi",
             "ANDROID-CONSOLE file eggos",
             "ANDROID-CONSOLE dir about",
@@ -1070,21 +1088,21 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             "ANDROID-CONSOLE property eggos.test.greeting=hello",
             "ANDROID-CONSOLE log sent",
             "ANDROID-CONSOLE pagesize 4096",
+        ]
+        .map(|line| Line::Whole(line.to_owned())),
+    );
+    lines.push(Line::Whole(format!("ANDROID-CONSOLE loader {loader}")));
+    lines.extend(
+        [
             "ANDROID-CONSOLE random differs",
             "ANDROID-CONSOLE shell",
             "ANDROID-CONSOLE system status 0",
             "ANDROID-CONSOLE stderr",
             "ANDROID-CONSOLE status 0",
-        ]),
-        vec![
-            Line::Around("I/eggos-test(", "): hello from android-console"),
-            Line::Whole("ANDROID-LOG status 0".to_string()),
-        ],
-        whole(&["ANDROID-LOG status 0"]),
-        whole(&["ANDROID-CONSOLE status 42"]),
-        whole(&["Aborted", "ANDROID-CONSOLE status 134"]),
-        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
-    ]
+        ]
+        .map(|line| Line::Whole(line.to_owned())),
+    );
+    lines
 }
 
 fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len()] {

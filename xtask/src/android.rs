@@ -1,8 +1,10 @@
-//! Android console programs (D119): static programs linked by the Android NDK against bionic,
-//! which run through the Linux layer. An image gets `/system/bin/sh`, the shell bionic's
-//! `system` and `popen` run, only when an added file is an Android program; the boot test's
-//! program is built from `tests/android-console` and linked by the NDK's clang, found through
-//! the NDK's usual environment variables.
+//! Android console programs (D119, D188): programs linked by the Android NDK against bionic,
+//! statically or dynamically, which run through the Linux layer. An image gets
+//! `/system/bin/sh`, the shell bionic's `system` and `popen` run, and `/system/build.prop`
+//! only when an added file is an Android program, and Android's runtime module
+//! (`android_runtime.rs`) only when one is dynamically linked; the boot tests' program is
+//! built from `tests/android-console` and linked by the NDK's clang, found through the NDK's
+//! usual environment variables.
 
 use crate::initramfs::Content;
 use std::ffi::OsString;
@@ -14,6 +16,7 @@ pub const API_LEVEL: u32 = 29;
 const SYSTEM_SHELL_PATH: &str = "system/bin/sh";
 const BUILD_PROPERTIES_PATH: &str = "system/build.prop";
 const NOTE_SEGMENT: u32 = 4;
+const INTERPRETER_SEGMENT: u32 = 3;
 const NOTE_OWNER: &[u8] = b"Android\0";
 const NOTE_TYPE_IDENT: u32 = 1;
 const PROGRAM_HEADER_SIZE: usize = 56;
@@ -88,6 +91,41 @@ fn android_ident(mut notes: &[u8], u32_at: impl Fn(&[u8], usize) -> Option<u32>)
 /// Whether the file at `path` is an Android program ([`api_level`] finds its note).
 pub fn is_program(path: &str) -> bool {
     std::fs::read(path).is_ok_and(|elf| api_level(&elf).is_some())
+}
+
+/// The interpreter a 64-bit little-endian ELF file names in its `PT_INTERP` segment, without
+/// the closing NUL; `None` for a static program or another file.
+pub fn interpreter(elf: &[u8]) -> Option<&[u8]> {
+    let u64_at = |at: usize| {
+        Some(u64::from_le_bytes(
+            elf.get(at..at.checked_add(8)?)?.try_into().ok()?,
+        ))
+    };
+    if elf.get(..6)? != b"\x7fELF\x02\x01" {
+        return None;
+    }
+    let headers = usize::try_from(u64_at(0x20)?).ok()?;
+    let count = usize::from(u16::from_le_bytes(elf.get(0x38..0x3a)?.try_into().ok()?));
+    (0..count).find_map(|index| {
+        let header = headers.checked_add(index.checked_mul(PROGRAM_HEADER_SIZE)?)?;
+        let kind = u32::from_le_bytes(elf.get(header..header.checked_add(4)?)?.try_into().ok()?);
+        if kind != INTERPRETER_SEGMENT {
+            return None;
+        }
+        let offset = usize::try_from(u64_at(header.checked_add(8)?)?).ok()?;
+        let size = usize::try_from(u64_at(header.checked_add(32)?)?).ok()?;
+        let path = elf.get(offset..offset.checked_add(size)?)?;
+        Some(path.split(|byte| *byte == 0).next().unwrap_or(path))
+    })
+}
+
+/// Whether the file at `path` is an Android program that Android's dynamic linker
+/// ([`crate::android_runtime::LINKER_PATH`]) runs, so its image needs the runtime module.
+pub fn is_dynamic_program(path: &str) -> bool {
+    std::fs::read(path).is_ok_and(|elf| {
+        api_level(&elf).is_some()
+            && interpreter(&elf) == Some(crate::android_runtime::LINKER_PATH.as_bytes())
+    })
 }
 
 macro_rules! build_properties {
@@ -205,26 +243,48 @@ fn clang_in(root: &Path) -> Option<PathBuf> {
     })
 }
 
-/// The arguments that link `archive` (a static library defining `main`) into a static
-/// Android program at `output` for `target`, with bionic's start-up code and C library.
-pub fn link_arguments(target: &str, archive: &Path, output: &Path) -> Vec<OsString> {
-    let mut arguments: Vec<OsString> = [
-        format!("--target={target}{API_LEVEL}"),
-        "-static".into(),
-        "-Wl,--gc-sections".into(),
-        "-o".into(),
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect();
+/// How an Android program is linked against bionic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Linkage {
+    /// Statically, with `libc.a` and `crtbegin_static.o`.
+    Static,
+    /// Dynamically, as a PIE that `/system/bin/linker64` loads with `libc.so`.
+    Dynamic,
+}
+
+/// The arguments that link `archive` (a static library defining `main`) into an Android
+/// program at `output` for `target`, with bionic's start-up code and C library, as `linkage`
+/// says.
+pub fn link_arguments(
+    target: &str,
+    linkage: Linkage,
+    archive: &Path,
+    output: &Path,
+) -> Vec<OsString> {
+    let static_flag = match linkage {
+        Linkage::Static => Some("-static".to_owned()),
+        Linkage::Dynamic => None,
+    };
+    let mut arguments: Vec<OsString> = [format!("--target={target}{API_LEVEL}")]
+        .into_iter()
+        .chain(static_flag)
+        .chain(["-Wl,--gc-sections".to_owned(), "-o".to_owned()])
+        .map(OsString::from)
+        .collect();
     arguments.push(output.into());
     arguments.push(archive.into());
     arguments
 }
 
-/// Links `archive` into the static Android program `output` with the NDK's clang.
-pub fn link(ndk: &Ndk, target: &str, archive: &Path, output: &Path) -> Result<(), String> {
-    let arguments = link_arguments(target, archive, output);
+/// Links `archive` into the Android program `output` with the NDK's clang, as `linkage` says.
+pub fn link(
+    ndk: &Ndk,
+    target: &str,
+    linkage: Linkage,
+    archive: &Path,
+    output: &Path,
+) -> Result<(), String> {
+    let arguments = link_arguments(target, linkage, archive, output);
     eprintln!(
         "xtask: {} {}",
         ndk.clang.display(),
@@ -340,18 +400,20 @@ mod tests {
     }
 
     #[test]
-    fn the_program_is_linked_statically_for_the_api_level() {
-        let arguments = link_arguments(
-            "aarch64-linux-android",
-            Path::new("lib.a"),
-            Path::new("out"),
-        );
-        let arguments: Vec<String> = arguments
+    fn the_program_is_linked_statically_or_dynamically_for_the_api_level() {
+        let arguments = |linkage| -> Vec<String> {
+            link_arguments(
+                "aarch64-linux-android",
+                linkage,
+                Path::new("lib.a"),
+                Path::new("out"),
+            )
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
-            .collect();
+            .collect()
+        };
         assert_eq!(
-            arguments,
+            arguments(Linkage::Static),
             [
                 "--target=aarch64-linux-android29",
                 "-static",
@@ -361,6 +423,36 @@ mod tests {
                 "lib.a"
             ]
         );
+        assert_eq!(
+            arguments(Linkage::Dynamic),
+            [
+                "--target=aarch64-linux-android29",
+                "-Wl,--gc-sections",
+                "-o",
+                "out",
+                "lib.a"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_interpreter_is_the_path_in_pt_interp_without_its_nul() {
+        let path = b"/system/bin/linker64\0";
+        let headers = 64;
+        let path_at = headers + PROGRAM_HEADER_SIZE;
+        let mut elf = vec![0u8; path_at];
+        elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        elf[0x20..0x28].copy_from_slice(&(headers as u64).to_le_bytes());
+        elf[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
+        elf[headers..headers + 4].copy_from_slice(&INTERPRETER_SEGMENT.to_le_bytes());
+        elf[headers + 8..headers + 16].copy_from_slice(&(path_at as u64).to_le_bytes());
+        elf[headers + 32..headers + 40].copy_from_slice(&(path.len() as u64).to_le_bytes());
+        elf.extend(path);
+        assert_eq!(interpreter(&elf), Some(&b"/system/bin/linker64"[..]));
+        elf[headers..headers + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(interpreter(&elf), None);
+        assert_eq!(interpreter(&elf_with_notes(&[])), None);
+        assert_eq!(interpreter(b"MZ"), None);
     }
 
     #[test]

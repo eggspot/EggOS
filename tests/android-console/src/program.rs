@@ -5,6 +5,7 @@ const PREFIX: &str = "ANDROID-CONSOLE";
 const CLOCK_REALTIME: c_int = 0;
 const CLOCK_MONOTONIC: c_int = 1;
 const AT_PAGESZ: c_ulong = 6;
+const AT_BASE: c_ulong = 7;
 const PROPERTY_VALUE_MAX: usize = 92;
 const THREADS: usize = 4;
 const LINE_BUFFER: usize = 128;
@@ -212,6 +213,12 @@ extern "C" fn main(count: c_int, arguments: *const *const c_char) -> c_int {
             page_size,
         )
     };
+    // SAFETY: `getauxval` takes a number.
+    let loader = match unsafe { getauxval(AT_BASE) } {
+        0 => "static",
+        _ => "linker64",
+    };
+    say!("loader {loader}");
     say!("random {}", random());
     // SAFETY: `fflush(NULL)` flushes every stream.
     unsafe { fflush(core::ptr::null_mut()) };

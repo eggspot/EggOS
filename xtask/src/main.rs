@@ -5,12 +5,16 @@
 //! docs/build.md, "Developer commands".
 
 mod android;
+mod android_dynamic;
+mod android_runtime;
 mod autohotkey;
 mod bench;
 mod ci_artifact;
 mod cocoa_app;
 mod dynamic_linking;
 mod elf;
+mod ext4;
+mod gitiles;
 mod gl_libraries;
 mod gtk_app;
 mod hello_crate;
@@ -112,6 +116,12 @@ commands:
                          data: this Linux host's cross compilers' static C library), as a
                          static executable and as a static PIE, add both to the release
                          image, boot it and check both run (<arch> may be `all`)
+  android-dynamic --arch <arch>
+                         link our Android console program dynamically with the Android NDK,
+                         add it with Android's linker64 and the runtime module's libraries
+                         (test data: AOSP's prebuilt com.android.runtime APEX, downloaded
+                         into target/android-runtime) to the release image, boot it and
+                         check it runs (aarch64 and x86_64; <arch> may be `all`)
   rustc-version --arch <arch>
                          download the official Rust toolchain's rustc (test data, into
                          target/rustc-version, checked against its pinned SHA-256), hand
@@ -609,6 +619,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("static-glibc") => {
             for arch in arch()? {
                 static_glibc::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("android-dynamic") => {
+            for arch in arch()? {
+                android_dynamic::check(arch)?;
             }
             Ok(())
         }
@@ -1263,10 +1279,25 @@ pub fn build_release_image(
     {
         return Err(format!("`{}` is not a file to add", missing.host));
     }
+    let dynamic_runtime = match added
+        .iter()
+        .any(|file| android::is_dynamic_program(&file.host))
+    {
+        true => Some(android_runtime::Runtime::fetch(arch.name)?),
+        false => None,
+    };
     let mut members = image::members(added);
     if added.iter().any(|file| android::is_program(&file.host)) {
         members.extend(
             android::system_members(SHELL_PATH, arch.name)
+                .into_iter()
+                .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
+        );
+    }
+    if let Some(runtime) = &dynamic_runtime {
+        members.extend(
+            runtime
+                .members()
                 .into_iter()
                 .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
         );
@@ -2163,7 +2194,7 @@ fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::P
         );
         return Ok(None);
     };
-    let program = build_android_console(&ndk, target)?;
+    let program = build_android_console(&ndk, target, android::Linkage::Static)?;
     let added = [image::AddedFile {
         host: program.to_string_lossy().into_owned(),
         path: ANDROID_CONSOLE_PATH.to_owned(),
@@ -2188,7 +2219,11 @@ fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::P
     build_release_kernel(arch, &initramfs).map(Some)
 }
 
-fn build_android_console(ndk: &android::Ndk, target: &str) -> Result<std::path::PathBuf, String> {
+fn build_android_console(
+    ndk: &android::Ndk,
+    target: &str,
+    linkage: android::Linkage,
+) -> Result<std::path::PathBuf, String> {
     let target_dir = target_directory().join("android-console");
     let target_dir_text = target_dir.to_string_lossy();
     cargo_with_env(
@@ -2206,8 +2241,17 @@ fn build_android_console(ndk: &android::Ndk, target: &str) -> Result<std::path::
         ],
     )?;
     let release = target_dir.join(target).join("release");
-    let program = release.join("android-console");
-    android::link(ndk, target, &release.join("libandroid_console.a"), &program)?;
+    let program = release.join(match linkage {
+        android::Linkage::Static => "android-console",
+        android::Linkage::Dynamic => "android-console-dynamic",
+    });
+    android::link(
+        ndk,
+        target,
+        linkage,
+        &release.join("libandroid_console.a"),
+        &program,
+    )?;
     Ok(program)
 }
 

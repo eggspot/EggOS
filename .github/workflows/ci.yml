@@ -238,6 +238,48 @@ jobs:
       - name: Static glibc programs and static PIEs boot
         run: cargo xtask static-glibc --arch ${{ matrix.arch }}
 
+  android-dynamic:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk:ro
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      ANDROID_HOME: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Dynamically linked Android programs boot
+        run: cargo xtask android-dynamic --arch ${{ matrix.arch }}
+
   rustc-version:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -912,7 +954,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, dynamic-linking, static-glibc, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, autohotkey, cocoa-app, gtk-app, qt-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
+    needs: [changes, fast, qemu, dynamic-linking, static-glibc, android-dynamic, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, autohotkey, cocoa-app, gtk-app, qt-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
