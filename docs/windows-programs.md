@@ -383,7 +383,8 @@ size needed, as each function documents.
   `_spawn*`, `system` and `_popen` (D189's "Not yet"); **UTF-16 console polish** (line endings
   as `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
 - **x64 programs on aarch64** (and ARM64 programs on x86_64): an x64 program on Arm needs its
-  code translated ahead of time (D17), which EggOS does not do yet; ARM64EC and ARM64X hybrid
+  code translated ahead of time (D17), which EggOS does not do yet (designed in D191,
+  [translation](translation.md); only the decoder exists so far); ARM64EC and ARM64X hybrid
   images run only as plain ARM64 code (their x64 parts are not supported).
 - **DOS wildcard special cases** (`a?` matching `a`, `*.` matching names without an
   extension); `lstrcmpW` and `lstrcmpiW` compare ordinally, not by locale;

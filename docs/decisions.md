@@ -14854,3 +14854,62 @@ the license, by an explicit instruction recorded here.
   Mac. Not yet: files that bind only through relocations and the indirect symbol table
   (Mac OS X 10.5 and earlier), i386 programs, imports a program makes from itself through its
   export trie, `getopt_long`'s `W;`, and arm64e.
+
+## D191 x86_64 programs on Arm through ahead-of-time translation: the design (`docs/translation.md`) and the x86-64 decoder in the new crate `eggos-translate` (batch part 39, slice 39a; v0.3.0 items 19b and 21's follow-ups; D121's, D123's and D124's "Not yet"; extends D17) — Decided by the build loop (the memory order, flags, registers, code discovery, run-time misses, x87 precision, the cache's cap and refused instructions decided by research)
+
+- **What.** The design of the translator that lets an x86_64 Windows or macOS program run on an
+  aarch64 machine: its code translated once, at install, into AArch64 code cached on disk,
+  never interpreted and never translated while it runs (D17). `docs/translation.md` holds it:
+  the instructions translated (integer, flags, stack, calls, strings, atomics, SSE, SSE2 and a
+  minimal x87) and those refused, how code is found, the register map, flags in NZCV, the
+  memory order, the translated image and its tables, the bridges between Win64 or SysV and
+  AAPCS64 in both directions, what cannot work (self-modifying code, JIT compilers), the cache,
+  install and launch, and the benchmarks, reported apart from native ones.
+- **The decoder.** The new crate `translate/` (`eggos-translate`, `no_std`, no allocation, no
+  `unsafe`) decodes one instruction at a time: `decode(code, address)` returns an
+  `Instruction { address, length, mnemonic, width, lock, repeat, operands() }` whose operands
+  are `Register` (general registers by width, `ah`-`bh`, XMM, x87), `Memory { segment (fs/gs
+  only), address: Based { base, index, displacement } | Rip { target } | Absolute, width }`,
+  `Immediate` and branch `Target`s, RIP-relative operands and branch targets already resolved.
+  It handles legacy prefixes (the last of a group wins, REX cancelled by a later prefix, the
+  15-byte limit), REX (`spl`-`dil` against `ah`-`bh`), mandatory prefixes, ModRM, SIB (`r12`
+  and `r13` bases, no-base and no-index forms), displacements and immediates (sign- or
+  zero-extended by field), the one-byte map, `0F`, `0F 38` and `0F 3A` (recognised and
+  refused), the opcode groups, and the x87 escapes. What 64-bit mode does not define is
+  `Invalid`; what the translator does not handle is `Unsupported { refusal, length }` with a
+  `Refusal` (`Vex`, `Evex`, `Xop`, `Mmx`, `Sse3`, `ThreeByteMap`, `X87`, `AddressSize`,
+  `Branch16`, `StateSave`, `System`) and the instruction's length, VEX, EVEX and XOP included,
+  so discovery can report the site and step over it. Host tests check hand-assembled
+  sequences from the manuals' encoding rules for every group.
+- **Decided by research.** (1) Memory order: on a CPU with a hardware TSO mode the kernel turns
+  it on for translated threads; elsewhere guest loads are `ldapr`/`ldar` and stores `stlr`,
+  locked instructions LSE atomics, fences `dmb`; keeping stack accesses plain needs escape
+  analysis and is not the default. (2) Flags live in NZCV with backward liveness per block,
+  Arm's inverted carry tracked instead of fixed, FlagM used where present, PF and AF computed
+  only when read; no general lazy-flags state. (3) The register map (`rax`-`r15` in `x0`-`x15`,
+  `rsp` in a plain register, `x18` the `gs:` base, `x19`-`x21` the tables, shadow stack and
+  state block, `xmm` in `v0`-`v15`). (4) Indirect branches through a per-image hash with a
+  one-entry inline cache; returns through a (guest, host) shadow stack with the guest's return
+  address still on its stack. (5) Discovery order (entry, exports, `.pdata`, relocation
+  targets, `LC_FUNCTION_STARTS`, symbols, recursive descent, jump tables, a final linear
+  sweep); a run-time jump to an undiscovered address is a fatal, reported error, never a JIT.
+  (6) x87 in double precision for now. (7) The cache's key (SHA-256 of the file, translator
+  version and code-generation mode), checksum, atomic rename, cap (2 GiB or 5% of the volume)
+  and least-recently-launched eviction by exact name. (8) Refused instructions: discovery
+  reaches the AVX and SSE4 paths real programs only take after `cpuid`, so the install
+  succeeds, counts refused sites per module and extension, and makes each one a stub that
+  ends the program with a full report if it ever runs; it warns only when an entry point or
+  export starts in refused code. (9) The encoding facts the decoder relies on were checked
+  against the Intel and AMD manuals' structure.
+- **Choices made without research.** The translated `cpuid` reports LZCNT and POPCNT but not
+  BMI1, so `F3 0F BC` runs as `bsf`; the address-size prefix is refused on memory operands and
+  implicit addresses rather than translated; the operand-size prefix on near branches is
+  refused (Intel ignores it, AMD honours it); `xchg` with memory is atomic without `lock`, as
+  on x86; instructions without operands report a byte width; the decoder names `F3 0F BC/BD`
+  `tzcnt`/`lzcnt` and leaves their meaning to the code generator.
+- **Not yet** (slices 39b to 39e): AArch64 code generation for the integer instructions, the
+  flags and the stack (39b); SSE, SSE2 and x87, the memory order and atomics (39c); code
+  discovery, the image tables, the bridges, the cache and the Windows layer's loader (39d);
+  the macOS layer, `app install` and launch, the refused-site report and the benchmarks
+  (39e). Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87,
+  arm64 programs on x86_64.

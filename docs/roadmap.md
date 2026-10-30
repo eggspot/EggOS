@@ -242,7 +242,8 @@ Must-have, in order:
     and file mappings with other programs, map files and memory into views, call
     `SignalObjectAndWait` and get wildcard arguments expanded (D189, slice 37d, checked by
     `eggnamed.exe`); then x64 programs on Arm through ahead-of-time translation (D121's and
-    D124's "Not yet").
+    D124's "Not yet"): designed in D191 (docs/translation.md), with its x86-64 decoder in the
+    new `translate/` crate (slice 39a); code generation, the cache and `app install` next.
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
     docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which
@@ -268,7 +269,8 @@ Must-have, in order:
     Mach-O thread-local variables, pthread keys, mutexes, condition variables and once,
     libdispatch semaphores, `mmap`, `fcntl`, `writev` and `dlsym`. The unwinder, time zones,
     other locales, programs without chained fixups, other dylibs and frameworks, and x86_64
-    programs on Arm come later (D123's "Not yet"). Users can now run macOS programs that handle
+    programs on Arm come later (D123's "Not yet"; x86_64 programs on Arm are designed in D191,
+    docs/translation.md, which they share with Windows). Users can now run macOS programs that handle
     signals and start other programs (D190, slice 38a): handlers with Darwin's numbers and
     `siginfo_t`, masks, `sigsuspend`, `sigpending` and alternate stacks; `fork`, the `exec`
     family, `posix_spawn` and `posix_spawnp` with file actions and attributes, pipes, `dup2`,
