@@ -13812,3 +13812,119 @@ the license, by an explicit instruction recorded here.
   other keyboards; the launcher's search beyond ASCII; characters beyond Latin-1 and `€` in
   the fonts (Ÿ first, D185's glyph notes); the Settings pane's Caps Lock line follows the key
   only while Settings is focused; measured costs.
+
+## D186 Desktop polish: the boot screen with its progress, the pointer drawn by the GPU's cursor, the `Hand` and `Busy` pointers, windows dragged partly off screen, F11, a full-screen terminal on small displays, the cursor's blink, console output that never waits for the desktop's repaint, `TERM=xterm` (batch part 34; v0.3.0 items 14, 30 and 31's "Next"; D114's, D115's and D128's "Not yet"; extends D109, D112, D114, D115, D127, D128, D156, D184) — Decided by the build loop (the screendump's pointer decided by research; the hand, the hourglass, the full-screen console and the boot screen's tiers and end designed by Claude Fable, `docs/ux/desktop-polish-v0.3.md`)
+
+- **What users get.** The first frame is the boot screen (docs/ux/desktop-v0.3.md section 1):
+  the egg with its yolk, `EggOS` at 2x, the version and four progress segments; the second
+  lights once the input devices were looked for, the third as init starts (`boot: init` on
+  the serial console), and the desktop replaces it in one frame when the first program waits
+  to read the console (the prompt is out), or 1 s after init started. Smaller displays get
+  Fable's compact tier (a 48 px egg, the name at 1x) or only the progress. The pointer is the
+  GPU's cursor: moving it redraws nothing. Two new pointer shapes, the hand (Windows
+  `IDC_HAND`, Wayland `pointer`) and the hourglass (`IDC_WAIT`, Wayland `wait`), and the
+  window server shows the hourglass itself over the content of a window that says `(not
+  responding)`. A window dragged by its title bar, or moved with the window menu's `Move`,
+  may hang off the work area's right and bottom edges, keeping 48 px and the whole title bar
+  inside. F11 shows the desktop in the macOS profile. A display too small for the desktop
+  shows the terminal on the whole screen (Fable's full-screen console). The terminal's cursor
+  blinks (500 ms shown, 500 ms hidden, from the last byte in or out) and is an outline while
+  its window is not focused. A console write never waits for the desktop's repaint. Programs
+  started by init and by the desktop see `TERM=xterm` (the terminal's sequences are a subset of
+  xterm's, docs/ux/terminal-v0.3.md). The window controls' pressed look, also in this item's
+  list, came with D156.
+- **The boot screen.** `eggos_drivers::desktop::boot_screen::BootScreen` (`new(width,
+  height)`, `tier`, `light`, `segment`, `draw_span`, `draw`): a few numbers, every row computed
+  when drawn, so the kernel draws any rectangle of it and hashes it a row at a time. The
+  display keeps it while it shows (`display::Display`'s `boot`): `display::show_first_frame`
+  draws it, `display::light_boot_stages` lights stages and flushes only the segments that
+  changed, `Framebuffer::end_boot_screen` drops it when the desktop's first frame is composed,
+  `display::boot_screen_hash` gives the self-test its hash. The interactive session's screen
+  waits (`terminal::console_waited`, called where a read of the console blocks, one relaxed
+  load after the first time) and composes nothing until then; the self-test session draws at
+  once.
+- **The GPU's cursor.** `VirtioGpu` sets up queue 1 (up to 4 entries in its existing 4 KiB)
+  when the device has it, `attach_cursor` makes a 64x64 `B8G8R8A8_UNORM` resource (id 2) on 16
+  KiB of its own, `cursor_pixels`, `show_cursor` (transfer, then `UPDATE_CURSOR` with the
+  hotspot), `move_cursor`, `hide_cursor` (no resource); `Released::cursor` returns its memory.
+  `display::Scanout` gains `draws_pointer`, `pointer_image`, `show_pointer`, `move_pointer`
+  and `hide_pointer` (refusing by default; the offscreen display keeps the software pointer);
+  `display::show_pointer` uploads an image only when the shape changes. The desktop draws the
+  pointer only when `Desktop::set_pointer_on_display(false)`; with it on, moving the pointer
+  damages nothing, `Desktop::pointer` says where and what, and `Desktop::draw_scene` paints the
+  picture without the pointer, which is what QEMU's `screendump` holds. The agent's accent
+  arrow (D156) stays software-drawn.
+- **The lock split.** The terminal engine moved out of the screen's lock into its own
+  (`TERMINAL`, a leaf): `write_mirrored` takes only it, and the drawing thread holds it only
+  while it renders the terminal's changed cells into the grid's buffer; composing the desktop
+  (`SCREEN` under the display's lock) never holds it. Lock order: display, screen, terminal.
+- **The blink.** `eggos_drivers::terminal::CursorLook` (`Block`, `Blinked`, `Outline`),
+  `Terminal::{set_cursor_look, cursor_look, cursor_blinks}`; `terminal::cursor_look_at` picks
+  the look from focus, the program's modes and the last activity (output, or typed bytes:
+  `terminal::note_typing` from `console::receive_from_keyboard`). The drawing thread publishes
+  when it wants to look again (`LOOK_AGAIN_AT`: the blink's next change, the boot screen's
+  limit; 0 for none, so it stays in `.bss`); the input poller's `tick` and the clock thread
+  look at it, and the clock thread now waits on a `DeviceEvents` with that deadline, woken
+  early when it moves earlier. A self-test session never blinks, so its hash did not change.
+- **The full-screen console.** When `Desktop::new` refuses the display, `terminal::start`
+  makes the terminal alone: `terminal::console_area` (inside the 8 px padding from 320x240
+  up, every pixel below), its own grid buffer, composed straight onto the display; no window
+  server (`with_windows` is `None`), no shortcuts (`takes_from_terminal` is false), the input
+  layer's wheel scrolls it as before, `wm type` types into it.
+- **Off screen and F11.** `Desktop::drag_window` (title bar drags and the keyboard `Move`)
+  clamps with `HANGING_TITLE_KEPT` (48) on the right and the title bar's height at the bottom;
+  every other move keeps the whole window inside, as before. `shortcut` maps F11 alone to
+  `ShowDesktop` in the macOS profile.
+- **Pointer shapes.** `PointerShape::Hand` (7) and `Busy` (8) with Fable's bitmaps
+  (`pointer.rs`), `pointer::write_cursor_image`; the Windows layer maps `IDC_HAND` and
+  `IDC_WAIT` (`IDC_APPSTARTING` stays the arrow, Fable's design), eggway maps
+  `wp_cursor_shape_device_v1`'s `pointer` and `wait` (`progress` stays the arrow).
+- **Front-ends (D22).** Visual polish of the existing desktop: the GUI is the front-end; no
+  new capability, so no CLI or MCP twin.
+- **Checks.** Host: the boot screen's tiers, positions, colours, the name's 2x glyphs, lighting
+  and drawing in pieces or rows; the display's first frame, its stages, its end, the row-wise
+  hash and the pointer it draws (an image per shape, moves otherwise); the GPU's cursor queue
+  against the fake device (resource, transfer, `UPDATE_CURSOR`, `MOVE_CURSOR`, hiding, no queue,
+  small memory, reset); the hand's and the hourglass's hotspots and the cursor image; the
+  cursor looks and the blink's timing; a pointer on the display is neither painted nor
+  damaged; Busy over a window that does not answer, not over its title bar; F11 in the macOS
+  profile only; a drag off the right and bottom edges; the full-screen console's grids; the
+  Windows and Wayland mappings. QEMU, all three: the self-test checks the first frame against
+  the boot screen's hash with its lit stages and that it comes back after the test pattern;
+  the boot-to-prompt test requires `boot: init`, and every screendump check compares with the
+  host's render without the pointer, with the cursor block or, when the terminal is focused,
+  the blink's hidden half, and the outline while the terminal is unfocused.
+- **Cost (D24, D78).** Not measured (no builds in this batch). Expected: the kernel image a few
+  KiB larger (the boot screen, the cursor commands, the console mode); 16 KiB of DMA memory for
+  the cursor's image with a GPU; the console write path takes a smaller lock (the terminal's)
+  instead of the screen's, one call less; two wake-ups a second while a focused terminal's
+  cursor blinks (none while it is steady, unfocused or minimised); one relaxed load per blocking
+  console read. To report in the build phase: `gfx_*` and `term_*` benchmarks, image size, and
+  boot to prompt (the desktop now appears at the prompt, after the boot screen).
+- **Decided by research** (a research subagent, 2026-10-30, from QEMU's documentation and the
+  virtio 1.2 specification; behaviour only, no code copied): QEMU's `screendump` saves the
+  scanout's surface without the cursor, so the expected frames leave the pointer out; a
+  `MOVE_CURSOR` keeps the resource id (0 would hide the cursor); the position is the hotspot's;
+  QEMU returns cursor-queue buffers with no answer written, so each command is one
+  device-readable descriptor; the cursor resource must be 64x64.
+- **Decided without research.** One cursor command in flight, the driver waiting for it as for
+  every control command; the cursor queue's place in the control region (offset 3072); the
+  terminal's lock as a second leaf lock under the screen's; `DeviceEvents` reused for the clock
+  thread's timed wait; the boot screen's wait counted from when the desktop is made (just after
+  `boot: init`); `boot: init` printed before `boot: terminal` so it never enters the terminal's
+  stream; keeping the serial lines `boot: no input` and `boot: display WxH` and printing no
+  `boot: desktop` line (Fable's `boot: input none`, `... console`/`desktop` suffixes and
+  `boot: desktop <ms>` would change lines the QEMU checks match, and a line printed when the
+  prompt is out would land in the terminal's stream after it): the `boot: terminal CxR` line
+  says which grid the display got; hanging off the left edge left out (window positions are
+  unsigned); `Busy` only while a window says `(not responding)` (the server does not yet track
+  unread events otherwise); `TERM=xterm` also for programs the desktop starts; the xtask checks
+  accepting the blink's hidden half.
+- **Not yet.** Windows hanging off the left edge (signed window positions); the server's own
+  `Busy` over any window that stops reading its events for 2 s; the composite
+  arrow-and-hourglass; Mac apps choosing pointer shapes (`NSCursor`); a `boot: desktop <ms>`
+  line and the first-frame timing report; display mode change events (the GPU's
+  configuration-change interrupt, relayout, a QMP resize check: part 32's leftover);
+  `KEYS_TO_TERMINAL` starting false (D115's `.data` note); the caret's blink in the launcher's
+  search field; a QEMU screendump of the boot screen itself (it is gone by the time QMP looks:
+  the self-test checks it); measured costs.

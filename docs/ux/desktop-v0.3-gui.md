@@ -141,8 +141,9 @@ XoooXoooX
 XXXXXXXXX
 ```
 
-`Move` (while a window is dragged) is the arrow; `Busy` and `Hand` are not in 0.3.0 (a client
-asking for them gets the arrow).
+`Move` (while a window is dragged) is the arrow. `Hand` and `Busy` are designed in
+`desktop-polish-v0.3.md` section 1 (D186), with which requests map to them and when the server
+shows `Busy` itself.
 
 ## 3. Windows (item 31)
 

@@ -124,13 +124,18 @@ Must-have, in order:
     alongside, and `TIOCGWINSZ` is 80x24 like the serial side; `boot: terminal 80x24`. The
     boot-to-prompt test compares QEMU's `screendump` pixel for pixel with the host's render of
     the desktop and the serial bytes at the first prompt, then minimises, restores and drags
-    the window through QMP and checks each frame, on all three architectures. Next, as user
-    capabilities: users can double-click the title bar to maximise the terminal; users see a
-    pointer drawn by the GPU's cursor queue and hover highlights on the bar and controls;
-    users see a boot screen with the logo and progress before the desktop; users can drag a
-    window partly off screen; users see the wall clock once an RTC driver sets it (done, D150); users with a display smaller than
-    658x458 get a full-screen terminal; console output never waits for the desktop's repaint
-    (D115's review follow-ups).
+    the window through QMP and checks each frame, on all three architectures. Since then
+    (D186): users see a boot screen with the logo, `EggOS`, the version and a four-stage
+    progress until the first prompt; the pointer is drawn by the GPU's cursor queue (moving it
+    redraws nothing); the `Hand` and `Busy` pointers (the server's `Busy` over a window that
+    does not answer); windows dragged partly off the right and bottom edges; F11 shows the
+    desktop in the macOS profile; a display smaller than the desktop gets a full-screen
+    terminal; the cursor blinks, and is an outline while the terminal is unfocused; console
+    output never waits for the desktop's repaint; `TERM=xterm` in init's environment; the
+    window controls' pressed look came with D156; the wall clock with D150. Next, as user
+    capabilities: users can double-click the title bar to maximise the terminal (terminals as
+    programs); users can drag a window partly off the left edge; the display follows a window
+    resized by the host (display mode change events).
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
     script, run it, and boot EggOS in a QEMU window with its desktop and terminal, or on the
     serial console alone with `--serial`, at an `eggsh` prompt (D116): `cargo xtask release`
@@ -259,8 +264,9 @@ D16):
     control, a double-click on the title bar, Super+Up/Down), snap to halves, the drawn pointer
     and its shapes, Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu (Alt+Space),
     show desktop, the 2 s rule for a program that does not answer a close request, and the
-    `wm` command. Next: windows partly off screen, a profile setting (item 34), `wm`'s MCP
-    tools (with the MCP server).
+    `wm` command. Since then: a profile setting (item 34), `wm`'s MCP tools, windows partly off
+    the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186). Next: windows
+    partly off the left edge.
 32. **done** — users can now run Windows GUI programs from `eggsh` and see their windows on
     the desktop (D129, docs/windows-programs.md): x64 on x86_64 and ARM64 on aarch64, the
     layer's own user32 and gdi32 over `/dev/window`: window classes, windows with EggOS's

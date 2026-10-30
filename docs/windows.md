@@ -61,7 +61,7 @@ integer in the machine's byte order unless marked 64; offsets are in bytes. Wind
 | `SET_MINIMUM_SIZE` | `0x400c7704` (W) | 12 | 0: window, 4: width, 8: height | The smallest content `SET_SIZE` and the user's resizing may give it. |
 | `SET_POSITION` | `0x400c7705` (W) | 12 | 0: window, 4: x, 8: y (signed, work-area coordinates of the window's outside top-left) | Clamped so the whole window is in the work area; applied when it is first shown if it is not yet. |
 | `SET_STATE` | `0x40087706` (W) | 8 | 0: window, 4: state | 0 normal (restores from minimised and from maximised), 1 minimised (to the window list: the taskbar, the dock or a chip in the top bar), 2 maximised (fills the work area; `EINVAL` for a dialog or a `FIXED_SIZE` window). Dialogs cannot be minimised (`EINVAL`). |
-| `SET_POINTER` | `0x40087707` (W) | 8 | 0: window, 4: shape | The pointer drawn over the window's content: 0 arrow, 1 I-beam, 2 north-south, 3 east-west, 4 north-west-south-east, 5 north-east-south-west, 6 none (D172: hidden over the content, as a Wayland program's null cursor asks). |
+| `SET_POINTER` | `0x40087707` (W) | 8 | 0: window, 4: shape | The pointer drawn over the window's content: 0 arrow, 1 I-beam, 2 north-south, 3 east-west, 4 north-west-south-east, 5 north-east-south-west, 6 none (D172: hidden over the content, as a Wayland program's null cursor asks), 7 the hand, 8 busy (D186; the server shows busy itself over a window that does not answer its close request). |
 | `COMMIT` | `0x40887708` (W) | 136 | 0: window, 4: count (at most 8), 8: rects, each 16 bytes: x, y, width, height in content coordinates | Shows the window on its first commit; copies the rects, clipped to the content, or all of it when count is 0 (or after `SET_SIZE`). |
 | `DESTROY` | `0x40047709` (W) | 4 | 0: window | Unshows and frees it (its buffer once no mapping holds it), and its dialogs. |
 | `GET_WORK_AREA` | `0x8014770a` (R) | 20 | 0: x, 4: y, 8: width, 12: height, 16: scale | Where windows go (the screen less the profile's panels: above the taskbar, or between the top bar and the dock, or below the top bar; what a maximised window fills) and the scale, 1 in 0.3.0. |
@@ -224,8 +224,8 @@ moment later. Injected input never counts as a person's.
 
 ## Not yet
 
-Windows partly off screen, F11, the `Hand` and
-`Busy` pointer shapes, capturing the terminal's window, pointer input to it, non-ASCII typing
+Windows partly off the left edge of the screen (they may hang off the right and bottom since
+D186), capturing the terminal's window, pointer input to it, non-ASCII typing
 through `SEND_INPUT`, a sideways wheel on real hardware (the virtio tablet's horizontal axis),
 macOS programs' NSView trees, a Windows list box's items and a check box's checked state in
 the HWND tree, key repeat as `Key` records with

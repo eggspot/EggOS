@@ -370,15 +370,23 @@ with Alt+Tab, drag it by its title bar, resize it from its edges and corners, ma
 restore it (its green control, a double-click on the title bar, Super+Up and Super+Down), snap
 it to a half (Super+Left and Super+Right), minimise it to a chip in the bar, open its window
 menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the pointer is drawn
-on screen, in the shape of a resize zone or of what a program asks for. Settings
-(`settings`, [Settings](settings.md), D132) picks the layout profile, Windows, macOS or Linux
-habits (the controls' side and the shortcuts), kept on the disk across reboots. Not yet:
-- a boot screen with the logo and progress (the plain wallpaper shows until init starts);
-- the pressed look of the window controls, and the `Hand` and `Busy` pointer shapes (the
-  panels' items have hover and pressed looks since D133);
-- dragging a window partly off screen;
+by the GPU's cursor (D186), in the shape of a resize zone or of what a program asks for, the
+hand and the hourglass included. A boot screen shows the boot's progress until the first
+prompt; a window dragged by its title bar may hang off the right and bottom edges; F11 shows
+the desktop in the macOS profile; a display smaller than about 658x458 shows the terminal on
+the whole screen instead of the desktop. Settings (`settings`, [Settings](settings.md), D132)
+picks the layout profile, Windows, macOS or Linux habits (the controls' side and the
+shortcuts), kept on the disk across reboots. Not yet:
+- dragging a window partly off the left edge (window positions are unsigned); a window the
+  desktop moves for itself (a restore, a new size) is put back wholly inside the work area;
+- the server's `Busy` pointer shows only over a window that left a close request unread for
+  0.5 s, not over every window that stops reading its events; the boot screen's serial lines
+  are `boot: display`, `boot: input` and `boot: init` (no `boot: desktop <ms>` line yet); the
+  composite arrow-and-hourglass pointer; Mac apps choose no pointer shape (no `NSCursor`);
+- a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
+  layout;
 - resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
-- F11; the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
+- the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
   blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
 - removing or installing the Windows or macOS layer on its own (the component manager, D18,
   D152), and `app install --force`: `app install` refuses a program whose layer is not in the

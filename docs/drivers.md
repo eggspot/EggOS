@@ -146,6 +146,14 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   `SET_SCANOUT`; then the driver is the kernel's display. Every command is fenced, and a flush
   sends each damaged rectangle's `TRANSFER_TO_HOST_2D`, waits for their answers, then sends
   their `RESOURCE_FLUSH`: the spec promises neither order nor completion of unfenced commands.
+  The cursor queue (D186): queue 1, up to 4 entries, in the same 4 KiB region; at probe a
+  64x64 `B8G8R8A8_UNORM` resource (id 2) whose backing is 16 KiB of its own, which draws the
+  desktop's pointer. A new shape is written into it, transferred and shown by
+  `UPDATE_CURSOR` with its hotspot; a move is one `MOVE_CURSOR`, and redraws nothing; hiding is
+  an `UPDATE_CURSOR` with no resource. One cursor command is in flight at a time, one
+  device-readable descriptor, and the driver waits for the device to give it back (QEMU writes
+  no answer). A device without the queue, or without memory for the image, keeps the pointer
+  drawn in software.
 
 - **virtio-input** (D113). One event queue of up to 64 entries and 64 event buffers of 8 bytes
   (type, code, value, little-endian) in one 4 KiB region, every buffer always posted: `poll`
@@ -287,9 +295,18 @@ folder, the disk and the channel uses all 8.
 - `display::flush::<P>()` shows the damage (at most 8 rectangles, overlapping ones merged; a
   ninth merges where the union grows least) and nothing else; nothing reaches the device while
   nothing is damaged. A failed flush keeps the damage for the next.
-- At boot the kernel draws the first frame (the whole screen in `wallpaper.top`, `#0E1726`)
-  and prints `boot: display 1280x800`, or `boot: no display` without one.
-- A display driver implements `display::Scanout` and calls `display::install`.
+- At boot the kernel draws the first frame, the boot screen (D186, docs/ux/desktop-v0.3.md
+  section 1, docs/ux/desktop-polish-v0.3.md section 3: the egg, `EggOS`, the version and four
+  progress segments on `#0E1726`, in three tiers by the display's size; a display below 32x8 is
+  all `#0E1726`), and prints `boot: display 1280x800`, or `boot: no display` without one. The
+  second segment lights once the input devices were looked for (`boot: input ...`), the third
+  as init starts (`boot: init`); the desktop replaces the boot screen in one frame when the
+  first program waits to read the console, or 1 s after init started.
+  `display::boot_screen_hash()` hashes the boot screen a row at a time for the self-test.
+- A display driver implements `display::Scanout` and calls `display::install`. A display that
+  draws the pointer itself (the GPU's cursor) answers `draws_pointer`, lends its image
+  (`pointer_image`) and shows, moves and hides it; `display::show_pointer` sends a new image
+  only when the shape changed.
 
 ## The graphical terminal
 
@@ -308,10 +325,19 @@ folder, the disk and the channel uses all 8.
   `\r\n` (the engine's `set_onlcr`); otherwise it is the UART's write after one load. The
   kernel's own messages (`PlatformConsole`, panics) stay on the serial console.
 - Feeding only updates cells. The drawing thread (`terminal::start_drawing`) renders the cells
-  that changed into the framebuffer under the display's lock, then the terminal's, and flushes
-  the damage after letting the terminal's lock go, at most once every 16 ms and at once after an
-  idle frame; a scroll moves pixels and draws only the new line. Replies programs asked for
-  (`CSI 6 n`, `CSI c`) go to the console's input from that thread.
+  that changed into the terminal's own buffer under the terminal's lock alone, then composes
+  the desktop under the display's and the screen's locks and flushes, at most once every 16 ms
+  and at once after an idle frame; a console write waits at most for the terminal's render,
+  never for the desktop's repaint (D186). A scroll moves pixels and draws only the new line.
+  Replies programs asked for (`CSI 6 n`, `CSI c`) go to the console's input from that thread.
+- The cursor blinks 500 ms shown, 500 ms hidden, from the last byte in or out, while the
+  terminal is focused and the program has not asked for a steady (`CSI ? 12 l`) or hidden
+  (`CSI ? 25 l`) cursor; without focus it is a 1 px outline of its cell (D186). The thread
+  that looks at the clock each second also wakes at the blink's next change.
+- A display too small for the desktop (below about 658x458) gets the full-screen console
+  (docs/ux/desktop-polish-v0.3.md section 2): the terminal on the whole display, its grid
+  inside an 8 px padding from 320x240 up, on every pixel below; no bar, chrome, pointer or
+  window server (`/dev/window` requests fail); the wheel scrolls the scrollback.
 
 ## Adding a driver
 
@@ -347,8 +373,8 @@ whenever Caps Lock changes.
 
 Interrupts for the other virtio drivers (block, console and the agent channel, GPU, network,
 entropy: they still poll until an answer comes), the I/O APIC for device lines and a line per
-queue, keyboard layouts beyond D185's 14 and the Num and Scroll Lock lights, the virtio GPU's
-cursor queue, display events (a mode change), several requests in flight on virtio-blk,
+queue, keyboard layouts beyond D185's 14 and the Num and Scroll Lock lights, display events (a mode
+change), several requests in flight on virtio-blk,
 virtio-console input as a console, reseeding the kernel's generator from virtio-rng, the About
 pane's device list, modes whose buffer is larger than one DMA
 region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache

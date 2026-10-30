@@ -250,15 +250,15 @@ here needs a design call beyond those; underline and `...` reuse the font's one 
 | `IDC_SIZENWSE` | `ResizeNWSE` (4) |
 | `IDC_SIZENESW` | `ResizeNESW` (5) |
 | `IDC_SIZEALL`, `IDC_SIZE` | `Arrow` (the GUI brief's `Move` is the arrow) |
-| `IDC_WAIT`, `IDC_APPSTARTING` | `Arrow` (`Busy` is not in 0.3.0) |
-| `IDC_HAND` | `Arrow` (`Hand` is not in 0.3.0) |
+| `IDC_WAIT` | `Busy` (8, D186, `desktop-polish-v0.3.md` section 1) |
+| `IDC_APPSTARTING` | `Arrow` (the composite arrow-and-hourglass is a follow-up) |
+| `IDC_HAND` | `Hand` (7, D186) |
 | `IDC_CROSS`, `IDC_NO`, `IDC_HELP`, `IDC_UPARROW`, `IDC_ICON`, `IDC_PERSON`, `IDC_PIN` | `Arrow` |
 | a class with `hCursor` `NULL`, or `SetCursor(NULL)` | `Arrow` (the server cannot hide the pointer over one window in 0.3.0; listed gap) |
 
 `LoadCursorW` with a module handle (a program's own cursor resource), `CreateCursor` and
-`LoadImageW` cursors give a handle that maps to `Arrow`. When `Busy` and `Hand` shapes are drawn
-(a later brief), the two rows above change and nothing else does. Over the message box the
-pointer is always `Arrow`.
+`LoadImageW` cursors give a handle that maps to `Arrow`. The `Busy` and `Hand` shapes are drawn
+since D186 (`desktop-polish-v0.3.md`). Over the message box the pointer is always `Arrow`.
 
 ## 4. Tests
 
