@@ -15,9 +15,12 @@ Status: slice 39a built the x86-64 decoder and slice 39b the AArch64 encoder, th
 former, the flag liveness pass and the lowering of the integer, stack and control-flow
 instructions; slice 39c lowered SSE and SSE2, MXCSR, `cpuid`, `rdtsc`, `xgetbv`, `lahf`, `sahf`,
 `pushf`, `popf`, `cld`, `std`, `cmpxchg8b`, `cmpxchg16b` and the refused-site stubs; slice 39c2
-lowered the minimal x87 set, the string instructions, `xlat`, `enter`, `rcl` and `rcr`; the
-bridges, the cache and the install and launch integration are slices 39d and 39e (D191's "Not
-yet").
+lowered the minimal x87 set, the string instructions, `xlat`, `enter`, `rcl` and `rcr`; slice
+39d1 built code discovery, flag liveness across blocks, the image builder (layout, linking,
+veneers, the entries table, the back-map, the refused sites, the indirect dispatch and the
+entry trampoline) and the `.tx` cache file format and directory policy; the bridges, the
+loader, the cache on disk and the install and launch integration are slices 39d2 and 39e
+(D191's "Not yet").
 
 ## What is translated
 
@@ -70,7 +73,9 @@ Code is found by recursive descent from every known entry, then the bytes no pat
    decodes is translated as extra entries, what does not is left as data.
 
 A jump at run time to an address nothing found is a fatal, reported error (module, offset,
-nearest known function); it is never translated then.
+nearest known function); it is never translated then. Translated code reaches it as
+`brk #0xE006` (`UNDISCOVERED`) with the guest address in `x16`, from the indirect dispatch
+or from a stub for a direct branch out of the discovered code.
 
 ## Registers and state
 
@@ -104,8 +109,11 @@ block, or to the image's indirect dispatch (guest target in `x16`, NZCV untouche
 exit C holds CF itself, never its inverse.
 
 **Flags.** CF, ZF, SF and OF live in NZCV. Each block's flag liveness is computed backwards,
-so a flag result nobody reads is never computed. After a subtraction Arm's C is the inverse of
-x86's borrow; the generator tracks which sense C holds and picks the matching Arm condition
+so a flag result nobody reads is never computed. Liveness also runs across blocks to a fixed
+point over the block graph; at a `ret`, an indirect call or a tail call no flag is live
+(neither x86-64 calling convention passes flags) unless some return site reads one, while an
+unrecognised indirect `jmp` and a trap keep every flag live. After a subtraction Arm's C is
+the inverse of x86's borrow; the generator tracks which sense C holds and picks the matching Arm condition
 instead of fixing C, using `CFINV`, `SETF8`/`SETF16` and `RMIF` (FEAT_FlagM) where the CPU has
 them. PF and AF are lazy: the last result's low byte (and operands for AF) is saved in the
 state block only when a later `jp`, `setp`, `lahf` or `pushf` can read it.
@@ -126,8 +134,10 @@ Each translated module is one cache file: a header, the AArch64 code, and three 
 
 - **entries**: guest RVA to translated offset for every block that can be reached
   indirectly (function starts, return sites, jump-table targets, exports), an open-addressed
-  hash per image whose base `x19` holds; each indirect `call`/`jmp` site also keeps a
-  one-entry inline cache;
+  hash per image (linear probing, at least twice as many slots as entries) that `x19` points
+  to, after the guest image's and the code's run-time base addresses; relative address 0 maps
+  to the entry trampoline's return path; a one-entry inline cache per indirect `call`/`jmp`
+  site is planned, until then every indirect branch goes through the hash;
 - **back-map**: translated offset to guest RVA for every instruction that can fault or call
   out, so exceptions, signals, SEH unwinding (`.pdata`/`.xdata` describe guest frames) and
   crash reports see the guest's `rip`;
@@ -156,7 +166,11 @@ export's signature:
 - **callbacks** (entry points, TLS callbacks, window procedures, thread starts, `atexit`,
   `qsort` comparators, exception handlers, signal handlers) go the other way: the layers call
   program code through one "call the program" function that, in a translated process, enters
-  the translated code with the guest's convention and returns through a bridge.
+  the translated code with the guest's convention and returns through a bridge. Its core is the
+  image's entry trampoline, an AAPCS64 function taking a guest context (registers, `rip`,
+  `x18`-`x21`, `xmm0`-`xmm15`): the caller pushes the guest image's base address as the return
+  address, and the guest's `ret` to it comes back to the trampoline, which writes the guest
+  registers back to the context.
 
 `syscall` in a translated macOS program enters the macOS layer's system-call handling with
 the guest's registers, the same path a native x86_64 macOS program's traps take.
@@ -174,11 +188,12 @@ in double precision, not 80-bit extended; 80-bit loads and stores convert.
 `/var/cache/eggos/translate/<key>.tx`, where the key is the SHA-256 (the `crypto` crate) of the
 input file, the translator version and the code-generation mode (memory-order strategy, LSE,
 LRCPC, FlagM), so a different CPU or a new translator never reuses stale code. The header
-repeats the key, and a trailing checksum is checked on load; any mismatch translates again. A
-file is written to a temporary name in the same directory and renamed into place. The cache is
-capped at 2 GiB or 5% of the volume, whichever is smaller; the least recently launched entries
-(launch touches the file's time) are removed first, never one in use, always by exact name.
-Removing an app removes its own entries.
+repeats the key, and a trailing checksum is checked on load; any mismatch translates again. The
+code starts at offset 4096, so it can be mapped page-aligned. A file is written to a temporary
+name in the same directory and renamed into place; temporaries left by a stopped writer are
+removed after an hour. The cache is capped at 2 GiB or 5% of the volume, whichever is smaller;
+the least recently launched entries (launch touches the file's time) are removed first, never
+one in use, always by exact name. Removing an app removes its own entries.
 
 ## Install and launch
 

@@ -12,10 +12,12 @@
 //! report the address and step over it. VEX, EVEX and XOP instructions are recognised and
 //! refused.
 //!
-//! The code generator ([`codegen`]) forms blocks from decoded instructions and lowers the
-//! integer instructions, the flags, the stack, calls, returns and branches to AArch64 code with
-//! the register map, flag handling and memory order of the design; SSE, SSE2, x87 and string
-//! instructions are reported as not lowered yet.
+//! The code generator ([`codegen`]) forms blocks from decoded instructions and lowers them to
+//! AArch64 code with the register map, flag handling and memory order of the design. The image
+//! builder ([`image`]) finds a program's code, translates every block with flag liveness
+//! across blocks, links the blocks and builds the image's tables and run-time routines; the
+//! [`cache`] module reads and writes the `.tx` cache files and decides the cache directory's
+//! names and evictions.
 //!
 //! [`Invalid`]: DecodeErrorKind::Invalid
 //! [`Unsupported`]: DecodeErrorKind::Unsupported
@@ -25,8 +27,10 @@
 
 extern crate alloc;
 
+pub mod cache;
 pub mod codegen;
 mod decoder;
+pub mod image;
 pub mod instruction;
 
 pub use decoder::{DecodeError, DecodeErrorKind, MAX_INSTRUCTION_LENGTH, Refusal, decode};

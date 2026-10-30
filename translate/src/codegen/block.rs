@@ -34,7 +34,7 @@ pub struct Block {
     pub end: BlockEnd,
 }
 
-fn ends_block(mnemonic: Mnemonic) -> bool {
+pub(crate) fn ends_block(mnemonic: Mnemonic) -> bool {
     matches!(
         mnemonic,
         Mnemonic::Jmp

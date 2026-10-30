@@ -322,6 +322,9 @@ dependencies = [
 [[package]]
 name = "eggos-translate"
 version = "0.2.0"
+dependencies = [
+ "eggos-crypto",
+]
 
 [[package]]
 name = "eggos-wayland"

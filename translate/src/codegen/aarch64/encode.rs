@@ -236,6 +236,12 @@ pub fn adr(d: Reg, offset: i32) -> u32 {
     0x1000_0000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7_FFFF) << 5) | rd(d)
 }
 
+/// `adrp`: `d` = this instruction's 4 KiB page + `pages` pages (within 4 GiB).
+pub fn adrp(d: Reg, pages: i32) -> u32 {
+    let imm = pages as u32;
+    0x9000_0000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7_FFFF) << 5) | rd(d)
+}
+
 /// The add and subtract with carry operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Carry {
@@ -545,6 +551,11 @@ pub fn tbz(t: Reg, bit: u8, offset_words: i32, nonzero: bool) -> u32 {
 /// `br`: a branch to the address in `n`.
 pub fn br(n: Reg) -> u32 {
     0xD61F_0000 | rn(n)
+}
+
+/// `ret`: a return to the address in `n` (`x30` normally).
+pub fn ret(n: Reg) -> u32 {
+    0xD65F_0000 | rn(n)
 }
 
 /// `brk` with a 16-bit immediate the exception handler reads.

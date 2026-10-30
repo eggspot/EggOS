@@ -188,3 +188,11 @@ fn post_index_loads_and_stores() {
         0xB81F_C420
     );
 }
+
+#[test]
+fn page_addresses_and_returns() {
+    assert_eq!(adrp(X17, 1), 0xB000_0011);
+    assert_eq!(adrp(X17, -1), 0xF0FF_FFF1);
+    assert_eq!(adrp(X0, 0), 0x9000_0000);
+    assert_eq!(ret(Reg(30)), 0xD65F_03C0);
+}

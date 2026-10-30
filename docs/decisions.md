@@ -15046,15 +15046,86 @@ the license, by an explicit instruction recorded here.
   instructions stay refused by the decoder, so no run-time hook is defined yet (`brk #0xE003`
   is `trap::DIVIDE_ERROR`; a hook would take the next free immediate, `0xE006`, with the
   operation in `x16`).
-- **Not yet** (slices 39d to 39e): `fiadd`/`fimul`/`fisub`/`fisubr`/`fidiv`/`fidivr`/
+- **Slice 39d1: code discovery, the image builder and the cache file.** `translate/src/image/`
+  (pure, no OS calls; the crate now depends on our `eggos-crypto` for SHA-256): the input is
+  an `ImageInput { image_base, sections: [Section { rva, bytes, executable }], seeds: [Seed {
+  rva, origin }] }` whose seeds come from the entry point, exports, TLS callbacks, `.pdata`
+  (`pdata_function_starts`), `LC_FUNCTION_STARTS` (`function_starts`, ULEB128 deltas),
+  symbols and relocation targets (the last only when the bytes look like code). `discover`
+  runs recursive descent (both sides of `jcc`/`loop`/`jrcxz`, call targets and return sites as
+  entries, RIP-relative `lea` targets in code when plausible), recognises jump tables from the
+  `cmp r, n` + `ja`/`jae`/`jb`/`jbe` bound and a small symbolic pass over the jump's block
+  (`lea base, [rip+T]`, then `movsxd`/`mov r32, [base + i*4 + d]`, `add r, base`, `jmp r`, which
+  covers both the PIC offset tables of clang and GCC and MSVC's image-relative tables; and
+  `jmp [base + i*8 + d]` absolute tables), and ends with a linear sweep of the gaps between
+  claimed bytes (padding `cc`/`00`/`nop` skipped, candidates at the gap start and at every
+  16-byte boundary, accepted when up to 64 instructions decode to a `ret` or `jmp` without traps
+  or branches out of code, or run into known code). Blocks are split at every leader, so no
+  code is translated twice. `live_outs` computes flag liveness across the block graph to a
+  fixed point (39b's `Flags::ALL` is gone). `translate_image(input, mode)` lowers every block
+  (a block that hits an instruction the code generator does not lower is cut there and the
+  instruction becomes a `REFUSED` stub, reason `NotLowered`), adds a stub per branch target
+  outside discovered code (`ldr x16, =guest; brk #0xE006`, the new `trap::UNDISCOVERED`), lays
+  out the runtime routines, the blocks (8-byte aligned) and the stubs, inserts veneer islands
+  (`adrp x17; add x17; br x17`) every 32 MiB when an exit is more than 64 MiB from its target,
+  patches every `brk #UNLINKED` into a `b`, and returns `TranslatedImage { code, dispatch,
+  enter, entries, back_map, refused_sites, guest_address_literals, stats }`. The entries table
+  (`EntriesTable`) is an open-addressed hash of `u64` slots (relative address low, code offset
+  high, empty key `u32::MAX`), at least twice as many slots as entries, Knuth's multiplicative
+  hash with linear probing; at run time `x19` points to the guest base, the code base and the
+  slots (`runtime::entries_table`). `runtime::routines` emits the dispatch (target in `x16`,
+  uses `x17` and `x22`-`x25`, never touches NZCV, ends in `brk #UNDISCOVERED` on a miss) and the
+  entry trampoline: an AAPCS64 function taking a guest context (`runtime::context`: `rax`-`r15`,
+  `rip`, `x18`-`x21`, `xmm0`-`xmm15`) that saves `x18`-`x30` and `d8`-`d15`, loads the guest
+  state, pushes (guest base, return path) on the shadow stack and dispatches; the native caller
+  pushes the guest base as the return address, so the guest's `ret` comes back through the
+  shadow stack (or the entries table, which maps relative address 0, `RETURN_TO_NATIVE_RVA`, to
+  the return path), which stores the guest registers back and returns. `translate/src/cache/`:
+  the `.tx` format (a 160-byte header with magic, format and translator versions, mode bits, key,
+  input digest, preferred base, offsets, counts and statistics; the code at 4096 so it can be
+  mapped page-aligned; the slots, back-map, sites and literal offsets; a trailing SHA-256 of
+  everything before it), `serialize`, a strict `parse` (every size, offset, padding byte, mode
+  bit, slot and the key checked; anything after the checksum rejected), `cache_key` (SHA-256 of
+  a domain string, the input's digest, `TRANSLATOR_VERSION` and the mode bits) and
+  `cache::policy` (names `<64 hex>.tx` and `.<hex>.<writer>.tmp`, the cap `min(2 GiB, 5%)`,
+  `evictions`: stale temporaries first, then least recently launched files, never one in use,
+  never a name that is not the cache's; `removals_for_app`). Host tests: discovery of a loop, a
+  bounded and an unbounded switch, a call graph and a function behind data in code; linking
+  (no `brk #UNLINKED` left, branch offsets to the right blocks), veneers with tiny limits, a
+  refused site, the entries table, the dispatch's hash, the seed readers; the cache's round
+  trip, every truncation, versions, damage, keys, names, the cap and evictions.
+- **Slice 39d1 decided by research.** Flag liveness at edges whose successor is unknown: an
+  indirect `jmp` that is not a jump table, traps and refused sites keep every flag live; a tail
+  call (only `pop`, `leave`, `add`/`lea rsp` or `mov rsp, rbp` before an indirect `jmp`, or a
+  lone `jmp [rip+x]` import thunk) and an indirect call keep none, a direct call uses its
+  callee's live-in flags, and `ret` keeps none, because neither the Win64 nor the SysV
+  convention passes or returns anything in CF, ZF, SF or OF (only DF must be clear, and it is
+  in the state block); if any return site reads a flag before writing it, every `ret` of the
+  image keeps all of them, which keeps hand-written helpers that return in a flag correct.
+- **Slice 39d1's choices made without research.** Direct call targets are entries too (a
+  function called directly may also be reached through a pointer the descent did not see);
+  `int3`, `int n` and `ud2` end a path (padding after them is not code); a jump table needs a
+  bound (an unbounded one stays indirect and its targets are found by the sweep); at most 65,536
+  entries per table; the sweep tries only gap starts and 16-byte boundaries; an image's code is
+  capped at 2 GiB; the trampoline also saves `x18`; the cache key hashes the input's digest
+  rather than the input itself; temporaries count as stale after an hour; the image builder
+  reports a `NotLowered` site rather than failing the install; `brk #0xE006` is now `UNDISCOVERED`, so the transcendental
+  hook 39c2 mentions would take `0xE007`.
+- **Not yet** (slices 39d2 to 39e): `fiadd`/`fimul`/`fisub`/`fisubr`/`fidiv`/`fidivr`/
   `ficom`, `fprem`/`fprem1`, `fscale`, `fxtract`, `ftst`, `fxam`, the transcendentals
   (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`) and
   `fnstenv`/`fldenv`/`fnsave`/`frstor` (all refused by the decoder, so refused-site stubs),
   `rdrand`/`rdseed` (FEAT_RNG), `maskmovdqu`, `syscall` (all reported `Unhandled`), the wide
-  `rep movs`/`rep stos` fast path, flag liveness across blocks (39d passes `live_out`; until
-  then `Flags::ALL`), a test-only AArch64 evaluator comparing lowered code with x86 semantics
-  on random inputs; code discovery, the image tables, the bridges (which also restore the
-  default FPCR around native calls), the cache and the Windows layer's loader (39d); the
-  macOS layer, `app install` and launch, the refused-site report and the benchmarks (39e).
+  `rep movs`/`rep stos` fast path, a test-only AArch64 evaluator comparing lowered code (and
+  the dispatch and trampoline) with x86 semantics on random inputs; the one-entry inline cache
+  per indirect `call`/`jmp` site (every indirect branch goes through the hash for now); calls
+  between images (an indirect branch into another module misses this image's table and traps:
+  the loader must give each import a bridge or switch `x19`); the trampoline does not set the
+  guest's FPCR (MXCSR rounding) or restore the host's; Mach-O rebases and symbols as seeds
+  (the reader takes them, the macOS layer must supply them); the bridges (which also restore
+  the default FPCR around native calls), writing and reading cache files on disk (atomic
+  write, cap enforcement, launch touching the file) and the Windows layer's loader mapping a
+  translated image (39d2); the macOS layer, `app install` and launch, the refused-site report
+  and the benchmarks, including `translate_install_bytes` (39e).
   Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87, arm64
   programs on x86_64.

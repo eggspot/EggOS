@@ -11,6 +11,7 @@ mod lower;
 
 use alloc::vec::Vec;
 
+pub(crate) use block::ends_block;
 pub use block::{Block, BlockEnd, MAX_BLOCK_INSTRUCTIONS, form_block};
 pub use flags::Flags;
 
@@ -118,6 +119,9 @@ pub mod trap {
     pub const FAST_FAIL: u16 = 0xE004;
     /// Any other `int n`: a general-protection fault, as in a user-mode program.
     pub const GENERAL_PROTECTION: u16 = 0xE005;
+    /// A jump to a guest address code discovery never found: the image's indirect dispatch
+    /// missed, or a direct branch leaves the discovered code; the guest address is in `x16`.
+    pub const UNDISCOVERED: u16 = 0xE006;
     /// An exit the image linker has not patched yet.
     pub const UNLINKED: u16 = 0xE00F;
 }
