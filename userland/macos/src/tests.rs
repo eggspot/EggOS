@@ -1,6 +1,7 @@
+use crate::dyld_info::{self, Bind, Location, Table};
 use crate::fixups::{ChainedFixups, Source};
 use crate::macho::{
-    self, CPU_TYPE_ARM64, CPU_TYPE_X86_64, Cpu, InvalidMachO, MH_MAGIC_64, MachO, NoSlice,
+    self, CPU_TYPE_ARM64, CPU_TYPE_X86_64, Cpu, InvalidMachO, MH_MAGIC_64, MachO, NoSlice, Start,
 };
 
 const TEXT: u64 = 0x1_0000_0000;
@@ -200,7 +201,8 @@ fn an_executable_parses_with_its_segments_entry_and_library() {
     assert_eq!(program.library(1).unwrap().path, macho::LIBSYSTEM);
     assert_eq!(program.library(2), None);
     assert_eq!(program.library(0), None);
-    assert!(!program.dyld_info);
+    assert!(program.dyld_info.is_none());
+    assert_eq!(program.start, Start::Main);
 }
 
 #[test]
@@ -621,9 +623,27 @@ fn strptime_reads_zones_and_leaves_time_alone_when_it_fails() {
     assert_eq!(after, before);
 }
 
+fn parse_all<'w>(
+    rules: crate::getopt::Rules<'_>,
+    longs: &[crate::getopt::Long<'_>],
+    words: &[&'w [u8]],
+) -> (Vec<(crate::getopt::Found, usize)>, Vec<&'w [u8]>) {
+    use crate::getopt::{Cursor, Found, next};
+    let mut words = words.to_vec();
+    let mut cursor = Cursor::at(1);
+    let mut found = Vec::new();
+    loop {
+        let this = next(&mut words[..], rules, longs.iter().copied(), &mut cursor);
+        found.push((this, cursor.index));
+        if this == Found::Done {
+            return (found, words);
+        }
+    }
+}
+
 #[test]
 fn getopt_parses_short_and_long_options_like_bsd() {
-    use crate::getopt::{Cursor, Found, Takes, next, quiet};
+    use crate::getopt::{Found, Kind, Long, Rules, Takes, Typed};
     let words: &[&[u8]] = &[
         b"tool",
         b"-vn3",
@@ -642,25 +662,36 @@ fn getopt_parses_short_and_long_options_like_bsd() {
         b"--",
         b"-v",
     ];
-    let longs: [(&[u8], Takes); 4] = [
-        (b"list", Takes::Required),
-        (b"name", Takes::Required),
-        (b"names", Takes::Optional),
-        (b"verbose", Takes::Nothing),
+    let longs = [
+        Long {
+            name: b"list",
+            takes: Takes::Required,
+            gives: (0, 1),
+        },
+        Long {
+            name: b"name",
+            takes: Takes::Required,
+            gives: (0, 2),
+        },
+        Long {
+            name: b"names",
+            takes: Takes::Optional,
+            gives: (0, 3),
+        },
+        Long {
+            name: b"verbose",
+            takes: Takes::Nothing,
+            gives: (0, 4),
+        },
     ];
-    let word = |index: usize| words.get(index).copied();
-    let mut cursor = Cursor {
-        index: 1,
-        offset: 0,
+    let typed = |index, end| Typed {
+        index,
+        dashes: 2,
+        start: 2,
+        end,
     };
-    let mut found = Vec::new();
-    loop {
-        let next = next(word, b"vn:o::", longs.iter().copied(), true, &mut cursor);
-        found.push(next);
-        if next == Found::Done {
-            break;
-        }
-    }
+    let (found, _) = parse_all(Rules::new(Kind::Long, b"vn:o::", false), &longs, words);
+    let found: Vec<Found> = found.into_iter().map(|(found, _)| found).collect();
     assert_eq!(
         found,
         [
@@ -673,44 +704,214 @@ fn getopt_parses_short_and_long_options_like_bsd() {
             Found::Long(0, Some((8, 0))),
             Found::Long(1, Some((9, 7))),
             Found::Long(3, None),
-            Found::AmbiguousLong(11),
-            Found::UnknownLong(12),
-            Found::UnexpectedLong(3),
+            Found::AmbiguousLong(typed(11, 4)),
+            Found::UnknownLong(typed(12, 7)),
+            Found::UnexpectedLong(3, typed(13, 9)),
             Found::Done,
         ]
     );
-    assert_eq!(cursor.index, 15);
-    let mut at_operand = Cursor {
-        index: 1,
-        offset: 0,
-    };
     let operands: &[&[u8]] = &[b"tool", b"file", b"-v"];
-    let operand = |index: usize| operands.get(index).copied();
-    assert_eq!(
-        next(operand, b"v", [].into_iter(), false, &mut at_operand),
-        Found::Done
-    );
-    assert_eq!(at_operand.index, 1);
+    let (found, _) = parse_all(Rules::new(Kind::Short, b"v", false), &[], operands);
+    assert_eq!(found, [(Found::Done, 1)]);
     let missing: &[&[u8]] = &[b"tool", b"-n"];
-    let mut at_missing = Cursor {
-        index: 1,
-        offset: 0,
-    };
-    let missing_word = |index: usize| missing.get(index).copied();
-    assert_eq!(
-        next(missing_word, b":n:", [].into_iter(), false, &mut at_missing),
-        Found::MissingShort(b'n')
-    );
-    assert!(quiet(b":n:") && quiet(b"+:n") && !quiet(b"n:"));
+    let (found, _) = parse_all(Rules::new(Kind::Short, b":n:", false), &[], missing);
+    assert_eq!(found[0].0, Found::MissingShort(b'n'));
+    assert!(Rules::new(Kind::Short, b":n:", false).quiet);
+    assert!(Rules::new(Kind::Long, b"+:n", false).quiet);
+    assert!(!Rules::new(Kind::Long, b"n:", false).quiet);
     let long_missing: &[&[u8]] = &[b"tool", b"--list"];
-    let mut at_long = Cursor {
-        index: 1,
-        offset: 0,
-    };
-    let long_word = |index: usize| long_missing.get(index).copied();
+    let (found, _) = parse_all(Rules::new(Kind::Long, b"", false), &longs, long_missing);
+    assert_eq!(found[0].0, Found::MissingLong(0, typed(1, 6)));
+}
+
+#[test]
+fn getopt_long_moves_operands_after_the_options_as_a_mac_does() {
+    use crate::getopt::{Found, Kind, Long, Order, Rules, Takes};
+    let longs = [
+        Long {
+            name: b"name",
+            takes: Takes::Required,
+            gives: (0, i32::from(b'n')),
+        },
+        Long {
+            name: b"flag",
+            takes: Takes::Nothing,
+            gives: (0x1000, 7),
+        },
+        Long {
+            name: b"level",
+            takes: Takes::Optional,
+            gives: (0, i32::from(b'l')),
+        },
+    ];
+    let rules = Rules::new(Kind::Long, b"vn:l::", false);
+    assert_eq!(rules.order, Order::Permute);
+    let words: &[&[u8]] = &[
+        b"probe",
+        b"file1",
+        b"-v",
+        b"--name=x",
+        b"file2",
+        b"-n",
+        b"y",
+        b"--",
+        b"-v",
+        b"z",
+    ];
+    let (found, words) = parse_all(rules, &longs, words);
     assert_eq!(
-        next(long_word, b"", longs.iter().copied(), true, &mut at_long),
-        Found::MissingLong(0)
+        found,
+        [
+            (Found::Short(b'v', None), 3),
+            (Found::Long(0, Some((3, 7))), 4),
+            (Found::Short(b'n', Some((6, 0))), 7),
+            (Found::Done, 6),
+        ]
+    );
+    let reordered: &[&[u8]] = &[
+        b"probe",
+        b"-v",
+        b"--name=x",
+        b"-n",
+        b"y",
+        b"--",
+        b"file1",
+        b"file2",
+        b"-v",
+        b"z",
+    ];
+    assert_eq!(words, reordered);
+    let words: &[&[u8]] = &[
+        b"probe", b"-v", b"file1", b"-lfoo", b"--level", b"bar", b"-x", b"--nam=q", b"file2",
+    ];
+    let (found, words) = parse_all(rules, &longs, words);
+    assert_eq!(
+        found,
+        [
+            (Found::Short(b'v', None), 2),
+            (Found::Short(b'l', Some((3, 2))), 4),
+            (Found::Long(2, None), 5),
+            (Found::UnknownShort(b'x'), 7),
+            (Found::Long(0, Some((7, 6))), 8),
+            (Found::Done, 6),
+        ]
+    );
+    let reordered: &[&[u8]] = &[
+        b"probe", b"-v", b"-lfoo", b"--level", b"-x", b"--nam=q", b"file1", b"bar", b"file2",
+    ];
+    assert_eq!(words, reordered);
+    let words: &[&[u8]] = &[b"probe", b"a", b"b", b"-v"];
+    let (found, words) = parse_all(rules, &longs, words);
+    assert_eq!(found, [(Found::Short(b'v', None), 4), (Found::Done, 2)]);
+    assert_eq!(words, [&b"probe"[..], b"-v", b"a", b"b"]);
+    let words: &[&[u8]] = &[b"probe", b"x", b"--", b"y"];
+    let (found, words) = parse_all(rules, &longs, words);
+    assert_eq!(found, [(Found::Done, 2)]);
+    assert_eq!(words, [&b"probe"[..], b"--", b"x", b"y"]);
+    let words: &[&[u8]] = &[b"probe", b"a", b"-v"];
+    let (found, words) = parse_all(Rules::new(Kind::Long, b"vn:", true), &longs, words);
+    assert_eq!(found, [(Found::Done, 1)]);
+    assert_eq!(words, [&b"probe"[..], b"a", b"-v"]);
+    let (found, _) = parse_all(Rules::new(Kind::Long, b"+vn:", false), &longs, &words);
+    assert_eq!(found, [(Found::Done, 1)]);
+    let words: &[&[u8]] = &[b"probe", b"a", b"-v", b"b"];
+    let in_order = Rules::new(Kind::Long, b"-vn:", true);
+    assert_eq!(in_order.order, Order::InOrder);
+    let (found, words) = parse_all(in_order, &longs, words);
+    assert_eq!(
+        found,
+        [
+            (Found::Operand(1), 2),
+            (Found::Short(b'v', None), 3),
+            (Found::Operand(3), 4),
+            (Found::Done, 4),
+        ]
+    );
+    assert_eq!(words, [&b"probe"[..], b"a", b"-v", b"b"]);
+}
+
+#[test]
+fn getopt_long_only_reads_single_dash_long_options_as_a_mac_does() {
+    use crate::getopt::{Found, Kind, Long, Rules, Takes, Typed};
+    let longs = [
+        Long {
+            name: b"name",
+            takes: Takes::Required,
+            gives: (0, i32::from(b'n')),
+        },
+        Long {
+            name: b"verbose",
+            takes: Takes::Nothing,
+            gives: (0, i32::from(b'v')),
+        },
+        Long {
+            name: b"vex",
+            takes: Takes::Nothing,
+            gives: (0, i32::from(b'V')),
+        },
+    ];
+    let rules = Rules::new(Kind::LongOnly, b"vn:", false);
+    let words: &[&[u8]] = &[b"probe", b"-verbose", b"-name=q", b"-nx", b"-ve", b"a"];
+    let (found, _) = parse_all(rules, &longs, words);
+    assert_eq!(
+        found,
+        [
+            (Found::Long(1, None), 2),
+            (Found::Long(0, Some((2, 6))), 3),
+            (Found::Short(b'n', Some((3, 2))), 4),
+            (
+                Found::AmbiguousLong(Typed {
+                    index: 4,
+                    dashes: 1,
+                    start: 1,
+                    end: 3
+                }),
+                5
+            ),
+            (Found::Done, 5),
+        ]
+    );
+    let words: &[&[u8]] = &[b"probe", b"-vx", b"-v", b"-nam"];
+    let (found, _) = parse_all(rules, &longs, words);
+    assert_eq!(
+        found,
+        [
+            (Found::Short(b'v', None), 1),
+            (
+                Found::UnknownLong(Typed {
+                    index: 1,
+                    dashes: 1,
+                    start: 2,
+                    end: 3
+                }),
+                2
+            ),
+            (Found::Short(b'v', None), 3),
+            (
+                Found::MissingLong(
+                    0,
+                    Typed {
+                        index: 3,
+                        dashes: 1,
+                        start: 1,
+                        end: 4
+                    }
+                ),
+                4
+            ),
+            (Found::Done, 4),
+        ]
+    );
+    let ambiguous: &[&[u8]] = &[b"p", b"--v"];
+    let (found, _) = parse_all(Rules::new(Kind::Long, b"vn:", false), &longs, ambiguous);
+    assert_eq!(
+        found[0].0,
+        Found::AmbiguousLong(Typed {
+            index: 1,
+            dashes: 2,
+            start: 2,
+            end: 3
+        })
     );
 }
 
@@ -943,4 +1144,227 @@ fn execvp_tries_each_directory_of_the_search_path() {
     assert_eq!(candidate(&long[..PATH_MAX - 2], b"x", &mut buffer), Err(63));
     assert!(is_path(b"./tool") && is_path(b"/bin/eggsh"));
     assert!(!is_path(b"eggsh"));
+}
+
+fn rebased(opcodes: &[u8]) -> Result<Vec<(usize, u64)>, InvalidMachO> {
+    let mut found = Vec::new();
+    dyld_info::rebases(opcodes, |location| {
+        found.push((location.segment, location.offset));
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+fn bound(opcodes: &[u8], table: Table) -> Result<Vec<Bind<'_>>, InvalidMachO> {
+    let mut found = Vec::new();
+    dyld_info::binds(opcodes, table, |bind| {
+        found.push(bind);
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+#[test]
+fn dyld_info_opcodes_from_a_program_linked_without_chained_fixups_decode() {
+    let rebase = [
+        0x11, 0x23, 0x00, 0x53, 0x43, 0x70, 0x08, 0x70, 0x08, 0x51, 0x00, 0, 0, 0, 0, 0,
+    ];
+    assert_eq!(
+        rebased(&rebase).unwrap(),
+        [(3, 0), (3, 8), (3, 0x10), (3, 0x30), (3, 0x40), (3, 0x50)]
+    );
+    let bind = [
+        &[0x11, 0x40][..],
+        b"_optarg\0",
+        &[0x51, 0x72, 0x00, 0x90, 0x40],
+        b"_optind\0",
+        &[0x90, 0x40],
+        b"dyld_stub_binder\0",
+        &[0x90, 0x00, 0, 0, 0, 0],
+    ]
+    .concat();
+    let at = |offset| Location { segment: 2, offset };
+    let import = |offset: u64, name: &'static [u8]| Bind {
+        location: at(offset),
+        source: Source::Library(1),
+        weak_import: false,
+        name,
+        addend: 0,
+    };
+    assert_eq!(
+        bound(&bind, Table::Binds).unwrap(),
+        [
+            import(0, &b"_optarg"[..]),
+            import(8, b"_optind"),
+            import(0x10, b"dyld_stub_binder"),
+        ]
+    );
+    let lazy = [
+        &[0x73, 0x00, 0x11, 0x40][..],
+        b"_getopt_long\0",
+        &[0x90, 0x00, 0x73, 0x08, 0x11, 0x40],
+        b"_printf\0",
+        &[0x90, 0x00, 0, 0, 0, 0, 0, 0, 0],
+    ]
+    .concat();
+    let lazy_pointer = |offset: u64, name: &'static [u8]| Bind {
+        location: Location { segment: 3, offset },
+        ..import(0, name)
+    };
+    assert_eq!(
+        bound(&lazy, Table::LazyBinds).unwrap(),
+        [
+            lazy_pointer(0, &b"_getopt_long"[..]),
+            lazy_pointer(8, b"_printf"),
+        ]
+    );
+    assert_eq!(bound(&lazy, Table::Binds).unwrap().len(), 1);
+}
+
+#[test]
+fn dyld_info_repeats_skips_addends_and_special_libraries() {
+    assert_eq!(
+        rebased(&[0x11, 0x21, 0x10, 0x60, 0x02, 0x80, 0x02, 0x08, 0x00]).unwrap(),
+        [(1, 0x10), (1, 0x18), (1, 0x20), (1, 0x30)]
+    );
+    let opcodes = [
+        &[0x3e, 0x41][..],
+        b"_maybe\0",
+        &[0x60, 0x7f, 0x71, 0x10, 0xc0, 0x03, 0x08, 0x3f, 0xb1, 0x00],
+    ]
+    .concat();
+    let found = bound(&opcodes, Table::Binds).unwrap();
+    let places: Vec<(u64, Source, bool, i64)> = found
+        .iter()
+        .map(|bind| {
+            (
+                bind.location.offset,
+                bind.source,
+                bind.weak_import,
+                bind.addend,
+            )
+        })
+        .collect();
+    assert_eq!(
+        places,
+        [
+            (0x10, Source::Flat, true, -1),
+            (0x20, Source::Flat, true, -1),
+            (0x30, Source::Flat, true, -1),
+            (0x40, Source::Executable, true, -1),
+        ]
+    );
+}
+
+#[test]
+fn malformed_dyld_info_opcodes_are_refused() {
+    assert_eq!(
+        rebased(&[0x51]).err(),
+        Some(InvalidMachO("a fixup opcode acts before naming a segment"))
+    );
+    assert_eq!(
+        rebased(&[0x12]).err(),
+        Some(InvalidMachO(
+            "a rebase of a 32-bit code address (i386 only)"
+        ))
+    );
+    assert_eq!(
+        rebased(&[0x20, 0x80]).err(),
+        Some(InvalidMachO("a fixup number runs past its table"))
+    );
+    let too_long = [
+        0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+    ];
+    assert_eq!(
+        rebased(&too_long).err(),
+        Some(InvalidMachO("a fixup number does not fit in 64 bits"))
+    );
+    assert_eq!(
+        dyld_info::rebases(
+            &[0x20, 0x00, 0x60, 0xff, 0xff, 0xff, 0xff, 0x0f],
+            |_| Ok(())
+        )
+        .err(),
+        Some(InvalidMachO("a fixup table names too many pointers"))
+    );
+    assert_eq!(
+        bound(&[0x70, 0x00, 0x90], Table::Binds).err(),
+        Some(InvalidMachO("a bind opcode binds before naming a symbol"))
+    );
+    assert_eq!(
+        bound(&[0x40, b'_', b'x'], Table::Binds).err(),
+        Some(InvalidMachO("a bound symbol's name does not end"))
+    );
+    assert_eq!(
+        bound(&[0xd0, 0x00], Table::Binds).err(),
+        Some(InvalidMachO(
+            "threaded binds (arm64e), which EggOS does not run"
+        ))
+    );
+    assert_eq!(
+        bound(&[0xe0], Table::Binds).err(),
+        Some(InvalidMachO("an unknown bind opcode"))
+    );
+}
+
+fn with_unix_thread(file: &[u8], flavor: u32, count: u32, pc_at: usize, pc: u64) -> Vec<u8> {
+    let main = file
+        .windows(4)
+        .position(|w| w == 0x8000_0028u32.to_le_bytes())
+        .unwrap();
+    let mut thread = Vec::new();
+    for value in [5, 16 + count * 4, flavor, count] {
+        put32(&mut thread, value);
+    }
+    thread.resize(16 + count as usize * 4, 0);
+    thread[16 + pc_at..24 + pc_at].copy_from_slice(&pc.to_le_bytes());
+    let grown = thread.len() - 24;
+    let mut changed = file[..main].to_vec();
+    changed.extend_from_slice(&thread);
+    changed.extend_from_slice(&file[main + 24..0x4000 - grown]);
+    changed.extend_from_slice(&file[0x4000..]);
+    let commands_size = u32::from_le_bytes(changed[20..24].try_into().unwrap()) + grown as u32;
+    changed[20..24].copy_from_slice(&commands_size.to_le_bytes());
+    changed
+}
+
+#[test]
+fn an_lc_unixthread_program_starts_at_its_thread_states_pc() {
+    let x86 = with_unix_thread(
+        &executable(CPU_TYPE_X86_64, 6),
+        4,
+        42,
+        16 * 8,
+        TEXT + 0x1720,
+    );
+    let program = MachO::parse(&x86).unwrap();
+    assert_eq!(program.start, Start::Thread);
+    assert_eq!(program.entry, 0x1720);
+    let arm = with_unix_thread(&executable(CPU_TYPE_ARM64, 2), 6, 68, 32 * 8, TEXT + 0x2000);
+    let program = MachO::parse(&arm).unwrap();
+    assert_eq!((program.start, program.entry), (Start::Thread, 0x2000));
+    let other_cpu = with_unix_thread(&executable(CPU_TYPE_ARM64, 2), 4, 42, 128, TEXT);
+    assert_eq!(
+        MachO::parse(&other_cpu).err(),
+        Some(InvalidMachO(
+            "LC_UNIXTHREAD has no thread state for this CPU"
+        ))
+    );
+    let outside = with_unix_thread(&executable(CPU_TYPE_X86_64, 6), 4, 42, 128, TEXT + 0x5000);
+    assert_eq!(
+        MachO::parse(&outside).err(),
+        Some(InvalidMachO("the entry point is not in executable code"))
+    );
+}
+
+#[test]
+fn fixup_segment_indexes_count_pagezero_as_the_opcodes_do() {
+    let file = executable(CPU_TYPE_ARM64, 2);
+    let program = MachO::parse(&file).unwrap();
+    let name = |index| program.segment_by_command_index(index).map(|s| s.name());
+    assert_eq!(name(0), None);
+    assert_eq!(name(1), Some(&b"__TEXT"[..]));
+    assert_eq!(name(2), Some(&b"__DATA_CONST"[..]));
+    assert_eq!(name(3), Some(&b"__LINKEDIT"[..]));
+    assert_eq!(name(4), None);
 }

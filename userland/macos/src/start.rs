@@ -2,16 +2,19 @@
 //! `macos <program> <arguments>` for a Mach-O or fat file (D120). The layer reads the file,
 //! picks the slice for this CPU, checks it, maps its segments (anywhere for a position-
 //! independent program, at its own addresses otherwise), binds its imports to the layer's
-//! libSystem and rebases its pointers by the slide through its chained fixups, protects each
-//! segment and calls `main(argc, argv, envp, apple)`, whose return value goes to `exit`.
+//! libSystem and rebases its pointers by the slide through its chained fixups or, for a program
+//! linked without them, its `LC_DYLD_INFO` opcodes, lazy pointers included (D190), protects
+//! each segment and calls `main(argc, argv, envp, apple)`, whose return value goes to `exit`,
+//! or enters an `LC_UNIXTHREAD` program's `start` with `argc` and the vectors on the stack.
 
 use crate::appkit;
+use crate::dyld_info::{self, DyldInfo, Location, Table};
 use crate::fixups::{ChainedFixups, Source};
 use crate::foundation;
 use crate::libsystem;
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::macho::{
-    self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, VM_PROT_EXECUTE, VM_PROT_READ,
+    self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, Start, VM_PROT_EXECUTE, VM_PROT_READ,
     VM_PROT_WRITE,
 };
 use crate::objc;
@@ -160,10 +163,10 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     }
     let fixups = match program.chained_fixups {
         Some(range) => Some(ChainedFixups::parse(&program, range).map_err(Failure::Invalid)?),
-        None if program.dyld_info => {
+        None if program.dyld_info.is_none() && program.libraries().next().is_some() => {
             return Err(Failure::Invalid(InvalidMachO(
-                "uses LC_DYLD_INFO fixups instead of chained ones (built for an older macOS: \
-                 before 12 on arm64, before 13 on x86_64), which EggOS does not read yet",
+                "binds its imports through relocations (built for Mac OS X 10.5 or earlier), \
+                 which EggOS does not read yet",
             )));
         }
         None => None,
@@ -185,11 +188,17 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         let length = segment.filesize as usize;
         image[at..at + length].copy_from_slice(&slice[from..from + length]);
     }
+    let mut binder = Binder {
+        program: &program,
+        missing: 0,
+    };
     if let Some(fixups) = fixups {
-        let imports = bind_imports(&program, &fixups)?;
+        let imports = bind_imports(&mut binder, &fixups)?;
         fixups
             .apply(&program, image, base as u64, imports)
             .map_err(Failure::Invalid)?;
+    } else if let Some(info) = program.dyld_info {
+        apply_dyld_info(&mut binder, info, image, base as u64)?;
     }
     let slide = (base as isize).wrapping_sub(program.base_address() as isize);
     if uses_objc {
@@ -235,6 +244,14 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         objc::run_load_methods();
     }
     let entry = base + program.entry as usize;
+    if program.start == Start::Thread {
+        let (words, count) =
+            start_words(argument_count(&startup), [arguments, environment, apple])?;
+        // SAFETY: `entry` is LC_UNIXTHREAD's checked pc inside an executable segment of the
+        // image, mapped, bound, rebased and protected, and `words` holds `count` words: `argc`
+        // and the three null-ended vectors that `start` reads from its stack.
+        unsafe { enter_start(entry, words, count) }
+    }
     // SAFETY: `entry` is LC_MAIN's checked entry point inside an executable segment of the
     // image, mapped, bound, rebased and protected; dyld calls it as
     // `int main(int, char **, char **, char **)`.
@@ -248,18 +265,16 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     libsystem::exit(status)
 }
 
-fn bind_imports<'a>(
-    program: &MachO<'a>,
-    fixups: &ChainedFixups<'a>,
-) -> Result<&'static [u64], Failure> {
-    let count = fixups.import_count();
-    let table = allocate_pages(count.max(1) * 8)?.cast::<u64>();
-    let mut missing = 0;
-    for index in 0..count {
-        let import = fixups.import(index).map_err(Failure::Invalid)?;
-        let library = match import.source {
+struct Binder<'p, 'a> {
+    program: &'p MachO<'a>,
+    missing: usize,
+}
+
+impl<'a> Binder<'_, 'a> {
+    fn address_of(&mut self, source: Source, weak: bool, name: &'a [u8]) -> Result<u64, Failure> {
+        let library = match source {
             Source::Library(ordinal) => Some(
-                program
+                self.program
                     .library(ordinal)
                     .ok_or(Failure::Invalid(InvalidMachO(
                         "an import from a library it does not link",
@@ -270,26 +285,37 @@ fn bind_imports<'a>(
             Source::Executable => None,
         };
         let library = library.and_then(Library::provided);
-        let found = library.and_then(|_| resolve(import.name));
+        let found = library.and_then(|_| resolve(name));
         // SAFETY: the file's mapping stays for as long as the program runs, so the name does
         // too.
-        let name: &'static [u8] =
-            unsafe { core::slice::from_raw_parts(import.name.as_ptr(), import.name.len()) };
-        let address = match (found, library) {
+        let name: &'static [u8] = unsafe { core::slice::from_raw_parts(name.as_ptr(), name.len()) };
+        Ok(match (found, library) {
             (Some(address), _) => address,
-            (None, _) if import.weak => 0,
+            (None, _) if weak => 0,
             (None, Some(library)) if objc::is_class_symbol(name) => {
                 objc::bind_missing_class(library.name(), name).ok_or(Failure::TooManyMissing)?
             }
             (None, library) => {
-                if missing == libsystem::MISSING_STUBS {
+                if self.missing == libsystem::MISSING_STUBS {
                     return Err(Failure::TooManyMissing);
                 }
-                missing += 1;
+                self.missing += 1;
                 let library = library.unwrap_or(Library::System);
-                libsystem::bind_missing(missing - 1, library.name(), name)
+                libsystem::bind_missing(self.missing - 1, library.name(), name)
             }
-        };
+        })
+    }
+}
+
+fn bind_imports<'a>(
+    binder: &mut Binder<'_, 'a>,
+    fixups: &ChainedFixups<'a>,
+) -> Result<&'static [u64], Failure> {
+    let count = fixups.import_count();
+    let table = allocate_pages(count.max(1) * 8)?.cast::<u64>();
+    for index in 0..count {
+        let import = fixups.import(index).map_err(Failure::Invalid)?;
+        let address = binder.address_of(import.source, import.weak, import.name)?;
         // SAFETY: `table` holds `count` entries.
         unsafe {
             table
@@ -299,6 +325,166 @@ fn bind_imports<'a>(
     }
     // SAFETY: the `count` entries written above, in a block that is never freed.
     Ok(unsafe { core::slice::from_raw_parts(table, count) })
+}
+
+fn pointer_at(program: &MachO<'_>, location: Location) -> Result<usize, InvalidMachO> {
+    let outside = InvalidMachO("a fixup is outside its segment");
+    let segment = program
+        .segment_by_command_index(location.segment)
+        .ok_or(outside)?;
+    if location
+        .offset
+        .checked_add(8)
+        .is_none_or(|end| end > segment.vmsize)
+    {
+        return Err(outside);
+    }
+    Ok((segment.vmaddr - program.base_address() + location.offset) as usize)
+}
+
+fn update_pointer(
+    image: &mut [u8],
+    at: usize,
+    change: impl FnOnce(u64) -> u64,
+) -> Result<(), InvalidMachO> {
+    let slot = image
+        .get_mut(at..at.saturating_add(8))
+        .ok_or(InvalidMachO("a fixup is outside the image"))?;
+    let value = u64::from_le_bytes(slot.try_into().unwrap_or([0; 8]));
+    slot.copy_from_slice(&change(value).to_le_bytes());
+    Ok(())
+}
+
+fn apply_dyld_info(
+    binder: &mut Binder<'_, '_>,
+    info: DyldInfo,
+    image: &mut [u8],
+    load_address: u64,
+) -> Result<(), Failure> {
+    let program = binder.program;
+    let table = |range: macho::Range| {
+        program
+            .bytes
+            .get(range.offset..range.offset + range.size)
+            .unwrap_or_default()
+    };
+    let slide = load_address.wrapping_sub(program.base_address());
+    dyld_info::rebases(table(info.rebase), |location| {
+        let at = pointer_at(program, location)?;
+        update_pointer(image, at, |value| value.wrapping_add(slide))
+    })
+    .map_err(Failure::Invalid)?;
+    for (range, kind) in [
+        (info.bind, Table::Binds),
+        (info.lazy_bind, Table::LazyBinds),
+    ] {
+        let mut failure = None;
+        let applied = dyld_info::binds(table(range), kind, |bind| {
+            let at = pointer_at(program, bind.location)?;
+            match binder.address_of(bind.source, bind.weak_import, bind.name) {
+                Ok(address) => {
+                    update_pointer(image, at, |_| address.wrapping_add(bind.addend as u64))
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    Err(InvalidMachO("a symbol could not be bound"))
+                }
+            }
+        });
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        applied.map_err(Failure::Invalid)?;
+    }
+    Ok(())
+}
+
+fn null_ended_length(vector: *mut *mut c_char) -> usize {
+    (0..)
+        // SAFETY: the vectors `start` builds end with a null pointer.
+        .take_while(|&index| !unsafe { vector.wrapping_add(index).read() }.is_null())
+        .count()
+}
+
+fn start_words(
+    count: usize,
+    vectors: [*mut *mut c_char; 3],
+) -> Result<(*const usize, usize), Failure> {
+    let lengths = vectors.map(null_ended_length);
+    let total = 1 + lengths.iter().map(|length| length + 1).sum::<usize>();
+    let words = allocate_pages(total * 8)?.cast::<usize>();
+    // SAFETY: `words` holds `total` words: `count`, then each vector with its null pointer.
+    unsafe { words.write(count) };
+    let mut at = 1;
+    for (vector, length) in vectors.into_iter().zip(lengths) {
+        for index in 0..=length {
+            // SAFETY: `vector` holds `length` pointers and a null one.
+            let pointer = unsafe { vector.wrapping_add(index).read() };
+            // SAFETY: as above, `at` stays below `total`.
+            unsafe { words.wrapping_add(at).write(pointer as usize) };
+            at += 1;
+        }
+    }
+    Ok((words, total))
+}
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 2",
+    ".globl eggos_macos_enter_start",
+    ".hidden eggos_macos_enter_start",
+    "eggos_macos_enter_start:",
+    "mov x9, sp",
+    "sub x9, x9, x2, lsl #3",
+    "and x9, x9, #0xfffffffffffffff0",
+    "mov sp, x9",
+    "mov x10, #0",
+    "2:",
+    "cmp x10, x2",
+    "b.eq 3f",
+    "ldr x11, [x1, x10, lsl #3]",
+    "str x11, [x9, x10, lsl #3]",
+    "add x10, x10, #1",
+    "b 2b",
+    "3:",
+    "mov x29, xzr",
+    "mov x30, xzr",
+    "br x0",
+);
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 4",
+    ".globl eggos_macos_enter_start",
+    ".hidden eggos_macos_enter_start",
+    "eggos_macos_enter_start:",
+    "mov rcx, rdx",
+    "shl rcx, 3",
+    "mov rax, rsp",
+    "sub rax, rcx",
+    "and rax, -16",
+    "mov rsp, rax",
+    "xor ecx, ecx",
+    "2:",
+    "cmp rcx, rdx",
+    "je 3f",
+    "mov r8, [rsi + rcx*8]",
+    "mov [rsp + rcx*8], r8",
+    "inc rcx",
+    "jmp 2b",
+    "3:",
+    "xor ebp, ebp",
+    "jmp rdi",
+);
+
+unsafe extern "C" {
+    /// Copies `count` words from `words` to the 16-byte-aligned place below the stack pointer,
+    /// moves the stack pointer there and jumps to `entry`, as the kernel and dyld start an
+    /// `LC_UNIXTHREAD` program.
+    #[link_name = "eggos_macos_enter_start"]
+    fn enter_start(entry: usize, words: *const usize, count: usize) -> !;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

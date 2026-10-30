@@ -99,6 +99,13 @@ pub unsafe extern "C" fn dlsym(_: *mut c_void, name: *const c_char) -> *mut c_vo
     found.map_or(core::ptr::null_mut(), |address| address as *mut c_void)
 }
 
+/// `dyld_stub_binder`, which a lazy symbol stub reaches through its stub helper only while
+/// its lazy pointer is unbound. The layer binds every lazy pointer when it loads a program
+/// (D190), so reaching it means the program jumped into a stub helper by itself.
+pub extern "C" fn stub_binder() -> ! {
+    super::process::fail(b"dyld_stub_binder: called for a lazy pointer the layer did not bind")
+}
+
 pub extern "C" fn dlopen(_: *const c_char, _: c_int) -> *mut c_void {
     FAILED.store(true, Ordering::Relaxed);
     core::ptr::null_mut()

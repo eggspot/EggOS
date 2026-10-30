@@ -2,6 +2,8 @@
 //! load commands the layer needs and the slice for the running CPU. Every offset, size and
 //! count comes from the file and is checked against it before use.
 
+use crate::dyld_info::DyldInfo;
+
 pub const MH_MAGIC_64: u32 = 0xfeed_facf;
 pub const FAT_MAGIC: u32 = 0xcafe_babe;
 pub const FAT_MAGIC_64: u32 = 0xcafe_babf;
@@ -45,6 +47,11 @@ const S_THREAD_LOCAL_REGULAR: u32 = 0x11;
 const S_THREAD_LOCAL_ZEROFILL: u32 = 0x12;
 const MAX_THREAD_LOCAL_SIZE: u64 = 16 << 20;
 const MAX_THREAD_LOCAL_ALIGNMENT_SHIFT: u32 = 12;
+const PLATFORM_MACOS: u32 = 1;
+const THREAD_STATE_X86_64: u32 = 4;
+const THREAD_STATE_X86_64_PC: usize = 16 * 8;
+const THREAD_STATE_ARM64: u32 = 6;
+const THREAD_STATE_ARM64_PC: usize = 32 * 8;
 
 mod command {
     pub const UNIXTHREAD: u32 = 0x5;
@@ -62,6 +69,11 @@ mod command {
     pub const DYLD_EXPORTS_TRIE: u32 = 0x8000_0033;
     pub const DYLD_CHAINED_FIXUPS: u32 = 0x8000_0034;
     pub const RPATH: u32 = 0x8000_001c;
+    pub const VERSION_MIN_MACOSX: u32 = 0x24;
+    pub const VERSION_MIN_IPHONEOS: u32 = 0x25;
+    pub const VERSION_MIN_TVOS: u32 = 0x2f;
+    pub const VERSION_MIN_WATCHOS: u32 = 0x30;
+    pub const BUILD_VERSION: u32 = 0x32;
 }
 
 /// Why a file is not a Mach-O executable the layer runs.
@@ -346,6 +358,18 @@ impl ObjcSections {
     }
 }
 
+/// How the program starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// `LC_MAIN`: the entry point is `main`, called with `argc`, `argv`, `envp` and `apple`.
+    Main,
+    /// `LC_UNIXTHREAD` (macOS 10.7 and earlier on x86_64): the entry point is the C runtime's
+    /// `start`, entered with the stack pointer at `argc`, then `argv`, `envp` and `apple`, each
+    /// ended by a null pointer. The thread state's other registers, its stack pointer included,
+    /// are not used, as on macOS for a program that dyld loads.
+    Thread,
+}
+
 /// A parsed 64-bit Mach-O executable.
 #[derive(Debug, Clone, Copy)]
 pub struct MachO<'a> {
@@ -354,11 +378,14 @@ pub struct MachO<'a> {
     pub pie: bool,
     segments: [Segment; MAX_SEGMENTS],
     segment_count: usize,
+    segment_commands: usize,
+    page_zero_command: Option<usize>,
     libraries: [Option<Library<'a>>; MAX_LIBRARIES],
     library_count: usize,
     pub entry: u64,
+    pub start: Start,
     pub chained_fixups: Option<Range>,
-    pub dyld_info: bool,
+    pub dyld_info: Option<DyldInfo>,
     pub thread_locals: Option<ThreadLocalTemplate>,
     pub objc: ObjcSections,
     pub unwind_info: Option<SectionRange>,
@@ -391,16 +418,20 @@ impl<'a> MachO<'a> {
             pie: flags & MH_PIE != 0,
             segments: [Segment::default(); MAX_SEGMENTS],
             segment_count: 0,
+            segment_commands: 0,
+            page_zero_command: None,
             libraries: [None; MAX_LIBRARIES],
             library_count: 0,
             entry: 0,
+            start: Start::Main,
             chained_fixups: None,
-            dyld_info: false,
+            dyld_info: None,
             thread_locals: None,
             objc: ObjcSections::default(),
             unwind_info: None,
         };
         let mut entry = None;
+        let mut thread_pc = None;
         let mut at = HEADER_SIZE;
         for _ in 0..command_count {
             let kind = u32_at(bytes, at).ok_or(invalid("truncated load command"))?;
@@ -415,12 +446,7 @@ impl<'a> MachO<'a> {
                 command::MAIN => {
                     entry = Some(u64_at(command, 8).ok_or(invalid("truncated LC_MAIN"))?);
                 }
-                command::UNIXTHREAD => {
-                    return Err(invalid(
-                        "starts with LC_UNIXTHREAD (built for Mac OS X 10.7 or earlier), \
-                         which EggOS does not run yet",
-                    ));
-                }
+                command::UNIXTHREAD => thread_pc = Some(thread_pc_of(command, cpu)?),
                 command::LOAD_DYLIB
                 | command::LOAD_WEAK_DYLIB
                 | command::REEXPORT_DYLIB
@@ -446,13 +472,31 @@ impl<'a> MachO<'a> {
                 command::DYLD_EXPORTS_TRIE => {
                     range_in(command, bytes.len())?;
                 }
-                command::DYLD_INFO | command::DYLD_INFO_ONLY => parsed.dyld_info = true,
+                command::DYLD_INFO | command::DYLD_INFO_ONLY => {
+                    let size = bytes.len();
+                    range_at(command, 24, size)?;
+                    range_at(command, 40, size)?;
+                    parsed.dyld_info = Some(DyldInfo {
+                        rebase: range_at(command, 8, size)?,
+                        bind: range_at(command, 16, size)?,
+                        lazy_bind: range_at(command, 32, size)?,
+                    });
+                }
+                command::BUILD_VERSION => {
+                    let platform = u32_at(command, 8).ok_or(invalid("truncated build version"))?;
+                    if platform != PLATFORM_MACOS {
+                        return Err(invalid(OTHER_PLATFORM));
+                    }
+                }
+                command::VERSION_MIN_IPHONEOS
+                | command::VERSION_MIN_TVOS
+                | command::VERSION_MIN_WATCHOS => return Err(invalid(OTHER_PLATFORM)),
                 command::ENCRYPTION_INFO_64 => {
                     if u32_at(command, 16).ok_or(invalid("truncated encryption info"))? != 0 {
                         return Err(invalid("is encrypted"));
                     }
                 }
-                command::RPATH => {}
+                command::RPATH | command::VERSION_MIN_MACOSX => {}
                 other if other & LC_REQ_DYLD != 0 && !is_known_optional(other) => {
                     return Err(invalid("needs a load command EggOS does not know"));
                 }
@@ -460,7 +504,17 @@ impl<'a> MachO<'a> {
             }
             at = end;
         }
-        parsed.entry = entry.ok_or(invalid("has no LC_MAIN entry point"))?;
+        parsed.entry = match (entry, thread_pc) {
+            (Some(offset), None) => offset,
+            (None, Some(pc)) => {
+                parsed.start = Start::Thread;
+                let base = parsed.segments().first().map_or(0, |text| text.vmaddr);
+                pc.checked_sub(base)
+                    .ok_or(invalid("the entry point is not in executable code"))?
+            }
+            (Some(_), Some(_)) => return Err(invalid("has both LC_MAIN and LC_UNIXTHREAD")),
+            (None, None) => return Err(invalid("has no entry point (LC_MAIN or LC_UNIXTHREAD)")),
+        };
         parsed.check_layout()?;
         Ok(parsed)
     }
@@ -470,6 +524,8 @@ impl<'a> MachO<'a> {
         if command.len() < SEGMENT_COMMAND_SIZE {
             return Err(invalid("truncated segment"));
         }
+        let command_index = self.segment_commands;
+        self.segment_commands += 1;
         let read = |offset| u64_at(command, offset).unwrap_or(0);
         let mut name = [0u8; 16];
         name.copy_from_slice(&command[8..24]);
@@ -534,6 +590,9 @@ impl<'a> MachO<'a> {
             }
         }
         if segment.is_page_zero() {
+            if self.page_zero_command.replace(command_index).is_some() {
+                return Err(invalid("two __PAGEZERO segments"));
+            }
             return Ok(());
         }
         let slot = self
@@ -656,6 +715,17 @@ impl<'a> MachO<'a> {
         &self.segments[..self.segment_count]
     }
 
+    /// The segment that fixup opcodes call `index`: the segment commands' order, `__PAGEZERO`
+    /// included, which has no mapped segment.
+    pub fn segment_by_command_index(&self, index: usize) -> Option<&Segment> {
+        let position = match self.page_zero_command {
+            Some(zero) if index == zero => return None,
+            Some(zero) if index > zero => index - 1,
+            _ => index,
+        };
+        self.segments().get(position)
+    }
+
     /// The libraries it links, in load-command order (ordinal 1 first).
     pub fn libraries(&self) -> impl Iterator<Item = Library<'a>> + '_ {
         self.libraries[..self.library_count]
@@ -706,12 +776,44 @@ fn string_in(command: &[u8], offset_field: usize) -> Option<&[u8]> {
 }
 
 fn range_in(command: &[u8], file_size: usize) -> Result<Range, InvalidMachO> {
+    range_at(command, 8, file_size)
+}
+
+fn range_at(command: &[u8], field: usize, file_size: usize) -> Result<Range, InvalidMachO> {
     let invalid = InvalidMachO("a linkedit range is outside the file");
-    let offset = u32_at(command, 8).ok_or(invalid)? as usize;
-    let size = u32_at(command, 12).ok_or(invalid)? as usize;
+    let offset = u32_at(command, field).ok_or(invalid)? as usize;
+    let size = u32_at(command, field + 4).ok_or(invalid)? as usize;
     offset
         .checked_add(size)
         .filter(|&end| end <= file_size)
         .ok_or(invalid)?;
     Ok(Range { offset, size })
+}
+
+const OTHER_PLATFORM: &str = "built for an Apple platform other than macOS";
+
+fn thread_pc_of(command: &[u8], cpu: Cpu) -> Result<u64, InvalidMachO> {
+    let (flavor, pc) = match cpu {
+        Cpu::X86_64 => (THREAD_STATE_X86_64, THREAD_STATE_X86_64_PC),
+        Cpu::Arm64 => (THREAD_STATE_ARM64, THREAD_STATE_ARM64_PC),
+        _ => return Err(InvalidMachO("LC_UNIXTHREAD for a CPU EggOS does not run")),
+    };
+    let mut at = 8;
+    while let (Some(kind), Some(count)) = (u32_at(command, at), u32_at(command, at + 4)) {
+        let state = at + 8;
+        let end = (count as usize)
+            .checked_mul(4)
+            .and_then(|size| state.checked_add(size))
+            .filter(|&end| end <= command.len())
+            .ok_or(InvalidMachO("a thread state runs past LC_UNIXTHREAD"))?;
+        if kind == flavor {
+            return u64_at(command, state + pc)
+                .filter(|_| state + pc + 8 <= end)
+                .ok_or(InvalidMachO("a thread state too short for its pc"));
+        }
+        at = end;
+    }
+    Err(InvalidMachO(
+        "LC_UNIXTHREAD has no thread state for this CPU",
+    ))
 }

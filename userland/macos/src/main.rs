@@ -1,7 +1,8 @@
 //! The macOS layer (D120), at `/usr/lib/eggos/macos`: the kernel starts it for a Mach-O or fat
 //! file, and it runs that macOS program natively, arm64 programs on aarch64 and x86_64
-//! programs on x86_64. The Mach-O format, the fat slice, chained fixups and Darwin's numbers and
-//! layouts are pure logic with host tests, and `printf`'s formatting and `scanf`'s scanning
+//! programs on x86_64. The Mach-O format, the fat slice, chained fixups, `LC_DYLD_INFO`
+//! opcodes, option parsing and Darwin's numbers and layouts are pure logic with host tests,
+//! and `printf`'s formatting and `scanf`'s scanning
 //! are the shared `eggos-c-format` crate's (D146, D190); `start.rs` loads the
 //! program, standing in for dyld, `libsystem/` implements the libSystem functions it imports,
 //! `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142),
@@ -48,6 +49,14 @@ mod darwin_locale;
     )
 ))]
 mod darwin_signals;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
+mod dyld_info;
 #[cfg(any(
     test,
     all(

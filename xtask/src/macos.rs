@@ -67,25 +67,39 @@ pub const SWIFT_PROGRAMS: [SwiftProgram; 1] = [SwiftProgram {
 }];
 
 /// A program built from C source with Apple's clang: `tests/<folder>/main.c`, for macOS
-/// `deployment_target` and later.
+/// `deployment_target` and later, with `link_flags` for Apple's linker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CProgram {
     pub name: &'static str,
     pub folder: &'static str,
     pub deployment_target: &'static str,
+    pub link_flags: &'static [&'static str],
 }
 
+/// The oldest macOS the older-program test targets: clang raises it to 11.0 for arm64, where
+/// the program starts at `LC_MAIN`, and keeps it for x86_64, where the program starts at
+/// `LC_UNIXTHREAD` with `LC_VERSION_MIN_MACOSX`, as for every target up to 10.7 (D190).
+pub const LEGACY_DEPLOYMENT_TARGET: &str = "10.7";
+
 /// The programs built from C sources with Apple's clang.
-pub const C_PROGRAMS: [CProgram; 2] = [
+pub const C_PROGRAMS: [CProgram; 3] = [
     CProgram {
         name: "macos-process",
         folder: "macos-process",
         deployment_target: DEPLOYMENT_TARGET,
+        link_flags: &[],
     },
     CProgram {
         name: "macos-text",
         folder: "macos-text",
         deployment_target: DEPLOYMENT_TARGET,
+        link_flags: &[],
+    },
+    CProgram {
+        name: "macos-legacy",
+        folder: "macos-legacy",
+        deployment_target: LEGACY_DEPLOYMENT_TARGET,
+        link_flags: &["-Wl,-no_fixup_chains"],
     },
 ];
 
@@ -415,15 +429,17 @@ fn build_objc_program(program: ObjcProgram, cpu: &str, output: &Path) -> Result<
 }
 
 /// The `clang` arguments that build `program`'s `source` for `cpu` into `output`: optimized,
-/// warnings as errors, for the program's macOS version and later.
+/// warnings as errors, for the program's macOS version and later, with its link flags.
 pub fn c_arguments(program: &CProgram, source: &Path, cpu: &str, output: &Path) -> Vec<String> {
     let mut arguments = vec![
         "clang".to_owned(),
         format!("-mmacosx-version-min={}", program.deployment_target),
     ];
     arguments.extend(
-        ["-arch", cpu, "-O2", "-Wall", "-Werror", "-o"]
+        ["-arch", cpu, "-O2", "-Wall", "-Werror"]
             .iter()
+            .chain(program.link_flags)
+            .chain(&["-o"])
             .map(|argument| argument.to_string()),
     );
     arguments.push(output.to_string_lossy().into_owned());
@@ -604,7 +620,18 @@ mod tests {
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 3..], ["-o", "out", "main.c"]);
         let names: Vec<&str> = C_PROGRAMS.iter().map(|program| program.name).collect();
-        assert_eq!(names, ["macos-process", "macos-text"]);
+        assert_eq!(names, ["macos-process", "macos-text", "macos-legacy"]);
+        let legacy = c_arguments(
+            &C_PROGRAMS[2],
+            Path::new("main.c"),
+            "x86_64",
+            Path::new("out"),
+        );
+        assert!(legacy.contains(&"-mmacosx-version-min=10.7".to_owned()));
+        assert_eq!(
+            &legacy[legacy.len() - 4..],
+            ["-Wl,-no_fixup_chains", "-o", "out", "main.c"]
+        );
         let source = crate::workspace_root()
             .join("tests")
             .join(program.folder)

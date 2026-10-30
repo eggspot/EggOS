@@ -354,6 +354,8 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_madvise" => memory::madvise,
         b"_getopt" => options::getopt,
         b"_getopt_long" => options::getopt_long,
+        b"_getopt_long_only" => options::getopt_long_only,
+        b"dyld_stub_binder" => dynamic::stub_binder,
         b"_setlocale" => locale::setlocale,
         b"_nl_langinfo" => locale::nl_langinfo,
         b"_localeconv" => locale::localeconv,

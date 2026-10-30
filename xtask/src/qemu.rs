@@ -816,7 +816,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 23] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -840,6 +840,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 23] = [
     b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
     b"macos-process; echo MACOS-CONSOLE status $?\r",
     b"macos-text; echo MACOS-CONSOLE status $?\r",
+    b"macos-legacy one -v --name=eggos two; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -984,6 +985,23 @@ const TEXT_PROGRAM_LINES: [&str; 21] = [
     "MACOS-CONSOLE status 0",
 ];
 
+const LEGACY_PROGRAM_LINES: [&str; 14] = [
+    "MACOS-LEGACY main",
+    "MACOS-LEGACY argv v=1 name=eggos optind=3 words=-v,--name=eggos,one,two",
+    "MACOS-LEGACY permute optind=6 after=3,4,7 order=-v,--name=x,-n,y,--,file1,file2,-v,z",
+    "MACOS-LEGACY in-order 1:a v 1:b optind=4",
+    "MACOS-LEGACY posix -1 1 plus -1 1 a",
+    "MACOS-LEGACY long-only v#1 n=q n=x ? l#3 optind=6",
+    "macos-legacy: invalid option -- x",
+    "macos-legacy: unrecognized option `--bogus'",
+    "macos-legacy: option `--verbose' doesn't allow an argument",
+    "macos-legacy: option `--name' requires an argument",
+    "MACOS-LEGACY getopt -1 1 then v 3",
+    "MACOS-LEGACY lazy 5 0 42 1,2,3 hello world 5",
+    "MACOS-LEGACY done",
+    "MACOS-CONSOLE status 0",
+];
+
 const PROCESS_PROGRAM_LINES: [&str; 21] = [
     "MACOS-PROCESS main",
     "MACOS-PROCESS siginfo 30 user self default-before 1",
@@ -1122,6 +1140,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-swift"),
             refused("macos-process"),
             refused("macos-text"),
+            refused("macos-legacy"),
             end,
         ];
     }
@@ -1201,7 +1220,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             "MACOS-TOOLS locale C US-ASCII . other refused",
             "MACOS-CONSOLE status 0",
         ]),
-        whole(&["macos-tools: illegal option -- x", "MACOS-CONSOLE status 2"]),
+        whole(&["macos-tools: invalid option -- x", "MACOS-CONSOLE status 2"]),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
@@ -1216,6 +1235,10 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             .map(|line| Line::Whole((*line).to_owned()))
             .collect(),
         TEXT_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
+        LEGACY_PROGRAM_LINES
             .iter()
             .map(|line| Line::Whole((*line).to_owned()))
             .collect(),
