@@ -51,7 +51,6 @@ fn wrapped_of(optional: Metadata) -> Metadata {
 
 struct OptionalLayout {
     payload: Metadata,
-    size: usize,
     payload_inhabitants: u32,
 }
 
@@ -60,7 +59,6 @@ fn optional_layout(optional: Metadata) -> OptionalLayout {
     let table = witnesses(payload);
     OptionalLayout {
         payload,
-        size: table.size,
         payload_inhabitants: table.extra_inhabitant_count,
     }
 }

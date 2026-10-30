@@ -12,6 +12,7 @@ use super::storage;
 /// What a metadata accessor returns: the metadata and its state.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct Response {
     pub metadata: Metadata,
     pub state: usize,

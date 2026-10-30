@@ -264,6 +264,7 @@ extern "C" fn bridge_release_n(value: usize, count: u32) {
 /// A dynamic access a program begins: the three words it hands `swift_beginAccess`.
 #[repr(C)]
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Access {
     pointer: usize,
     pc: usize,
