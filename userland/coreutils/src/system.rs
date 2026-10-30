@@ -270,6 +270,8 @@ pub trait System {
         timeout_ms: u32,
     ) -> Result<Option<usize>, Errno>;
     fn random(&mut self, out: &mut [u8]) -> Result<(), Errno>;
+    fn signal_init(&mut self, signal: u32) -> Result<(), Errno>;
+    fn terminal_columns(&mut self, descriptor: usize) -> Option<u16>;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -463,6 +465,14 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
         (**self).random(out)
+    }
+
+    fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
+        (**self).signal_init(signal)
+    }
+
+    fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {
+        (**self).terminal_columns(descriptor)
     }
 }
 

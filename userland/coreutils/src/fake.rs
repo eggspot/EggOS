@@ -175,6 +175,9 @@ pub struct Fake {
     pub rebooted: Vec<u32>,
     pub synced: usize,
     pub reboot_error: Option<Errno>,
+    pub init_signals: Vec<u32>,
+    pub init_signal_error: Option<Errno>,
+    pub terminal_width: Option<u16>,
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
     pub now_nanoseconds: u32,
@@ -232,6 +235,9 @@ impl Default for Fake {
             rebooted: Vec::new(),
             synced: 0,
             reboot_error: Some(Errno::EPERM),
+            init_signals: Vec::new(),
+            init_signal_error: None,
+            terminal_width: None,
             cross_device: Vec::new(),
             now: 1_700_000_000,
             now_nanoseconds: 0,
@@ -1155,6 +1161,15 @@ impl System for Fake {
             *byte = self.network.random_counter;
         }
         Ok(())
+    }
+
+    fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
+        self.init_signals.push(signal);
+        self.init_signal_error.map_or(Ok(()), Err)
+    }
+
+    fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {
+        self.terminal_width.filter(|_| descriptor == STANDARD_OUTPUT)
     }
 }
 

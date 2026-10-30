@@ -440,7 +440,6 @@ pub fn clone<P: Platform>(
             .map_err(|_| Errno::EPERM)?;
     }
     child.set_syscall_result(0);
-    let id = process::allocate_thread_id().ok_or(Errno::EAGAIN)?;
     let clear_child_tid = if any(flag::CHILD_CLEARTID) {
         arguments.child_tid
     } else {
@@ -454,6 +453,7 @@ pub fn clone<P: Platform>(
         true => thread.working_directory().share(),
         false => thread.working_directory().copy(),
     };
+    let id = process::allocate_thread_id::<P>().ok_or(Errno::EAGAIN)?;
     let mut new = thread.new_thread(id, clear_child_tid, files, working_directory);
     new.inherit_fp(running_fp::<P>());
     process

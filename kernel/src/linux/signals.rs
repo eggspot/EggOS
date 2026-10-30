@@ -778,6 +778,18 @@ impl Signals {
             .is_some_and(|[block]| block.threads.iter().any(|thread| thread.id == id))
     }
 
+    /// Adds the id of each of the process's threads but its first that has not exited to
+    /// `ids`, whose ids nothing else may take (D183). `ENOMEM` without memory for them.
+    pub fn other_thread_ids(&self, ids: &mut Vec<u32>) -> Result<(), Errno> {
+        let Some([block]) = self.actions_and_queue.as_deref() else {
+            return Ok(());
+        };
+        ids.try_reserve(block.threads.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        ids.extend(block.threads.iter().map(|thread| thread.id));
+        Ok(())
+    }
+
     /// Sends the signal `info` describes to thread `id`, another of the process's threads,
     /// which takes it in ([`LockedSignals::take_in_sent`]) and handles it as if sent to itself
     /// then ([`LockedSignals::send`]). It counts toward `RLIMIT_SIGPENDING`, `queue_limit`,
@@ -1889,6 +1901,33 @@ pub fn init_takes(signal: u32, action: Option<Action>) -> bool {
         && action.is_some_and(|action| action.handler != DEFAULT && action.handler != IGNORE)
 }
 
+/// Sends `signal` from the kernel to init if init takes it ([`init_takes`]): how the desktop's
+/// power menu asks init to take the machine down (D183). Whether init was sent it.
+pub fn ask_init<P: Platform>(signal: u32) -> bool {
+    let target = {
+        let table = process_table::TABLE.lock();
+        match table.init() {
+            0 => None,
+            init => table.target(init),
+        }
+    };
+    let Some(running) = target.and_then(|target| target.running) else {
+        return false;
+    };
+    let Some(process) = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())
+    else {
+        return false;
+    };
+    if !init_takes(signal, process.signals().lock().action(signal)) {
+        return false;
+    }
+    send_from_outside::<P>(&process, &running.first_thread, Info::from_kernel(signal));
+    true
+}
+
 fn signal_ids<P: Platform>(process: &Process<P>) -> SignalIds {
     let credentials = process.credentials_and_limits().lock();
     let ids = credentials.credentials.ids(super::credentials::Kind::User);
@@ -1935,12 +1974,15 @@ fn send_to_other<P: Platform>(
     Reached::Delivered
 }
 
+const EVERY_OTHER_PROCESS: i32 = -1;
+
 /// `kill(pid, signal)`: sends `signal` to the process `pid` names: its id (the caller's own
-/// included); 0, every process of the caller's group; or minus a group's id, every process of
-/// that group. A process that ended and is not yet reaped is found, and takes nothing. `ESRCH`
-/// for `-1` (every process but the caller is not supported), `i32::MIN` and an id or group
-/// with no process, before the signal is looked at, as on Linux; then `EINVAL` for a signal
-/// outside 0 to 64; then `EPERM` when the caller may signal none of them ([`may_signal`]); 0,
+/// included); 0, every process of the caller's group; minus a group's id, every process of
+/// that group; or -1, every process but the caller and init (D183), which init's shutdown
+/// uses. A process that ended and is not yet reaped is found, and takes nothing. `ESRCH`
+/// for `i32::MIN` and an id or group with no process (for -1, no process but the caller and
+/// init), before the signal is looked at, as on Linux; then `EINVAL` for a signal outside 0
+/// to 64; then `EPERM` when the caller may signal none of them ([`may_signal`]); 0,
 /// the signal, only checks. Init takes another process's signal only through a handler, and
 /// never `SIGKILL` or `SIGSTOP` ([`init_takes`]). `pid` is a `pid_t`: the register's upper half
 /// is ignored. The signal's `siginfo_t` says `SI_USER` from the caller. The caller's own
@@ -1953,8 +1995,7 @@ pub fn kill<P: Platform>(
 ) -> Result<u64, Errno> {
     let own = own_id(process);
     let pid = pid as u32 as i32;
-    let every_process_but_the_caller = -1;
-    if pid == every_process_but_the_caller || pid == i32::MIN {
+    if pid == i32::MIN {
         return Err(Errno::ESRCH);
     }
     let uid = real_user_id(process);
@@ -1969,6 +2010,7 @@ pub fn kill<P: Platform>(
             .map_or(own as u32, |(group, _)| group);
         let init = table.init();
         match pid {
+            EVERY_OTHER_PROCESS => (table.every_target_but(own as u32), false, init),
             0 => (table.group_targets(own_group), true, init),
             pid if pid < 0 => {
                 let group = pid.unsigned_abs();

@@ -140,7 +140,8 @@ pub enum Expect {
     /// The release kernel starts init, which starts the shell; the test types one line of its
     /// session each time a prompt appears, as a person would, so the console's echo never mixes
     /// with what the commands write, and `^C` when the program waiting for it says so; the
-    /// shell writes each line the session expects and exits with 7, and init powers off (D107).
+    /// shell writes each line the session expects and exits with 7, and init powers off (D107)
+    /// after it sent `SIGTERM` to the program the session left waiting for it (D183).
     Shell,
     /// The release kernel boots to the prompt of the shell init starts by default; the test
     /// types a line of its session at each prompt, which runs the core utilities, each writing
@@ -238,7 +239,7 @@ const BOOT_CLOCK_LINE: &str = "EGGOS-BENCH: boot_to_prompt ";
 
 const SHELL_PROMPT: &str = "eggsh:/";
 
-const SHELL_SESSION: [&[u8]; 36] = [
+const SHELL_SESSION: [&[u8]; 37] = [
     b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
     b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
     b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
@@ -274,6 +275,7 @@ const SHELL_SESSION: [&[u8]; 36] = [
     b"echo EGGSH-TEST interrupted $?\r",
     b"\x03",
     b"echo EGGSH-TEST prompt interrupt $?\r",
+    b"eggos-std-selftest shell-child term-at-power-off\r",
     b"exit 7\r",
 ];
 
@@ -1254,7 +1256,7 @@ const PROMPT_SESSION: [&[u8]; 26] = [
     b"tail -n 1 /etc/motd /etc/hostname | head -n 4 | tail -n +2\r",
     PIPELINE_READING_THE_TERMINAL,
     b"echo EGGOS-PIPE interrupted $?\r",
-    b"ls /proc; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
+    b"ls /proc/sys/kernel; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
     b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
     b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
     b"echo a > /tmp/x; echo b >> /tmp/x; cat /tmp/x; cat < /tmp/x\r",
@@ -1396,21 +1398,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&[
-            "Applications",
-            "bin",
-            "dev",
-            "etc",
-            "home",
-            "init",
-            "media",
-            "proc",
-            "run",
-            "tmp",
-            "usr",
-            "var",
-            "work",
-        ]),
+        whole(&["Applications  bin  dev  etc  home  init  media  proc  run  tmp  usr  var  work"]),
         vec![
             Line::Around("-rwxr-xr-x 30 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
@@ -1443,9 +1431,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         ]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
-        whole(&[
-            "cmdline", "driver", "meminfo", "mounts", "net", "ps", "uptime", "/proc", "/", "4",
-        ]),
+        whole(&["hostname  osrelease  ostype", "/proc", "/", "4"]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
             "               total        used        free      shared  buff/cache   available",
@@ -1479,7 +1465,7 @@ struct ShellTyping {
     reactions: [bool; REACTIONS.len()],
 }
 
-const SHELL_LINES: [&str; 51] = [
+const SHELL_LINES: [&str; 53] = [
     "EGGSH-TEST quoting single  quoted double /home/root $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
     "EGGSH-TEST cd /usr/libexec /home/root",
@@ -1531,6 +1517,8 @@ const SHELL_LINES: [&str; 51] = [
     "EGGSH-TEST remembered nested",
     "EGGSH-TEST interrupted 130",
     "EGGSH-TEST prompt interrupt 130",
+    "EGGOS-SHELL-CHILD: waiting for SIGTERM",
+    "EGGOS-SHELL-CHILD: SIGTERM at power-off",
 ];
 
 const STOPPED_JOB_LINE: &str =

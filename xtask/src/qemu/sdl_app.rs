@@ -47,7 +47,7 @@ fn open_line() -> String {
 }
 
 fn after_line() -> String {
-    format!("ls /tmp; wm list; echo {STATUS_PREFIX}after $?\r")
+    format!("ls -1 /tmp; wm list; echo {STATUS_PREFIX}after $?\r")
 }
 
 const POWER_OFF: &str = "poweroff\r";

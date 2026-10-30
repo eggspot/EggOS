@@ -20,7 +20,7 @@
 use crate::console;
 use crate::display;
 use crate::input::{self, Button, InputEvent};
-use crate::linux::reboot::{self, take_machine_down};
+use crate::linux::reboot;
 use crate::sync::LeafSpinLock;
 use crate::thread::{self, SpawnError, WaitQueue};
 use crate::vfs;
@@ -649,8 +649,8 @@ pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
 
 /// Hands the desktop the input events queued for it, draws what they and the terminal changed
 /// into the display's framebuffer and flushes it, then hands the replies programs asked for to
-/// the console's input. Returns how many rectangles the flush showed. Does not return when the
-/// power menu powered the machine off or restarted it.
+/// the console's input. Returns how many rectangles the flush showed. The power menu asks
+/// init to power off or restart ([`reboot::shut_down`]), and does it at once without an init.
 pub fn show<P: Platform>() -> Result<usize, &'static str> {
     AGENT_CONNECTED.store(crate::agent_channel::is_connected(), Ordering::Relaxed);
     let drawn = display::draw(|framebuffer| {
@@ -664,8 +664,8 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
         console::wake_input_waiters::<P>();
     }
     match drawn.map(|asked| asked.action) {
-        Some(Action::PowerOff) => take_machine_down::<P>(reboot::Action::PowerOff),
-        Some(Action::Restart) => take_machine_down::<P>(reboot::Action::Restart),
+        Some(Action::PowerOff) => reboot::shut_down::<P>(reboot::Action::PowerOff),
+        Some(Action::Restart) => reboot::shut_down::<P>(reboot::Action::Restart),
         Some(action @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_))) => {
             run_launch::<P>(action)
         }

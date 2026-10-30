@@ -624,26 +624,31 @@ pub enum NewChildError {
     SharedAnonymousMemory,
 }
 
-/// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
-/// positive.
+/// A process's id: from 1 up to [`ProcessId::MAX`], then again from
+/// [`crate::linux::process_ids::FIRST_REUSED`] up, skipping every id still in use (D183).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProcessId(u32);
 
 impl ProcessId {
+    /// The largest id, one below Linux's largest `pid_max` (`PID_MAX_LIMIT`, 2^22).
+    pub const MAX: u32 = (1 << 22) - 1;
+
     /// The value Linux programs see.
     pub fn get(self) -> u32 {
         self.0
     }
 
-    /// The next unused id, or `None` once every id up to `i32::MAX` has been given out
-    /// (reusing ended processes' ids waits for a process table, with `wait4`).
-    fn allocate() -> Option<Self> {
+    /// The next id: each from 1 up the first time round, then one no process, zombie, thread,
+    /// process group, session or the console holds ([`crate::linux::process_ids`]); `None`
+    /// when every one is held.
+    fn allocate<P: Platform>() -> Option<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(1);
-        NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
-            (id <= i32::MAX as u32).then_some(id + 1)
-        })
-        .ok()
-        .map(Self)
+        match NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+            (id <= Self::MAX).then_some(id + 1)
+        }) {
+            Ok(id) => Some(Self(id)),
+            Err(_) => crate::linux::process_ids::allocate_again::<P>().map(Self),
+        }
     }
 }
 
@@ -657,10 +662,12 @@ fn allocate_futex_space() -> Option<u32> {
 
 /// An id for a thread that is not a process's first (`clone`), from the processes' ids: Linux
 /// gives threads and processes ids from one space, the first thread's being its process's.
-/// `None` once every id has been given out.
-pub fn allocate_thread_id() -> Option<u32> {
-    ProcessId::allocate().map(ProcessId::get)
+/// `None` when every id is held.
+pub fn allocate_thread_id<P: Platform>() -> Option<u32> {
+    ProcessId::allocate::<P>().map(ProcessId::get)
 }
+
+const CHILD_ID_ATTEMPTS: usize = 4;
 
 impl<P: Platform> Process<P> {
     /// A process with an empty address space sharing the kernel half of `kernel`.
@@ -677,7 +684,7 @@ impl<P: Platform> Process<P> {
             .as_ref()
             .ok_or("there is no frame allocator")?
             .physical_memory_offset();
-        let id = ProcessId::allocate().ok_or("out of process ids")?;
+        let id = ProcessId::allocate::<P>().ok_or("out of process ids")?;
         let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
         Ok(Self::with_memory(
             Arc::new(Memory::new(space, frame_offset, futex_space)),
@@ -721,7 +728,7 @@ impl<P: Platform> Process<P> {
             .space
             .new_owning_frames_beside()
             .map_err(|error| error.description())?;
-        let id = ProcessId::allocate().ok_or("out of process ids")?;
+        let id = ProcessId::allocate::<P>().ok_or("out of process ids")?;
         let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
         Ok(Self::with_memory(
             Arc::new(Memory::new(space, self.memory.frame_offset, futex_space)),
@@ -769,7 +776,7 @@ impl<P: Platform> Process<P> {
     /// every one it took. Pages other threads of this process write during the copy may be
     /// seen by the child as they are at that moment.
     pub fn new_child(&self, memory: ChildMemory) -> Result<Self, NewChildError> {
-        let id = ProcessId::allocate().ok_or(NewChildError::OutOfIds)?;
+        let (id, record) = self.add_child_to_table()?;
         let memory = match memory {
             ChildMemory::Shared => Arc::clone(&self.memory),
             ChildMemory::Copied => {
@@ -790,21 +797,34 @@ impl<P: Platform> Process<P> {
             .lock()
             .copy_actions()
             .ok_or(NewChildError::OutOfMemory)?;
-        {
-            let mut table = process_table::TABLE.lock();
-            table
-                .add_if_missing(self.id.get())
-                .and_then(|()| table.add(id.get(), Some(self.id.get())))
-                .map_err(|_| NewChildError::OutOfMemory)?;
+        Ok(Self::with_memory(memory, record, id, credentials_and_limits, signals))
+    }
+
+    /// A new id for a child of this process, already in the process table with this process
+    /// as its parent, and the child's record, which takes it out of the table again if the
+    /// child is dropped before it ends. An id another process took between its allocation and
+    /// the table's lock is passed over (D183).
+    fn add_child_to_table(
+        &self,
+    ) -> Result<(ProcessId, Arc<SpinLock<PidRecord<P>>>), NewChildError> {
+        for _ in 0..CHILD_ID_ATTEMPTS {
+            let id = ProcessId::allocate::<P>().ok_or(NewChildError::OutOfIds)?;
+            let added = {
+                let mut table = process_table::TABLE.lock();
+                table
+                    .add_if_missing(self.id.get())
+                    .and_then(|()| table.add(id.get(), Some(self.id.get())))
+            };
+            match added {
+                Ok(()) => {
+                    self.record.lock().in_table = true;
+                    return Ok((id, Arc::new(SpinLock::new(PidRecord::new(id, true)))));
+                }
+                Err(crate::linux::Errno::EAGAIN) => continue,
+                Err(_) => return Err(NewChildError::OutOfMemory),
+            }
         }
-        self.record.lock().in_table = true;
-        Ok(Self::with_memory(
-            memory,
-            Arc::new(SpinLock::new(PidRecord::new(id, true))),
-            id,
-            credentials_and_limits,
-            signals,
-        ))
+        Err(NewChildError::OutOfIds)
     }
 
     /// Records that the process is in the process table, which it leaves as its record goes

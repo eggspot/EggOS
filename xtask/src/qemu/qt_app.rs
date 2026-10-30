@@ -63,7 +63,7 @@ fn open_line() -> String {
 fn after_line() -> String {
     format!(
         "cat {}; echo; echo {STATUS_PREFIX}saved $?; cat {NOTE}; echo {STATUS_PREFIX}note $?; \
-         ls {FONTS_LINK_FOLDER}; wm list; echo {STATUS_PREFIX}after $?\r",
+         ls -1 {FONTS_LINK_FOLDER}; wm list; echo {STATUS_PREFIX}after $?\r",
         saved_path()
     )
 }
@@ -371,7 +371,7 @@ mod tests {
              corepad\tlinux\tx86_64\t/Applications/corepad/corepad\t-\n\
              Opened corepad.\nQT-APP open 0\n\
              # cat /tmp/saved.txt; echo; echo QT-APP saved $?; cat /tmp/note.txt; echo QT-APP \
-             note $?; ls /Applications/.fonts; wm list; echo QT-APP after $?\n{saved}\n\n\
+             note $?; ls -1 /Applications/.fonts; wm list; echo QT-APP after $?\n{saved}\n\n\
              QT-APP saved 0\n{note}\nQT-APP note 0\n{fonts}\n{WM_LIST_HEADER}\n\
              {windows}QT-APP after 0\n{POWER_DOWN_LINE}\n"
         )

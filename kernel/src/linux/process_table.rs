@@ -998,6 +998,41 @@ impl Table {
         targets
     }
 
+    /// Every process a signal sent to `-1` finds (`kill(-1, ...)`, D183): all but `caller` and
+    /// init, ended or not.
+    pub fn every_target_but(&self, caller: u32) -> Vec<Target> {
+        let mut targets = Vec::new();
+        for entry in &self.entries {
+            if entry.id != caller && entry.id != self.init && targets.try_reserve(1).is_ok() {
+                targets.push(Target::of(entry));
+            }
+        }
+        targets
+    }
+
+    /// Adds to `ids` every process id the table holds in use (D183): each process's, ended or
+    /// not, every process group's and session's, the console's session and foreground group,
+    /// and init's; and returns how to reach each running process, whose other threads hold
+    /// ids too. Ids are pushed unsorted, possibly more than once. `Err` without memory.
+    pub fn ids_in_use(&self, ids: &mut Vec<u32>) -> Result<Vec<Running>, Errno> {
+        ids.try_reserve(self.entries.len() * 3 + 3)
+            .map_err(|_| Errno::ENOMEM)?;
+        let mut running = Vec::new();
+        running
+            .try_reserve(self.entries.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        for entry in &self.entries {
+            ids.extend([entry.id, entry.group, entry.session]);
+            if entry.exit.is_none()
+                && let Some(reach) = &entry.running
+            {
+                running.push(reach.clone());
+            }
+        }
+        ids.extend([self.init, self.console.session, self.console.foreground]);
+        Ok(running)
+    }
+
     /// The process orphans go to, which cannot be killed; 0 before there is one.
     pub fn init(&self) -> u32 {
         self.init
@@ -1440,5 +1475,55 @@ mod tests {
         let zombies = table.group_targets(122);
         assert_eq!(ids(zombies.clone()), [122]);
         assert!(zombies.iter().all(|target| target.running.is_none()));
+    }
+
+    #[test]
+    fn minus_one_finds_every_process_but_the_caller_and_init() {
+        let mut table = table_with(&[(1, None), (5, Some(1)), (6, Some(5)), (7, Some(1))]);
+        table.set_init(1);
+        table.end(7, EXITED, 0);
+        let ids = |targets: Vec<Target>| -> Vec<u32> { targets.iter().map(|t| t.id).collect() };
+        assert_eq!(ids(table.every_target_but(5)), [6, 7]);
+        assert_eq!(ids(table.every_target_but(1)), [5, 6, 7]);
+        let mut alone = table_with(&[(1, None)]);
+        alone.set_init(1);
+        assert!(alone.every_target_but(1).is_empty());
+    }
+
+    #[test]
+    fn a_group_and_session_hold_their_id_after_their_leader_is_reaped() {
+        let mut table = table_with(&[(1, None), (60, Some(1))]);
+        table.set_init(1);
+        assert_eq!(table.new_session(60), Ok(60));
+        table.add(61, Some(60)).unwrap();
+        table.set_exit_signal(61, SIGCHLD);
+        table.set_running(61, running());
+        table.end(60, EXITED, 0);
+        assert_eq!(
+            table.wait(1, Selector::Process(60), ChildKind::Sigchld, Ends::Reap),
+            Found::Ended {
+                id: 60,
+                uid: 0,
+                exit: EXITED
+            }
+        );
+        assert!(table.target(60).is_none());
+        let mut ids = Vec::new();
+        let running = table.ids_in_use(&mut ids).unwrap();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids, [0, 1, 60, 61]);
+        assert_eq!(running.len(), 1);
+    }
+
+    #[test]
+    fn a_reused_id_below_the_newest_takes_its_sorted_place_once() {
+        let mut table = table_with(&[(1, None), (500, Some(1))]);
+        table.add(300, Some(1)).unwrap();
+        assert_eq!(table.parent(300), 1);
+        let listed: Vec<u32> = table.list().map(|listed| listed.id).collect();
+        assert_eq!(listed, [1, 300, 500]);
+        assert_eq!(table.add(300, Some(1)), Err(Errno::EAGAIN));
+        assert_eq!(table.add(500, None), Err(Errno::EAGAIN));
     }
 }

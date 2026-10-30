@@ -24,7 +24,7 @@ const HOME_MOUNTED_LINE: Line = Line::Around(
 );
 
 const SESSION: [&[u8]; 3] = [
-    b"cat /work/hello.txt; ls /work\r",
+    b"cat /work/hello.txt; ls -1 /work\r",
     b"mkdir /work/out; echo built > /work/out/log.txt; cp /work/hello.txt /work/out/copy.txt; rm /work/src/main.rs; echo kept > /home/kept.txt; sync; echo EGGOS-WORK synced $?\r",
     b"poweroff\r",
 ];

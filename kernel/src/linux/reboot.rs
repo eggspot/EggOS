@@ -99,9 +99,34 @@ pub fn reboot<P: Platform>(
     }
 }
 
+/// The signal that asks init to take the machine down as `action` says (D183): systemd's,
+/// `SIGRTMIN+3` to halt, `+4` to power off and `+5` to restart, C libraries' `SIGRTMIN` being
+/// 34; `None` for [`Action::None`].
+pub fn init_signal(action: Action) -> Option<u32> {
+    const SIGRTMIN: u32 = 34;
+    match action {
+        Action::None => None,
+        Action::Halt => Some(SIGRTMIN + 3),
+        Action::PowerOff => Some(SIGRTMIN + 4),
+        Action::Restart => Some(SIGRTMIN + 5),
+    }
+}
+
+/// Takes the machine down as `action` says for the desktop's power menu (D183): asks init, if
+/// it takes [`init_signal`]'s signal, to end every program first and do it, and returns; does
+/// it at once ([`take_machine_down`]) when there is no such init.
+pub fn shut_down<P: Platform>(action: Action) {
+    if let Some(signal) = init_signal(action)
+        && super::signals::ask_init::<P>(signal)
+    {
+        return;
+    }
+    take_machine_down::<P>(action)
+}
+
 /// Puts every file system's changes on the disk ([`crate::vfs::sync_all`], D131), parks every
 /// other CPU, says `action`'s line on the console, then takes the machine down as `action`
-/// says: for `reboot(2)` and the desktop's power menu alike. Call it as
+/// says: for `reboot(2)`, and for the desktop's power menu without an init. Call it as
 /// [`crate::thread::yield_now`] is called, with no spin lock held: syncing may sleep on a file
 /// system's lock.
 #[cold]
@@ -156,6 +181,14 @@ mod tests {
                 Ok(Action::PowerOff)
             );
         }
+    }
+
+    #[test]
+    fn each_action_asks_init_with_systemd_s_signal() {
+        assert_eq!(init_signal(Action::Halt), Some(37));
+        assert_eq!(init_signal(Action::PowerOff), Some(38));
+        assert_eq!(init_signal(Action::Restart), Some(39));
+        assert_eq!(init_signal(Action::None), None);
     }
 
     #[test]

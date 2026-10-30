@@ -67,7 +67,7 @@ fn open_line() -> String {
 
 fn after_line() -> String {
     format!(
-        "cat {NOTE}; echo; echo {STATUS_PREFIX}note $?; ls {FONTS_LINK_FOLDER}; wm list; \
+        "cat {NOTE}; echo; echo {STATUS_PREFIX}note $?; ls -1 {FONTS_LINK_FOLDER}; wm list; \
          echo {STATUS_PREFIX}after $?\r"
     )
 }
@@ -347,7 +347,7 @@ mod tests {
             "Installed mousepad in /Applications/mousepad.\nGTK-APP install 0\n\
              mousepad\tlinux\tx86_64\t/Applications/mousepad/mousepad\t-\nGTK-APP schemas 0\n\
              Opened mousepad.\nGTK-APP open 0\n\
-             # cat /tmp/note.txt; echo; echo GTK-APP note $?; ls /Applications/.fonts; wm list; \
+             # cat /tmp/note.txt; echo; echo GTK-APP note $?; ls -1 /Applications/.fonts; wm list; \
              echo GTK-APP after $?\n{note}\n\nGTK-APP note 0\n{fonts}\n{WM_LIST_HEADER}\n\
              {windows}GTK-APP after 0\n{POWER_DOWN_LINE}\n"
         )

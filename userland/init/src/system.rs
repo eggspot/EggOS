@@ -2,6 +2,7 @@ use crate::agent_server::{AGENT_CHANNEL, AGENT_SERVER, AfterEnd, AgentServer, RE
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
+use crate::shutdown::{self, Ending, LOOK_EVERY_MS, Request, Step};
 use core::ptr;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -19,10 +20,18 @@ const EINTR: isize = 4;
 const ECHILD: isize = 10;
 const WNOHANG: usize = 1;
 const SIGCHLD: usize = 17;
+const SIGKILL: usize = 9;
+const SIGTERM: usize = 15;
+const SIGCONT: usize = 18;
+const ESRCH: isize = 3;
+const EVERY_OTHER_PROCESS: usize = -1isize as usize;
+#[cfg(target_arch = "x86_64")]
+const SA_RESTORER: usize = 0x0400_0000;
 const SIG_DFL: usize = 0;
 const SIG_IGN: usize = 1;
+const SIG_BLOCK: usize = 0;
 const SIGNAL_SET_SIZE: usize = 8;
-const IGNORED_SIGNALS: [usize; 10] = [1, 2, 3, 10, 12, 13, 15, 20, 21, 22];
+const IGNORED_SIGNALS: [usize; 8] = [1, 2, 3, 13, 15, 20, 21, 22];
 const TIOCSCTTY: usize = 0x540e;
 const TIOCSPGRP: usize = 0x5410;
 const STEAL_THE_CONSOLE: usize = 1;
@@ -32,9 +41,6 @@ const CONFIG_CAPACITY: usize = 1024;
 
 const REBOOT_MAGIC1: usize = 0xfee1_dead;
 const REBOOT_MAGIC2: usize = 0x2812_1969;
-const REBOOT_POWER_OFF: usize = 0x4321_fedc;
-const REBOOT_RESTART: usize = 0x0123_4567;
-const REBOOT_HALT: usize = 0xcdef_0123;
 
 const ENVIRONMENT: [&[u8]; 5] = [
     b"HOME=/home/root\0",
@@ -77,6 +83,25 @@ impl SignalAction {
             mask: 0,
         }
     }
+
+    fn catching(handler: extern "C" fn(i32), mask: u64) -> Self {
+        #[cfg(target_arch = "x86_64")]
+        let (flags, restorer) = (
+            SA_RESTORER,
+            eggos_runtime::process::restore_after_signal as *const () as usize,
+        );
+        #[cfg(target_arch = "aarch64")]
+        let (flags, restorer) = (0, 0);
+        #[cfg(target_arch = "riscv64")]
+        let flags = 0;
+        Self {
+            handler: handler as usize,
+            flags,
+            #[cfg(not(target_arch = "riscv64"))]
+            restorer,
+            mask,
+        }
+    }
 }
 
 #[repr(C)]
@@ -111,6 +136,7 @@ fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 
 pub fn run(_startup: &Startup) -> i32 {
     set_signal_actions(SIG_IGN);
+    catch_shutdown_requests();
     say(&[BANNER]);
     let mut services = Services::default();
     if exists(AGENT_CHANNEL) && exists(AGENT_SERVER) {
@@ -148,12 +174,8 @@ pub fn run(_startup: &Startup) -> i32 {
             Some(status) => report(name, status),
             None => say(&[b"init: could not start ", name, b"\n"]),
         }
-        if let Some(command) = reboot_command(config.login_exit) {
-            call(
-                number::REBOOT,
-                [REBOOT_MAGIC1, REBOOT_MAGIC2, command, 0, 0, 0],
-            );
-            say(&[b"init: reboot failed; starting the login program again\n"]);
+        if let Some(request) = login_exit_request(config.login_exit) {
+            shut_down(request);
         }
         let delay = backoff.delay_after(now_ms().saturating_sub(started));
         if delay > 0 {
@@ -170,12 +192,12 @@ pub fn run(_startup: &Startup) -> i32 {
     }
 }
 
-fn reboot_command(login_exit: LoginExit) -> Option<usize> {
+fn login_exit_request(login_exit: LoginExit) -> Option<Request> {
     match login_exit {
         LoginExit::Respawn => None,
-        LoginExit::PowerOff => Some(REBOOT_POWER_OFF),
-        LoginExit::Restart => Some(REBOOT_RESTART),
-        LoginExit::Halt => Some(REBOOT_HALT),
+        LoginExit::PowerOff => Some(Request::PowerOff),
+        LoginExit::Restart => Some(Request::Restart),
+        LoginExit::Halt => Some(Request::Halt),
     }
 }
 
@@ -186,6 +208,88 @@ fn set_signal_actions(handler: usize) {
             number::RT_SIGACTION,
             [signal, &raw const action as usize, 0, SIGNAL_SET_SIZE, 0, 0],
         );
+    }
+}
+
+fn shutdown_requests() -> u64 {
+    shutdown::SIGNALS
+        .iter()
+        .fold(0u64, |mask, signal| mask | (1 << (signal - 1)))
+}
+
+fn catch_shutdown_requests() {
+    let action = SignalAction::catching(on_shutdown_request, shutdown_requests());
+    for signal in shutdown::SIGNALS {
+        call(
+            number::RT_SIGACTION,
+            [signal, &raw const action as usize, 0, SIGNAL_SET_SIZE, 0, 0],
+        );
+    }
+}
+
+extern "C" fn on_shutdown_request(signal: i32) {
+    if let Some(request) = Request::of_signal(signal as usize) {
+        shut_down(request);
+    }
+}
+
+fn kill(pid: usize, signal: usize) -> isize {
+    call(number::KILL, [pid, signal, 0, 0, 0, 0])
+}
+
+fn reap_without_restarting() {
+    let mut status = 0;
+    while wait4(WNOHANG, &mut status) > 0 {}
+}
+
+fn sleep_ms(milliseconds: u64) {
+    let time = Timespec {
+        seconds: (milliseconds / 1000) as i64,
+        nanoseconds: (milliseconds % 1000 * 1_000_000) as i64,
+    };
+    call(
+        number::CLOCK_NANOSLEEP,
+        [CLOCK_MONOTONIC, 0, &raw const time as usize, 0, 0, 0],
+    );
+}
+
+fn shut_down(request: Request) -> ! {
+    let requests = shutdown_requests();
+    call(
+        number::RT_SIGPROCMASK,
+        [SIG_BLOCK, &raw const requests as usize, 0, SIGNAL_SET_SIZE, 0, 0],
+    );
+    kill(EVERY_OTHER_PROCESS, SIGTERM);
+    kill(EVERY_OTHER_PROCESS, SIGCONT);
+    let mut ending = Ending::new(now_ms());
+    loop {
+        reap_without_restarting();
+        let all_ended = kill(EVERY_OTHER_PROCESS, 0) == -ESRCH;
+        match ending.next(all_ended, now_ms()) {
+            Step::Wait => sleep_ms(LOOK_EVERY_MS),
+            Step::Kill => {
+                say(&[b"init: some programs did not end in time; killing them\n"]);
+                kill(EVERY_OTHER_PROCESS, SIGKILL);
+            }
+            Step::GoDown => break,
+        }
+    }
+    call(number::SYNC, [0; 6]);
+    call(
+        number::REBOOT,
+        [
+            REBOOT_MAGIC1,
+            REBOOT_MAGIC2,
+            request.reboot_command(),
+            0,
+            0,
+            0,
+        ],
+    );
+    say(&[b"init: reboot failed; init only reaps children\n"]);
+    loop {
+        reap_without_restarting();
+        sleep_ms(1000);
     }
 }
 

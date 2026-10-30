@@ -1,10 +1,11 @@
 //! The commands the shell boot test runs from `eggsh` (D107, D181): given [`SHELL_CHILD`] and
 //! one of [`SHOW`], [`KILL_SELF`], [`WAIT_FOR_INTERRUPT`], [`STOP_AND_CONTINUE`],
-//! [`READ_LINE`], [`SLEEP`] or [`WINDOW_CHANGE`], the program shows what the shell gave it,
-//! ends by a signal, waits in the console's foreground group for `^C`, is stopped by `^Z` and
-//! continued in the background and the foreground, reads a line (stopped by `SIGTTIN` until
-//! it is in the foreground), sleeps until a signal ends it, or changes the console's window
-//! size and sees `SIGWINCH`.
+//! [`READ_LINE`], [`SLEEP`], [`WINDOW_CHANGE`] or [`TERM_AT_POWER_OFF`], the program shows what
+//! the shell gave it, ends by a signal, waits in the console's foreground group for `^C`, is
+//! stopped by `^Z` and continued in the background and the foreground, reads a line (stopped by
+//! `SIGTTIN` until it is in the foreground), sleeps until a signal ends it, changes the
+//! console's window size and sees `SIGWINCH`, or leaves a process behind that init's power-off
+//! sends `SIGTERM` (D183).
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -41,6 +42,11 @@ pub const SLEEP: &str = "sleep";
 /// it `SIGWINCH` (D181).
 pub const WINDOW_CHANGE: &str = "window-change";
 
+/// Starts a process in a session of its own that writes [`TERM_LINE`] and exits with 0 once
+/// `SIGTERM` reaches it, then writes [`TERM_READY_LINE`] and exits with 0 itself: the process
+/// is ready for the signal by then (D183).
+pub const TERM_AT_POWER_OFF: &str = "term-at-power-off";
+
 /// The line [`WAIT_FOR_INTERRUPT`] writes once it waits in the foreground group.
 pub const WAITING_LINE: &str =
     "EGGOS-SHELL-CHILD: waiting for an interrupt in the foreground group";
@@ -56,6 +62,12 @@ pub const FOREGROUND_LINE: &str = "EGGOS-SHELL-CHILD: back in the foreground";
 
 /// The line [`WINDOW_CHANGE`] writes: the window size it set last, which `SIGWINCH` told it of.
 pub const WINDOW_LINE: &str = "EGGOS-SHELL-CHILD: SIGWINCH 31x101";
+
+/// The line [`TERM_AT_POWER_OFF`] writes once the process it leaves waits for `SIGTERM`.
+pub const TERM_READY_LINE: &str = "EGGOS-SHELL-CHILD: waiting for SIGTERM";
+
+/// The line the process [`TERM_AT_POWER_OFF`] leaves writes when `SIGTERM` reaches it.
+pub const TERM_LINE: &str = "EGGOS-SHELL-CHILD: SIGTERM at power-off";
 
 /// [`SHOW`]'s exit status.
 pub const SHOW_STATUS: u8 = 3;
@@ -74,6 +86,7 @@ const SIGNAL_WAIT: Duration = Duration::from_secs(2);
 
 static CONTINUED: AtomicU32 = AtomicU32::new(0);
 static WINDOW_CHANGES: AtomicU32 = AtomicU32::new(0);
+static TERMINATED: AtomicU32 = AtomicU32::new(0);
 
 mod libc {
     unsafe extern "C" {
@@ -83,6 +96,8 @@ mod libc {
         pub fn kill(pid: i32, signal: i32) -> i32;
         pub fn signal(signal: i32, handler: extern "C" fn(i32)) -> usize;
         pub fn ioctl(fd: i32, request: i32, ...) -> i32;
+        pub fn fork() -> i32;
+        pub safe fn setsid() -> i32;
     }
 }
 
@@ -92,6 +107,10 @@ extern "C" fn count_continue(_: i32) {
 
 extern "C" fn count_window_change(_: i32) {
     WINDOW_CHANGES.fetch_add(1, Ordering::SeqCst);
+}
+
+extern "C" fn note_termination(_: i32) {
+    TERMINATED.fetch_add(1, Ordering::SeqCst);
 }
 
 fn leads_the_foreground() -> Option<i32> {
@@ -211,6 +230,35 @@ pub fn run() -> ExitCode {
                 }
                 false => {
                     let _ = writeln!(output, "EGGOS-SHELL-CHILD: no SIGWINCH ({line})");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some(TERM_AT_POWER_OFF) => {
+            // SAFETY: `note_termination` only adds to an atomic, which a handler may do.
+            unsafe { libc::signal(SIGTERM, note_termination) };
+            let _ = output.flush();
+            // SAFETY: the program runs one thread, so the child may go on running Rust code;
+            // it inherits the handler just set.
+            match unsafe { libc::fork() } {
+                0 => {
+                    libc::setsid();
+                    let started = Instant::now();
+                    while started.elapsed() < WAIT {
+                        if TERMINATED.load(Ordering::SeqCst) > 0 {
+                            let _ = writeln!(output, "{TERM_LINE}");
+                            return ExitCode::SUCCESS;
+                        }
+                        std::thread::sleep(LOOK_EVERY);
+                    }
+                    ExitCode::FAILURE
+                }
+                1.. => {
+                    let _ = writeln!(output, "{TERM_READY_LINE}");
+                    ExitCode::SUCCESS
+                }
+                _ => {
+                    let _ = writeln!(output, "EGGOS-SHELL-CHILD: fork failed");
                     ExitCode::FAILURE
                 }
             }

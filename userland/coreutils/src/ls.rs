@@ -1,7 +1,7 @@
 use crate::options::{Refused, parse_defined};
 use crate::output::{FAILURE, Output, error_for};
 use crate::page::Page;
-use crate::system::{DIRECTORY, FILE_TYPE, Status, SymbolicLinks, System};
+use crate::system::{DIRECTORY, FILE_TYPE, STANDARD_OUTPUT, Status, SymbolicLinks, System};
 use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
 use eggos_commands::page::MAX_KEY_BYTES;
@@ -20,6 +20,17 @@ const EARLIEST_TIME_SHOWN: i64 = -62_167_219_200;
 const LATEST_TIME_SHOWN: i64 = 253_402_300_799;
 const RECORD_BYTES: usize = 8 * 1024;
 const RECORD_PATH_BYTES: usize = 1024;
+const COLUMN_GAP: usize = 2;
+const DEFAULT_LINE_WIDTH: usize = 80;
+const SPACES: [u8; 32] = [b' '; 32];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Layout {
+    #[default]
+    ColumnsOnATerminal,
+    Lines,
+    Columns,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Options {
@@ -28,6 +39,8 @@ struct Options {
     long: bool,
     directories_as_files: bool,
     json: bool,
+    layout: Layout,
+    line_width: Option<usize>,
 }
 
 impl Options {
@@ -169,6 +182,86 @@ fn digits(value: u64) -> usize {
     value.checked_ilog10().map_or(1, |log| log as usize + 1)
 }
 
+fn line_width<S: System>(output: &mut Output<S>, options: Options) -> Option<usize> {
+    if options.long || options.json || options.layout == Layout::Lines {
+        return None;
+    }
+    let terminal = output.system.terminal_columns(STANDARD_OUTPUT);
+    if terminal.is_none() && options.layout == Layout::ColumnsOnATerminal {
+        return None;
+    }
+    match terminal {
+        Some(columns @ 1..) => Some(usize::from(columns)),
+        _ => Some(DEFAULT_LINE_WIDTH),
+    }
+}
+
+fn display_width(name: &[u8]) -> usize {
+    name.iter()
+        .filter(|&&byte| !(0x80..0xc0).contains(&byte))
+        .count()
+}
+
+fn column_width(
+    width_of: &impl Fn(usize) -> usize,
+    count: usize,
+    rows: usize,
+    column: usize,
+) -> usize {
+    (column * rows..count.min((column + 1) * rows))
+        .map(width_of)
+        .max()
+        .unwrap_or(0)
+}
+
+fn rows_for(count: usize, line_width: usize, width_of: &impl Fn(usize) -> usize) -> usize {
+    let most_columns = (line_width + COLUMN_GAP) / (1 + COLUMN_GAP);
+    let mut rows = count.div_ceil(most_columns.max(1)).max(1);
+    while rows < count {
+        let columns = count.div_ceil(rows);
+        let names: usize = (0..columns)
+            .map(|column| column_width(width_of, count, rows, column))
+            .sum();
+        if names + COLUMN_GAP * (columns - 1) < line_width {
+            return rows;
+        }
+        rows += 1;
+    }
+    count
+}
+
+fn write_spaces<S: System>(output: &mut Output<S>, mut count: usize) {
+    while count > 0 {
+        let piece = count.min(SPACES.len());
+        output.write(&SPACES[..piece]);
+        count -= piece;
+    }
+}
+
+fn write_columns<'a, S: System>(
+    output: &mut Output<S>,
+    line_width: usize,
+    count: usize,
+    name: impl Fn(usize) -> &'a [u8],
+) {
+    let width_of = |index: usize| display_width(name(index));
+    let rows = rows_for(count, line_width, &width_of);
+    for row in 0..rows.min(count) {
+        let mut index = row;
+        let mut column = 0;
+        while index < count {
+            output.write(name(index));
+            if index + rows < count {
+                let width = column_width(&width_of, count, rows, column);
+                write_spaces(output, width - width_of(index) + COLUMN_GAP);
+            }
+            index += rows;
+            column += 1;
+        }
+        output.write(b"\n");
+    }
+}
+
 pub fn ls<S: System>(output: &mut Output<S>, listing: &mut Listing, arguments: &[&CStr]) -> i32 {
     let mut options = Options::default();
     let mut page = Page::default();
@@ -181,6 +274,8 @@ pub fn ls<S: System>(output: &mut Output<S>, listing: &mut Listing, arguments: &
             Some(b'A') => options.almost_all = true,
             Some(b'l') => options.long = true,
             Some(b'd') => options.directories_as_files = true,
+            Some(b'1') => options.layout = Layout::Lines,
+            Some(b'C') => options.layout = Layout::Columns,
             _ => options.json |= given.is_long("json"),
         }
         Ok(())
@@ -188,6 +283,7 @@ pub fn ls<S: System>(output: &mut Output<S>, listing: &mut Listing, arguments: &
     let Ok(operands) = parsed else {
         return SERIOUS_TROUBLE;
     };
+    options.line_width = line_width(output, options);
     let operands = match operands.all() {
         [] => &[c"."][..],
         given => given,
@@ -254,11 +350,20 @@ fn list_operands<'a, S: System>(
     }
     let files = &mut files[..file_count];
     files.sort_unstable_by(|a, b| a.path.cmp(b.path));
-    let widths = Widths::of(files.iter().map(|file| &file.status));
-    for file in files.iter() {
-        let path = file.path.to_bytes();
-        if !write_entry(output, options, None, path, &file.status, widths) {
-            status = status.max(FAILURE);
+    match options.line_width {
+        Some(line_width) => {
+            write_columns(output, line_width, files.len(), |index| {
+                files[index].path.to_bytes()
+            });
+        }
+        None => {
+            let widths = Widths::of(files.iter().map(|file| &file.status));
+            for file in files.iter() {
+                let path = file.path.to_bytes();
+                if !write_entry(output, options, None, path, &file.status, widths) {
+                    status = status.max(FAILURE);
+                }
+            }
         }
     }
     let mut printed = !files.is_empty();
@@ -334,19 +439,26 @@ fn list_directory<S: System>(
         output.write(b"\n");
     }
     output.system.close(descriptor);
+    let listing: &Listing = listing;
     let entries = &listing.entries[..listing.count];
-    let widths = Widths::of(entries.iter().map(|entry| &entry.status));
-    for entry in entries {
-        let name = listing.name(entry);
-        if !write_entry(
-            output,
-            options,
-            Some(path.to_bytes()),
-            name,
-            &entry.status,
-            widths,
-        ) {
-            status = status.max(FAILURE);
+    if let Some(line_width) = options.line_width {
+        write_columns(output, line_width, entries.len(), |index| {
+            listing.name(&entries[index])
+        });
+    } else {
+        let widths = Widths::of(entries.iter().map(|entry| &entry.status));
+        for entry in entries {
+            let name = listing.name(entry);
+            if !write_entry(
+                output,
+                options,
+                Some(path.to_bytes()),
+                name,
+                &entry.status,
+                widths,
+            ) {
+                status = status.max(FAILURE);
+            }
         }
     }
     if let Some(length) = last_length {
@@ -877,6 +989,82 @@ mod tests {
         let (status, fake) = run(tree(), &[c"--limit", c"501", c"/etc"]);
         assert_eq!(status, 2);
         assert!(fake.errors().contains("1 to 500"), "{}", fake.errors());
+    }
+
+    fn columns_tree(terminal_width: Option<u16>) -> Fake {
+        let mut fake = tree();
+        for name in ["a", "bb", "ccc", "dddd", "eeeee", "f", "gg"] {
+            fake = fake.with_file(&format!("/c/{name}"), 0o644, b"", 0);
+        }
+        fake = fake.with_directory("/c", 0);
+        fake.terminal_width = terminal_width;
+        fake
+    }
+
+    #[test]
+    fn a_terminal_gets_the_names_in_as_few_rows_as_fit_sorted_down_each_column() {
+        let (status, fake) = run(columns_tree(Some(80)), &[c"/c"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(30)), &[c"/c"]);
+        assert_eq!(fake.output(), "a   ccc   eeeee  gg\nbb  dddd  f\n");
+        let (_, fake) = run(columns_tree(Some(10)), &[c"/c"]);
+        assert_eq!(fake.output(), "a      f\nbb     gg\nccc\ndddd\neeeee\n");
+        let (_, fake) = run(columns_tree(Some(1)), &[c"/c"]);
+        assert_eq!(fake.output(), "a\nbb\nccc\ndddd\neeeee\nf\ngg\n");
+    }
+
+    #[test]
+    fn a_line_exactly_as_wide_as_the_terminal_wraps_into_more_rows() {
+        let (_, fake) = run(columns_tree(Some(31)), &[c"/c"]);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(30)), &[c"/c"]);
+        assert_eq!(fake.output().lines().count(), 2);
+    }
+
+    #[test]
+    fn a_pipe_gets_one_name_a_line_and_dash_one_and_dash_capital_c_choose() {
+        let (_, fake) = run(columns_tree(None), &[c"/c"]);
+        assert_eq!(fake.output(), "a\nbb\nccc\ndddd\neeeee\nf\ngg\n");
+        let (_, fake) = run(columns_tree(Some(80)), &[c"-1", c"/c"]);
+        assert_eq!(fake.output(), "a\nbb\nccc\ndddd\neeeee\nf\ngg\n");
+        let (_, fake) = run(columns_tree(None), &[c"-C", c"/c"]);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(0)), &[c"/c"]);
+        assert_eq!(fake.output(), "a  bb  ccc  dddd  eeeee  f  gg\n");
+        let (_, fake) = run(columns_tree(Some(80)), &[c"-C", c"-1", c"/c"]);
+        assert_eq!(fake.output().lines().count(), 7);
+    }
+
+    #[test]
+    fn the_long_format_and_json_stay_one_entry_a_line_on_a_terminal() {
+        let (_, fake) = run(columns_tree(Some(80)), &[c"-l", c"/bin"]);
+        assert_eq!(
+            fake.output(),
+            "total 2\n-rwxr-xr-x 1 0 0 2000 1971-01-01 00:00 ls\n"
+        );
+        let (_, fake) = run(columns_tree(Some(80)), &[c"--json", c"/c"]);
+        assert_eq!(fake.output().lines().count(), 7);
+    }
+
+    #[test]
+    fn file_operands_and_each_folder_get_columns_of_their_own() {
+        let (status, fake) = run(
+            columns_tree(Some(80)),
+            &[c"/etc/motd", c"/bin/ls", c"/etc", c"/c"],
+        );
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "/bin/ls  /etc/motd\n\n/c:\na  bb  ccc  dddd  eeeee  f  gg\n\n/etc:\nhostname  motd\n"
+        );
+    }
+
+    #[test]
+    fn a_name_s_width_counts_characters_not_bytes() {
+        assert_eq!(display_width(b"plain"), 5);
+        assert_eq!(display_width("caf\u{e9}".as_bytes()), 4);
+        assert_eq!(display_width("\u{1f95a}".as_bytes()), 1);
     }
 
     #[test]

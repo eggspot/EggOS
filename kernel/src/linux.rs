@@ -76,6 +76,7 @@ pub mod memory_devices;
 pub mod pipe;
 pub mod poll;
 pub mod proc;
+pub mod process_ids;
 pub mod process_table;
 pub mod random;
 pub mod reboot;
@@ -3821,12 +3822,7 @@ mod tests {
         }
         let group_of_none = u64::from(i32::MIN as u32);
         let no_process = u64::from(i32::MAX as u32);
-        for target in [
-            no_process,
-            u64::MAX,
-            group_of_none,
-            no_process.wrapping_neg(),
-        ] {
+        for target in [no_process, group_of_none, no_process.wrapping_neg()] {
             assert_eq!(
                 call(&process, number::KILL, [target, 65, 0, 0, 0, 0]),
                 esrch
@@ -6510,7 +6506,7 @@ mod tests {
         clear_child_tid: u64,
     ) -> LinuxThread {
         process.add_thread();
-        let id = process::allocate_thread_id().unwrap();
+        let id = process::allocate_thread_id::<P>().unwrap();
         let second = first.new_thread(
             id,
             clear_child_tid,

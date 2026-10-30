@@ -44,6 +44,10 @@ const MSG_DONTWAIT: usize = 0x40;
 const POLLIN: i16 = 1;
 const SIGSET_BYTES: usize = 8;
 const SOCKADDR_IN_SIZE: usize = 16;
+const SIGTERM: usize = 15;
+const SIG_UNBLOCK: usize = 1;
+const INIT: usize = 1;
+const TIOCGWINSZ: usize = 0x5413;
 
 #[repr(C)]
 struct PollFd {
@@ -759,6 +763,44 @@ impl System for Linux {
             }
         }
         Ok(())
+    }
+
+    fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
+        let default_action = [0usize; 4];
+        call(
+            number::RT_SIGACTION,
+            [
+                SIGTERM,
+                default_action.as_ptr() as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )?;
+        let terminate = 1u64 << (SIGTERM - 1);
+        call(
+            number::RT_SIGPROCMASK,
+            [
+                SIG_UNBLOCK,
+                &raw const terminate as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+                0,
+            ],
+        )?;
+        call(number::KILL, [INIT, signal as usize, 0, 0, 0, 0]).map(|_| ())
+    }
+
+    fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {
+        let mut size = [0u16; 4];
+        call(
+            number::IOCTL,
+            [descriptor, TIOCGWINSZ, size.as_mut_ptr() as usize, 0, 0, 0],
+        )
+        .ok()?;
+        Some(size[1])
     }
 }
 

@@ -62,7 +62,7 @@ const SECOND_NAME: &str = "/home/docs/a-second";
 const FIRST_SESSION: [&[u8]; 5] = [
     b"mkdir /home/docs /home/docs/deep; echo hello > /home/docs/a.txt; echo more >> /home/docs/a.txt; cat /home/docs/a.txt\r",
     b"cp /media/host/large.bin /home/docs/large.bin; echo x > /home/old.txt; mv /home/old.txt /home/docs/deep/new.txt; echo gone > /home/gone.txt; rm /home/gone.txt; mkdir /Applications/Tool; echo tool > /Applications/Tool/run.txt; sync; echo EGGOS-PERSIST synced $?\r",
-    b"ls /home /home/docs\r",
+    b"ls -1 /home /home/docs\r",
     b"ln -s a.txt /home/docs/a-link; ln /home/docs/a.txt /home/docs/a-second; readlink /home/docs/a-link; /media/host/script.sh arg; sync; echo EGGOS-PERSIST linked $?\r",
     b"poweroff\r",
 ];

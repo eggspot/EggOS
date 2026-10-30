@@ -108,18 +108,21 @@ pub fn start<P: Platform>(beside: &Process<P>, command: &[u8]) -> Result<(), &'s
     }
     let image = ProgramBytes::read(node, attributes.size, u64::MAX).map_err(|_| "unreadable")?;
     let mut process = beside.new_beside()?;
-    let context = exec::load(&mut process, image.bytes(), path, arguments, &ENVIRONMENT)
-        .map_err(|_| "not a program this machine runs")?;
+    let id = process.id().get();
+    process_table::TABLE
+        .lock()
+        .add(id, None)
+        .map_err(|_| "no room in the process table")?;
+    let Ok(context) = exec::load(&mut process, image.bytes(), path, arguments, &ENVIRONMENT)
+    else {
+        process_table::TABLE.lock().remove_unended(id);
+        return Err("not a program this machine runs");
+    };
     let process = Arc::new(process);
     let file_name = path.rsplit(|&byte| byte == b'/').next().unwrap_or(path);
-    {
-        let mut table = process_table::TABLE.lock();
-        table
-            .add_if_missing(process.id().get())
-            .map_err(|_| "no room in the process table")?;
-        table.set_name(process.id().get(), process_table::name_of(file_name));
-    }
-    let id = process.id().get();
+    process_table::TABLE
+        .lock()
+        .set_name(id, process_table::name_of(file_name));
     if linux::spawn::<P>(process, context).is_err() {
         process_table::TABLE.lock().remove_unended(id);
         return Err("could not start its thread");
