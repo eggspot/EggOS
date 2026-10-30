@@ -15577,3 +15577,37 @@ the license, by an explicit instruction recorded here.
   - Checking a mounted volume online.
   - A progress report for the checker on big disks.
   - The baseline lines for `eggfs_lookup_10k` (added when the build phase measures it).
+- **Slice 40b, the kernel side.** Each disk keeps the place its driver installed it at
+  (`block::DISK_NAMES`: `vda` to `vdd`). The boot gives the disks no file system took back to
+  their places (`block::put_back`) and records where the others are mounted
+  (`block::mark_mounted`: `/home`, `/work`, `/media/host`).
+  - **`/dev/vda` to `/dev/vdd`.** A present disk's node is a regular file of root's (0600), as
+    large as the disk. Reads and writes go to the whole disk ([`block::read_at`],
+    [`block::write_at`]: at most 60 KiB a call, a partial sector read, changed and written
+    back), `fsync` flushes it. While a file system holds the disk, or another transfer has
+    it, a write fails with `EBUSY` and a read with `EIO`. Writing past the end is `ENOSPC`.
+  - **`/proc/driver/disks`.** One line per disk: `<name> <sectors> <ro|rw> <place>`, `-` for
+    a disk no file system holds. `disk list` reads it.
+  - **Settings' Storage pane** is designed (`docs/ux/storage-v0.3.md`, Claude Fable).
+- **Decided by research (slice 40b).** Checking and repairing are two commands, `disk check`
+  (read-only, tool `disk_check`, `view` grant, `readOnlyHint`) and `disk repair` (writes,
+  tool `disk_repair`, `write` grant), with `repair` added to `disk`'s verbs, rather than
+  `disk check --repair`. A tool has one effect and one grant, so one tool could not let an
+  agent holding only `view` check a disk. No option of any command raises its effect, and
+  `diskutil verifyVolume` / `repairVolume` split them the same way. No `--repair` alias.
+- **Choices made without research (slice 40b).**
+  - Disks are regular files in `/dev`, not block devices (`S_IFBLK` with `BLKGETSIZE64`):
+    `read`, `write`, `lseek`, `pread64`, `pwrite64`, `fsync` and `stat`'s size then work
+    through the existing paths, and no new file kind is needed.
+  - The `disk` command will be served by `/bin/settings` (a hard link `/bin/disk`, as
+    `/bin/edit` is), not by the core utilities: the checker needs a memory allocator, which
+    `/bin/coreutils` has none of and `/bin/settings` has, and the Storage pane lives there.
+- **Not yet (after slice 40b's kernel side).** The shared capability (`eggos_files::storage`:
+  the disk list from `/proc/driver/disks`, a `Disk` over a `/dev/vdX` file, check, repair and
+  format refusing a mounted or read-only disk), the commands `disk list`, `disk check`,
+  `disk repair` and `disk format` (`--label`, `--dry-run`, `--yes`, a typed prompt
+  otherwise, `needs_confirmation` without a terminal), the MCP tools `disk_list`,
+  `disk_check`, `disk_repair` and `disk_format` (`destroy`, `Confirmation::Always`), the
+  Storage pane, and the QEMU test that formats a second disk, checks it and repairs a damaged
+  image. Mounting a disk from userland (no `mount` system call yet); `S_IFBLK` nodes and
+  `BLKGETSIZE64` for Linux tools; a mounted volume's label in `/proc/driver/disks`.
