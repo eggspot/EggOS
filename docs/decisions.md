@@ -12010,3 +12010,147 @@ the license, by an explicit instruction recorded here.
   and memory files through `/proc` links, and a pipe opened for reading and writing; deadlock
   detection across open-file-description locks (Linux has none either); the gaps and the
   times the first run shows, to be recorded in the roadmap; stage 3, EggOS building EggDB.
+
+## D174 A real classic Win32 app installs and runs: Pegs from Simon Tatham's Puzzles through ANSI windows, program-made dialogs on `DefDlgProc`, the drop-down list combo box, menu ticks and greying, window placement from the new `GET_PLACEMENT` request, memory device contexts and `BitBlt`, and CI's `win32-app` job (the Real apps track's fourth step, its first Windows app; extends D18, D21, D22, D127, D129, D145, D146, D151, D161, D162, D172) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the new controls designed by Claude Fable, `docs/ux/windows-controls-v0.3.md` sections 10-19)
+- **Why.** The Real apps track checks EggOS against applications people use. After a Linux SDL
+  app (D172), its Windows step runs a real classic Win32 program: one written against the
+  plain Win32 API in C, as most small Windows tools and games are, which no test program of
+  ours (`win-paint`, `win-controls`, `eggpad`) covers, since those use only the wide functions
+  and the parts of user32 they were written for.
+- **The app** (decided by research, below): Pegs, from Simon Tatham's Portable Puzzle
+  Collection, build `20260923.616da16` (MIT), the collection's official x64 `pegs.exe`
+  (165448 bytes, SHA-256 `d093bd48...cc7`, pinned in `xtask/src/win32_app.rs`), downloaded
+  from <https://www.chiark.greenend.org.uk/~sgtatham/puzzles/pegs.exe>. It is test data:
+  downloaded by CI on every run, never shipped or committed; the collection replaces the file at
+  that address with each build, so a new build is pinned again by hand (the versioned
+  installer `puzzles-20260923.616da16-installer.msi` holds the same file). The collection
+  publishes x64 Windows builds only, so the app runs and is checked on **x86_64 only**; on
+  aarch64 it waits for x64 programs on Arm (part 39). docs/compatibility.md lists it.
+- **What it needed** (79 of its 191 imports were missing; all are in now):
+  - **ANSI windows** (`win32/ansi.rs`). The layer's ANSI code page is UTF-8 (D118), so ANSI
+    text converts exactly. A class `RegisterClassA` registers marks its windows ANSI
+    (`Class.ansi`, `Window.ansi`): the layer keeps every message's text as UTF-16 and, when it
+    calls an ANSI window's procedure, narrows the strings the message carries (`WM_SETTEXT`,
+    `WM_CREATE`'s and `WM_NCCREATE`'s names in a copy of the `CREATESTRUCT`, the list and combo
+    strings), widens `WM_GETTEXT`'s answer back into the caller's buffer, and sends a character
+    past ASCII as its UTF-8 bytes, one `WM_CHAR` each. The ANSI functions that take text
+    (`DefWindowProcA`, `SendMessageA`, `SetWindowTextA`, `GetWindowTextA`,
+    `GetDlgItemTextA`, `SendDlgItemMessageA`, `CreateWindowExA`, `RegisterClassA`/`ExA`,
+    `MessageBoxA`, `AppendMenuA`) widen what they are given and narrow what they give back,
+    counting lengths in UTF-8 bytes; the ANSI names of functions that take no text are the
+    wide functions. `TranslateMessage` also finds a key's character by its window and virtual
+    key when the program hands it a `MSG` of its own making (Pegs passes one with a changed
+    `lParam` and no time).
+  - **Dialogs a program builds** (`win32/dialog_window.rs`): `DefDlgProcW`/`A` call the dialog
+    procedure in `DWLP_DLGPROC` first and answer from `DWLP_MSGRESULT` when it handles a
+    message; otherwise the design's 11.2: the grey background whatever the class brush,
+    `WM_CLOSE` as `IDCANCEL`, the font kept (`WM_SETFONT`/`WM_GETFONT`), the first tab stop
+    focused when the dialog gets the focus, `WM_NEXTDLGCTL`, `DM_GETDEFID`. A top-level
+    `WS_POPUP` window with an owner is created as the window server's dialog of its owner's
+    top-level window (fixed size), as design 11.1 says; `CheckDlgButton` and
+    `IsDlgButtonChecked` are in.
+  - **The drop-down list combo box** (`COMBOBOX` with `CBS_DROPDOWNLIST`; model and painting in
+    `eggos-windows-gui`'s `controls/combo_box.rs`, wiring in `win32/combo_box.rs`): the closed
+    box always 24 pixels tall, the list laid out from the height the program gave (at most 30
+    rows), opening below, else above, else below clipped, drawn over the top-level window's
+    content in the same buffer as a menu's drop-down and taking all of that window's input
+    until it closes; the `CB_*` messages and the `CBN_*` notifications in design section 10's
+    order (`CBN_SELENDOK`, `CBN_CLOSEUP`, `CBN_SELCHANGE`; a cancel restores the selection);
+    the vertical scroll bar of a long list (design section 14's look; arrows and track page;
+    the thumb is not dragged yet). In agents' element tree a combo box is a list whose value is
+    its chosen item.
+  - **Menus**: `CheckMenuItem`, `EnableMenuItem` and `GetMenuState` by position or by command
+    (searched in the drop-downs, `gui::menus::locate`), and `GetMenuItemRect` for a bar entry,
+    on the screen.
+  - **Where windows are**: a new window server request, `GET_PLACEMENT` (`0xc014771c`,
+    `Desktop::placement`), gives a client its own window's outside rectangle on the screen, from
+    which `GetWindowRect`, `ClientToScreen`, `ScreenToClient` and `GetMenuItemRect` work
+    (`win32/placement.rs`). `SetWindowPos` and `MoveWindow` now move and resize top-level
+    windows too (the server's `SET_SIZE` and `SET_POSITION`, the client area and `WM_SIZE`
+    following), and `SystemParametersInfo`'s `SPI_GETWORKAREA`, the rectangle helpers,
+    `GetKeyboardState`, `GetKeyState`, `GetAsyncKeyState` (`InputState` keeps the keys held),
+    `SetForegroundWindow` (true when the window is already the active one; a client cannot raise
+    itself), `MessageBeep` (no sound device yet), `WinHelp` (no help viewer: it fails) and
+    `GetDialogBaseUnits` are in.
+  - **Drawing off screen** (`win32/gdi.rs`): memory device contexts (`CreateCompatibleDC`,
+    `DeleteDC`) start on a 1 by 1 default bitmap and draw on the bitmap selected into them
+    (`CreateCompatibleBitmap`, a heap block of 32-bit pixels, at most 16384 pixels a side and
+    16 Mi pixels; `DeleteObject` refuses a selected one); `BitBlt` and `PatBlt` with all 256
+    raster operations by their truth table (`eggos_windows_gui::blit`), row by row through a
+    chunk on the stack in the order that never overwrites a pixel before it is read; `Polygon`
+    (alternate filling, pixel centres) and `Polyline` (at most 512 points); `IntersectClipRect`,
+    `SelectClipRgn` and rectangular regions; fonts that are all Egg Mono with its honest
+    metrics (design 11.3: `GetTextMetricsW`/`A` give height 16, ascent 13, descent 3, average and
+    widest 8), `ExtTextOutW`/`A`, `TextOutA`, `GetTextExtentPoint32A`, `GetDeviceCaps` (96 dots
+    per inch) and `SetMapMode` (`MM_TEXT`). Printing fails: `PrintDlg` reports no default
+    printer and `StartDoc` refuses, as EggOS has no printers; `CreateHatchBrush` paints solid.
+  - **The rest**: comctl32 (`InitCommonControls`, which programs import by ordinal 17, now
+    resolved by ordinal, and `InitCommonControlsEx` for the standard classes); comdlg32's ANSI
+    pickers; kernel32's ANSI directory functions, `MoveFileW`/`A`/`ExW`/`ExA` (`renameat2`),
+    `GetModuleFileNameA`, `FormatMessageA`, `MulDiv`, moveable `GlobalAlloc` blocks with
+    `GlobalLock`/`Unlock`/`Size`; the program's own clipboard (`win32/clipboard.rs`; a clipboard
+    shared between apps is part 45); the C runtime's `getenv`, `atof`, `strtod`, `strspn`,
+    `strcspn`, `_wassert`, `_fdopen`, `_open_osfhandle`, `sqrtf` (correctly rounded from an
+    integer square root, `float.rs`) and `scanf`'s family through `__stdio_common_vsscanf`
+    (`scan.rs`, with the `_s` forms' buffer sizes); `WM_LBUTTONDBLCLK` for a program's
+    `CS_DBLCLKS` classes (400 ms, 4 pixels; the system's controls still see two presses);
+    a `six_stack_arguments` export entry on aarch64 for `CreateFont`'s fourteen arguments.
+- **Front-ends (D22).** GUI: the app's icon and launcher row open it, Files and the installer
+  install it, and everything above is what its window does. CLI: `app install`, `app open`,
+  `app list`, `wm list`, `wm show` and `wm act` on its windows and dialogs. MCP: `app_install`,
+  `app_open`, `wm_list`, `wm_show`, `wm_click`, `wm_drag`, `wm_type`, `wm_press`.
+- **The check** (`cargo xtask win32-app --arch x86_64`, `xtask/src/qemu/win32_app.rs`; CI's
+  `win32-app` job, x86_64, in `check`'s needs): boots the release image with a blank disk and
+  `pegs.exe` in the host folder, installs and lists it, opens it from `/tmp`, finds its window
+  where the screen changed and its content by its menu bar, checks the pegs of the first jump,
+  drags the peg (3,1) over (3,2) into (3,3), presses `u` and wants the starting board back pixel
+  for pixel and `r` the jumped one, wants `Type`'s tick on `Cross 7x7`, chooses `Cross 5x7`
+  and wants a narrower window and the tick moved, opens `Help > About` and closes it with
+  Enter, opens `Type > Custom...`, opens its board type list (Tab, Tab, Alt+Down) and closes
+  the list and the dialog with Esc, wanting the board unchanged after each dialog, quits with
+  `q`, and wants no Pegs window in `wm list` and a clean power-off.
+- **Tests.** eggos-windows-gui: polygons and polylines, the raster operations' truth tables and
+  where a copy lands, the scroll bar's thumb and parts, the combo box's rows, placement, choosing,
+  cancelling, keys and pixels. Windows layer: menus located by command and their flags,
+  memory contexts and regions, the keyboard state, decimal text and the square root, `scanf`'s
+  conversions. drivers: `GET_PLACEMENT` for the client's own window only. xtask: the pin, the
+  architecture rule, the verdict, the window, content, cell, menu and tick arithmetic.
+- **Decided by research** (a research subagent downloaded and read the import tables and
+  resources of Pegs, the collection's other puzzles, PuTTYgen, Winfile and a small notepad, and
+  read the collection's MIT sources): Pegs, because it is a real, popular, freely licensed
+  classic Win32 program built by MSVC on `/MD`, with the fewest missing functions among the
+  candidates (79; PuTTYgen 91 with the registry, `advapi32` and a static C runtime; Winfile
+  about 200 with OLE and C++), its whole interface built in code (menus, dialogs on
+  `DefDlgProcA` with static text, buttons, check boxes, edits and a drop-down list) so no
+  resource templates are needed, its board drawn off screen and copied with `BitBlt`, no status
+  bar (unlike Fifteen, Sixteen, Net and others), and its Cross board the same at every start,
+  so frames compare. Runner-up: PuTTYgen 0.85 (it ships ARM64 too, but needs the registry, a
+  progress bar and random key generation). Its finding that the collection ships no ARM64
+  build settled x86_64 only.
+- **Decided without research.** ANSI as conversion at the procedure boundary (the layer stays
+  UTF-16 inside); `GET_PLACEMENT` as a new request rather than position events (a client asks
+  where its window is when it needs it); owned popups as the server's dialogs (design 11.1);
+  `SetForegroundWindow` answering whether the window is already active; `WinHelp` failing;
+  hatched brushes painted solid; the process's own clipboard until part 45; the looser
+  `TranslateMessage` match; the check's timings (300 s for the window under TCG, 1500 s in
+  all) and finding the window by the screen's change. The owner can overrule any of these.
+- **Performance and size (D24).** Nothing on a kernel hot path changes; the window server gains
+  one request that reads a rectangle. A console program pays nothing; a GUI program's state
+  grows by the combo box tracking, the last click and the keys held (about 60 bytes), a combo
+  box's state is a heap block of about 17 KiB, and a bitmap is its pixels. `BitBlt`'s copy
+  reads each pixel once through a 2 KiB stack chunk. The layer's program grows by the new
+  functions; no benchmark is added, as no kernel hot path is touched.
+- **Not yet.** The rest of D145's list for other apps: multi-line edits and selection in every
+  edit (design 13), `ES_PASSWORD` and `ES_NUMBER`, radio buttons' keys and group boxes beyond
+  their look (design 15), scroll bars as controls and on windows (design 14; only the combo
+  list's is drawn, its thumb not dragged), `CBS_DROPDOWN` and `CBS_SIMPLE`, item data
+  (`CB_GETITEMDATA`), submenus as cascades (design 12; they still draw as disabled items),
+  `TrackPopupMenu`, keyboard accelerators and `LoadAccelerators`, menu keys (F10, Alt,
+  mnemonics), `MFT_RADIOCHECK`, dialogs from resource templates (`DialogBoxParamW`,
+  `CreateDialogParamW`, design 11.4), `SetCursor` and `ShowCursor` (design 16), hover looks,
+  `WM_CTLCOLOR*`, double clicks in the system's controls (`LBN_DBLCLK`, word selection);
+  comctl32's common controls (Fifteen, Sixteen, Net and the other puzzles with a status bar
+  need its status bar: part 26), the math library beyond `sqrtf` (other puzzles import `sin`,
+  `cos`, `floor`), printing, HTML Help, a clipboard shared between apps (part 45), hatched
+  brushes; aarch64 (part 39, x64 programs on Arm); a client raising its own window
+  (`SetForegroundWindow`); fonts other than Egg Mono.

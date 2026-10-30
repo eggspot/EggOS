@@ -599,8 +599,19 @@ The release path (the release-path review's issues #141-#145, after the items ab
   dynamically linked Linux programs installed from a `.zip` with their loader and libraries,
   the manifest's `loader`, `libraries` and `arguments`, `app install --arguments` and
   `app_install`'s `arguments`; CI's `sdl3` and `sdl-app` jobs install it, open it, play turns,
-  save and close it on x86_64 and aarch64. Next: a real Win32 app (part 22), then a real GTK
-  app (part 24).
+  save and close it on x86_64 and aarch64. Its fourth step, a real classic Win32 app installs
+  and runs, **written, unchecked** (D174): Pegs from Simon Tatham's Portable Puzzle Collection
+  (chosen by research; its official x64 build only, so x86_64 only), listed in
+  docs/compatibility.md; ANSI windows and the user32 functions that take ANSI text, `DefDlgProc`
+  dialogs owned by a window (a window server dialog), the drop-down list combo box (Claude
+  Fable's docs/ux/windows-controls-v0.3.md sections 10-19), `CheckMenuItem`,
+  `EnableMenuItem`, `GetMenuItemRect`, `GetWindowRect` from the new `GET_PLACEMENT` request,
+  `SetWindowPos` and `MoveWindow` on top-level windows, memory device contexts, bitmaps and
+  `BitBlt` with every raster operation, polygons, clip rectangles, honest font metrics, the
+  keyboard state, double clicks, the process's own clipboard, comctl32's
+  `InitCommonControls` by ordinal, `scanf`, `atof`, `getenv` and `sqrtf`; CI's `win32-app` job
+  plays it, undoes and redoes, changes its board from its menu, opens its dialogs and compares
+  the frames. Next: a real GTK app (part 24), then Windows programs on C++ (part 25).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

@@ -10,6 +10,8 @@ in pixels at scale 1 and doubles at 2x; the font is Egg Mono 8x16 (cell 8x16, un
 14, `...` three `.` glyphs, a codepoint the font lacks `?`), no second font, no anti-aliasing.
 Primitives: `fill`, `rounded` with an inset table, 1 px rectangles, `pixel`, `glyph`.
 
+Sections 10-19 were added for the Real apps track's first Windows app, Pegs from Simon Tatham's Puzzles (D174); sections 0-9 stand, except where a later section says it replaces a rule.
+
 ## 0. Two palettes, one set of controls
 
 **Decision: a program's client area, its menu bar and its drop-downs are light (Win32's
@@ -402,3 +404,415 @@ the injected `FocusOut`/`FocusIn` pair leaving the menu and the caret as they we
 picker's listing order, hidden files, the filter, the typed-folder rule, the two message box
 texts and the returned `lpstrFile` fields. The QEMU boot test's Windows program shows frame A,
 then frame C, then the picker, and each `screendump` is compared with the host's render.
+
+## 10. COMBOBOX
+
+Palette rows added to section 0's table (Light values are Windows 10's scroll bar and combo
+constants; Dark reuses the toolkit's tokens):
+
+| Role | Light | Dark |
+|---|---|---|
+| `scroll.arrow` / `scroll.arrow.disabled` | `606060` / `BFBFBF` | `text.dim` / `button.border` |
+| `scroll.arrow.hover.fill` / `scroll.arrow.pressed.fill` / `.pressed.glyph` | `DADADA` / `606060` / `FFFFFF` | `button.hover` / `button.pressed` / `text` |
+| `scroll.thumb.hover` / `scroll.thumb.pressed` | `A6A6A6` / `606060` | `text.dim` / `text` |
+| `combo.focus.fill` / `combo.focus.text` | `highlight` / `highlight.text` | `selection` / `text` |
+
+Chevrons, drawn with `pixel` in the text colour of the moment: `CHEVRON_DOWN` is 8x4, rows
+`##....##`, `.##..##.`, `..####..`, `...##...`; `CHEVRON_UP` is it flipped; `CHEVRON_RIGHT` is
+4x8, rows `#...`, `##..`, `.##.`, `..##`, `..##`, `.##.`, `##..`, `#...`; `CHEVRON_LEFT` is it
+mirrored. The same four serve the scroll bars (section 14) and submenus (section 12).
+
+**`CBS_DROPDOWNLIST`.** The program's rect is `(x, y, w, h)`; the **closed box** is always
+`(x, y, w, 24)` (`GetWindowRect`/`GetClientRect` report 24 tall; `CB_GETITEMHEIGHT` answers 22
+for -1 and 20 for an item; `CB_SETITEMHEIGHT` is accepted and ignored); `h` only bounds the
+list. The closed box has the push button's look: fill `button.fill`, 1 px `button.border`
+(Light square, Dark `INSET_R4`); the selected item's text at `x + 4`, cell top `y + 4`, room
+`w - 25` (cut with `...`), nothing when no item is selected; the arrow area is the rightmost
+16 px inside the border, `(x + w - 17, y + 1, 16, 22)`, not filled separately, with
+`CHEVRON_DOWN` at `(x + w - 13, y + 10)`. The whole closed box is one hit target.
+
+| State | Light fill / border / text and chevron | Dark |
+|---|---|---|
+| plain | `E1E1E1` / `ADADAD` / `000000` | `button.bg` / `button.border` / `text` |
+| hovered | `E5F1FB` / `0078D7` / `000000` | `button.hover` / `text.dim` / `text` |
+| open, or pressed | `CCE4F7` / `005499` / `000000` | `button.pressed` / `text.dim` / `text` |
+| disabled | `CCCCCC` / `BFBFBF` / `6D6D6D` | `button.bg` / `button.border` / `text.dim` |
+| focused, closed | plus the text area `(x + 3, y + 3, w - 20, 18)` filled `combo.focus.fill`, text `combo.focus.text`, the dotted rect on that area's outline in `combo.focus.text` | plus the area filled `selection` and the ring at inset 2 of the box |
+
+**The list.** `rows = min(count, max(1, min(30, (h - 26) / 20)))`; `CB_SETMINVISIBLE n`
+replaces `min(30, (h - 26) / 20)` by `max(n, (h - 26) / 20)`. `list_h = 2 + 20 rows`;
+`list_w = max(w, CB_SETDROPPEDWIDTH's value)`. It opens **below** at `(x, y + 24, list_w,
+list_h)` when `y + 24 + list_h <= content_h`; else **above** at `(x, y - list_h, ...)` when
+`y - list_h >= 0`; else below, clipped at the content's bottom. Its left edge is shifted left
+so its right edge is at most the content width (never below 0). It is drawn in the top-level
+window's buffer over everything, exactly as a menu drop-down (D145): opening and moving the
+highlight commit its own rect, a paint while it is open draws it again, closing invalidates
+the rect under it. Inside: 1 px `field.border`, fill `field.fill` (the `WM_CTLCOLORLISTBOX`
+answer, `lParam` the combo), rows as section 5 from the inner top: 20 tall, text at `+4`, cell
+top `+2`, cut with `...`; the **highlighted row** (the row under the pointer, else the selected
+item) is `highlight`/`highlight.text`; no dotted rect in the list. When `count > rows` a
+vertical scroll bar (section 14) sits inside the border at the right, rows end 16 px before
+it, and section 5's `top` rules keep the highlighted row in view (on opening, the selected
+item). `CB_GETDROPPEDCONTROLRECT` answers the rect the list would open at, in screen
+coordinates; `CB_GETDROPPEDSTATE` whether it is open.
+
+| Input (closed, enabled) | Does |
+|---|---|
+| button-down anywhere in the box | focuses it, `CBN_DROPDOWN`, opens the list (`CBN_SETFOCUS` first if it was not focused) |
+| Alt+Down, Alt+Up, F4 | opens (or closes with cancel, below) |
+| Up / Left, Down / Right | the previous / next item (clamped); Home / End the first / last; PageUp / PageDown by `max(1, rows - 1)`; a printable key the next item after the current, wrapping, whose first glyph matches case-insensitively. Each change: `CBN_SELENDOK`, `CBN_SELCHANGE` |
+| Tab, Enter, Esc | to `IsDialogMessageW` (section 1) |
+
+| Input (open) | Does |
+|---|---|
+| pointer over a row | highlights it (the pointer only, no selection change); over the scroll bar: section 14 |
+| release over a row (after the opening press, a drag, or a new click) | selects it, closes: **`CBN_SELENDOK`, `CBN_CLOSEUP`, `CBN_SELCHANGE`** (the selection is already set when the first is sent, so a program handling any one of them reads the new item) |
+| Up / Down, Home / End, PageUp / PageDown | move the highlight (clamped, scrolled into view) |
+| Enter, or a printable key then Enter | selects the highlighted row, closes, the three notifications above |
+| Esc, F4, Alt+Up, a button-down on the closed box, a button-down outside the list and box (not delivered to the program), a `FocusOut` not followed by `FocusIn` in the same read | closes with the selection as it was at opening: `CBN_SELENDCANCEL`, `CBN_CLOSEUP` |
+
+While the list is open no key reaches the program and pointer events over the client are
+consumed, as a menu. Disabling or hiding the combo closes it with cancel. Pointer: `Arrow`.
+
+**`CBS_DROPDOWN`**: the closed box is section 3's single-line EDIT (`field.*` fill and
+border, hover and focus borders, caret, selection of section 13, inner text `x + 4 .. x + w -
+21`) with the arrow area `(x + w - 17, y + 1, 16, 22)` filled `button.fill`, a 1 px
+`button.border` column at its left, the chevron, hover and pressed as the button's rows. Only
+the arrow, F4 and Alt+Down/Up open the list; typing sends `CBN_EDITUPDATE` then
+`CBN_EDITCHANGE` and never changes the selection; choosing a row (as above) sets the edit's
+text to the item and selects it all; closed arrows change the selection and the text. Pointer
+`IBeam` over the edit, `Arrow` over the arrow. **`CBS_SIMPLE`**: the edit at `(x, y, w, 24)`,
+the list always shown at `(x, y + 24, w, h - 24)` as a section 5 LISTBOX inside the control's
+rect, no arrow, no `CBN_DROPDOWN`/`CBN_CLOSEUP`; a click on a row selects it and sets the text
+(`CBN_SELCHANGE`), a double-click adds `CBN_DBLCLK`.
+
+Messages: `CB_ADDSTRING` (sorted with `CBS_SORT` as `LBS_SORT`), `CB_INSERTSTRING`,
+`CB_DELETESTRING`, `CB_RESETCONTENT`, `CB_GETCOUNT`, `CB_GETCURSEL`, `CB_SETCURSEL` (no
+notification; -1 clears), `CB_GETLBTEXT`, `CB_GETLBTEXTLEN`, `CB_FINDSTRING`,
+`CB_FINDSTRINGEXACT`, `CB_SELECTSTRING`, `CB_SHOWDROPDOWN`, `CB_GETITEMDATA`/`SETITEMDATA`,
+`CB_LIMITTEXT`, `CB_GETEDITSEL`/`SETEDITSEL`, `CB_GETMINVISIBLE`, `WM_GETTEXT` (the shown
+text). `CBS_OWNERDRAW*` without `CBS_HASSTRINGS` draws blank rows (listed); `CBS_NOINTEGRALHEIGHT`,
+`CBS_DISABLENOSCROLL`, `CBS_UPPERCASE`/`LOWERCASE`, `CBS_OEMCONVERT` have no effect (listed);
+the wheel is out of scope as in section 5 (listed).
+
+## 11. Program-made dialog windows and fonts
+
+**11.1 The window.** A top-level window created with `WS_POPUP` and a non-null `hWndParent`
+is **owned**, not a child (Win32's rule). It is a server window of kind `Dialog` of the owner's
+top-level window (`GetAncestor(owner, GA_ROOT)`), whatever its procedure: the owner takes no
+input while it is shown (the server's modal rule, part 1 section 1.1) and keeps its look, with
+the chrome the server draws for an inactive window. Chrome: close control only; `WS_THICKFRAME`
+and `WS_MAXIMIZEBOX` are ignored (`FIXED_SIZE`); without `WS_SYSMENU` the close control is
+drawn `button.inactive` (`NO_CLOSE`) and `CloseRequest` is ignored. `DS_MODALFRAME` and
+`WS_DLGFRAME` add nothing: `AdjustWindowRectEx` gives (1, 29, 1, 1) as for any captioned
+window (D129). Title: the window text, as the message box. Placement: `CW_USEDEFAULT` lets the
+server centre it on its owner; a given position, at creation or by `SetWindowPos`/`MoveWindow`,
+is sent as `SetPosition` and clamped by the server into the work area. A `WS_POPUP` window
+without an owner, or whose owner is not shown, is a `Normal` `FIXED_SIZE` window centred in
+the work area (a captionless one still gets the chrome: listed). Destroying it returns focus
+to the owner (the server's rule); `EnableWindow(owner, TRUE)` is the program's business and
+changes nothing visible. A modeless owned dialog therefore blocks its owner too (listed gap;
+the first apps use modal ones).
+
+**11.2 `DefDlgProcA`/`W`** (a class whose procedure is it, `cbWndExtra >= DLGWINDOWEXTRA`,
+and every template dialog of 11.4): `WM_ERASEBKGND` sends `WM_CTLCOLORDLG` to the dialog
+procedure (`DWLP_DLGPROC`, when set) and fills the client with its brush, else with
+`COLOR_BTNFACE` (`surface`), **ignoring the class brush** (Pegs' classes carry
+`COLOR_BACKGROUND + 1`, black, and are grey on Windows for this reason). When the window is
+first shown and no control has the focus, the first enabled `WS_TABSTOP` child in creation
+order gets it (an edit selects all its text); `WM_SETFOCUS` on the dialog returns the focus to
+the last focused control; `WM_NEXTDLGCTL` moves it; `DM_SETDEFID`/`DM_GETDEFID` keep the
+default button's id (initially the `BS_DEFPUSHBUTTON` one; section 2's default rule applies);
+`WM_CLOSE` sends itself `WM_COMMAND` `IDCANCEL`; `IsDialogMessageW` (section 1) gives Tab,
+arrows, Enter to `DM_GETDEFID`'s button as `BN_CLICKED`, Esc as `IDCANCEL`, and Alt+mnemonic.
+`WM_INITDIALOG` and `WM_COMMAND` go to the dialog procedure first, as Win32.
+
+**11.3 One font, honest metrics.** Every `HFONT` is Egg Mono 8x16 (part 1); `WM_SETFONT` is
+stored (`WM_GETFONT` returns it) and changes nothing drawn. So that program layouts fit what
+we draw, every font reports Egg Mono's real metrics: `GetTextMetricsA`/`W` give `tmHeight 16`,
+`tmAscent 13`, `tmDescent 3`, `tmInternalLeading 0`, `tmExternalLeading 0`, `tmAveCharWidth 8`,
+`tmMaxCharWidth 8`, `tmWeight 400`, `tmOverhang 0`, `tmDigitizedAspectX`/`Y 96`,
+`tmFirstChar 0x20`, `tmLastChar 0xFFFD`, `tmDefaultChar '?'`, `tmBreakChar ' '`, `tmItalic`,
+`tmUnderlined`, `tmStruckOut 0`, `tmPitchAndFamily FF_MODERN` (low bits 0: fixed pitch),
+`tmCharSet ANSI_CHARSET`; `GetTextExtentPoint32A`/`W` and `GetTextExtentExPoint` give `(8n,
+16)` for `n` units (a surrogate pair is one cell); `GetTextFaceW` `Egg Mono`;
+`GetDeviceCaps(LOGPIXELSX/Y)` 96; `GetDialogBaseUnits` `MAKELONG(8, 16)`. Pegs' `height =
+tmAscent + tmDescent` is 16 and its `width = tmAveCharWidth` 8, so its rows are 24 tall and
+its buttons 28, the brief's own numbers.
+
+**11.4 Resource templates** (`DialogBoxParamW`, `DialogBoxIndirectParamW`,
+`CreateDialogParamW`, `CreateDialogIndirectParamW`): `DLGTEMPLATE` and `DLGTEMPLATEEX` from
+`RT_DIALOG`; dialog units to pixels with our base units, `px_x = 2 du`, `px_y = 2 du`
+(`MapDialogRect` the same), so a template reckoned at 4 DLU per character gets 8 px cells;
+`DS_SETFONT`/`DS_SHELLFONT` fonts ignored; item classes by atom (`0x80` BUTTON, `0x81` EDIT,
+`0x82` STATIC, `0x83` LISTBOX, `0x84` SCROLLBAR, `0x85` COMBOBOX) or name; `DS_CENTER` and
+`CW_USEDEFAULT` centre on the owner; the window is 11.1's with `WS_POPUP | WS_CAPTION |
+WS_SYSMENU` added as Win32 does when the template has no `WS_CHILD`. `DialogBox*` runs the
+modal loop the picker uses (D145), dispatching the thread's other messages, until `EndDialog`
+(its result returned); `WM_INITDIALOG`'s return `TRUE` lets 11.2's first-control focus apply.
+`DS_CONTROL`, `DS_ABSALIGN`, help ids and `WS_CHILD` templates are out of scope (listed).
+
+## 12. Menu additions
+
+**Submenus.** An `MF_POPUP` item inside a drop-down (replacing section 6's "draws as a disabled
+item") draws its label as any item plus `CHEVRON_RIGHT` at `(dx + w - 16, iy + 8)` in the item's
+text colour; `MF_GRAYED` greys both. Highlighting it (pointer, Up/Down, or a mnemonic) opens its
+**cascade** at once, no delay, after `WM_INITMENUPOPUP` for the submenu: a drop-down laid out by
+section 6's rules with its left edge at `dx + w` and its top at `iy - 3` (so its first item
+aligns with the parent item); when `dx + w + cw > content_w` it opens to the left, right edge
+at `dx` (never below 0, then at 0); taller than the room below: clipped as section 6, no
+shifting up. Highlighting another item of the parent closes it; the parent item stays
+highlighted while the pointer is in the cascade. Keys: Right on a submenu item opens it with
+its first enabled item highlighted (Enter and Space the same); Left in a cascade closes it and
+leaves the parent item highlighted; Right on an ordinary item and Left in a top-level
+drop-down change the bar entry as section 6; Esc closes the innermost cascade only. At most 4
+levels (deeper ones draw as disabled items, listed).
+
+**Marks, confirmed and added.** `MF_CHECKED`: the tick at box origin `(dx + 7, iy + 5)`
+(section 6, confirmed). `MFT_RADIOCHECK` with `MF_CHECKED` (`CheckMenuRadioItem`,
+`SetMenuItemInfo`): a 6 px `INSET_R3` dot at `(dx + 11, iy + 9)` in the text colour instead of
+the tick. `MF_GRAYED`/`MF_DISABLED` and separators: section 6, confirmed. `MF_BITMAP`,
+`MF_OWNERDRAW`, `MFS_DEFAULT` (no bold), `MF_MENUBARBREAK`/`MF_MENUBREAK` and `hbmpItem` have no
+effect (listed). `ModifyMenuW`, `InsertMenuW`, `InsertMenuItemW`, `SetMenuItemInfoW`,
+`GetMenuItemInfoW`, `DeleteMenu`, `RemoveMenu`, `GetSubMenu`, `GetMenuItemCount`,
+`GetMenuItemID`, `GetMenuState`, `GetMenuStringW`, `DrawMenuBar` as Win32; a bar change while
+a menu is open closes it.
+
+**Accelerator text.** A label's part after `\t` is drawn right-aligned, its last cell ending
+at `dx + w - 20`, in the item's text colour; `widest` (section 6) counts `label + 3 +
+accelerator` cells for such an item, so at least 24 px separate the two. `\b` in a label is
+dropped (listed).
+
+**`TrackPopupMenu`/`Ex`** (`hMenu`, flags, `x`, `y`, `hwnd`): a context menu. `x`, `y` are
+screen coordinates, converted to `hwnd`'s content; the drop-down (section 6's layout, no bar)
+opens with its top-left there (`TPM_RIGHTALIGN`, `TPM_CENTERALIGN`, `TPM_BOTTOMALIGN`,
+`TPM_VCENTERALIGN` move the anchor as named), shifted left into the content, and placed above
+the point when it would pass the content's bottom and fits above, else clipped; it is drawn in
+`hwnd`'s top-level buffer like every drop-down (clients cannot open popups, D127), so it never
+leaves the window. No item is highlighted at first. Pointer and keys as a drop-down; Left and
+Right do nothing (no bar); `TPM_RIGHTBUTTON` lets the right button's release activate too. The
+call blocks until the menu closes, running the modal loop that dispatches the thread's other
+messages; with `TPM_RETURNCMD` it returns the id (0 for none), else it posts `WM_COMMAND` and
+returns nonzero. `TPM_NONOTIFY`, `TPM_RECURSE`, `TPM_LAYOUTRTL` and `lptpm` are ignored
+(listed). `DefWindowProcW` turns `WM_RBUTTONUP` into `WM_CONTEXTMENU` (`lParam` screen
+coordinates), as Win32; the right button's down and up are delivered like the left's.
+
+**Keys, confirmed.** Section 6's table stands (F10, Alt alone, Alt+mnemonic, Left/Right, Up/Down,
+Enter/Space, mnemonics, Esc), with one precision: Alt+mnemonic and F10 act only while the
+window is enabled and no menu or combo list is open.
+
+**Keyboard accelerators.** `LoadAcceleratorsW`, `CreateAcceleratorTableW`,
+`DestroyAcceleratorTable`, `TranslateAcceleratorW(hwnd, hAccel, &msg)`: on a `WM_KEYDOWN`/
+`WM_SYSKEYDOWN` (`FVIRTKEY` with `FCONTROL`, `FSHIFT`, `FALT` matched exactly) or a `WM_CHAR`
+(an entry without `FVIRTKEY`) whose key matches, it sends `WM_COMMAND` (`LOWORD` the id,
+`HIWORD` 1) to `hwnd` and returns nonzero, unless `hwnd` is disabled or the id names a menu item
+of its bar that is grayed or disabled (then nothing, nonzero still). It needs no menu open and
+has no visual; while a menu, combo list or context menu is open the key never reaches the loop.
+
+## 13. EDIT: selection and `ES_MULTILINE`
+
+**Selection, every EDIT** (replacing section 3's "caret only"): an anchor and the caret
+(`EM_SETSEL`, `EM_GETSEL`; the caret is the active end and stays visible). Selected cells are
+filled `highlight` with glyphs in `highlight.text`, shown while the edit is focused (always
+with `ES_NOHIDESEL`). Typing replaces the selection; Backspace and Delete delete it; Shift +
+Left/Right/Home/End extend it; Ctrl+Left/Right move by words (a word is a run of letters,
+digits and `_`, or a run of other glyphs; spaces are skipped), with Shift extending; Ctrl+A
+selects all; `EM_REPLACESEL` replaces it. Tab into an edit by `IsDialogMessageW` selects all; a
+click does not. Pointer: button-down puts the caret at the nearest cell boundary and the
+anchor there, capturing; dragging moves the caret (auto-scrolling by section 3's rules at the
+edges); Shift+button-down moves only the caret; a double-click (section 17) selects the word
+under it. No clipboard, no undo: Ctrl+C/X/V/Z and `WM_COPY`/`WM_CUT`/`WM_PASTE`/`WM_UNDO` do
+nothing (listed).
+
+**`ES_MULTILINE`.** Fill and border as section 3; text from `(x + 4, y + 2)`, lines 16 apart,
+clipped to the rect inset 1; `R = (h - 4) / 16` whole lines visible, the partial one drawn
+clipped; the inner width ends 4 px before the right edge, 16 more while a vertical scroll bar
+shows. Without `ES_AUTOHSCROLL` lines **wrap** at the inner width with part 1's greedy rule (a
+word longer than the width is cut); with it they do not, and the view scrolls horizontally in
+cells as section 3 keeps the caret visible. A selected line end fills one extra cell after the
+line's last glyph (an empty selected line shows one 8x16 block). Keys: Up/Down keep the
+column (clamped to the line's length), Home/End the line's ends, Ctrl+Home/End the text's,
+PageUp/PageDown by `R - 1` lines, Enter inserts `\r\n` (always outside `IsDialogMessageW`; in a
+dialog only with `ES_WANTRETURN`, else Enter goes to the default button), Tab inserts a tab
+drawn as one cell (in a dialog Tab moves the focus). The first visible line `f` follows
+section 5's `top` rule for the caret's line. `WS_VSCROLL`/`WS_HSCROLL` give section 14's bars
+inside the border (always shown, disabled while nothing scrolls), fed by (lines, `R`, `f`) and
+(widest line's cells, visible cells, `o`); `ES_AUTOVSCROLL` without `WS_VSCROLL` scrolls
+without a bar. Messages: `EM_GETLINECOUNT`, `EM_LINEINDEX`, `EM_LINELENGTH`, `EM_GETLINE`,
+`EM_LINEFROMCHAR`, `EM_LINESCROLL`, `EM_SCROLLCARET`, `EM_GETFIRSTVISIBLELINE`,
+`EM_SETREADONLY`, `EM_GETMODIFY`/`SETMODIFY`; `WM_GETTEXT` returns `\r\n` line ends; a lone
+`\n` or `\r` set by `WM_SETTEXT` is kept as given and ends a line. `EM_FMTLINES`, `EM_SETTABSTOPS`,
+`EM_SETMARGINS`, `EM_SETRECT` and `ES_CENTER`/`ES_RIGHT` have no effect (listed).
+
+## 14. Scroll bars
+
+**Width: 16 px, not Windows' 17.** `SM_CXVSCROLL`, `SM_CYHSCROLL`, `SM_CXHSCROLL`, `SM_CYVSCROLL`,
+`SM_CXHTHUMB` and `SM_CYVTHUMB` all report 16, so program layouts that subtract them fit. 16 is
+two cells and the cell's height: the arrow buttons are 16x16 squares, the chevrons centre
+without a half pixel, the whole bar doubles cleanly at 2x, and a bar 1 px narrower than
+Windows' reads as the same thing. The one look serves the `SCROLLBAR` control (`SBS_VERT`,
+`SBS_HORZ`), window scroll bars (`WS_VSCROLL`/`WS_HSCROLL` on any window) and the bars inside a
+LISTBOX, a multi-line EDIT and the combo's list.
+
+**Geometry**, for a bar of length `L` (its rect's height when vertical, width when
+horizontal; the other dimension 16): an arrow button 16 long at each end, the track between
+them, `track = L - 32` (when `L < 32` the two arrows are `L / 2` each and there is no track).
+Fill `scroll.track` everywhere first. Chevrons: `CHEVRON_UP`/`DOWN` at `(4, 6)` of the button,
+`CHEVRON_LEFT`/`RIGHT` at `(6, 4)`, in `scroll.arrow`. From `SCROLLINFO` (`nMin`, `nMax`, `nPage`,
+`nPos`): `range = nMax - nMin + 1`; the bar **scrolls** when `nPage > 0` and `nPage < range`;
+then `thumb = min(track, max(16, track * nPage / range))`, `pos_max = nMax - nPage + 1`, `nPos`
+clamped to `[nMin, pos_max]`, the thumb's start at `16 + (track - thumb) * (nPos - nMin) /
+(pos_max - nMin)`, drawn `scroll.thumb` across the bar's full 16 px. Not scrolling: no thumb,
+both chevrons `scroll.arrow.disabled` (the disabled look; also an `EnableScrollBar`-disabled bar
+and a disabled control). `SetScrollInfo` redraws the bar at once; nothing else moves the thumb
+except a drag, below.
+
+| Part | plain | hovered | pressed (held) |
+|---|---|---|---|
+| arrow button | `scroll.track` / `scroll.arrow` | `scroll.arrow.hover.fill` / `scroll.arrow` | `scroll.arrow.pressed.fill` / `scroll.arrow.pressed.glyph` |
+| thumb | `scroll.thumb` | `scroll.thumb.hover` | `scroll.thumb.pressed` |
+| track | `scroll.track` | unchanged | unchanged |
+
+**Input** sends `WM_VSCROLL`/`WM_HSCROLL` to the control's parent (`lParam` the control) or to
+the window itself (`lParam` 0); a LISTBOX, a multi-line EDIT and a combo list handle their own
+and update their `SCROLLINFO` themselves. Arrow button-down: `SB_LINEUP`/`SB_LINEDOWN`
+(`SB_LINELEFT`/`RIGHT`) at once, again after 250 ms, then every 50 ms while held with the
+pointer on the button; release: `SB_ENDSCROLL`. Track button-down before the thumb:
+`SB_PAGEUP`, after it: `SB_PAGEDOWN`, the same repeat timing while held and the pointer is
+still beyond the thumb (so paging stops when the thumb reaches it). Thumb button-down: the
+thumb follows the pointer, keeping the grab offset, `pos = nMin + (start - 16) * (pos_max -
+nMin) / (track - thumb)` rounded to nearest, `SB_THUMBTRACK` with the position (16 bits in
+`HIWORD`; `GetScrollInfo` with `SIF_TRACKPOS` gives it whole) on every change; release:
+`SB_THUMBPOSITION` then `SB_ENDSCROLL`, and the thumb returns to `SCROLLINFO`'s `nPos` (a program
+that ignores the message sees it snap back, as on Windows). Keys on a focused `SCROLLBAR`
+control: Up/Left, Down/Right line, PageUp/PageDown, Home `SB_TOP`, End `SB_BOTTOM`; its focus
+indicator is the dotted rect on the thumb's outline (Dark: the ring at inset 0 of the thumb).
+Pointer: `Arrow`. The wheel is out of scope (listed).
+
+**Window scroll bars** sit inside the content at the right edge (below the menu bar) and the
+bottom edge; `GetClientRect` and `WM_SIZE` exclude them (`AdjustWindowRectEx` never adds them,
+as Win32). When both show, the 16x16 **size box** at the corner is `scroll.track` and inert
+(`SBS_SIZEGRIP`/`SBS_SIZEBOX` draw the same, listed). `ShowScrollBar` adds or removes a bar
+(the client resizes, `WM_SIZE`); `SetScrollInfo` whose values make the bar unnecessary removes
+it unless `SIF_DISABLENOSCROLL` (then it shows disabled). A LISTBOX with `WS_VSCROLL` draws
+this bar inside its border, rows ending 16 px before it, only while `count > V` (always, disabled,
+with `LBS_DISABLENOSCROLL`), replacing section 5's 8 px indicator; a LISTBOX without
+`WS_VSCROLL` keeps the indicator (EggOS's choice, section 5; the picker is unchanged). A
+`SCROLLBAR` control is exactly its rect; `SBS_TOPALIGN` and the other alignment styles are
+ignored (listed).
+
+## 15. Radio buttons and group boxes, confirmed
+
+Section 2's radio button and group box stand. Added for the keyboard, under `IsDialogMessageW`:
+Down and Right select the next enabled radio of the group (from the previous `WS_GROUP` control
+to the next; wrapping within the group), Up and Left the previous, moving the focus with the
+selection and sending `BN_CLICKED` as a click would (`BS_AUTORADIOBUTTON`; a plain
+`BS_RADIOBUTTON` moves only the focus); Tab into a group lands on its selected radio, else its
+first enabled one; without `IsDialogMessageW` the arrows reach the focused radio and do
+nothing. A group box's `WS_GROUP` starts a group like any control's.
+
+## 16. Pointer shapes
+
+Part 1's table stands with two changes: `SetCursor(NULL)`, a class with `hCursor NULL`, and
+`ShowCursor(FALSE)` taking the count below 0, now map to the server's **`Hidden`** shape (6,
+D172) over that window; a program's own cursor resources (`LoadCursorW` with a module handle,
+`LoadImageW`, `CreateCursor`) still show `Arrow`. So: `IDC_ARROW`, `IDC_SIZEALL`, `IDC_WAIT`,
+`IDC_APPSTARTING`, `IDC_HAND`, `IDC_CROSS`, `IDC_NO`, `IDC_HELP`, `IDC_UPARROW` to `Arrow`;
+`IDC_IBEAM` to `IBeam`; `IDC_SIZENS`, `IDC_SIZEWE`, `IDC_SIZENWSE`, `IDC_SIZENESW` to the four
+resizes; null to `Hidden`. Over a control the control's pointer wins (sections 2-5, 10, 14);
+`WM_SETCURSOR` goes to the control's parent first, as Win32, and a program that answers it
+`TRUE` after its own `SetCursor` keeps its shape.
+
+## 17. Double clicks
+
+A second left button-down on the same window within 400 ms (`GetDoubleClickTime`) and 4 px
+(`SM_CXDOUBLECLK`, `SM_CYDOUBLECLK`) of the first arrives as `WM_LBUTTONDBLCLK` instead of
+`WM_LBUTTONDOWN` when the class has `CS_DBLCLKS` (the third is a plain down again); without the
+style every down is `WM_LBUTTONDOWN`. The system classes have `CS_DBLCLKS`: a LISTBOX row sends
+`LBN_DBLCLK` (section 5, confirmed; it stays selected), an EDIT selects the word under the
+pointer (section 13), a `CBS_SIMPLE` list sends `CBN_DBLCLK`, a drop-down list's row acts as a
+click (it already closed), a STATIC with `SS_NOTIFY` sends `STN_DBLCLK`, and a BUTTON treats it
+as a press (no `BN_DOUBLECLICKED`, listed). The right button follows the same rule with
+`WM_RBUTTONDBLCLK`.
+
+## 18. Worked example: Pegs
+
+`pegs.exe` sizes its main window to the board with `AdjustWindowRectEx` (menu: `+24`) and
+`SetWindowPos`, paints the board from a memory bitmap by `BitBlt` in `WM_PAINT`, and builds
+`Game`, `Type` and `Help` in code; `Type` lists nine presets (`Cross 5x7` to `Random 9x9`,
+no separator) and `Custom...`, the current preset ticked by `CheckMenuItem`; `Game`'s `Copy`
+is greyed by `EnableMenuItem` while the board cannot be copied (checked against the binary
+when it was implemented, D174). With our
+metrics `height = 16`, `width = 8`. The control rects below are the program's arithmetic as
+read from its source; the brief fixes what each control draws for any rect, so the engineer
+checks them against the binary's `CreateWindowEx` calls.
+
+**About** (`Help > About`): three centred STATIC lines `Pegs` (4 cells), `from Simon Tatham's
+Portable Puzzle Collection` (46 cells, 368 px, the widest) and a version line (24 cells
+assumed), `winwidth = 368 + 4 * 8 = 400`, `winheight = 8 + 3 * (24 + 8) + 16 + 28 = 148`;
+outside **402x178**, a `Dialog` of the main window centred on it, title `About Pegs`, close
+control only. The owner's board stays as painted and takes no input.
+
+| Element | Rectangle (x, y, w, h) | Pixels |
+|---|---|---|
+| surface | 0, 0, 400, 148 | `F0F0F0` (`DefDlgProc`, 11.2) |
+| STATIC `Pegs`, `SS_CENTER` | 16, 8, 368, 24 | fill `F0F0F0`; text at (184, 8) `000000` |
+| STATIC line 2 | 16, 40, 368, 24 | text at (16, 40) |
+| STATIC version line | 16, 72, 368, 24 | text at (104, 72) |
+| `OK`, default, focused | 16, 112, 368, 28 | fill `E1E1E1`; 2 px border `0078D7`; `OK` at (192, 118); dotted rect on the outline of (19, 115, 362, 22) |
+| bottom padding | 0, 140, 400, 8 | `F0F0F0` |
+
+Enter, Space, a click on `OK`, Esc or the close control send `WM_COMMAND` `IDOK`/`IDCANCEL`;
+the program re-enables the owner and destroys the dialog, and the board window is focused again.
+
+**Custom** (`Type > Custom...`): rows `Width` (EDIT), `Height` (EDIT), `Board type`
+(COMBOBOX, `CBS_DROPDOWNLIST | CBS_HASSTRINGS`, items `Cross`, `Octagon`, `Random`), all with
+`WS_EX_CLIENTEDGE` (which adds nothing to section 3's and 10's borders and takes no space).
+`maxlabel` 80 (`Board type`), `col1l 16`, `col1r 96`, `col2l 112`, `col2r 352`, `winwidth
+368`; `winheight = 8 + 3 * 32 + 8 + 28 + 8 = 148`; outside **370x178**, `Dialog`, title
+`Custom`.
+
+| Element | Rectangle (x, y, w, h) | Pixels |
+|---|---|---|
+| STATIC `Width` | 16, 8, 80, 24 | text at (16, 8) |
+| EDIT `7`, focused on entry, all selected | 112, 8, 240, 24 | fill `FFFFFF`, border `0078D7`; cell (116, 12) filled `0078D7`, `7` in `FFFFFF`; caret (124, 12, 1, 16) |
+| STATIC `Height` / EDIT `7` | 16, 40, 80, 24 / 112, 40, 240, 24 | border `7A7A7A`; `7` at (116, 44) |
+| STATIC `Board type` | 16, 72, 80, 24 | text at (16, 72) |
+| COMBOBOX, given (112, 72, 240, 328), closed, `Cross` | 112, 72, 240, 24 | fill `E1E1E1`, border `ADADAD`; `Cross` at (116, 76); chevron at (339, 82), rows 82-85 |
+| `OK`, default | 16, 112, 160, 28 | 2 px border `0078D7`; `OK` at (88, 118) |
+| `Cancel` | 192, 112, 160, 28 | border `ADADAD`; `Cancel` at (248, 118) |
+
+Opening the combo (a click, or Tab twice then Alt+Down): `rows = min(3, (328 - 26) / 20 =
+15) = 3`, `list_h 62`; below would end at `96 + 62 = 158 > 148`, above fits (`72 - 62 = 10`),
+so the list is `(112, 10, 240, 62)`: border `7A7A7A`, fill `FFFFFF`, rows `(113, 11, 238, 20)`
+`Cross` highlighted `0078D7`/`FFFFFF` (text at (117, 13)), `(113, 31, ...)` `Octagon`, `(113,
+51, ...)` `Random`, covering the `Width` and `Height` rows until it closes; the closed box
+shows the open row (`CCE4F7`/`005499`). A release on `Random` selects it, closes, invalidates
+`(112, 10, 240, 62)` (the dialog repaints the edits), and sends `CBN_SELENDOK`, `CBN_CLOSEUP`,
+`CBN_SELCHANGE`. Focused and closed, the combo's text area `(115, 75, 220, 18)` is `0078D7`
+with `Random` in `FFFFFF` and the dotted rect on its outline.
+
+## 19. Tests
+
+Host tests, pixel by pixel against the tables, in both palettes where a Dark column exists:
+the combo's closed box in every state (the text area's focus fill, the chevron's 32 pixels,
+the `...` cut at `w - 25`), `rows` for `h` 328 / 26 / 1000 with 3, 15 and 40 items and
+`CB_SETMINVISIBLE`, the list below, above and clipped, its highlight following the pointer
+without changing the selection, every row of both input tables with the exact notification
+order and the restored selection on cancel, `CBS_DROPDOWN`'s edit plus arrow and `CBS_SIMPLE`;
+an owned `WS_POPUP` window's kind, chrome, `AdjustWindowRectEx`, position and the owner's
+blocked input; `DefDlgProc`'s grey erase over a black class brush, first-control focus,
+`WM_CLOSE` to `IDCANCEL`; the TEXTMETRIC fields, `GetTextExtentPoint32` for 0, 1 and 46 units,
+`GetDialogBaseUnits` and a 4-item template's pixel rects; the cascade's position right, flipped
+left and clipped, its chevron, the radio dot, accelerator text right-aligned at `w - 20` and
+the width rule, `TrackPopupMenu`'s four alignments and `TPM_RETURNCMD`, an accelerator table
+with a grayed item; selection fill in single- and multi-line edits (an empty selected line's
+block), word double-click, Shift+click, Ctrl+A, wrap vs `ES_AUTOHSCROLL`, PageDown, Enter's
+`\r\n` and `WM_GETTEXT`; the scroll bar's thumb size and start for (`nMin 0, nMax 99, nPage
+10, nPos 0 / 45 / 90`) in a 200 px bar, the 16 px minimum thumb, the disabled look at `nPage
+>= range`, the repeat timing, the drag's `SB_THUMBTRACK` positions and the snap back, the size
+box, a LISTBOX's bar replacing the indicator; radio arrows within a group; the `Hidden`
+pointer; `WM_LBUTTONDBLCLK` at 399 and 401 ms. Section 18's About and Custom dialogs are hashed
+at 400x148 and 368x148, the combo open above included. The QEMU boot test runs `pegs.exe`:
+it opens `Help > About`, then `Type > Custom...`, opens the combo, chooses `Random`, presses
+`OK`, and each `screendump` is compared with the host's render.

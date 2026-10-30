@@ -10,6 +10,7 @@ works.
 | App | Version | License | Platform | Architectures | What works | CI job |
 |-----|---------|---------|----------|---------------|------------|--------|
 | [Brogue: Community Edition](https://github.com/tmewett/BrogueCE), a roguelike game | 1.15.1 (Alpine `v3.24`'s `brogue-1.15.1-r0`), on `sdl2-compat` 2.32.68 and SDL `main` at `328edfc1` | AGPL-3.0-or-later (code), CC BY-SA 4.0 (tiles) | Linux, SDL 2 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader and libraries, opens from its icon or `app open` in its own window, plays turns from the keyboard, saves and quits | `sdl3`, `sdl-app` (D172) |
+| [Pegs](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/pegs.html) from Simon Tatham's Portable Puzzle Collection, a peg solitaire game | `20260923.616da16` (the collection's official `pegs.exe`) | MIT | Windows, classic Win32 (ANSI, MSVC's `/MD` C runtime) | x86_64 (the collection publishes x64 Windows builds only) | installs from its `.exe`, opens from its icon or `app open`, plays by dragging pegs, undoes and redoes, changes its board from its `Type` menu (the window resizes, the tick moves), opens its About box and its Custom dialog with a drop-down list, quits | `win32-app` (D174) |
 
 ## Brogue CE (Linux, SDL)
 
@@ -47,3 +48,43 @@ works.
   audio back ends); the pointer shows the system's
   arrow where SDL asks for a shape EggOS does not draw (a hand, a busy pointer); the window is
   shown opaque at scale 1. What EggOS still lacks for it is in D172's "Not yet".
+
+## Pegs (Windows, classic Win32)
+
+- **Where it comes from.** `cargo xtask win32-app` downloads the collection's official x64
+  `pegs.exe` from <https://www.chiark.greenend.org.uk/~sgtatham/puzzles/pegs.exe>, checked
+  against the SHA-256 pinned in `xtask/src/win32_app.rs`. The collection publishes each puzzle
+  at one address that every new build replaces (the versioned installer,
+  `puzzles-20260923.616da16-installer.msi`, holds the same file), so a new build is pinned again
+  by hand. It is test data: never shipped in an image, never committed.
+- **Why it.** Research chose it as the first classic Win32 app: a real, popular, MIT-licensed
+  program written against the plain Win32 API in C, built by MSVC on its `/MD` C runtime,
+  with a menu bar built in code (`CreateMenu`, `AppendMenuA`, `CheckMenuItem`,
+  `EnableMenuItem`), dialogs it builds itself on `DefDlgProcA` (static text, buttons, check
+  boxes, edits and a drop-down list combo box), a board drawn off screen into a bitmap and
+  copied with `BitBlt`, and a window it sizes to its board with `SetWindowPos`. Pegs needs no
+  status bar (other puzzles of the collection use comctl32's, which the layer has not yet), and
+  its Cross board is the same at every start, so its frames can be compared.
+- **Installing it.** `app install /media/host/pegs.exe` (or the MCP tool `app_install`, or Files)
+  installs the program as the app `pegs`.
+- **Opening it.** Its icon, `app open pegs` or the MCP tool `app_open` runs it through the
+  Windows layer. It starts a Cross 7x7 board; drag a peg over another into a hole to remove it,
+  `u` undoes, `r` redoes, `n` starts a new game, `q` quits. Agents read its window as an element
+  tree with `wm show` (its dialogs' controls, the combo box's chosen board type as its value)
+  and operate it with `wm click`, `drag`, `type` and `press`.
+- **What CI does** (`win32-app`, x86_64): installs it on a blank disk, lists it, opens it from
+  `/tmp`, finds its window where the screen changed and its content by its menu bar, checks the
+  three pegs of the first jump, drags the peg over the next into the hole and checks the pegs
+  again, presses `u` and wants the starting board back pixel for pixel, `r` and wants the
+  jumped board back, opens `Type` and wants `Cross 7x7` ticked, chooses `Cross 5x7` and wants
+  the window narrower and the tick on `Cross 5x7`, opens `Help > About` and closes it with
+  Enter, opens `Type > Custom...`, opens its board type list with Tab, Tab and Alt+Down and
+  closes the list and the dialog with Esc, wanting the board unchanged after each dialog,
+  quits with `q`, and wants no Pegs window in `wm list` and a clean power-off.
+- **Known limits.** x86_64 only: the collection ships no ARM64 Windows build, and x64 programs
+  do not run on Arm yet (part 39). Help needs `puzzles.chm` and Windows' HTML Help, which EggOS
+  does not have, so the Help menu has only About; printing finds no printer; Copy puts the
+  board's text on the program's own clipboard, as there is no clipboard shared between apps yet;
+  every font is Egg Mono, so the dialogs are laid out from its metrics. What the layer still
+  lacks for other puzzles of the collection (comctl32's status bar, more of the math library) is
+  in D174's "Not yet".

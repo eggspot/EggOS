@@ -213,11 +213,18 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   manager makes it optional (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
-  programs built by MSVC on its C runtime (`/MD`) run (D146). Programs on a C++ runtime,
-  MinGW's or Rust's std, `scanf`, locales, the math library, other processes, other DLLs, structured exception handling,
-  controls beyond buttons, edits, labels and lists (D145), dialogs from resources, fonts other
-  than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
-  riscv64 do not run yet; names are case-sensitive and local time is UTC.
+  programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
+  apps such as Pegs from Simon Tatham's Puzzles too, with their own dialogs, drop-down list
+  combo boxes, off-screen bitmaps and `BitBlt` (D174, [compatibility](compatibility.md)).
+  Programs on a C++ runtime, MinGW's or Rust's std, locales, most of the math library, other
+  processes, other DLLs, structured exception handling, controls beyond buttons, edits,
+  labels, lists and drop-down lists (D145, D174: no multi-line edits or selection, radio
+  keys, scroll bars, editable combo boxes, submenus, context menus, accelerators or menu keys
+  yet), dialogs from resources, common controls (comctl32's list views, toolbars, status
+  bars), printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
+  and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and riscv64 do
+  not run yet; the clipboard is each program's own until the shared one comes; names are
+  case-sensitive and local time is UTC.
 - **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
@@ -239,8 +246,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input or sideways scrolling, and
   non-ASCII typing is not in yet; clicks, drags and scrolling aimed at a window with a dialog
-  open are refused (keys go to the dialog: D162); Windows programs get no `WM_LBUTTONDBLCLK`
-  (a double-click is two `WM_LBUTTONDOWN`s), and no mouse sends a sideways wheel yet (only
+  open are refused (keys go to the dialog: D162); Windows programs get `WM_LBUTTONDBLCLK`
+  only in windows of their own classes with `CS_DBLCLKS` (the system's controls still see two
+  presses, D174), and no mouse sends a sideways wheel yet (only
   `wm scroll` and agents do); a minimised Wayland app does not repaint after input (eggway
   sends no frame callbacks to minimised surfaces) until it is restored; every process is root
   until users come (M10), so any program can capture and send input; agents get it only
