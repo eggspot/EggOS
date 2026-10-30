@@ -245,9 +245,13 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `__finally`, vectored handlers, faults as Windows exceptions, `throw` and `catch`, `signal`.
   Programs start other programs and read their output (D189): `CreateProcessW` and
   `CreateProcessA`, anonymous pipes, `PeekNamedPipe`, inherited, duplicated and protected
-  handles, waits, exit codes and `TerminateProcess` on children; named pipes, overlapped I/O,
+  handles, waits, exit codes and `TerminateProcess` on children; named pipes,
   objects inherited into a child, a really suspended child (`CREATE_SUSPENDED` starts it at
   once) and job objects do not.
+  Programs built on Rust's standard library run (D189, slice 37b): `Command`, files, threads,
+  locks, clocks and panics; `fs::copy`, `fs::canonicalize`, links, `File::lock`,
+  `fs::remove_dir_all`, networking and waitable timers do not yet, nor programs linked to
+  MinGW's `msvcrt.dll`.
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.

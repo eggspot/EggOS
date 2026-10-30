@@ -14365,10 +14365,60 @@ the license, by an explicit instruction recorded here.
   a pipe is `ERROR_INVALID_HANDLE`; `STARTF_USESTDHANDLES` handles that are not files (null,
   `INVALID_HANDLE_VALUE`) leave the parent's stream in place; the pipe size `CreatePipe` is
   given is a hint left unused (Linux's pipe holds 64 KiB).
-- **Not yet.** Slice 37b: programs built on Rust's std (`std::process::Command` needs
-  `CreateProcessW` with `STARTUPINFOEXW` and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
-  `GetCurrentThread()` duplicated into a real thread handle, `ProcessPrng`) and on MinGW's
-  `msvcrt.dll`. Slice 37c: named objects, alertable waits and APCs, abandoned mutexes,
+- **Slice 37b: programs on Rust's standard library.** The imports came from the toolchain's
+  own `libstd` for `x86_64-pc-windows-msvc` (its undefined `__imp_` symbols and the
+  `raw-dylib` library names), not from a guess: std imports kernel32, ntdll, `userenv`,
+  `bcryptprimitives` and the API set `api-ms-win-core-synch-l1-2-0` (already kernel32's, D178),
+  and its `Command` never uses `STARTUPINFOEXW` (only the unstable attribute-list API does).
+  New: `ProcessPrng` (`bcryptprimitives`, `getrandom`), `GetUserProfileDirectoryW`
+  (`userenv`, `HOME`), `GetSystemDirectoryW` and `GetWindowsDirectoryW` (the layer's folder,
+  as `GetSystemWindowsDirectoryW`), `SetThreadStackGuarantee` (kept in the TEB's
+  `GuaranteedStackBytes`; it only grows), `IsThreadAFiber` (no fibers),
+  `GetFileInformationByHandleEx` (basic, standard and attribute-tag classes) and
+  `SetFileInformationByHandle` (end of file and allocation, `ftruncate`), and
+  `CreateFileW` reporting `ERROR_ALREADY_EXISTS` for `OPEN_ALWAYS`/`CREATE_ALWAYS` on an
+  existing file (std truncates with `OPEN_ALWAYS` plus `FileAllocationInfo`). `NUL` (and
+  `\\.\NUL`) is `/dev/null`. ntdll (`win32/native_files.rs`): `NtReadFile` and `NtWriteFile`
+  (std's file and pipe I/O: at once, at the offset or the position, `STATUS_END_OF_FILE` and
+  `STATUS_PIPE_BROKEN` at the ends, the event signalled and an APC routine queued),
+  `NtOpenFile` of `\??\PIPE\` and `NtCreateNamedPipeFile` with no name under it, then
+  `NtOpenFile` with no name under that end (std's anonymous pipes: a Linux pipe whose other
+  end waits until opened, inherited when `OBJ_INHERIT`), and `RtlNtStatusToDosError`
+  (`nt_status.rs`). Overlapped I/O (`win32/overlapped.rs`): `ReadFile` with an `OVERLAPPED`
+  on a pipe reads at once when it can and otherwise returns `ERROR_IO_PENDING`, kept in
+  `pending_reads.rs`; a wait on its event looks at the pipe every 10 ms (as waits on processes
+  do) and finishes it, `GetOverlappedResult` finishes or waits for it, `CancelIo` and closing
+  the handle cancel it (`ERROR_OPERATION_ABORTED`); on files it reads and writes at once at the
+  `OVERLAPPED`'s offset. `ReadFileEx` and `WriteFileEx` do the I/O at once and queue the
+  completion routine for the thread (`queued_calls.rs`); `SleepEx`,
+  `WaitForSingleObjectEx` and `WaitForMultipleObjectsEx` run the queued calls when alertable
+  and return `WAIT_IO_COMPLETION`. That is all `Command::output` (overlapped reads of two
+  pipes), `ChildStdout::read` (`ReadFileEx` plus `SleepEx`) and `Child::wait` need.
+  `CreateWaitableTimerExW` fails with `ERROR_NOT_SUPPORTED`, so `thread::sleep` falls back
+  to `Sleep`, as std does on older Windows. Check: `tests/windows-rust` (`eggrust`), our own
+  std program built by `cargo` with MSVC's linker for both MSVC targets on CI's Windows
+  runner (`cargo xtask windows-programs`, `windows::RUST_PROGRAMS`), added to the C runtime
+  boot test at `/bin/eggrust.exe`: `Command::output` of itself with arguments (`two words`,
+  `q"uote`) and its error and exit code 7, a piped child read to the end, a file written,
+  rewritten, cut with `set_len`, measured and removed, four threads on a `Mutex` and a
+  `Condvar` with thread-locals, `thread::sleep` and the clocks, a `HashMap`, status 0; and
+  `eggrust.exe panic` prints the panic on standard error (std's hook, then unwinding through
+  `__CxxFrameHandler3`, D177) and ends with 101. No CI change: the `windows-programs` job
+  already builds every program `cargo xtask windows-programs` knows, with the pinned
+  toolchain's Windows targets. Decided without research: overlapped reads poll at 10 ms
+  rather than a helper thread per read (no layer threads exist yet, and it is the process
+  waits' interval); waitable timers left out (std copes); 37a's note on `STARTUPINFOEXW` was
+  wrong for `Command` and is left to the attribute-list API below.
+- **Not yet.** Slice 37b2: programs linked to MinGW's `msvcrt.dll` (a `msvcrt` library with
+  the old C runtime's exports over part 25's UCRT code, built by llvm-mingw in CI). Rust
+  std functions only some programs reach, which still fail to load naming the import:
+  `fs::copy` (`CopyFileExW`, whose progress routine takes nine arguments), `fs::canonicalize`
+  (`GetFinalPathNameByHandleW`), symbolic and hard links (`CreateSymbolicLinkW`,
+  `CreateHardLinkW`), `File::lock` (`LockFileEx`, `UnlockFile`), `fs::remove_dir_all`
+  (`NtCreateFile`, `NtSetInformationFile`), networking (`ws2_32`), and the attribute-list API
+  (`InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`,
+  `DeleteProcThreadAttributeList`, `STARTUPINFOEXW` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`);
+  waitable timers; opening a folder with `FILE_FLAG_BACKUP_SEMANTICS`. Slice 37c: named objects, alertable waits and APCs, abandoned mutexes,
   ordinal imports, DOS wildcards. Then: named pipes (`CreateNamedPipeW`, `ConnectNamedPipe`)
   and overlapped I/O on pipes; inheriting kernel objects (events, process handles) into a
   child; duplicating handles into or out of another process; a really suspended child

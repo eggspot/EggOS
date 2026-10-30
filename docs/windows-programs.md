@@ -152,6 +152,22 @@ cl /O2 /MD seh.c                                           :: C with __try and _
 `tests/windows-crt/eggcpp.cpp` is our own example, which the Windows C runtime boot test runs
 in CI (`cargo xtask windows-crt`).
 
+## Programs built on Rust's standard library
+
+A Windows program written in Rust and built for `x86_64-pc-windows-msvc` or
+`aarch64-pc-windows-msvc` runs as it is (D189): printing, `std::process::Command` (`output`,
+`spawn` with piped standard streams, `wait`, exit codes), files (`fs::write`, `read_to_string`,
+`set_len`, `metadata`, `remove_file`), threads with `Mutex`, `Condvar` and thread-locals,
+`thread::sleep`, `Instant` and `SystemTime`, `HashMap` (seeded by `ProcessPrng`), and panics,
+printed on standard error with exit code 101. The layer implements what std imports for
+them: ntdll's `NtReadFile`, `NtWriteFile`, `NtOpenFile` and `NtCreateNamedPipeFile` (std's
+anonymous pipes), overlapped reads on pipes, `ReadFileEx`, `WriteFileEx` and alertable waits,
+`GetFileInformationByHandleEx`, `SetFileInformationByHandle`, `ProcessPrng` and
+`GetUserProfileDirectoryW`; `NUL` is `/dev/null`. Not yet: `fs::copy`, `fs::canonicalize`,
+links, `File::lock`, `fs::remove_dir_all`, networking and the process attribute-list API
+(such a program does not start, and the message names the missing function), and programs
+linked to MinGW's `msvcrt.dll`.
+
 ## Programs that start other programs
 
 A Windows program can start another program, Windows or Linux, and read its output (D178,
@@ -311,8 +327,8 @@ size needed, as each function documents.
   function given an invalid parameter returns its documented error instead of ending the
   program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
   the others' stdio calls).
-- **Named pipes and overlapped I/O** (`CreateNamedPipeW`, `ConnectNamedPipe`, `OVERLAPPED`
-  reads and writes), handles duplicated into another process, a child that really waits
+- **Named pipes** (`CreateNamedPipeW`, `ConnectNamedPipe`; overlapped reads and writes work on
+  anonymous pipes and files), handles duplicated into another process, a child that really waits
   suspended (`CREATE_SUSPENDED` starts it at once), job objects, and the C runtime's
   `_spawn*`, `system` and `_popen` (D189's "Not yet"); **UTF-16 console polish** (line endings
   as `\r\n`, `ReadConsoleW` across multi-byte input): a later part.

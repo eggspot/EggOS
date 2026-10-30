@@ -228,10 +228,13 @@ Must-have, in order:
     read their output (D189): `CreateProcessW` and `CreateProcessA`, anonymous pipes with
     `PeekNamedPipe`, inherited, duplicated and protected handles, and waits, exit codes and
     `TerminateProcess` on children, checked by `eggspawn.exe` from our own C source in the
-    Windows C runtime boot test on x86_64 and aarch64. Next, as user capabilities: programs
-    built on Rust's std and MinGW's `msvcrt.dll`, then named objects, alertable waits and APCs,
-    abandoned mutexes, ordinal imports and DOS wildcards (D189's "Not yet"), and x64 programs on
-    Arm through ahead-of-time translation (D121's and D124's "Not yet").
+    Windows C runtime boot test on x86_64 and aarch64. Users can now run Windows programs
+    built on Rust's standard library (D189, slice 37b): `Command` with piped output, files,
+    threads, locks, clocks and panics, checked by `eggrust.exe` from our own Rust source in the
+    same boot test. Next, as user capabilities: programs linked to MinGW's `msvcrt.dll`, the
+    rest of std (`fs::copy`, links, `File::lock`, networking), then named objects, alertable
+    waits and APCs, abandoned mutexes, ordinal imports and DOS wildcards (D189's "Not yet"),
+    and x64 programs on Arm through ahead-of-time translation (D121's and D124's "Not yet").
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
     docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which
