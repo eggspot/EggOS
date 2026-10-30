@@ -3,10 +3,12 @@
 //! buffers, surfaces and positioners. The compositor keeps each client in memory of its own,
 //! given back when it goes.
 
+use crate::selection::{DataSource, MAX_SOURCES};
 use crate::system::{Fd, WindowBuffer};
+use crate::text_input::{MAX_TEXT_INPUTS, TextInput};
 use eggos_wayland::blit::Rect;
 use eggos_wayland::positioner::Positioner;
-use eggos_wayland::protocol::{Event, Interface, display};
+use eggos_wayland::protocol::{Event, Interface, SERVER_ID_START, display};
 use eggos_wayland::wire::{self, Value};
 
 /// The highest object id a client may use, plus one.
@@ -33,6 +35,9 @@ pub const MAX_FRAMES: usize = 8;
 pub const TITLE_CAPACITY: usize = 64;
 /// Positioners per client.
 pub const MAX_POSITIONERS: usize = 8;
+/// Objects the compositor makes for a client at once (D176: the offers of a selection), from
+/// [`SERVER_ID_START`] up; one is free again once the client destroys it.
+pub const MAX_SERVER_OBJECTS: usize = 32;
 
 /// One entry of the object table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -256,6 +261,8 @@ pub struct Overflow;
 /// One client.
 #[derive(Debug)]
 pub struct ClientSlot {
+    /// Its place among the compositor's clients.
+    pub index: u8,
     pub socket: Fd,
     pub device: Option<Fd>,
     pub input: [u8; INPUT_CAPACITY],
@@ -268,10 +275,15 @@ pub struct ClientSlot {
     pub descriptors_out: [Fd; MAX_OUT_DESCRIPTORS],
     pub descriptors_out_count: usize,
     pub objects: [Object; MAX_OBJECTS],
+    /// The objects the compositor made, by their id's offset from [`SERVER_ID_START`].
+    pub server_objects: [Object; MAX_SERVER_OBJECTS],
     pub pools: [Option<Pool>; MAX_POOLS],
     pub buffers: [Option<Buffer>; MAX_BUFFERS],
     pub surfaces: [Option<Surface>; MAX_SURFACES],
     pub positioners: [Option<Positioner>; MAX_POSITIONERS],
+    /// Its clipboard and primary selection sources.
+    pub sources: [Option<DataSource>; MAX_SOURCES],
+    pub text_inputs: [Option<TextInput>; MAX_TEXT_INPUTS],
     pub pool_bytes: usize,
     /// It bound `wl_subcompositor` or `wp_viewporter`, or made a positioner: its windows are
     /// drawn from the buffers they hold, so subsurfaces and popups can be drawn over them.
@@ -301,6 +313,7 @@ impl ClientSlot {
             inert: false,
         };
         Self {
+            index: 0,
             socket,
             device: None,
             input: [0; INPUT_CAPACITY],
@@ -313,10 +326,13 @@ impl ClientSlot {
             descriptors_out: [-1; MAX_OUT_DESCRIPTORS],
             descriptors_out_count: 0,
             objects,
+            server_objects: [Object::default(); MAX_SERVER_OBJECTS],
             pools: [None; MAX_POOLS],
             buffers: [None; MAX_BUFFERS],
             surfaces: [None; MAX_SURFACES],
             positioners: [None; MAX_POSITIONERS],
+            sources: [None; MAX_SOURCES],
+            text_inputs: [None; MAX_TEXT_INPUTS],
             pool_bytes: 0,
             composes: false,
             next_order: 0,
@@ -331,12 +347,39 @@ impl ClientSlot {
         }
     }
 
-    /// Object `id`, when it exists.
+    fn slot(&self, id: u32) -> Option<&Object> {
+        match id.checked_sub(SERVER_ID_START) {
+            Some(offset) => self.server_objects.get(offset as usize),
+            None => self.objects.get(id as usize),
+        }
+    }
+
+    /// Object `id`, when it exists: the client's own, or one the compositor made.
     pub fn object(&self, id: u32) -> Option<Object> {
-        self.objects
-            .get(id as usize)
+        self.slot(id)
             .copied()
             .filter(|object| object.interface.is_some())
+    }
+
+    /// Makes an object of `interface` at `version`, standing for `index`, with the lowest free
+    /// id of the compositor's range; `None` when none is free.
+    pub fn create_server_object(
+        &mut self,
+        interface: Interface,
+        version: u32,
+        index: u16,
+    ) -> Option<u32> {
+        let free = self
+            .server_objects
+            .iter()
+            .position(|object| object.interface.is_none())?;
+        self.server_objects[free] = Object {
+            interface: Some(interface),
+            version,
+            index,
+            inert: false,
+        };
+        Some(SERVER_ID_START + free as u32)
     }
 
     /// Whether `id` is free for a new object of the client's.
@@ -356,7 +399,11 @@ impl ClientSlot {
 
     /// Frees `id`.
     pub fn forget(&mut self, id: u32) {
-        if let Some(object) = self.objects.get_mut(id as usize) {
+        let slot = match id.checked_sub(SERVER_ID_START) {
+            Some(offset) => self.server_objects.get_mut(offset as usize),
+            None => self.objects.get_mut(id as usize),
+        };
+        if let Some(object) = slot {
             *object = Object::default();
         }
     }

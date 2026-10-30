@@ -46,8 +46,8 @@
 //! `readlink` and `readlinkat` ([`files`]), `access`, `faccessat` and `faccessat2`
 //! ([`stat`]), and `sethostname` and `setdomainname` ([`identity`]) (D168), and symbolic and
 //! hard links with `symlinkat`, `linkat` and `openat2`'s `RESOLVE_NO_SYMLINKS`, and
-//! permissions with `fchmodat`, `fchmodat2` and `fchmod` ([`file_changes`], [`files`], D170).
-//! Every
+//! permissions with `fchmodat`, `fchmodat2` and `fchmod` ([`file_changes`], [`files`], D170),
+//! and `sysinfo` ([`sysinfo`]) and `fadvise64` ([`files`]) for GTK apps (D176). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -82,6 +82,7 @@ pub mod signals;
 pub mod socket;
 pub mod stat;
 pub mod statfs;
+pub mod sysinfo;
 pub mod terminal;
 pub mod thread;
 pub mod thread_pointer;
@@ -282,6 +283,8 @@ pub mod number {
         pub const FLOCK: u64 = 73;
         pub const STATFS: u64 = 137;
         pub const FSTATFS: u64 = 138;
+        pub const SYSINFO: u64 = 99;
+        pub const FADVISE64: u64 = 221;
         /// The highest number above.
         pub const LAST: u64 = FCHMODAT2;
     }
@@ -435,6 +438,8 @@ pub mod number {
         pub const FLOCK: u64 = 32;
         pub const STATFS: u64 = 43;
         pub const FSTATFS: u64 = 44;
+        pub const SYSINFO: u64 = 179;
+        pub const FADVISE64: u64 = 223;
         /// The highest number above.
         pub const LAST: u64 = FCHMODAT2;
     }
@@ -630,6 +635,8 @@ pub mod number {
             FLOCK,
             STATFS,
             FSTATFS,
+            SYSINFO,
+            FADVISE64,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -1316,6 +1323,8 @@ fn out_of_line_result<P: Platform>(
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
         number::STATFS => statfs::statfs(process, thread, first, second),
         number::FSTATFS => statfs::fstatfs(process, thread.files(), first, second),
+        number::SYSINFO => sysinfo::sysinfo(process, first),
+        number::FADVISE64 => files::fadvise64(thread.files(), first, third, fourth),
         number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
         number::STATX => stat::statx(process, thread, first, second, third, fourth, fifth),
         number::OPENAT => files::openat(process, thread, first, second, third, fourth),
@@ -8025,6 +8034,41 @@ mod tests {
             call(&process, number::FSTATFS, [99, READ_BUFFER, 0, 0, 0, 0]),
             Errno::EBADF.result()
         );
+    }
+
+    #[test]
+    fn sysinfo_reports_memory_in_bytes_and_fadvise_takes_valid_advice_on_files() {
+        use descriptors::open_flag;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let word = |at: usize| {
+            let bytes = read_bytes(&process, READ_BUFFER + at as u64, 8);
+            u64::from_ne_bytes(bytes.try_into().unwrap())
+        };
+        assert_eq!(
+            call(&process, number::SYSINFO, [READ_BUFFER, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert!(
+            word(32) >= word(40),
+            "total memory is at least the free memory"
+        );
+        assert_eq!(word(104) & 0xffff_ffff, 1, "mem_unit is one byte");
+        assert_eq!(
+            call(&process, number::SYSINFO, [0, 0, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        let fd = open_at(&process, FDCWD, b"/etc/hostname", open_flag::CLOEXEC);
+        let fadvise = |fd: u64, length: u64, advice: u64| {
+            call(&process, number::FADVISE64, [fd, 0, length, advice, 0, 0])
+        };
+        for advice in 0..=files::advice::NOREUSE {
+            assert_eq!(fadvise(fd, 0, advice), 0, "{advice}");
+        }
+        assert_eq!(fadvise(fd, 0, 6), Errno::EINVAL.result());
+        assert_eq!(fadvise(fd, u64::MAX, 0), Errno::EINVAL.result());
+        assert_eq!(fadvise(99, 0, 0), Errno::EBADF.result());
     }
 
     #[test]

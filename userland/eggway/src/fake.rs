@@ -102,6 +102,8 @@ pub struct Fake {
     pub keymaps: usize,
     /// The queries answered: serial, outcome and tree.
     pub answers: Vec<(u32, u32, Vec<u8>)>,
+    /// The windows raised and focused, in order (D176).
+    pub focused: Vec<u32>,
 }
 
 std::thread_local! {
@@ -129,6 +131,7 @@ impl Default for Fake {
             clients: 0,
             keymaps: 0,
             answers: Vec::new(),
+            focused: Vec::new(),
         }
     }
 }
@@ -461,6 +464,14 @@ impl System for Fake {
     fn set_state(&mut self, _device: Fd, window: u32, state: u32) -> Result<(), Errno> {
         let target = self.windows.get_mut(&window).ok_or(Errno::EINVAL)?;
         target.states.push(state);
+        Ok(())
+    }
+
+    fn focus_window(&mut self, _device: Fd, window: u32) -> Result<(), Errno> {
+        if !self.windows.contains_key(&window) {
+            return Err(Errno::EINVAL);
+        }
+        self.focused.push(window);
         Ok(())
     }
 

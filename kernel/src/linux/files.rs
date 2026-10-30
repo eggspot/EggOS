@@ -651,6 +651,27 @@ pub fn read_regular<P: Platform>(
     }
 }
 
+/// `posix_fadvise`'s advice (`POSIX_FADV_*`), as `fadvise64` takes it.
+pub mod advice {
+    /// The last advice Linux knows: `POSIX_FADV_NOREUSE`; 0 (`NORMAL`) to it are valid.
+    pub const NOREUSE: u64 = 5;
+}
+
+/// `fadvise64(fd, offset, length, advice)` (D176): how a program will read a file. EggOS reads
+/// file pages when they are first used and keeps no read-ahead to tune, so every valid advice
+/// is taken and changes nothing, as Linux's own answer for files it does not cache. As Linux:
+/// `EBADF` unless `fd` is open, `ESPIPE` for a pipe, `EINVAL` for a negative length, an
+/// unknown advice or a file with no pages (a socket, an event file).
+pub fn fadvise64(files: &Descriptors, fd: u64, length: u64, wanted: u64) -> Result<u64, Errno> {
+    let file = files.file(fd)?;
+    match file.kind() {
+        FileKind::Pipe(_) => Err(Errno::ESPIPE),
+        FileKind::Socket(_) | FileKind::InetSocket(_) | FileKind::Event(_) => Err(Errno::EINVAL),
+        _ if (length as i64) < 0 || wanted > advice::NOREUSE => Err(Errno::EINVAL),
+        _ => Ok(0),
+    }
+}
+
 /// `pread64(fd, buffer, count, offset)`: reads what descriptor `fd` names from `offset`
 /// without moving the description's offset. As Linux, in this order: `EINVAL` for a negative
 /// offset, `EBADF` unless `fd` is open for reading, `ESPIPE` for the console, `EFAULT` if the

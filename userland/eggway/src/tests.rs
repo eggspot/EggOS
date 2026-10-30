@@ -2,8 +2,10 @@ use crate::compositor::{self, Compositor, MAX_CLIENTS};
 use crate::fake::{Fake, SentEvent, message};
 use crate::system::{Fd, System};
 use eggos_wayland::protocol::{
-    Interface, buffer, callback, cursor_shape, decoration, display, keyboard, pointer, registry,
-    shm, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
+    Interface, SERVER_ID_START, activation_token, buffer, callback, cursor_shape, data_device,
+    data_offer, data_source, decoration, display, keyboard, pointer, primary_selection_device,
+    primary_selection_offer, primary_selection_source, registry, server_decoration, shm, surface,
+    text_input, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
 };
 use eggos_wayland::wire::Value;
 
@@ -30,6 +32,7 @@ mod record {
     pub const BUTTON: u16 = 4;
     pub const KEY: u16 = 6;
     pub const FOCUS_IN: u16 = 7;
+    pub const FOCUS_OUT: u16 = 8;
     pub const CLOSE_REQUEST: u16 = 9;
     pub const RESIZE: u16 = 10;
     pub const STATE_CHANGED: u16 = 11;
@@ -83,8 +86,10 @@ impl Session {
             if self.compositor.client_count() == 0 {
                 break;
             }
-            self.compositor.readable(&mut self.fake, 0);
-            self.compositor.device_readable(&mut self.fake, 0);
+            for index in 0..MAX_CLIENTS {
+                self.compositor.readable(&mut self.fake, index);
+                self.compositor.device_readable(&mut self.fake, index);
+            }
             self.compositor.tick(&mut self.fake);
         }
         let events = self.fake.events(self.socket, &mut self.read);
@@ -247,7 +252,7 @@ fn the_registry_announces_every_global_and_refuses_a_newer_bind() {
         .iter()
         .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
         .collect();
-    assert_eq!(globals.len(), 9);
+    assert_eq!(globals.len(), 14);
     assert_eq!(globals[0].word(0), 1);
     session.bind(1, "wl_compositor", 5, COMPOSITOR);
     session.pump();
@@ -1359,4 +1364,522 @@ fn a_viewport_scales_the_buffer_to_its_destination_and_refuses_a_source_outside_
     session.pump();
     assert_eq!(session.error(), Some((VIEWPORT, viewport::OUT_OF_BUFFER)));
     session.end();
+}
+
+const DATA_MANAGER: u32 = 50;
+const DATA_DEVICE: u32 = 51;
+const SOURCE: u32 = 52;
+const SECOND_SOURCE: u32 = 53;
+const PRIMARY_MANAGER: u32 = 54;
+const PRIMARY_DEVICE: u32 = 55;
+const PRIMARY_SOURCE: u32 = 56;
+const ACTIVATION: u32 = 57;
+const TOKEN: u32 = 58;
+const SECOND_TOKEN: u32 = 59;
+const TEXT_INPUT_MANAGER: u32 = 60;
+const TEXT_INPUT: u32 = 61;
+const DECORATION_MANAGER_KDE: u32 = 62;
+const DECORATION_KDE: u32 = 63;
+
+fn text_of(event: &SentEvent) -> String {
+    let length = event.word(0) as usize;
+    String::from_utf8(event.body[4..4 + length - 1].to_vec()).expect("UTF-8")
+}
+
+impl Session {
+    fn data_device(&mut self) {
+        self.bind(10, "wl_data_device_manager", 3, DATA_MANAGER);
+        self.send(
+            DATA_MANAGER,
+            1,
+            &[Value::NewId(DATA_DEVICE), Value::Object(SEAT)],
+        );
+    }
+
+    fn source(&mut self, id: u32, types: &[&[u8]]) {
+        self.send(DATA_MANAGER, 0, &[Value::NewId(id)]);
+        for mime_type in types {
+            self.send(id, 0, &[Value::String(mime_type)]);
+        }
+    }
+
+    fn second_client(&mut self) -> (Fd, usize) {
+        let socket = self.fake.connect();
+        assert!(self.compositor.add_client(&mut self.fake, socket));
+        self.switch_to(socket, 0)
+    }
+
+    fn switch_to(&mut self, socket: Fd, read: usize) -> (Fd, usize) {
+        self.flush_requests();
+        self.events.clear();
+        let old = (self.socket, self.read);
+        self.socket = socket;
+        self.read = read;
+        old
+    }
+
+    fn last_window(&self) -> u32 {
+        *self.fake.windows.keys().last().expect("a window")
+    }
+
+    fn focus(&mut self, from: Option<u32>, to: u32) -> Vec<SentEvent> {
+        if let Some(from) = from {
+            self.fake.record(from, record::FOCUS_OUT, [0; 4]);
+        }
+        self.fake.record(to, record::FOCUS_IN, [0; 4]);
+        self.pump()
+    }
+}
+
+#[test]
+fn copy_and_paste_hand_the_pipe_from_the_focused_client_to_the_source_s_client() {
+    let mut session = Session::new();
+    let first = session.shown();
+    session.data_device();
+    session.source(
+        SOURCE,
+        &[
+            b"text/plain;charset=utf-8",
+            b"UTF8_STRING",
+            b"text/plain;charset=utf-8",
+        ],
+    );
+    session.focus(None, first);
+    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(1)]);
+    let events = session.pump();
+    let offer = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("its own selection offered")
+        .word(0);
+    assert_eq!(offer, SERVER_ID_START);
+    let types: Vec<String> = events
+        .iter()
+        .filter(|event| event.object == offer && event.opcode == data_offer::OFFER.opcode)
+        .map(text_of)
+        .collect();
+    assert_eq!(types, ["text/plain;charset=utf-8", "UTF8_STRING"]);
+    let selections = session.of(DATA_DEVICE, data_device::SELECTION.opcode);
+    assert_eq!(selections.last().map(|event| event.word(0)), Some(offer));
+
+    let (first_socket, first_read) = session.second_client();
+    session.shown();
+    let second = session.last_window();
+    session.data_device();
+    session.pump();
+    assert!(
+        session
+            .of(DATA_DEVICE, data_device::SELECTION.opcode)
+            .is_empty()
+    );
+    let events = session.focus(Some(first), second);
+    let offer = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("the selection offered on focus")
+        .word(0);
+    let pipe = session.fake.other_file();
+    session.send_with(
+        offer,
+        1,
+        &[Value::String(b"UTF8_STRING"), Value::Fd],
+        vec![pipe],
+    );
+    session.pump();
+    assert!(!session.fake.open.contains(&pipe), "the pipe went on");
+    let mut read = first_read;
+    let sent = session.fake.events(first_socket, &mut read);
+    let send = sent
+        .iter()
+        .find(|event| event.object == SOURCE && event.opcode == data_source::SEND.opcode)
+        .expect("the source asked for its data");
+    assert_eq!(text_of(send), "UTF8_STRING");
+    assert_eq!(session.fake.sockets[&first_socket].outgoing_descriptors, 2);
+
+    let (second_socket, second_read) = session.switch_to(first_socket, read);
+    session.source(SECOND_SOURCE, &[b"text/plain"]);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(2)],
+    );
+    session.pump();
+    assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
+    let read = session.read;
+    session.switch_to(second_socket, second_read);
+    let events = session.pump();
+    let fresh = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("the new selection offered at once")
+        .word(0);
+    assert_ne!(fresh, offer);
+    let stale = session.fake.other_file();
+    session.send_with(
+        offer,
+        1,
+        &[Value::String(b"UTF8_STRING"), Value::Fd],
+        vec![stale],
+    );
+    session.pump();
+    assert!(
+        !session.fake.open.contains(&stale),
+        "a stale offer's pipe is closed"
+    );
+    assert_eq!(session.fake.sockets[&first_socket].outgoing_descriptors, 2);
+
+    session.fake.hang_up(first_socket);
+    let events = session.pump();
+    let cleared = events
+        .iter()
+        .filter(|event| {
+            event.object == DATA_DEVICE && event.opcode == data_device::SELECTION.opcode
+        })
+        .any(|event| event.word(0) == 0);
+    assert!(cleared, "the selection ends with its client");
+    let _ = read;
+    session.end();
+}
+
+#[test]
+fn a_source_is_set_once_and_a_selection_offer_has_no_finish() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(1)]);
+    session.pump();
+    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(2)]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((DATA_DEVICE, data_device::USED_SOURCE))
+    );
+    assert!(!session.alive());
+
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(1)]);
+    session.pump();
+    session.send(SERVER_ID_START, 3, &[]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((SERVER_ID_START, data_offer::INVALID_FINISH))
+    );
+
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    session.send(
+        DATA_DEVICE,
+        0,
+        &[
+            Value::Object(SOURCE),
+            Value::Object(SURFACE),
+            Value::Object(0),
+            Value::Uint(1),
+        ],
+    );
+    session.pump();
+    assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
+    session.send(SOURCE, 1, &[]);
+    session.pump();
+    assert!(session.alive());
+    session.end();
+}
+
+#[test]
+fn the_primary_selection_is_offered_and_read_through_its_own_device() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(
+        11,
+        "zwp_primary_selection_device_manager_v1",
+        1,
+        PRIMARY_MANAGER,
+    );
+    session.send(
+        PRIMARY_MANAGER,
+        1,
+        &[Value::NewId(PRIMARY_DEVICE), Value::Object(SEAT)],
+    );
+    session.send(PRIMARY_MANAGER, 0, &[Value::NewId(PRIMARY_SOURCE)]);
+    session.send(
+        PRIMARY_SOURCE,
+        0,
+        &[Value::String(b"text/plain;charset=utf-8")],
+    );
+    let events = session.focus(None, window);
+    let cleared = events.iter().any(|event| {
+        event.object == PRIMARY_DEVICE
+            && event.opcode == primary_selection_device::SELECTION.opcode
+            && event.word(0) == 0
+    });
+    assert!(cleared, "no primary selection yet");
+    session.send(
+        PRIMARY_DEVICE,
+        0,
+        &[Value::Object(PRIMARY_SOURCE), Value::Uint(3)],
+    );
+    let events = session.pump();
+    let offer = events
+        .iter()
+        .find(|event| {
+            event.object == PRIMARY_DEVICE
+                && event.opcode == primary_selection_device::DATA_OFFER.opcode
+        })
+        .expect("the primary selection offered")
+        .word(0);
+    let offered: Vec<String> = events
+        .iter()
+        .filter(|event| {
+            event.object == offer && event.opcode == primary_selection_offer::OFFER.opcode
+        })
+        .map(text_of)
+        .collect();
+    assert_eq!(offered, ["text/plain;charset=utf-8"]);
+    let pipe = session.fake.other_file();
+    session.send_with(
+        offer,
+        0,
+        &[Value::String(b"text/plain;charset=utf-8"), Value::Fd],
+        vec![pipe],
+    );
+    session.pump();
+    let send = session.of(PRIMARY_SOURCE, primary_selection_source::SEND.opcode);
+    assert_eq!(send.len(), 1);
+    assert_eq!(text_of(send[0]), "text/plain;charset=utf-8");
+    assert!(!session.fake.open.contains(&pipe));
+    session.send(PRIMARY_SOURCE, 1, &[]);
+    let events = session.pump();
+    let cleared = events.iter().any(|event| {
+        event.object == PRIMARY_DEVICE
+            && event.opcode == primary_selection_device::SELECTION.opcode
+            && event.word(0) == 0
+    });
+    assert!(cleared, "a destroyed source ends the selection");
+    session.end();
+}
+
+#[test]
+fn an_activation_token_from_the_focused_client_raises_a_window_once() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(12, "xdg_activation_v1", 1, ACTIVATION);
+    session.send(ACTIVATION, 1, &[Value::NewId(TOKEN)]);
+    session.send(TOKEN, 0, &[Value::Uint(1), Value::Object(SEAT)]);
+    session.send(TOKEN, 2, &[Value::Object(SURFACE)]);
+    session.send(TOKEN, 3, &[]);
+    let events = session.pump();
+    let unfocused = text_of(
+        events
+            .iter()
+            .find(|event| event.object == TOKEN && event.opcode == activation_token::DONE.opcode)
+            .expect("a token"),
+    );
+    assert!(unfocused.starts_with("eggway-"));
+    assert_eq!(unfocused.len(), crate::activation::TOKEN_BYTES);
+    session.send(
+        ACTIVATION,
+        2,
+        &[Value::String(unfocused.as_bytes()), Value::Object(SURFACE)],
+    );
+    session.pump();
+    assert!(
+        session.fake.focused.is_empty(),
+        "a background token raises nothing"
+    );
+
+    session.focus(None, window);
+    session.send(ACTIVATION, 1, &[Value::NewId(SECOND_TOKEN)]);
+    session.send(SECOND_TOKEN, 3, &[]);
+    let events = session.pump();
+    let token = text_of(
+        events
+            .iter()
+            .find(|event| {
+                event.object == SECOND_TOKEN && event.opcode == activation_token::DONE.opcode
+            })
+            .expect("a token"),
+    );
+    assert_ne!(token, unfocused);
+    for _ in 0..2 {
+        session.send(
+            ACTIVATION,
+            2,
+            &[Value::String(token.as_bytes()), Value::Object(SURFACE)],
+        );
+        session.pump();
+    }
+    assert_eq!(session.fake.focused, [window]);
+    session.send(SECOND_TOKEN, 3, &[]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((SECOND_TOKEN, activation_token::ALREADY_USED))
+    );
+}
+
+#[test]
+fn tokens_are_single_use_and_expire() {
+    use crate::activation::{Activation, TOKEN_LIFETIME_MS, token_text, token_value};
+    let mut tokens = Activation::default();
+    let value = tokens.issue(1000, true);
+    assert_eq!(token_value(&token_text(value)), Some(value));
+    assert_eq!(token_value(b"eggway-0123"), None);
+    assert_eq!(token_value(b"other-0123456789abcdef"), None);
+    assert!(tokens.redeem(value, 1000 + TOKEN_LIFETIME_MS));
+    assert!(!tokens.redeem(value, 1001));
+    let late = tokens.issue(2000, true);
+    assert!(!tokens.redeem(late, 2001 + TOKEN_LIFETIME_MS));
+    let first = tokens.issue(3000, true);
+    for at in 0..crate::activation::MAX_TOKENS as u64 {
+        tokens.issue(4000 + at, true);
+    }
+    assert!(!tokens.redeem(first, 5000), "the oldest token made room");
+}
+
+#[test]
+fn a_focused_text_field_joins_the_element_tree_without_a_password_s_text() {
+    use eggos_element_tree::{QUERY_EVENT, Role, elements, flags};
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(13, "zwp_text_input_manager_v3", 1, TEXT_INPUT_MANAGER);
+    session.focus(None, window);
+    session.send(
+        TEXT_INPUT_MANAGER,
+        1,
+        &[Value::NewId(TEXT_INPUT), Value::Object(SEAT)],
+    );
+    let events = session.pump();
+    let entered: Vec<u32> = events
+        .iter()
+        .filter(|event| event.object == TEXT_INPUT && event.opcode == text_input::ENTER.opcode)
+        .map(|event| event.word(0))
+        .collect();
+    assert_eq!(entered, [SURFACE]);
+    session.send(TEXT_INPUT, 1, &[]);
+    session.send(
+        TEXT_INPUT,
+        3,
+        &[Value::String(b"alpha beta"), Value::Int(5), Value::Int(0)],
+    );
+    session.send(TEXT_INPUT, 5, &[Value::Uint(0), Value::Uint(0)]);
+    session.send(
+        TEXT_INPUT,
+        6,
+        &[
+            Value::Int(30),
+            Value::Int(12),
+            Value::Int(1),
+            Value::Int(16),
+        ],
+    );
+    session.pump();
+    session.record(QUERY_EVENT, [9, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    assert_eq!(
+        elements(&tree).count(),
+        1,
+        "nothing shows before the commit"
+    );
+    session.send(TEXT_INPUT, 7, &[]);
+    session.pump();
+    session.record(QUERY_EVENT, [10, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    let field = elements(&tree).nth(1).unwrap().unwrap();
+    assert_eq!(
+        (field.parent, field.role, field.name, field.value),
+        (1, Role::TextField, &b"text"[..], &b"alpha beta"[..])
+    );
+    assert_eq!(
+        (field.bounds.x, field.bounds.y, field.bounds.height),
+        (30, 12, 16)
+    );
+    assert_eq!(field.flags, flags::FOCUSED | flags::FOCUSABLE);
+    session.send(
+        TEXT_INPUT,
+        5,
+        &[Value::Uint(0), Value::Uint(text_input::PURPOSE_PASSWORD)],
+    );
+    session.send(TEXT_INPUT, 7, &[]);
+    session.pump();
+    session.record(QUERY_EVENT, [11, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    let field = elements(&tree).nth(1).unwrap().unwrap();
+    assert_eq!((field.name, field.value), (&b"password"[..], &b""[..]));
+    let events = session.record(record::FOCUS_OUT, [0; 4]);
+    assert!(
+        events
+            .iter()
+            .any(|event| event.object == TEXT_INPUT && event.opcode == text_input::LEAVE.opcode)
+    );
+    session.record(QUERY_EVENT, [12, 0, 0, 0]);
+    let (_, _, tree) = session.fake.answers.last().cloned().unwrap();
+    assert_eq!(elements(&tree).count(), 1, "no field once the focus left");
+    session.end();
+}
+
+#[test]
+fn long_surrounding_text_keeps_whole_characters_around_the_cursor() {
+    use crate::text_input::{SURROUNDING_CAPACITY, excerpt};
+    let short = b"short";
+    assert_eq!(excerpt(short, 2), (0, 5));
+    let long = "é".repeat(200);
+    let (start, end) = excerpt(long.as_bytes(), 200);
+    assert!(end - start <= SURROUNDING_CAPACITY);
+    assert!(long.is_char_boundary(start) && long.is_char_boundary(end));
+    assert!((start..=end).contains(&200));
+    let (start, end) = excerpt(long.as_bytes(), 0);
+    assert_eq!(start, 0);
+    assert_eq!(end, SURROUNDING_CAPACITY);
+    let (start, end) = excerpt(long.as_bytes(), 400);
+    assert_eq!(end, 400);
+    assert!(400 - start <= SURROUNDING_CAPACITY);
+}
+
+#[test]
+fn kde_server_decorations_are_always_the_server_s() {
+    let mut session = Session::new();
+    session.shown();
+    session.bind(
+        14,
+        "org_kde_kwin_server_decoration_manager",
+        1,
+        DECORATION_MANAGER_KDE,
+    );
+    session.send(
+        DECORATION_MANAGER_KDE,
+        0,
+        &[Value::NewId(DECORATION_KDE), Value::Object(SURFACE)],
+    );
+    session.send(DECORATION_KDE, 1, &[Value::Uint(server_decoration::CLIENT)]);
+    session.pump();
+    let defaults = session.of(
+        DECORATION_MANAGER_KDE,
+        server_decoration::DEFAULT_MODE.opcode,
+    );
+    assert_eq!(defaults[0].word(0), server_decoration::SERVER);
+    let modes: Vec<u32> = session
+        .of(DECORATION_KDE, server_decoration::MODE.opcode)
+        .iter()
+        .map(|event| event.word(0))
+        .collect();
+    assert_eq!(
+        modes,
+        [server_decoration::SERVER, server_decoration::SERVER]
+    );
+    session.send(DECORATION_KDE, 1, &[Value::Uint(7)]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((DECORATION_KDE, display::INVALID_METHOD))
+    );
 }

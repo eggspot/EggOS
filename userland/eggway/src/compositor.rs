@@ -1,20 +1,24 @@
-//! The compositor (D140, D172): every client's requests checked against `wayland.xml`,
-//! `xdg-shell.xml`, `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml` and
-//! `viewporter.xml` and carried out, each `xdg_toplevel` a window on `/dev/window` with its
-//! subsurfaces and popups drawn into it, the window server's input turned into seat and shell
+//! The compositor (D140, D172, D176): every client's requests checked against `wayland.xml`,
+//! `xdg-shell.xml`, `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml`, `viewporter.xml`,
+//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`
+//! and KDE's `server-decoration.xml` and carried out, each `xdg_toplevel` a window on
+//! `/dev/window` with its subsurfaces and popups drawn into it, the window server's input turned into seat and shell
 //! events for the surface under the pointer, and frame callbacks paced at 60 Hz. A client that
 //! breaks the protocol gets `wl_display.error` and is disconnected; nothing a client sends can
 //! make the compositor panic or hold more than its fixed limits.
 
+use crate::activation;
 use crate::client::{
     Attach, Buffer, ClientSlot, INPUT_CAPACITY, MAX_BUFFERS, MAX_FRAMES, MAX_IN_DESCRIPTORS,
     MAX_OBJECTS, MAX_OUT_DESCRIPTORS, MAX_POOLS, MAX_POSITIONERS, MAX_SURFACES, OUTPUT_CAPACITY,
     Pool, Role, Surface, TITLE_CAPACITY, ViewportState,
 };
+use crate::selection::{self, Delivery, Selections};
 use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
+use crate::text_input;
 use eggos_element_tree::{
-    Bounds, Element, HEADER_BYTES, Outcome, Query, Role as ElementRole, TreeWriter, query_kind,
-    tree_answer,
+    Bounds, Element, HEADER_BYTES, Outcome, Query, Role as ElementRole, TreeWriter,
+    flags as element_flags, query_kind, tree_answer,
 };
 use eggos_runtime::errno::Errno;
 use eggos_wayland::blit::{Placement, Rect};
@@ -22,8 +26,8 @@ use eggos_wayland::keymap;
 use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
-    keyboard, output, pointer, registry, seat, shm, subsurface, surface, viewport, xdg_popup,
-    xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+    keyboard, output, pointer, registry, seat, server_decoration, shm, subsurface, surface,
+    viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 use eggos_wayland::wire::{self, Header, MAX_ARGUMENTS, MAX_MESSAGE_SIZE, Value};
 
@@ -45,6 +49,7 @@ pub const MAX_BUFFER_BYTES: usize = 4 << 20;
 pub const MAX_RECEIVE_DESCRIPTORS: usize = 28;
 const ANSWER_ROOM: usize = 4096;
 const ROOT_ELEMENT: u32 = 1;
+const TEXT_FIELD_ELEMENT: u32 = 2;
 
 const FIXED_SIZE: u32 = 1;
 /// `/dev/window`'s event record size.
@@ -106,14 +111,20 @@ pub struct Watch {
     pub device: Option<Fd>,
 }
 
+/// What every client shares: serials, the pool memory mapped, the selections, the activation
+/// tokens and which client has the keyboard focus.
 #[derive(Debug, Default)]
-struct Shared {
+pub(crate) struct Shared {
     serial: u32,
     pool_bytes: usize,
+    pub(crate) selections: Selections,
+    pub(crate) activation: activation::Activation,
+    /// The index of the client whose window has the keyboard focus.
+    pub(crate) keyboard_client: Option<u8>,
 }
 
 impl Shared {
-    fn next_serial(&mut self) -> u32 {
+    pub(crate) fn next_serial(&mut self) -> u32 {
         self.serial = self.serial.wrapping_add(1).max(1);
         self.serial
     }
@@ -128,22 +139,24 @@ pub struct Compositor {
 
 type Values<'a> = [Value<'a>; MAX_ARGUMENTS];
 
-struct Message<'a> {
-    object: u32,
-    interface: Interface,
-    version: u32,
-    index: u16,
-    opcode: u16,
-    values: Values<'a>,
-    descriptors: [Fd; 2],
+/// One request, decoded: its object, that object's interface, version and index, its opcode,
+/// arguments and descriptors.
+pub(crate) struct Message<'a> {
+    pub(crate) object: u32,
+    pub(crate) interface: Interface,
+    pub(crate) version: u32,
+    pub(crate) index: u16,
+    pub(crate) opcode: u16,
+    pub(crate) values: Values<'a>,
+    pub(crate) descriptors: [Fd; 2],
 }
 
 impl Message<'_> {
-    fn uint(&self, at: usize) -> u32 {
+    pub(crate) fn uint(&self, at: usize) -> u32 {
         self.values[at].uint()
     }
 
-    fn int(&self, at: usize) -> i32 {
+    pub(crate) fn int(&self, at: usize) -> i32 {
         self.values[at].int()
     }
 }
@@ -188,6 +201,7 @@ impl Compositor {
             system.close(socket);
             return false;
         };
+        client.index = free as u8;
         self.clients[free] = Some(client);
         true
     }
@@ -216,6 +230,7 @@ impl Compositor {
         if !alive {
             self.disconnect(system, index);
         }
+        self.deliver(system);
     }
 
     /// Client `index`'s socket has room: sends what waits.
@@ -236,6 +251,7 @@ impl Compositor {
         {
             handle_requests(client, &mut self.shared, system);
         }
+        self.deliver(system);
     }
 
     /// Whether client `index` holds whole requests it has not handled yet (the per-wake limit
@@ -281,6 +297,7 @@ impl Compositor {
             }
         }
         flush_motion(client, &mut self.shared);
+        self.deliver(system);
     }
 
     /// Sends the frame callbacks that are due at `now`, then every client's events; clients
@@ -319,6 +336,45 @@ impl Compositor {
                     .saturating_sub(now)
             })
             .min()
+    }
+
+    fn deliver<S: System>(&mut self, system: &mut S) {
+        let Self { clients, shared } = self;
+        for _ in 0..selection::MAX_DELIVERIES * 2 {
+            let Some(delivery) = shared.selections.take_delivery() else {
+                return;
+            };
+            match delivery {
+                Delivery::Announce { kind } => {
+                    if let Some(index) = shared.keyboard_client
+                        && let Some(client) = client_at(clients, index)
+                    {
+                        selection::announce(client, &shared.selections, kind);
+                    }
+                }
+                Delivery::Cancel {
+                    owner,
+                    source,
+                    kind,
+                } => {
+                    if let Some(client) = client_at(clients, owner) {
+                        selection::cancel(client, source, kind);
+                    }
+                }
+                Delivery::Send {
+                    owner,
+                    source,
+                    kind,
+                    mime_type,
+                    descriptor,
+                } => match client_at(clients, owner) {
+                    Some(client) => {
+                        selection::send(client, system, source, kind, &mime_type, descriptor)
+                    }
+                    None => system.close(descriptor),
+                },
+            }
+        }
     }
 
     fn flush_client<S: System>(&mut self, system: &mut S, index: usize) {
@@ -362,10 +418,25 @@ impl Compositor {
             system.close(descriptor);
         }
         system.free_client(client);
+        let gone = index as u8;
+        if self.shared.keyboard_client == Some(gone) {
+            self.shared.keyboard_client = None;
+        }
+        self.shared.selections.forget_client(system, gone);
+        self.deliver(system);
     }
 }
 
-fn flush<S: System>(client: &mut ClientSlot, system: &mut S) -> bool {
+fn client_at(
+    clients: &mut [Option<&'static mut ClientSlot>],
+    index: u8,
+) -> Option<&mut ClientSlot> {
+    clients
+        .get_mut(usize::from(index))
+        .and_then(|slot| slot.as_deref_mut())
+}
+
+pub(crate) fn flush<S: System>(client: &mut ClientSlot, system: &mut S) -> bool {
     if client.output_length == 0 {
         return true;
     }
@@ -532,7 +603,7 @@ fn destroy_object(client: &mut ClientSlot, id: u32) {
     }
 }
 
-fn new_object(
+pub(crate) fn new_object(
     client: &mut ClientSlot,
     id: u32,
     interface: Interface,
@@ -551,7 +622,7 @@ fn new_object(
     true
 }
 
-fn object_index(client: &mut ClientSlot, id: u32, interface: Interface) -> Option<u16> {
+pub(crate) fn object_index(client: &mut ClientSlot, id: u32, interface: Interface) -> Option<u16> {
     match client.object(id) {
         Some(object) if object.interface == Some(interface) && !object.inert => Some(object.index),
         _ => {
@@ -590,6 +661,24 @@ fn handle<S: System>(
         Interface::CursorShapeDevice => cursor_shape_request(client, system, message),
         Interface::Viewporter => viewporter_request(client, message),
         Interface::Viewport => viewport_request(client, message),
+        Interface::DataDeviceManager | Interface::PrimarySelectionDeviceManager => {
+            selection::manager_request(client, shared, message)
+        }
+        Interface::DataSource | Interface::PrimarySelectionSource => {
+            selection::source_request(client, shared, message)
+        }
+        Interface::DataDevice | Interface::PrimarySelectionDevice => {
+            selection::device_request(client, shared, system, message)
+        }
+        Interface::DataOffer | Interface::PrimarySelectionOffer => {
+            selection::offer_request(client, shared, system, message)
+        }
+        Interface::Activation => activation::activation_request(client, shared, system, message),
+        Interface::ActivationToken => activation::token_request(client, shared, system, message),
+        Interface::TextInputManager => text_input::manager_request(client, message),
+        Interface::TextInput => text_input::request(client, message),
+        Interface::ServerDecorationManager => server_decoration_manager_request(client, message),
+        Interface::ServerDecoration => server_decoration_request(client, message),
         Interface::Region
         | Interface::Callback
         | Interface::Keyboard
@@ -662,6 +751,12 @@ fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
             client.post(id, version, seat::NAME, &[Value::String(b"seat0")]);
         }
         Interface::Subcompositor | Interface::Viewporter => client.composes = true,
+        Interface::ServerDecorationManager => client.post(
+            id,
+            version,
+            server_decoration::DEFAULT_MODE,
+            &[Value::Uint(server_decoration::SERVER)],
+        ),
         Interface::Output => {
             let (width, height) = system.work_area();
             send_output(client, id, version, width, height);
@@ -1046,6 +1141,7 @@ fn destroy_surface<S: System>(client: &mut ClientSlot, system: &mut S, index: u1
                     | Interface::Subsurface
                     | Interface::Viewport
                     | Interface::ToplevelDecoration
+                    | Interface::ServerDecoration
             )
         );
         if role && object.index == index {
@@ -1063,6 +1159,7 @@ fn destroy_surface<S: System>(client: &mut ClientSlot, system: &mut S, index: u1
         }
     }
     forget_focus(client, index);
+    text_input::forget_surface(client, index);
     if let Some(root) = root {
         recompose(client, system, root);
     }
@@ -1776,7 +1873,7 @@ fn word(record: &[u8], offset: usize) -> u32 {
     ])
 }
 
-fn each_of(
+pub(crate) fn each_of(
     client: &mut ClientSlot,
     interface: Interface,
     mut post: impl FnMut(&mut ClientSlot, u32, u32),
@@ -1844,7 +1941,8 @@ fn answer_query<S: System>(
         return;
     };
     let (width, height) = current_size(&surface);
-    let mut bytes = [0u8; HEADER_BYTES + 2 * TITLE_CAPACITY];
+    let mut bytes =
+        [0u8; 2 * HEADER_BYTES + 2 * TITLE_CAPACITY + text_input::SURROUNDING_CAPACITY + 16];
     let mut tree = TreeWriter::new(&mut bytes);
     let bounds = Bounds::new(0, 0, width as i32, height as i32);
     tree.push(
@@ -1852,6 +1950,33 @@ fn answer_query<S: System>(
             .named(&surface.title[..surface.title_length])
             .valued(&surface.app_id[..surface.app_id_length]),
     );
+    let root = u16::try_from(query.window)
+        .ok()
+        .and_then(|window| surface_of_window(client, window));
+    let field = root.and_then(|root| {
+        text_input::focused_field(client, |entered| root_of(client, entered) == Some(root))
+    });
+    if let (Some(root), Some((entered, field))) = (root, field) {
+        let (offset_x, offset_y) = offset_of(client, entered);
+        let (origin_x, origin_y) = origin_of(peek(client, root));
+        let (x, y, width, height) = field.cursor_rectangle;
+        let at = Bounds::new(
+            x.saturating_add(offset_x).saturating_sub(origin_x),
+            y.saturating_add(offset_y).saturating_sub(origin_y),
+            width,
+            height,
+        );
+        let text = match field.is_concealed() {
+            true => &[][..],
+            false => field.surrounding(),
+        };
+        tree.push(
+            &Element::new(TEXT_FIELD_ELEMENT, ROOT_ELEMENT, ElementRole::TextField, at)
+                .named(field.kind_name().as_bytes())
+                .valued(text)
+                .flagged(element_flags::FOCUSED | element_flags::FOCUSABLE),
+        );
+    }
     let _ = system.answer_query(device, query.serial, tree_answer::TREE, tree.bytes());
 }
 
@@ -1999,6 +2124,12 @@ fn window_event<S: System>(
         }
         record::FOCUS_IN => {
             let focus = topmost_grab(client, index).unwrap_or(index);
+            if shared.keyboard_client != Some(client.index) {
+                shared.keyboard_client = Some(client.index);
+                for kind in [selection::Kind::Clipboard, selection::Kind::Primary] {
+                    selection::announce(client, &shared.selections, kind);
+                }
+            }
             client.keyboard_focus = None;
             set_keyboard_focus(client, shared, Some(focus));
             if let Some(slot) = client.surface(index) {
@@ -2012,6 +2143,10 @@ fn window_event<S: System>(
                 .filter(|&focus| root_of(client, focus) == Some(index));
             if focus.is_some() {
                 client.keyboard_focus = None;
+                text_input::focus_moved(client, None);
+            }
+            if shared.keyboard_client == Some(client.index) {
+                shared.keyboard_client = None;
             }
             let left = focus
                 .and_then(|focus| peek(client, focus))
@@ -2086,7 +2221,7 @@ fn peek(client: &ClientSlot, index: u16) -> Option<Surface> {
     client.surfaces.get(usize::from(index)).copied().flatten()
 }
 
-fn root_of(client: &ClientSlot, index: u16) -> Option<u16> {
+pub(crate) fn root_of(client: &ClientSlot, index: u16) -> Option<u16> {
     let mut at = index;
     for _ in 0..MAX_SURFACES {
         let surface = peek(client, at)?;
@@ -2497,6 +2632,7 @@ fn set_keyboard_focus(client: &mut ClientSlot, shared: &mut Shared, focus: Optio
         let modifiers = client.modifiers;
         post_modifiers(client, shared, modifiers);
     }
+    text_input::focus_moved(client, focus);
 }
 
 fn topmost_grab(client: &ClientSlot, root: u16) -> Option<u16> {
@@ -3061,6 +3197,43 @@ fn decoration_request(client: &mut ClientSlot, shared: &mut Shared, message: &Me
         }
         _ => announce_decoration(client, shared, index),
     }
+}
+
+fn server_decoration_manager_request(client: &mut ClientSlot, message: &Message) {
+    let (id, surface) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, surface, Interface::Surface) else {
+        return;
+    };
+    if new_object(
+        client,
+        id,
+        Interface::ServerDecoration,
+        message.version,
+        index,
+    ) {
+        client.post(
+            id,
+            message.version,
+            server_decoration::MODE,
+            &[Value::Uint(server_decoration::SERVER)],
+        );
+    }
+}
+
+fn server_decoration_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    if message.uint(0) > server_decoration::SERVER {
+        client.protocol_error(message.object, display::INVALID_METHOD, b"bad mode");
+        return;
+    }
+    client.post(
+        message.object,
+        message.version,
+        server_decoration::MODE,
+        &[Value::Uint(server_decoration::SERVER)],
+    );
 }
 
 fn viewporter_request(client: &mut ClientSlot, message: &Message) {

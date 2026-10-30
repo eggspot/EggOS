@@ -22,6 +22,8 @@ pub enum Arg {
     Fixed,
     /// A string that may not be null.
     String,
+    /// A string or null (a length of 0), decoded as [`Value::None`] when null.
+    NullableString,
     /// An object's id that may not be null (0).
     Object,
     /// An object's id or 0.
@@ -201,6 +203,13 @@ pub fn decode<'a>(
                 id => Value::NewId(id),
             },
             Arg::String => Value::String(string(body, &mut at)?),
+            Arg::NullableString => match word(body, at) {
+                Some(0) => {
+                    at += 4;
+                    Value::None
+                }
+                _ => Value::String(string(body, &mut at)?),
+            },
             Arg::UntypedNewId => {
                 let interface = string(body, &mut at)?;
                 let version = word(body, at).ok_or(WireError::Truncated)?;

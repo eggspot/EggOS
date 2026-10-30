@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(any(test, feature = "fuzz")), no_std)]
 
+pub mod activation;
 pub mod client;
 pub mod compositor;
 #[cfg(any(test, feature = "fuzz"))]
@@ -15,6 +16,8 @@ pub mod fake;
 pub mod fuzz;
 #[cfg(target_env = "musl")]
 pub mod linux;
+pub mod selection;
 pub mod system;
 #[cfg(test)]
 mod tests;
+pub mod text_input;

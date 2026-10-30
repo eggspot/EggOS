@@ -74,7 +74,10 @@ mod request {
     pub const DESTROY: usize = 0x4004_7709;
     pub const GET_WORK_AREA: usize = 0x8014_770a;
     pub const START_MOVE_OR_RESIZE: usize = 0x400c_7712;
+    pub const MANAGE_WINDOW: usize = 0x4010_770c;
 }
+
+const FOCUS_ACTION: u32 = 0;
 
 const WINDOW_DEVICE: &CStr = c"/dev/window";
 const KEYMAP_NAME: &CStr = c"eggway-keymap";
@@ -809,6 +812,13 @@ impl System for Linux {
         put(&mut argument, 0, window);
         put(&mut argument, 4, state);
         ioctl(device, request::SET_STATE, &mut argument)
+    }
+
+    fn focus_window(&mut self, device: Fd, window: u32) -> Result<(), Errno> {
+        let mut argument = [0u8; 16];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, FOCUS_ACTION);
+        ioctl(device, request::MANAGE_WINDOW, &mut argument)
     }
 
     fn start_move_or_resize(

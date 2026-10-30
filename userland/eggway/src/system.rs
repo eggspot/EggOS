@@ -135,6 +135,9 @@ pub trait System {
     ) -> Result<(), Errno>;
     /// Asks for state 0 (normal), 1 (minimised) or 2 (maximised).
     fn set_state(&mut self, device: Fd, window: u32, state: u32) -> Result<(), Errno>;
+    /// Raises and focuses `window`, restoring it if it is minimised, as when the user picks it
+    /// (`MANAGE_WINDOW`'s focus action; D176, `xdg_activation_v1`).
+    fn focus_window(&mut self, device: Fd, window: u32) -> Result<(), Errno>;
     /// Hands the press `window` holds to the server's move (`kind` 0) or resize by `edges`
     /// (`kind` 1).
     fn start_move_or_resize(

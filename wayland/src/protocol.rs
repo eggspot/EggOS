@@ -1,10 +1,13 @@
 //! The interfaces EggOS's Wayland server serves, with their requests' signatures and their
 //! events' opcodes, errors and enums, from `wayland.xml`, `xdg-shell.xml`,
-//! `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml` and `viewporter.xml`. Request tables
-//! are indexed by opcode; a request whose `since` is above the object's version is no request of
-//! that object's.
+//! `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml`, `viewporter.xml`,
+//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`
+//! and KDE's `server-decoration.xml`. Request tables are indexed by opcode; a request whose
+//! `since` is above the object's version is no request of that object's.
 
-use crate::wire::Arg::{self, Array, Fd, Fixed, Int, NewId, NullableObject, Object, String, Uint};
+use crate::wire::Arg::{
+    self, Array, Fd, Fixed, Int, NewId, NullableObject, NullableString, Object, String, Uint,
+};
 
 /// The interfaces the server knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +39,20 @@ pub enum Interface {
     CursorShapeDevice,
     Viewporter,
     Viewport,
+    DataDeviceManager,
+    DataSource,
+    DataDevice,
+    DataOffer,
+    PrimarySelectionDeviceManager,
+    PrimarySelectionDevice,
+    PrimarySelectionOffer,
+    PrimarySelectionSource,
+    Activation,
+    ActivationToken,
+    TextInputManager,
+    TextInput,
+    ServerDecorationManager,
+    ServerDecoration,
 }
 
 impl Interface {
@@ -69,6 +86,20 @@ impl Interface {
             Self::CursorShapeDevice => "wp_cursor_shape_device_v1",
             Self::Viewporter => "wp_viewporter",
             Self::Viewport => "wp_viewport",
+            Self::DataDeviceManager => "wl_data_device_manager",
+            Self::DataSource => "wl_data_source",
+            Self::DataDevice => "wl_data_device",
+            Self::DataOffer => "wl_data_offer",
+            Self::PrimarySelectionDeviceManager => "zwp_primary_selection_device_manager_v1",
+            Self::PrimarySelectionDevice => "zwp_primary_selection_device_v1",
+            Self::PrimarySelectionOffer => "zwp_primary_selection_offer_v1",
+            Self::PrimarySelectionSource => "zwp_primary_selection_source_v1",
+            Self::Activation => "xdg_activation_v1",
+            Self::ActivationToken => "xdg_activation_token_v1",
+            Self::TextInputManager => "zwp_text_input_manager_v3",
+            Self::TextInput => "zwp_text_input_v3",
+            Self::ServerDecorationManager => "org_kde_kwin_server_decoration_manager",
+            Self::ServerDecoration => "org_kde_kwin_server_decoration",
         }
     }
 }
@@ -238,6 +269,77 @@ const VIEWPORT: &[Request] = &[
     request("set_source", 1, &[Fixed, Fixed, Fixed, Fixed]),
     request("set_destination", 1, &[Int, Int]),
 ];
+const DATA_DEVICE_MANAGER: &[Request] = &[
+    request("create_data_source", 1, &[NewId]),
+    request("get_data_device", 1, &[NewId, Object]),
+];
+const DATA_SOURCE: &[Request] = &[
+    request("offer", 1, &[String]),
+    destructor("destroy", 1),
+    request("set_actions", 3, &[Uint]),
+];
+const DATA_DEVICE: &[Request] = &[
+    request(
+        "start_drag",
+        1,
+        &[NullableObject, Object, NullableObject, Uint],
+    ),
+    request("set_selection", 1, &[NullableObject, Uint]),
+    destructor("release", 2),
+];
+const DATA_OFFER: &[Request] = &[
+    request("accept", 1, &[Uint, NullableString]),
+    request("receive", 1, &[String, Fd]),
+    destructor("destroy", 1),
+    request("finish", 3, &[]),
+    request("set_actions", 3, &[Uint, Uint]),
+];
+const PRIMARY_SELECTION_DEVICE_MANAGER: &[Request] = &[
+    request("create_source", 1, &[NewId]),
+    request("get_device", 1, &[NewId, Object]),
+    destructor("destroy", 1),
+];
+const PRIMARY_SELECTION_DEVICE: &[Request] = &[
+    request("set_selection", 1, &[NullableObject, Uint]),
+    destructor("destroy", 1),
+];
+const PRIMARY_SELECTION_OFFER: &[Request] = &[
+    request("receive", 1, &[String, Fd]),
+    destructor("destroy", 1),
+];
+const PRIMARY_SELECTION_SOURCE: &[Request] =
+    &[request("offer", 1, &[String]), destructor("destroy", 1)];
+const ACTIVATION: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_activation_token", 1, &[NewId]),
+    request("activate", 1, &[String, Object]),
+];
+const ACTIVATION_TOKEN: &[Request] = &[
+    request("set_serial", 1, &[Uint, Object]),
+    request("set_app_id", 1, &[String]),
+    request("set_surface", 1, &[Object]),
+    request("commit", 1, &[]),
+    destructor("destroy", 1),
+];
+const TEXT_INPUT_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_text_input", 1, &[NewId, Object]),
+];
+const TEXT_INPUT: &[Request] = &[
+    destructor("destroy", 1),
+    request("enable", 1, &[]),
+    request("disable", 1, &[]),
+    request("set_surrounding_text", 1, &[String, Int, Int]),
+    request("set_text_change_cause", 1, &[Uint]),
+    request("set_content_type", 1, &[Uint, Uint]),
+    request("set_cursor_rectangle", 1, RECT),
+    request("commit", 1, &[]),
+];
+const SERVER_DECORATION_MANAGER: &[Request] = &[request("create", 1, &[NewId, Object])];
+const SERVER_DECORATION: &[Request] = &[
+    destructor("release", 1),
+    request("request_mode", 1, &[Uint]),
+];
 
 /// `interface`'s requests, indexed by opcode.
 pub const fn requests(interface: Interface) -> &'static [Request] {
@@ -269,6 +371,20 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::CursorShapeDevice => CURSOR_SHAPE_DEVICE,
         Interface::Viewporter => VIEWPORTER,
         Interface::Viewport => VIEWPORT,
+        Interface::DataDeviceManager => DATA_DEVICE_MANAGER,
+        Interface::DataSource => DATA_SOURCE,
+        Interface::DataDevice => DATA_DEVICE,
+        Interface::DataOffer => DATA_OFFER,
+        Interface::PrimarySelectionDeviceManager => PRIMARY_SELECTION_DEVICE_MANAGER,
+        Interface::PrimarySelectionDevice => PRIMARY_SELECTION_DEVICE,
+        Interface::PrimarySelectionOffer => PRIMARY_SELECTION_OFFER,
+        Interface::PrimarySelectionSource => PRIMARY_SELECTION_SOURCE,
+        Interface::Activation => ACTIVATION,
+        Interface::ActivationToken => ACTIVATION_TOKEN,
+        Interface::TextInputManager => TEXT_INPUT_MANAGER,
+        Interface::TextInput => TEXT_INPUT,
+        Interface::ServerDecorationManager => SERVER_DECORATION_MANAGER,
+        Interface::ServerDecoration => SERVER_DECORATION,
     }
 }
 
@@ -288,7 +404,7 @@ pub struct Global {
 }
 
 /// Every global, in the order the registry announces them.
-pub const GLOBALS: [Global; 9] = [
+pub const GLOBALS: [Global; 14] = [
     Global {
         name: 1,
         interface: Interface::Compositor,
@@ -332,6 +448,31 @@ pub const GLOBALS: [Global; 9] = [
     Global {
         name: 9,
         interface: Interface::Viewporter,
+        version: 1,
+    },
+    Global {
+        name: 10,
+        interface: Interface::DataDeviceManager,
+        version: 3,
+    },
+    Global {
+        name: 11,
+        interface: Interface::PrimarySelectionDeviceManager,
+        version: 1,
+    },
+    Global {
+        name: 12,
+        interface: Interface::Activation,
+        version: 1,
+    },
+    Global {
+        name: 13,
+        interface: Interface::TextInputManager,
+        version: 1,
+    },
+    Global {
+        name: 14,
+        interface: Interface::ServerDecorationManager,
         version: 1,
     },
 ];
@@ -588,6 +729,97 @@ pub mod viewport {
     pub const NO_SURFACE: u32 = 3;
 }
 
+/// `wl_data_source`'s events and errors.
+pub mod data_source {
+    use super::{Event, event};
+    pub const TARGET: Event = event(0, 1);
+    pub const SEND: Event = event(1, 1);
+    pub const CANCELLED: Event = event(2, 1);
+    pub const INVALID_ACTION_MASK: u32 = 0;
+    pub const INVALID_SOURCE: u32 = 1;
+}
+
+/// `wl_data_device`'s events and errors.
+pub mod data_device {
+    use super::{Event, event};
+    pub const DATA_OFFER: Event = event(0, 1);
+    pub const SELECTION: Event = event(5, 1);
+    pub const ROLE: u32 = 0;
+    pub const USED_SOURCE: u32 = 1;
+}
+
+/// `wl_data_offer`'s events and errors.
+pub mod data_offer {
+    use super::{Event, event};
+    pub const OFFER: Event = event(0, 1);
+    pub const INVALID_FINISH: u32 = 0;
+    pub const INVALID_OFFER: u32 = 3;
+}
+
+/// `zwp_primary_selection_device_v1`'s events.
+pub mod primary_selection_device {
+    use super::{Event, event};
+    pub const DATA_OFFER: Event = event(0, 1);
+    pub const SELECTION: Event = event(1, 1);
+}
+
+/// `zwp_primary_selection_offer_v1`'s events.
+pub mod primary_selection_offer {
+    use super::{Event, event};
+    pub const OFFER: Event = event(0, 1);
+}
+
+/// `zwp_primary_selection_source_v1`'s events.
+pub mod primary_selection_source {
+    use super::{Event, event};
+    pub const SEND: Event = event(0, 1);
+    pub const CANCELLED: Event = event(1, 1);
+}
+
+/// `xdg_activation_token_v1`'s events and errors.
+pub mod activation_token {
+    use super::{Event, event};
+    pub const DONE: Event = event(0, 1);
+    pub const ALREADY_USED: u32 = 0;
+}
+
+/// `zwp_text_input_v3`'s events and enums.
+pub mod text_input {
+    use super::{Event, event};
+    pub const ENTER: Event = event(0, 1);
+    pub const LEAVE: Event = event(1, 1);
+    pub const PREEDIT_STRING: Event = event(2, 1);
+    pub const COMMIT_STRING: Event = event(3, 1);
+    pub const DELETE_SURROUNDING_TEXT: Event = event(4, 1);
+    pub const DONE: Event = event(5, 1);
+    /// `content_hint`: the text is hidden as typed (a password field's dots).
+    pub const HINT_HIDDEN_TEXT: u32 = 0x40;
+    /// `content_hint`: the text is sensitive and must not be kept or shown elsewhere.
+    pub const HINT_SENSITIVE_DATA: u32 = 0x80;
+    /// `content_hint`: the field takes several lines.
+    pub const HINT_MULTILINE: u32 = 0x200;
+    /// `content_purpose`: a password.
+    pub const PURPOSE_PASSWORD: u32 = 8;
+    /// `content_purpose`: a PIN.
+    pub const PURPOSE_PIN: u32 = 9;
+    /// Every `content_purpose`'s name, by its number.
+    pub const PURPOSES: [&str; 14] = [
+        "normal", "alpha", "digits", "number", "phone", "url", "email", "name", "password", "pin",
+        "date", "time", "datetime", "terminal",
+    ];
+}
+
+/// `org_kde_kwin_server_decoration_manager`'s and `org_kde_kwin_server_decoration`'s events
+/// and modes.
+pub mod server_decoration {
+    use super::{Event, event};
+    pub const DEFAULT_MODE: Event = event(0, 1);
+    pub const MODE: Event = event(0, 1);
+    pub const NONE: u32 = 0;
+    pub const CLIENT: u32 = 1;
+    pub const SERVER: u32 = 2;
+}
+
 /// The signatures of the events the test client decodes, by the interface and opcode.
 pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'static [Arg]> {
     Some(match (interface, opcode) {
@@ -626,6 +858,25 @@ pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'stat
         (Interface::XdgPopup, 1) => &[],
         (Interface::XdgPopup, 2) => &[Uint],
         (Interface::ToplevelDecoration, 0) => &[Uint],
+        (Interface::DataSource, 0) => &[NullableString],
+        (Interface::DataSource, 1) => &[String, Fd],
+        (Interface::DataSource, 2) => &[],
+        (Interface::DataDevice, 0) => &[NewId],
+        (Interface::DataDevice, 5) => &[NullableObject],
+        (Interface::DataOffer, 0) => &[String],
+        (Interface::PrimarySelectionDevice, 0) => &[NewId],
+        (Interface::PrimarySelectionDevice, 1) => &[NullableObject],
+        (Interface::PrimarySelectionOffer, 0) => &[String],
+        (Interface::PrimarySelectionSource, 0) => &[String, Fd],
+        (Interface::PrimarySelectionSource, 1) => &[],
+        (Interface::ActivationToken, 0) => &[String],
+        (Interface::TextInput, 0 | 1) => &[Object],
+        (Interface::TextInput, 2) => &[NullableString, Int, Int],
+        (Interface::TextInput, 3) => &[NullableString],
+        (Interface::TextInput, 4) => &[Uint, Uint],
+        (Interface::TextInput, 5) => &[Uint],
+        (Interface::ServerDecorationManager, 0) => &[Uint],
+        (Interface::ServerDecoration, 0) => &[Uint],
         _ => return None,
     })
 }

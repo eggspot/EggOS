@@ -226,6 +226,20 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::CursorShapeDevice,
         Interface::Viewporter,
         Interface::Viewport,
+        Interface::DataDeviceManager,
+        Interface::DataSource,
+        Interface::DataDevice,
+        Interface::DataOffer,
+        Interface::PrimarySelectionDeviceManager,
+        Interface::PrimarySelectionDevice,
+        Interface::PrimarySelectionOffer,
+        Interface::PrimarySelectionSource,
+        Interface::Activation,
+        Interface::ActivationToken,
+        Interface::TextInputManager,
+        Interface::TextInput,
+        Interface::ServerDecorationManager,
+        Interface::ServerDecoration,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);
@@ -257,7 +271,12 @@ fn every_request_table_is_ordered_and_bounded() {
             ("wl_subcompositor", 1),
             ("zxdg_decoration_manager_v1", 1),
             ("wp_cursor_shape_manager_v1", 1),
-            ("wp_viewporter", 1)
+            ("wp_viewporter", 1),
+            ("wl_data_device_manager", 3),
+            ("zwp_primary_selection_device_manager_v1", 1),
+            ("xdg_activation_v1", 1),
+            ("zwp_text_input_manager_v3", 1),
+            ("org_kde_kwin_server_decoration_manager", 1)
         ]
     );
     assert_eq!(
@@ -270,7 +289,80 @@ fn every_request_table_is_ordered_and_bounded() {
     );
     assert_eq!(
         protocol::GLOBALS.map(|global| global.name),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    );
+}
+
+#[test]
+fn the_selection_activation_text_input_and_decoration_tables_follow_their_specifications() {
+    let name = |interface, version, opcode| {
+        protocol::request_of(interface, version, opcode).map(|request| request.name)
+    };
+    assert_eq!(name(Interface::DataSource, 2, 2), None);
+    assert_eq!(name(Interface::DataSource, 3, 2), Some("set_actions"));
+    assert_eq!(name(Interface::DataDevice, 1, 1), Some("set_selection"));
+    assert_eq!(name(Interface::DataDevice, 1, 2), None);
+    assert_eq!(name(Interface::DataDevice, 2, 2), Some("release"));
+    assert_eq!(name(Interface::DataOffer, 3, 1), Some("receive"));
+    assert_eq!(
+        protocol::request_of(Interface::DataOffer, 1, 1).map(|request| request.signature),
+        Some(&[Arg::String, Arg::Fd][..])
+    );
+    assert_eq!(
+        name(Interface::PrimarySelectionDevice, 1, 0),
+        Some("set_selection")
+    );
+    assert_eq!(
+        name(Interface::PrimarySelectionSource, 1, 1),
+        Some("destroy")
+    );
+    assert_eq!(name(Interface::Activation, 1, 2), Some("activate"));
+    assert_eq!(name(Interface::ActivationToken, 1, 3), Some("commit"));
+    assert_eq!(
+        name(Interface::TextInput, 1, 3),
+        Some("set_surrounding_text")
+    );
+    assert_eq!(name(Interface::TextInput, 1, 7), Some("commit"));
+    assert_eq!(
+        name(Interface::ServerDecoration, 1, 1),
+        Some("request_mode")
+    );
+    assert_eq!(
+        protocol::text_input::PURPOSES[protocol::text_input::PURPOSE_PASSWORD as usize],
+        "password"
+    );
+    assert_eq!(
+        protocol::event_signature(Interface::DataSource, 1),
+        Some(&[Arg::String, Arg::Fd][..])
+    );
+}
+
+#[test]
+fn a_nullable_string_is_null_for_a_length_of_zero_and_a_string_otherwise() {
+    let null = words(&[7, 0]);
+    let (values, descriptors) = decoded(&null, &[Arg::Uint, Arg::NullableString]).unwrap();
+    assert_eq!(
+        (values[0], values[1], descriptors),
+        (Value::Uint(7), Value::None, 0)
+    );
+    let mut out = [0u8; 64];
+    let size = encode(
+        &mut out,
+        1,
+        0,
+        &[Value::Uint(7), Value::String(b"text/plain")],
+    )
+    .unwrap();
+    let (values, _) = decoded(&out[8..size], &[Arg::Uint, Arg::NullableString]).unwrap();
+    assert_eq!(values[1], Value::String(b"text/plain"));
+    let unterminated = [&words(&[7, 4])[..], b"text"].concat();
+    assert_eq!(
+        decoded(&unterminated, &[Arg::Uint, Arg::NullableString]).map(|(_, count)| count),
+        Err(WireError::BadString)
+    );
+    assert_eq!(
+        decoded(&words(&[7]), &[Arg::Uint, Arg::NullableString]).map(|(_, count)| count),
+        Err(WireError::Truncated)
     );
 }
 
