@@ -193,6 +193,11 @@ fn push_in_folder(line: &mut Command, name: &str, relative: &str) -> bool {
 
 fn launch_line(app: &manifest::Manifest<'_>, program: &Command) -> Option<Command> {
     let mut line = Command::new();
+    if let Some(environment) = app.environment
+        && (!line.push(environment.as_bytes()) || !line.push(b" "))
+    {
+        return None;
+    }
     if let Some(loader) = app.loader {
         let mut path = Command::new();
         if !push_in_folder(&mut path, app.name, loader)
@@ -730,6 +735,27 @@ mod tests {
             "a".repeat(100)
         );
         assert!(!catalogue.add_installed(b"long", long.as_bytes()));
+    }
+
+    #[test]
+    fn an_app_s_environment_comes_first_on_its_launch_line() {
+        let mut catalogue = Catalogue::new();
+        let file = b"eggos-app 1\nname=mousepad\nsource=linux\nrun=mousepad\n\
+                     loader=lib/ld-musl-aarch64.so.1\nlibraries=lib\n\
+                     arguments=--disable-server /tmp/note.txt\n\
+                     environment=XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1\n";
+        assert!(catalogue.add_installed(b"mousepad", file));
+        let mousepad = catalogue.installed_named("mousepad").unwrap();
+        match catalogue.launch(mousepad) {
+            Some(Launch::Type(line)) => assert_eq!(
+                line.as_bytes(),
+                b"\x15XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1 \
+                  /Applications/mousepad/lib/ld-musl-aarch64.so.1 --library-path \
+                  /Applications/mousepad/lib /Applications/mousepad/mousepad \
+                  --disable-server /tmp/note.txt\r"
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

@@ -1,13 +1,14 @@
 //! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--entry <path>]
-//! [--arguments <words>] [--window] <path>` (a program, an `.app` or a `.zip`; `--entry`
-//! chooses the program inside a `.zip`, D148; `--arguments` gives the words it opens with,
-//! D172), `app uninstall [--window] <name>` (`remove` is the same), `app open <name>`
-//! (D137; the built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app
-//! list` (name, source, architecture, program and icon file, D148; `--json` writes them as JSON
-//! lines, D160; `--limit <count>` and `--after <cursor>` page them by name, D164). `app uninstall
-//! --dry-run` says what it would remove (D164). Text, the same with or without a display;
-//! `--window` shows the installer's dialogs instead. `--` ends the options, so the next word is the operand even if it starts
-//! with `-`.
+//! [--arguments <words>] [--environment <variables>] [--window] <path>` (a program, an `.app`
+//! or a `.zip`; `--entry` chooses the program inside a `.zip`, D148; `--arguments` gives the
+//! words it opens with, D172; `--environment` the `NAME=value` words set for it, D176),
+//! `app uninstall [--window] <name>` (`remove` is the same), `app open <name>` (D137; the
+//! built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app list` (name,
+//! source, architecture, program and icon file, D148; `--json` writes them as JSON lines, D160;
+//! `--limit <count>` and `--after <cursor>` page them by name, D164). `app uninstall --dry-run`
+//! says what it would remove (D164). Text, the same with or without a display; `--window`
+//! shows the installer's dialogs instead. `--` ends the options, so the next word is the
+//! operand even if it starts with `-`.
 
 use eggos_mcp::json::JsonWriter;
 
@@ -19,6 +20,7 @@ pub enum Command<'a> {
         name: Option<&'a [u8]>,
         entry: Option<&'a [u8]>,
         arguments: Option<&'a [u8]>,
+        environment: Option<&'a [u8]>,
         window: bool,
     },
     Uninstall {
@@ -39,7 +41,8 @@ pub enum Command<'a> {
 
 /// The command's usage, printed for `--help` and with a usage error.
 pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
-                         [--arguments <words>] [--window] [--] <path>\n       \
+                         [--arguments <words>] [--environment <variables>] [--window] \
+                         [--] <path>\n       \
                          app uninstall [--window] [--dry-run] [--] <name>\n       \
                          app open [--] <name>\n       \
                          app list [--json] [--limit <count>] [--after <cursor>]\n";
@@ -65,6 +68,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut name = None;
     let mut entry = None;
     let mut words = None;
+    let mut environment = None;
     let mut json = false;
     let mut dry_run = false;
     let mut limit = None;
@@ -92,6 +96,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             b"--name" if verb == b"install" => name = Some(*rest.next()?),
             b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
             b"--arguments" if verb == b"install" => words = Some(*rest.next()?),
+            b"--environment" if verb == b"install" => environment = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
             _ if operand.is_none() => operand = Some(argument),
             _ => return None,
@@ -103,6 +108,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             name,
             entry,
             arguments: words,
+            environment,
             window,
         }),
         b"uninstall" | b"remove" if !(window && dry_run) => Some(Command::Uninstall {
@@ -165,7 +171,7 @@ mod program {
     use eggos_runtime::startup::Startup;
 
     const COPY_BUFFER: usize = 64 * 1024;
-    const MAX_ARGUMENTS: usize = 8;
+    const MAX_ARGUMENTS: usize = 12;
 
     static mut BUFFER: [u8; COPY_BUFFER] = [0; COPY_BUFFER];
 
@@ -199,6 +205,7 @@ mod program {
         name: Option<&[u8]>,
         entry: Option<&[u8]>,
         arguments: Option<&[u8]>,
+        environment: Option<&[u8]>,
     ) -> i32 {
         let mut files = LinuxFiles::new();
         let machine = linux::machine();
@@ -210,6 +217,10 @@ mod program {
                     Some(arguments) => plan.with_arguments(arguments),
                     None => Ok(plan),
                 }
+                .and_then(|plan| match environment {
+                    Some(environment) => plan.with_environment(environment),
+                    None => Ok(plan),
+                })
             });
         let plan = match planned {
             Ok(plan) => plan,
@@ -498,8 +509,9 @@ mod program {
                 name,
                 entry,
                 arguments,
+                environment,
                 ..
-            }) => install(path, name, entry, arguments),
+            }) => install(path, name, entry, arguments, environment),
             Some(Command::Uninstall {
                 name,
                 dry_run: true,
@@ -543,6 +555,7 @@ mod tests {
                 name: None,
                 entry: None,
                 arguments: None,
+                environment: None,
                 window: false
             })
         );
@@ -553,6 +566,7 @@ mod tests {
                 name: Some(b"Paint"),
                 entry: None,
                 arguments: None,
+                environment: None,
                 window: true
             })
         );
@@ -579,6 +593,7 @@ mod tests {
                 name: None,
                 entry: Some(b"bin/a.exe"),
                 arguments: None,
+                environment: None,
                 window: false
             })
         );
@@ -589,10 +604,29 @@ mod tests {
                 name: None,
                 entry: None,
                 arguments: Some(b"-n --size 4"),
+                environment: None,
                 window: false
             })
         );
         assert_eq!(parse(&[b"open", b"--arguments", b"x", b"a"]), None);
+        assert_eq!(
+            parse(&[
+                b"install",
+                b"--environment",
+                b"XDG_DATA_DIRS=/Applications/mousepad/share",
+                b"mousepad.zip"
+            ]),
+            Some(Command::Install {
+                path: b"mousepad.zip",
+                name: None,
+                entry: None,
+                arguments: None,
+                environment: Some(b"XDG_DATA_DIRS=/Applications/mousepad/share"),
+                window: false
+            })
+        );
+        assert_eq!(parse(&[b"open", b"--environment", b"A=1", b"a"]), None);
+        assert_eq!(parse(&[b"install", b"--environment"]), None);
         assert_eq!(parse(&[b"uninstall", b"--entry", b"a", b"b"]), None);
         assert_eq!(parse(&[b"install", b"--entry"]), None);
         assert_eq!(
@@ -679,6 +713,7 @@ mod tests {
                 name: None,
                 entry: None,
                 arguments: None,
+                environment: None,
                 window: false
             })
         );
@@ -689,6 +724,7 @@ mod tests {
                 name: None,
                 entry: None,
                 arguments: None,
+                environment: None,
                 window: false
             })
         );

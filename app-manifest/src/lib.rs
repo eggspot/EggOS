@@ -6,7 +6,9 @@
 //! (the app's own icon file, relative to the folder, D148: see [`icon`]), and for a
 //! dynamically linked Linux program `loader` (its dynamic loader, relative to the folder),
 //! `libraries` (the folders its libraries are in, relative to the folder, separated by `:`)
-//! and `arguments` (words given to the program when the app opens; D172) are optional. Reading
+//! and `arguments` (words given to the program when the app opens; D172), and `environment`
+//! (`NAME=value` words set in the program's environment when the app opens; D176) are
+//! optional. Reading
 //! is tolerant: a file of another format, longer than [`LARGEST`], missing a required key, or
 //! naming another folder is no app; lines that are no entry are skipped; an invalid optional
 //! value is ignored; the last line of a key wins. Nothing here allocates or panics: the
@@ -52,6 +54,9 @@ pub const ARGUMENTS_CAPACITY: usize = 128;
 /// The bytes besides letters and digits an `arguments` value may hold: none that a shell
 /// reads as anything but part of a word or the space between words.
 pub const ARGUMENT_PUNCTUATION: &[u8] = b" -_./:=+,@%";
+
+/// The longest `environment` value, in bytes; a longer one is ignored.
+pub const ENVIRONMENT_CAPACITY: usize = 128;
 
 /// The system an app was built for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +122,9 @@ pub struct Manifest<'a> {
     pub libraries: Option<&'a str>,
     /// Words given to the program after its path when the app opens, separated by spaces.
     pub arguments: Option<&'a str>,
+    /// `NAME=value` words, separated by spaces, set in the program's environment when the app
+    /// opens (D176): where a toolkit finds the data the app carries, say.
+    pub environment: Option<&'a str>,
 }
 
 impl<'a> Manifest<'a> {
@@ -197,6 +205,31 @@ pub fn is_arguments(arguments: &[u8]) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || ARGUMENT_PUNCTUATION.contains(byte))
 }
 
+fn is_variable(word: &[u8]) -> bool {
+    let Some(equals) = word.iter().position(|&byte| byte == b'=') else {
+        return false;
+    };
+    let (name, value) = (&word[..equals], &word[equals + 1..]);
+    let starts_well = name
+        .first()
+        .is_some_and(|&byte| byte.is_ascii_alphabetic() || byte == b'_');
+    starts_well
+        && name
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && value.iter().all(|&byte| {
+            byte.is_ascii_alphanumeric() || (byte != b' ' && ARGUMENT_PUNCTUATION.contains(&byte))
+        })
+}
+
+/// Whether `environment` may be an app's environment: 1 to [`ENVIRONMENT_CAPACITY`] bytes of
+/// `NAME=value` words separated by single spaces, each name a letter or `_` then letters,
+/// digits and `_`, each value letters, digits and [`ARGUMENT_PUNCTUATION`] but the space.
+pub fn is_environment(environment: &[u8]) -> bool {
+    (1..=ENVIRONMENT_CAPACITY).contains(&environment.len())
+        && environment.split(|&byte| byte == b' ').all(is_variable)
+}
+
 fn is_key(key: &[u8]) -> bool {
     !key.is_empty()
         && key
@@ -267,6 +300,9 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
     let arguments = last(file, "arguments")
         .filter(|value| is_arguments(value))
         .and_then(text);
+    let environment = last(file, "environment")
+        .filter(|value| is_environment(value))
+        .and_then(text);
     Some(Manifest {
         name: text(name)?,
         source,
@@ -277,6 +313,7 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
         loader,
         libraries,
         arguments,
+        environment,
     })
 }
 
@@ -324,7 +361,10 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
             .is_some_and(|libraries| !is_libraries(libraries.as_bytes()))
         || manifest
             .arguments
-            .is_some_and(|arguments| !is_arguments(arguments.as_bytes()));
+            .is_some_and(|arguments| !is_arguments(arguments.as_bytes()))
+        || manifest
+            .environment
+            .is_some_and(|environment| !is_environment(environment.as_bytes()));
     if invalid {
         return Err(Refused::InvalidValue);
     }
@@ -344,6 +384,7 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
         (b"loader=", manifest.loader),
         (b"libraries=", manifest.libraries),
         (b"arguments=", manifest.arguments),
+        (b"environment=", manifest.environment),
     ] {
         if let Some(value) = value {
             writer.put(&[key, value.as_bytes(), b"\n"])?;
@@ -481,6 +522,7 @@ mod tests {
             loader: None,
             libraries: None,
             arguments: None,
+            environment: None,
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
@@ -503,6 +545,7 @@ mod tests {
             loader: None,
             libraries: None,
             arguments: None,
+            environment: None,
         };
         let mut out = [0u8; LARGEST];
         let refused = |manifest: Manifest<'_>, out: &mut [u8]| write(&manifest, out);
@@ -583,6 +626,7 @@ mod tests {
             loader: Some("lib/ld-musl-x86_64.so.1"),
             libraries: Some("lib:usr/lib"),
             arguments: Some("--data-dir /Applications/brogue/share/brogue"),
+            environment: None,
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
@@ -598,6 +642,60 @@ mod tests {
             (read.loader, read.libraries, read.arguments),
             (None, None, None)
         );
+    }
+
+    #[test]
+    fn an_environment_of_plain_variables_reads_back_and_anything_else_is_refused() {
+        let environment = "XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1 LANG=";
+        assert!(is_environment(environment.as_bytes()));
+        let manifest = Manifest {
+            name: "mousepad",
+            source: Source::Linux,
+            run: "mousepad",
+            architecture: Some("aarch64"),
+            synonyms: "",
+            icon: None,
+            loader: Some("lib/ld-musl-aarch64.so.1"),
+            libraries: Some("lib"),
+            arguments: Some("--disable-server"),
+            environment: Some(environment),
+        };
+        let mut out = [0u8; LARGEST];
+        let length = write(&manifest, &mut out).unwrap();
+        assert!(out[..length].ends_with(
+            b"environment=XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1 LANG=\n"
+        ));
+        assert_eq!(parse(&out[..length], b"mousepad"), Some(manifest));
+        for bad in [
+            "",
+            " A=1",
+            "A=1  B=2",
+            "A=1 ",
+            "1A=x",
+            "A-B=x",
+            "=x",
+            "A",
+            "A=$(reboot)",
+            "A=x;reboot",
+            "A='x'",
+        ] {
+            assert!(!is_environment(bad.as_bytes()), "{bad:?}");
+            assert_eq!(
+                write(
+                    &Manifest {
+                        environment: Some(bad),
+                        ..manifest
+                    },
+                    &mut out
+                ),
+                Err(Refused::InvalidValue),
+                "{bad:?}"
+            );
+        }
+        let long = "A=".to_owned() + &"x".repeat(ENVIRONMENT_CAPACITY - 1);
+        assert!(!is_environment(long.as_bytes()));
+        let ignored = b"eggos-app 1\nname=A\nsource=linux\nrun=a\nenvironment=PATH=$HOME\n";
+        assert_eq!(parse(ignored, b"A").unwrap().environment, None);
     }
 
     #[test]

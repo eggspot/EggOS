@@ -1033,6 +1033,16 @@ pub const APP_INSTALL: ToolDefinition = ToolDefinition {
             "Words the app opens with, as app install --arguments takes them: letters, \
                  digits, spaces and -_./:=+,@% only, at most 128 bytes.",
         ),
+        described(
+            optional(
+                "environment",
+                JsonType::String,
+                Mapping::Option("--environment"),
+            ),
+            "NAME=value words set in the app's environment when it opens, separated by \
+                 spaces, as app install --environment takes them: values of letters, digits \
+                 and -_./:=+,@% only, at most 128 bytes in all.",
+        ),
     ],
     max_effect: Effect::Change,
     grant: Some(Grant::Install),

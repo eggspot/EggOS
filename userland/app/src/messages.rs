@@ -184,6 +184,10 @@ pub fn reason(problem: Problem) -> Line {
         Problem::InvalidArguments => line.write_str(
             "its arguments must be letters, digits, spaces and -_./:=+,@% only, at most 128 bytes",
         ),
+        Problem::InvalidEnvironment => line.write_str(
+            "its environment must be NAME=value words separated by spaces, values of letters, \
+             digits and -_./:=+,@% only, at most 128 bytes",
+        ),
         Problem::Failed(error) => {
             line.push_bytes(error.message());
             Ok(())

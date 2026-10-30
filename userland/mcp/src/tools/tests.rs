@@ -64,7 +64,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "app_install",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"The app's file, bundle or .zip in /media/host."},"entry":{"type":"string","description":"For a .zip holding several programs: the path inside it of the one to install (an .app bundle's own path names its program)."},"arguments":{"type":"string","description":"Words the app opens with, as app install --arguments takes them: letters, digits, spaces and -_./:=+,@% only, at most 128 bytes."}},"required":["path"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"The app's file, bundle or .zip in /media/host."},"entry":{"type":"string","description":"For a .zip holding several programs: the path inside it of the one to install (an .app bundle's own path names its program)."},"arguments":{"type":"string","description":"Words the app opens with, as app install --arguments takes them: letters, digits, spaces and -_./:=+,@% only, at most 128 bytes."},"environment":{"type":"string","description":"NAME=value words set in the app's environment when it opens, separated by spaces, as app install --environment takes them: values of letters, digits and -_./:=+,@% only, at most 128 bytes in all."}},"required":["path"],"additionalProperties":false}"#,
     ),
     (
         "app_open",

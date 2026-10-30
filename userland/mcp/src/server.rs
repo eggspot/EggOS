@@ -1478,6 +1478,11 @@ impl Server {
             push_word(&mut words, &mut count, "--arguments");
             push_word(&mut words, &mut count, words_given);
         }
+        if let Some(environment) = arguments::app_environment_text(&prepared.checked, buffers.words)
+        {
+            push_word(&mut words, &mut count, "--environment");
+            push_word(&mut words, &mut count, environment);
+        }
         let decimals = Decimals::of_window_call(&prepared.checked);
         if tool.twin.operand == Operand::Window {
             push_window_words(
@@ -2421,6 +2426,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if let Some(words) = arguments::app_arguments_text(checked, scratch.words) {
         writer.key("arguments");
         writer.string(words);
+    }
+    if let Some(environment) = arguments::app_environment_text(checked, scratch.words) {
+        writer.key("environment");
+        writer.string(environment);
     }
     if tool.kind == Kind::Tee {
         writer.key("append");

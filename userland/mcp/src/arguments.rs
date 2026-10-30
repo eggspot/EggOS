@@ -26,6 +26,9 @@ pub const MAX_ARCHIVE_ENTRY_BYTES: usize = 255;
 /// The longest `arguments` `app_install` takes (D172): a manifest's `arguments`.
 pub const MAX_APP_ARGUMENTS_BYTES: usize = 128;
 const APP_ARGUMENTS_AT: usize = MAX_ARCHIVE_ENTRY_BYTES + 1;
+/// The longest `environment` `app_install` takes (D176): a manifest's `environment`.
+pub const MAX_APP_ENVIRONMENT_BYTES: usize = 128;
+const APP_ENVIRONMENT_AT: usize = APP_ARGUMENTS_AT + MAX_APP_ARGUMENTS_BYTES;
 /// `run`'s time limit when the agent gives none.
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 10_000;
 /// `run`'s longest time limit, in seconds.
@@ -105,6 +108,9 @@ pub enum ArgumentProblem {
     /// `app_install`'s `arguments` is not a string of 1 to [`MAX_APP_ARGUMENTS_BYTES`] bytes
     /// without NUL.
     BadAppArguments,
+    /// `app_install`'s `environment` is not a string of 1 to [`MAX_APP_ENVIRONMENT_BYTES`]
+    /// bytes without NUL.
+    BadAppEnvironment,
     /// Too many arguments for `run`, too long, or one holds a NUL.
     BadWords,
     /// `timeout_seconds` is not 1 to 60.
@@ -213,6 +219,7 @@ impl ArgumentProblem {
                 "entry must be a path inside the .zip of 1 to 255 bytes, without NUL"
             }
             ArgumentProblem::BadAppArguments => "arguments must be 1 to 128 bytes, without NUL",
+            ArgumentProblem::BadAppEnvironment => "environment must be 1 to 128 bytes, without NUL",
             ArgumentProblem::BadWords => {
                 "at most 32 arguments, 4096 bytes in all, none holding a NUL"
             }
@@ -435,6 +442,8 @@ pub struct Checked {
     pub archive_entry: Option<usize>,
     /// `app_install`'s arguments' length, in the words buffer after the entry's room.
     pub app_arguments: Option<usize>,
+    /// `app_install`'s environment's length, in the words buffer after the arguments' room.
+    pub app_environment: Option<usize>,
     /// `append`.
     pub append: bool,
     /// `confirm`.
@@ -605,6 +614,7 @@ pub fn check(
     if tool.kind == Kind::AppInstall {
         checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
         checked.app_arguments = app_arguments(get("arguments"), decoded.words)?;
+        checked.app_environment = app_environment(get("environment"), decoded.words)?;
     }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
@@ -798,6 +808,27 @@ fn app_arguments(
     match !arguments.is_empty() && !arguments.contains('\0') {
         true => Ok(Some(arguments.len())),
         false => Err(ArgumentProblem::BadAppArguments),
+    }
+}
+
+fn app_environment(
+    value: Option<Value<'_>>,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match value {
+        None => return Ok(None),
+        Some(Value::Str(text)) => text,
+        Some(_) => return Err(ArgumentProblem::BadAppEnvironment),
+    };
+    let room = words
+        .get_mut(APP_ENVIRONMENT_AT..APP_ENVIRONMENT_AT + MAX_APP_ENVIRONMENT_BYTES)
+        .ok_or(ArgumentProblem::BadAppEnvironment)?;
+    let environment = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadAppEnvironment)?;
+    match !environment.is_empty() && !environment.contains('\0') {
+        true => Ok(Some(environment.len())),
+        false => Err(ArgumentProblem::BadAppEnvironment),
     }
 }
 
@@ -1194,6 +1225,13 @@ pub fn app_arguments_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b
     core::str::from_utf8(buffer.get(APP_ARGUMENTS_AT..end)?).ok()
 }
 
+/// `app_install`'s environment in `buffer`, the words buffer, that
+/// [`Checked::app_environment`] measures (D176).
+pub fn app_environment_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = APP_ENVIRONMENT_AT.checked_add(checked.app_environment?)?;
+    core::str::from_utf8(buffer.get(APP_ENVIRONMENT_AT..end)?).ok()
+}
+
 /// A list tool's `after` in `buffer`, the words buffer, that [`Checked::after`] measures (D164).
 pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.after?)?).ok()
@@ -1443,6 +1481,26 @@ mod tests {
             app_arguments_text(&result, &buffers.words),
             Some("-n --size 4")
         );
+        let (result, buffers) = checked(
+            "app_install",
+            r#"{"path":"/media/host/m.zip","arguments":"-n","environment":"A=1 B=2"}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(app_arguments_text(&result, &buffers.words), Some("-n"));
+        assert_eq!(
+            app_environment_text(&result, &buffers.words),
+            Some("A=1 B=2")
+        );
+        for environment in [
+            r#"{"path":"/media/host/t.zip","environment":""}"#,
+            r#"{"path":"/media/host/t.zip","environment":{"A":"1"}}"#,
+        ] {
+            assert_eq!(
+                checked("app_install", environment).0,
+                Err(ArgumentProblem::BadAppEnvironment),
+                "{environment}"
+            );
+        }
         for arguments in [
             r#"{"path":"/media/host/t.zip","arguments":""}"#,
             r#"{"path":"/media/host/t.zip","arguments":["-n"]}"#,

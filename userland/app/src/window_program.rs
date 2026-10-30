@@ -23,7 +23,7 @@ use eggos_toolkit::window::Window;
 
 const COPY_BUFFER: usize = 64 * 1024;
 const STEPS_PER_TICK: usize = 16;
-const MAX_ARGUMENTS: usize = 8;
+const MAX_ARGUMENTS: usize = 12;
 const SIGNATURE_BYTES: usize = 8;
 
 static mut BUFFER: [u8; COPY_BUFFER] = [0; COPY_BUFFER];
@@ -53,6 +53,7 @@ struct Installer {
     name: Option<Name>,
     entry: Option<Path>,
     arguments: Option<Path>,
+    environment: Option<Path>,
     buffer: &'static mut [u8],
 }
 
@@ -132,11 +133,16 @@ impl Installer {
         let entry = self.entry.as_ref().map(Path::as_bytes);
         let (dialog, plan) =
             dialog::install_prompt_entry(&mut self.files, path, name, entry, self.machine);
-        let arguments = self.arguments;
-        let plan = plan.and_then(|plan| match arguments {
-            Some(arguments) => plan.with_arguments(arguments.as_bytes()),
-            None => Ok(plan),
-        });
+        let (arguments, environment) = (self.arguments, self.environment);
+        let plan = plan
+            .and_then(|plan| match arguments {
+                Some(arguments) => plan.with_arguments(arguments.as_bytes()),
+                None => Ok(plan),
+            })
+            .and_then(|plan| match environment {
+                Some(environment) => plan.with_environment(environment.as_bytes()),
+                None => Ok(plan),
+            });
         match plan {
             Ok(plan) => self.show(dialog, Stage::Prompting(plan)),
             Err(refused)
@@ -378,14 +384,30 @@ pub fn run(startup: &Startup) -> i32 {
             return command::USAGE_ERROR;
         }
     };
-    let (name, entry, arguments) = match command {
+    let (name, entry, arguments, environment) = match command {
         Command::Install {
             name,
             entry,
             arguments,
+            environment,
             ..
-        } => (name.map(Name::new), entry.map(entry_as_given), arguments),
-        _ => (None, None, None),
+        } => (
+            name.map(Name::new),
+            entry.map(entry_as_given),
+            arguments,
+            environment,
+        ),
+        _ => (None, None, None, None),
+    };
+    let environment = match environment {
+        Some(words) if !eggos_app_manifest::is_environment(words) => {
+            complain(&[
+                b"its environment must be NAME=value words of letters, digits and -_./:=+,@% only",
+            ]);
+            return command::USAGE_ERROR;
+        }
+        Some(words) => Path::from(words),
+        None => None,
     };
     let arguments = match arguments {
         Some(words) if !eggos_app_manifest::is_arguments(words) => {
@@ -415,6 +437,7 @@ pub fn run(startup: &Startup) -> i32 {
         name,
         entry,
         arguments,
+        environment,
         buffer,
     };
     first_screen(&mut installer, command);

@@ -1201,3 +1201,64 @@ fn a_dynamically_linked_program_installs_with_the_loader_and_libraries_its_zip_h
         Problem::NotRunnable(NotRunnable::NeedsDynamicLoader)
     );
 }
+
+#[test]
+fn an_app_s_environment_is_written_and_its_fonts_are_linked_where_fontconfig_looks() {
+    let program = dynamic_program(183, b"/lib/ld-musl-aarch64.so.1");
+    let archive = zip(&[
+        stored("mousepad", &program),
+        stored("lib/ld-musl-aarch64.so.1", &linux_program(183)),
+        stored("lib/libgtk-3.so.0", b"library"),
+        stored("share/fonts/DejaVuSans.ttf", b"font"),
+    ]);
+    let mut files = host_with("/media/host/mousepad.zip", &archive);
+    let plan = planned(&mut files, "/media/host/mousepad.zip", Aarch64)
+        .with_environment(b"XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1")
+        .unwrap();
+    assert_eq!(
+        plan.environment(),
+        Some(&b"XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1"[..])
+    );
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let manifest = manifest_of(&files, "mousepad");
+    assert!(
+        manifest
+            .contains("environment=XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1\n"),
+        "{manifest}"
+    );
+    assert_eq!(
+        files.find("/Applications/.fonts/mousepad"),
+        Some(&Node::Link(b"/Applications/mousepad/share/fonts".to_vec()))
+    );
+    assert!(
+        installed_names(&mut files)
+            .iter()
+            .all(|name| name != ".fonts")
+    );
+    uninstall(&mut files, b"mousepad").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+
+    let mut files = host_with("/media/host/mousepad.zip", &archive);
+    let unsafe_words = planned(&mut files, "/media/host/mousepad.zip", Aarch64)
+        .with_environment(b"PATH=$(reboot)")
+        .unwrap_err();
+    assert_eq!(unsafe_words.problem, Problem::InvalidEnvironment);
+    let taken = plan_entry(
+        &mut files,
+        b"/media/host/mousepad.zip",
+        Some(FONTS_FOLDER),
+        None,
+        Aarch64,
+    )
+    .unwrap_err();
+    assert_eq!(taken.problem, Problem::InvalidName);
+
+    let without = zip(&[
+        stored("mousepad", &program),
+        stored("lib/ld-musl-aarch64.so.1", &linux_program(183)),
+    ]);
+    let mut files = host_with("/media/host/mousepad.zip", &without);
+    let plan = planned(&mut files, "/media/host/mousepad.zip", Aarch64);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    assert_eq!(files.find("/Applications/.fonts"), None);
+}

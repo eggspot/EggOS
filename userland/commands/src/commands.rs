@@ -742,6 +742,13 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
             ValueType::Text,
             "Words the app opens with: letters, digits, spaces and -_./:=+,@% (D172).",
         ),
+        valued(
+            None,
+            Some("environment"),
+            "variables",
+            ValueType::Text,
+            "NAME=value words set for the app when it opens, separated by spaces (D176).",
+        ),
         long_flag("window", "Show the installer's window instead of text."),
     ],
     operands: &[operand("path", ValueType::Path, Count::One)],

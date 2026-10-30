@@ -14,7 +14,10 @@
 //! with the same target, when [`link_stays_inside`] (D170). A dynamically linked Linux program
 //! installs from a `.zip` that also holds the dynamic loader its `PT_INTERP` names: the
 //! manifest then names that loader and the folders holding the archive's libraries, and the
-//! app opens through them; `--arguments` gives the words it opens with (D172).
+//! app opens through them; `--arguments` gives the words it opens with (D172) and
+//! `--environment` the variables it opens with (D176). An app that carries fonts in
+//! [`APP_FONTS`] gets a link to them in [`FONTS`], where `/etc/fonts` tells fontconfig to look,
+//! made before its manifest and removed with the app (D176).
 
 use crate::architecture::Architecture;
 use crate::archive::{self, Archive, ArchiveError, Cursor, Entry};
@@ -48,6 +51,13 @@ pub const RESERVED_NAMES: [&[u8]; 3] = [
 ];
 /// The most bytes a `.zip`'s files may take once extracted.
 pub const MAX_EXTRACTED_BYTES: u64 = 4 << 30;
+/// The folder of links to the fonts apps carry, one link per app named like the app (D176);
+/// `/etc/fonts/fonts.conf` lists it, so every program that uses fontconfig finds them.
+pub const FONTS: &[u8] = b"/Applications/.fonts";
+/// The folder inside an app's folder holding the fonts it carries.
+pub const APP_FONTS: &[u8] = b"share/fonts";
+/// [`FONTS`]' name in `/Applications`, which no app may take.
+pub const FONTS_FOLDER: &[u8] = b".fonts";
 
 const MAX_BUNDLES: usize = 4;
 const INFO_PLIST: &[u8] = b"Contents/Info.plist";
@@ -107,6 +117,8 @@ pub enum Problem {
     TooLarge,
     /// Arguments a manifest cannot hold ([`manifest::is_arguments`]).
     InvalidArguments,
+    /// Environment variables a manifest cannot hold ([`manifest::is_environment`]).
+    InvalidEnvironment,
     /// Another error of the file system.
     Failed(Errno),
 }
@@ -233,9 +245,11 @@ impl Name {
         core::str::from_utf8(self.as_bytes()).unwrap_or("?")
     }
 
-    /// Whether it may name an app ([`manifest::is_name`]).
+    /// Whether it may name an app ([`manifest::is_name`]), and is not [`FONTS_FOLDER`].
     pub fn is_valid(&self) -> bool {
-        self.length <= manifest::NAME_CAPACITY && manifest::is_name(self.as_bytes())
+        self.length <= manifest::NAME_CAPACITY
+            && manifest::is_name(self.as_bytes())
+            && self.as_bytes() != FONTS_FOLDER
     }
 }
 
@@ -275,6 +289,7 @@ pub struct Plan {
     run: Path,
     loader: Option<Loader>,
     arguments: Option<Path>,
+    environment: Option<Path>,
     leftover: bool,
     total_bytes: u64,
 }
@@ -350,6 +365,62 @@ impl Plan {
             arguments: Some(arguments),
             ..self
         })
+    }
+
+    /// The `NAME=value` words the app opens with, if any.
+    pub fn environment(&self) -> Option<&[u8]> {
+        self.environment.as_ref().map(Path::as_bytes)
+    }
+
+    /// The same plan, opening the app with the variables `environment` (D176); refused when a
+    /// manifest cannot hold them.
+    pub fn with_environment(self, environment: &[u8]) -> Result<Self, Refused> {
+        let refused = Refused {
+            name: self.name,
+            problem: Problem::InvalidEnvironment,
+        };
+        if !manifest::is_environment(environment) {
+            return Err(refused);
+        }
+        let environment = Path::from(environment).ok_or(refused)?;
+        Ok(Self {
+            environment: Some(environment),
+            ..self
+        })
+    }
+}
+
+fn font_link(name: &[u8]) -> Option<Path> {
+    Path::from(FONTS)?.join(name)
+}
+
+fn link_fonts(files: &mut impl Files, name: &[u8], folder: &Path) -> Result<(), Problem> {
+    let fonts = folder.join(APP_FONTS).ok_or(Problem::PathTooLong)?;
+    let carries = files
+        .status(fonts.as_bytes())
+        .is_ok_and(|status| status.kind == Kind::Directory);
+    if !carries {
+        return Ok(());
+    }
+    let link = font_link(name).ok_or(Problem::PathTooLong)?;
+    match files.make_directory(FONTS) {
+        Ok(()) | Err(Errno::EEXIST) => {}
+        Err(error) => return Err(Problem::from_errno(error)),
+    }
+    match files.remove_file(link.as_bytes()) {
+        Ok(()) | Err(Errno::ENOENT) => {}
+        Err(error) => return Err(Problem::from_errno(error)),
+    }
+    files
+        .make_link(fonts.as_bytes(), link.as_bytes())
+        .map_err(Problem::from_errno)
+}
+
+fn unlink_fonts(files: &mut impl Files, name: &[u8]) {
+    if let Some(link) = font_link(name)
+        && files.remove_file(link.as_bytes()).is_ok()
+    {
+        let _ = files.remove_directory(FONTS);
     }
 }
 
@@ -579,6 +650,7 @@ pub fn plan_entry(
         run,
         loader: None,
         arguments: None,
+        environment: None,
         leftover,
         total_bytes,
     })
@@ -1033,6 +1105,7 @@ fn plan_archive(
         run: scanned.run,
         loader: scanned.loader,
         arguments: None,
+        environment: None,
         leftover,
         total_bytes: scanned.total,
     })
@@ -1423,6 +1496,7 @@ impl Installation {
             && let Ok(folder) = self.folder()
         {
             let _ = remove_tree(files, folder.as_bytes());
+            unlink_fonts(files, self.plan.name.as_bytes());
         }
         self.stage = Stage::Finished;
     }
@@ -1680,7 +1754,9 @@ impl Installation {
             loader: loader.map(text).transpose()?,
             libraries: libraries.map(text).transpose()?,
             arguments: self.plan.arguments.as_ref().map(text).transpose()?,
+            environment: self.plan.environment.as_ref().map(text).transpose()?,
         };
+        link_fonts(files, self.plan.name.as_bytes(), &folder)?;
         let mut file = [0u8; manifest::LARGEST];
         let length = manifest::write(&entry, &mut file).map_err(|refused| match refused {
             manifest::Refused::InvalidName => Problem::InvalidName,
@@ -1738,6 +1814,7 @@ pub fn uninstall(files: &mut impl Files, name: &[u8]) -> Result<(), Problem> {
     files
         .remove_file(manifest_path.as_bytes())
         .map_err(Problem::from_errno)?;
+    unlink_fonts(files, name);
     let removed = remove_tree(files, folder.as_bytes()).map_err(Problem::from_errno);
     files.sync();
     removed

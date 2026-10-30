@@ -78,6 +78,7 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
         loader: None,
         libraries: None,
         arguments: None,
+        environment: None,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("the test app's manifest is valid");
