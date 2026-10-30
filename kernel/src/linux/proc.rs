@@ -327,6 +327,19 @@ pub fn driver_rtc(seconds: u64) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
+/// The open file description `node` names when it is a `/proc/<pid>/fd/<n>` link whose process
+/// and descriptor are still there: what opening the link opens again on Linux, where it is a
+/// "magic" link to the open file rather than to a path (D173; a pipe's link text names no
+/// file).
+pub fn described_file(node: crate::vfs::Node) -> Option<Arc<super::descriptors::OpenFile>> {
+    let link = ProcessNode::of(node.id())?;
+    if link.part != part::DESCRIPTOR || node.file_system().usage().magic != magic::PROC {
+        return None;
+    }
+    let (_, running) = TABLE.lock().describe(link.pid)?;
+    running?.files.file(link.fd)
+}
+
 /// `/proc/mounts`' text (D171): a line per mounted file system, the root's first, in Linux's
 /// layout: its type as the source, where it is mounted, its type, `ro` or `rw`, and two zeros.
 /// Files mounted over files are left out.
@@ -1064,7 +1077,10 @@ mod tests {
         assert_eq!(proc.entry(ROOT, 4).unwrap().kind, NodeKind::Directory);
         assert_eq!(proc.kind(MOUNTS), NodeKind::Regular);
         let mounts = proc.generate(MOUNTS).unwrap().unwrap();
-        assert!(mounts.starts_with(b"rootfs / rootfs ro 0 0\n"), "{mounts:?}");
+        assert!(
+            mounts.starts_with(b"rootfs / rootfs ro 0 0\n"),
+            "{mounts:?}"
+        );
         assert_eq!(proc.kind(DRIVER), NodeKind::Directory);
         assert_eq!(proc.parent(DRIVER_RTC), DRIVER);
         assert_eq!(proc.parent(DRIVER), ROOT);

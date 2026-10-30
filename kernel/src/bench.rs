@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 58] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 59] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -136,6 +136,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 58] {
         ("linux_memfd_map_unmap", linux_memfd_map_unmap::<P>),
         ("linux_file_map_read_unmap", linux_file_map_read_unmap::<P>),
         ("linux_dup3_close", linux_dup3_close::<P>),
+        ("linux_dup3_replace", linux_dup3_replace::<P>),
         ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
         ("linux_openat_close", linux_openat_close::<P>),
         ("linux_file_read", linux_file_read::<P>),
@@ -1601,6 +1602,19 @@ fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
+fn linux_dup3_replace<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{self, Descriptors};
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let files = Descriptors::with_console_streams();
+    for _ in 0..n {
+        let fd = descriptors::dup3(&program, &files, 0, black_box(1), 0)
+            .expect("descriptor 0 is open and 1 below the limit");
+        black_box(fd);
+    }
+}
+
 const FILE_BENCH_MEMORY: u64 = 0x1000_0000;
 
 fn process_with_path<P: Platform>(memory: &Memory<P>, path: &[u8]) -> Process<P> {
@@ -1891,8 +1905,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 26..].split_at(19);
-        let benchmarks = &[&all[..all.len() - 26], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 27..].split_at(20);
+        let benchmarks = &[&all[..all.len() - 27], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1906,6 +1920,7 @@ mod tests {
             (linux_memfd_map_unmap, _),
             (linux_file_map_read_unmap, _),
             (linux_dup3_close, _),
+            (linux_dup3_replace, _),
             (linux_descriptor_lookup, _),
             (linux_openat_close, _),
             (linux_file_read, _),
@@ -1943,6 +1958,7 @@ mod tests {
                 *linux_memfd_map_unmap,
                 *linux_file_map_read_unmap,
                 *linux_dup3_close,
+                *linux_dup3_replace,
                 *linux_descriptor_lookup,
                 *linux_openat_close,
                 *linux_file_read,
@@ -1964,6 +1980,7 @@ mod tests {
                 "linux_memfd_map_unmap",
                 "linux_file_map_read_unmap",
                 "linux_dup3_close",
+                "linux_dup3_replace",
                 "linux_descriptor_lookup",
                 "linux_openat_close",
                 "linux_file_read",

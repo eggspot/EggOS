@@ -739,6 +739,9 @@ fn duplicate_to<P: Platform>(
         return Err(Errno::EBADF);
     }
     let replaced = files.lock().duplicate_to(old, new, close_on_exec, limit)?;
+    if let Some(closed) = &replaced {
+        super::file_locks::descriptor_closed(process.id().get(), &closed.file);
+    }
     drop(replaced);
     Ok(u64::from(new))
 }
@@ -824,13 +827,15 @@ pub fn fcntl<P: Platform>(
     }
 }
 
-/// `close_range(first, last, flags)`, by the thread whose table is `files`: closes every open
-/// descriptor from `first` to `last`, or with `CLOSE_RANGE_CLOEXEC` marks them close-on-exec;
+/// `close_range(first, last, flags)`, by the thread of process `pid` whose table is `files`:
+/// closes every open descriptor from `first` to `last`, letting go of the record locks `pid`
+/// holds on their files (D173), or with `CLOSE_RANGE_CLOEXEC` marks them close-on-exec;
 /// with `CLOSE_RANGE_UNSHARE`, the caller first gets a table of its own if it shares one, which
 /// it is given back to keep. Descriptors not open in the range are skipped. As Linux: `EINVAL`
 /// for another flag or `first` above `last`, `ENOMEM` without memory for the copy. All three
 /// arguments are 32-bit.
 pub fn close_range(
+    pid: u32,
     files: &Descriptors,
     first: u64,
     last: u64,
@@ -856,6 +861,7 @@ pub fn close_range(
         let Some((fd, descriptor)) = closed else {
             break;
         };
+        super::file_locks::descriptor_closed(pid, &descriptor.file);
         drop(descriptor);
         if fd == last {
             break;
@@ -918,6 +924,8 @@ mod tests {
     }
 
     const LIMIT: u64 = 1024;
+
+    const TEST_PID: u32 = u32::MAX;
 
     #[test]
     fn a_new_table_has_the_standard_streams_on_one_description() {
@@ -1120,23 +1128,31 @@ mod tests {
         const CLOEXEC: u64 = close_range_flag::CLOEXEC as u64;
         let files = Descriptors::with_console_streams();
         assert_eq!(
-            close_range(&files, 0, 2, 1).map(|own| own.is_some()),
+            close_range(TEST_PID, &files, 0, 2, 1).map(|own| own.is_some()),
             Err(Errno::EINVAL)
         );
         assert_eq!(
-            close_range(&files, 3, 2, 0).map(|own| own.is_some()),
+            close_range(TEST_PID, &files, 3, 2, 0).map(|own| own.is_some()),
             Err(Errno::EINVAL)
         );
         let shared = files.share();
-        let own = close_range(&shared, 1, u64::from(u32::MAX), UNSHARE)
+        let own = close_range(TEST_PID, &shared, 1, u64::from(u32::MAX), UNSHARE)
             .unwrap()
             .unwrap();
         assert_eq!(open(&own.lock()), [0]);
         assert_eq!(open(&files.lock()), [0, 1, 2]);
         drop(shared);
-        assert!(close_range(&files, 0, 0, UNSHARE).unwrap().is_none());
+        assert!(
+            close_range(TEST_PID, &files, 0, 0, UNSHARE)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(open(&files.lock()), [1, 2]);
-        assert!(close_range(&files, 0, 9, CLOEXEC).unwrap().is_none());
+        assert!(
+            close_range(TEST_PID, &files, 0, 9, CLOEXEC)
+                .unwrap()
+                .is_none()
+        );
         assert!(files.lock().get(2).unwrap().close_on_exec);
     }
 }

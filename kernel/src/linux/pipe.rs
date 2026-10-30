@@ -213,6 +213,31 @@ pub fn new_pair(flags: u32) -> Result<(Arc<OpenFile>, Arc<OpenFile>), Errno> {
     ))
 }
 
+/// A new open file description of the pipe `end` belongs to, as opening `/proc/<pid>/fd/<n>`
+/// of either of its ends makes one on Linux (D173): the reading end for `O_RDONLY`, the writing
+/// end for `O_WRONLY`, with `flags`' status flags, its own and not shared with the other
+/// descriptions of that end. Make's and cargo's jobserver clients reopen their pipe so to set
+/// `O_NONBLOCK` on their own. `EINVAL` for `O_RDWR`, which only a FIFO on a file system takes.
+pub fn reopen(end: &PipeEnd, flags: u32) -> Result<Arc<OpenFile>, Errno> {
+    let writes = match flags & open_flag::ACCMODE {
+        open_flag::RDONLY => false,
+        open_flag::WRONLY => true,
+        _ => return Err(Errno::EINVAL),
+    };
+    {
+        let mut ring = end.pipe.ring.lock();
+        match writes {
+            true => ring.writers += 1,
+            false => ring.readers += 1,
+        }
+    }
+    let reopened = PipeEnd {
+        pipe: Arc::clone(&end.pipe),
+        writes,
+    };
+    Ok(Arc::new(OpenFile::new(FileKind::Pipe(reopened), flags)))
+}
+
 /// `pipe2(fds, flags)`: a new pipe, its reading end's descriptor then its writing end's
 /// written to `fds` as two `int`s. As Linux: `EINVAL` for a flag other than `O_CLOEXEC` and
 /// `O_NONBLOCK`, `EMFILE` without two free descriptors, `EFAULT` if `fds` is not the
@@ -569,5 +594,42 @@ mod tests {
                 writes: true
             }
         );
+    }
+
+    #[test]
+    fn a_reopened_end_is_a_description_of_its_own_that_keeps_the_pipe_open() {
+        let (reading, writing) = new_pair(0).unwrap();
+        let FileKind::Pipe(read_end) = reading.kind() else {
+            unreachable!("new_pair opens pipe ends")
+        };
+        let writer = reopen(read_end, open_flag::WRONLY | open_flag::NONBLOCK).unwrap();
+        let reader = reopen(read_end, open_flag::RDONLY).unwrap();
+        assert!(writer.is_writable() && writer.is_nonblocking());
+        assert!(!reader.is_nonblocking() && !writing.is_nonblocking());
+        let FileKind::Pipe(write_end) = writer.kind() else {
+            unreachable!("reopen opens a pipe end")
+        };
+        assert_eq!(write_end.inode(), read_end.inode());
+        let counts = {
+            let ring = read_end.pipe.ring.lock();
+            (ring.readers, ring.writers)
+        };
+        assert_eq!(counts, (2, 2));
+        drop(writing);
+        read_end.pipe.ring.lock().push(b"+");
+        let mut token = [0u8; 1];
+        assert_eq!(read_end.take(&mut token), Taken::Bytes(1));
+        assert_eq!(
+            read_end.take(&mut token),
+            Taken::Empty,
+            "the reopened writer keeps the pipe from ending"
+        );
+        drop(writer);
+        assert_eq!(read_end.take(&mut token), Taken::Ended);
+        assert_eq!(
+            reopen(read_end, open_flag::RDWR).map(|_| ()),
+            Err(Errno::EINVAL)
+        );
+        drop(reader);
     }
 }

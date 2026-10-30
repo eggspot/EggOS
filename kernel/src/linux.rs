@@ -788,6 +788,9 @@ impl Errno {
     pub const EOVERFLOW: Self = Self(75);
     /// No memory left for one more file lock (`flock`, `fcntl`, D171).
     pub const ENOLCK: Self = Self(37);
+    /// A record lock's wait would never end: its holder waits for the caller (`fcntl`'s
+    /// `F_SETLKW`, D173).
+    pub const EDEADLK: Self = Self(35);
     /// A datagram socket with no destination (`send` unconnected, D157).
     pub const EDESTADDRREQ: Self = Self(89);
     /// An address this machine does not have (`bind`, D157).
@@ -1248,7 +1251,8 @@ fn out_of_line_result<P: Platform>(
         #[cfg(target_arch = "x86_64")]
         number::PIPE => pipe::pipe2::<P>(process, thread, first, 0),
         number::CLOSE_RANGE => {
-            let own = descriptors::close_range(thread.files(), first, second, third)?;
+            let own =
+                descriptors::close_range(process.id().get(), thread.files(), first, second, third)?;
             if let Some(own) = own {
                 thread.set_files(own);
             }

@@ -14,6 +14,12 @@
 //!   request that conflicts fails with `EAGAIN` (`LOCK_NB`, `F_SETLK`), or waits until the
 //!   file's locks change, then looks again (`flock`, `F_SETLKW`): a signal interrupts the wait,
 //!   which is restarted after an `SA_RESTART` handler, as on Linux.
+//! - **Deadlocks** (D173). A process's `F_SETLKW` that would wait for a lock whose holder waits,
+//!   directly or through at most [`MAX_DEADLOCK_STEPS`] other waiting processes, for a lock the
+//!   caller holds fails with `EDEADLK` instead, as Linux's; open-file-description and `flock`
+//!   waits are not followed, as on Linux.
+//! - **Closing** (D173): a process's record locks on a file go with any of its descriptors for
+//!   it closed by `close`, `close_range`, `dup2` or `dup3` over it, or `execve`'s close-on-exec.
 //!
 //! A file is a node (whatever path or descriptor reaches it), a memory file, or for anything
 //! else its open file description. Every lock is in one table behind a lock, made by the first
@@ -80,6 +86,10 @@ pub const FLOCK_SIZE: usize = 32;
 
 /// The largest offset, where a range "to the end of the file" ends (`OFFSET_MAX`).
 pub const OFFSET_MAX: u64 = i64::MAX as u64;
+
+/// How many waiting processes a deadlock check follows from the lock in the way, as Linux's
+/// `MAX_DEADLK_ITERATIONS`: a longer chain is not reported.
+pub const MAX_DEADLOCK_STEPS: usize = 10;
 
 const SEEK_SET: i16 = 0;
 const SEEK_CUR: i16 = 1;
@@ -156,21 +166,80 @@ impl Lock {
     }
 }
 
-/// Every lock held.
+/// A thread waiting for a record lock of its process (`F_SETLKW`), which deadlock checks follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waiter {
+    /// The waiting thread.
+    pub thread: u32,
+    /// The lock it waits to take.
+    pub wanted: Lock,
+}
+
+/// Every lock held, and the processes' threads waiting for record locks.
 #[derive(Debug, Default)]
 pub struct Table {
     locks: Vec<Lock>,
+    waiters: Vec<Waiter>,
 }
 
 impl Table {
     /// A table with no lock.
     pub const fn new() -> Self {
-        Self { locks: Vec::new() }
+        Self {
+            locks: Vec::new(),
+            waiters: Vec::new(),
+        }
     }
 
     /// The locks held, in no order.
     pub fn locks(&self) -> &[Lock] {
         &self.locks
+    }
+
+    /// The threads waiting for record locks, in no order.
+    pub fn waiters(&self) -> &[Waiter] {
+        &self.waiters
+    }
+
+    /// Whether `wanted`, a process's record lock that `in_the_way` stands in the way of, would
+    /// wait in a cycle: the holder of `in_the_way` waits for a lock held by a process that
+    /// waits ... for one `wanted`'s owner holds, within [`MAX_DEADLOCK_STEPS`] steps (`EDEADLK`).
+    /// Always `false` for open-file-description and `flock` locks, as on Linux.
+    pub fn would_deadlock(&self, wanted: &Lock, in_the_way: &Lock) -> bool {
+        if wanted.family != Family::Record || !matches!(wanted.owner, Owner::Process(_)) {
+            return false;
+        }
+        let mut holder = in_the_way.owner;
+        for _ in 0..MAX_DEADLOCK_STEPS {
+            if holder == wanted.owner {
+                return true;
+            }
+            let Some(waiting) = self
+                .waiters
+                .iter()
+                .find(|waiter| waiter.wanted.owner == holder)
+            else {
+                return false;
+            };
+            let Some(next) = self.conflict(&waiting.wanted) else {
+                return false;
+            };
+            holder = next.owner;
+        }
+        false
+    }
+
+    /// Records that `thread` waits to take `wanted`, a record lock of its process. `ENOLCK`
+    /// without memory for the record.
+    pub fn wait(&mut self, thread: u32, wanted: Lock) -> Result<(), Errno> {
+        self.waiters.try_reserve(1).map_err(|_| Errno::ENOLCK)?;
+        self.waiters.push(Waiter { thread, wanted });
+        Ok(())
+    }
+
+    /// Forgets that `thread` waits for a lock.
+    pub fn stop_waiting(&mut self, thread: u32) {
+        self.waiters.retain(|waiter| waiter.thread != thread);
     }
 
     /// A lock that stands in the way of `wanted`, if one does.
@@ -363,7 +432,8 @@ pub fn description_closed(file: &OpenFile) {
 }
 
 /// Lets go of the record locks process `pid` holds on what `file` names, as closing any of
-/// its descriptors for the file does.
+/// its descriptors for the file does: `close`, `close_range`, `dup2` and `dup3` over a
+/// descriptor, and `execve`'s close-on-exec.
 pub fn descriptor_closed(pid: u32, file: &OpenFile) {
     if LOCKS.load(Ordering::Relaxed) == 0 {
         return;
@@ -681,7 +751,15 @@ fn run<P: Platform>(
             answer_conflict(process, answer, conflict(&wanted))
         }
         Ok((Request::Take { wanted, wait }, None)) => loop {
+            let thread_id = thread.id();
+            let followed = wait
+                && wanted.family == Family::Record
+                && matches!(wanted.owner, Owner::Process(_));
             let taken = change_made(|table| match table.conflict(&wanted) {
+                Some(in_the_way) if followed && table.would_deadlock(&wanted, &in_the_way) => {
+                    Err(Errno::EDEADLK)
+                }
+                Some(_) if followed => table.wait(thread_id, wanted).map(|()| false),
                 Some(_) => Ok(false),
                 None => table.set(wanted).map(|()| true),
             })
@@ -696,7 +774,11 @@ fn run<P: Platform>(
             let list = waiters();
             let lists = [&list];
             let free = || conflict(&wanted).is_none();
-            if poll::wait_for(process, thread, &lists, u64::MAX, free)? == Waited::Signalled
+            let woken = poll::wait_for(process, thread, &lists, u64::MAX, free);
+            if followed {
+                change(|table| table.stop_waiting(thread_id));
+            }
+            if woken? == Waited::Signalled
                 && signals::deliver_interrupting(process, thread, context, interrupted)?
             {
                 return ControlFlow::Continue(());
@@ -846,6 +928,55 @@ mod tests {
         assert!(held(&table, ONE).is_empty());
         assert_eq!(held(&table, TWO), [(Sharing::Shared, 0, 9)]);
         assert!(!table.remove_unless(|lock| lock.owner != ONE));
+    }
+
+    #[test]
+    fn a_wait_that_closes_a_cycle_of_waiting_processes_is_a_deadlock() {
+        const THREE: Owner = Owner::Process(9);
+        let mut table = Table::new();
+        table.set(record(ONE, Sharing::Exclusive, 0, 9)).unwrap();
+        table.set(record(TWO, Sharing::Exclusive, 10, 19)).unwrap();
+        table
+            .set(record(THREE, Sharing::Exclusive, 20, 29))
+            .unwrap();
+        let one_wants = record(ONE, Sharing::Exclusive, 10, 10);
+        let in_the_way = table.conflict(&one_wants).unwrap();
+        assert!(!table.would_deadlock(&one_wants, &in_the_way));
+        table.wait(70, one_wants).unwrap();
+        let two_wants = record(TWO, Sharing::Shared, 20, 20);
+        let in_the_way = table.conflict(&two_wants).unwrap();
+        assert!(!table.would_deadlock(&two_wants, &in_the_way));
+        table.wait(80, two_wants).unwrap();
+        let three_wants = record(THREE, Sharing::Exclusive, 5, 5);
+        let in_the_way = table.conflict(&three_wants).unwrap();
+        assert!(
+            table.would_deadlock(&three_wants, &in_the_way),
+            "three waits for one, who waits for two, who waits for three"
+        );
+        table.stop_waiting(80);
+        assert_eq!(table.waiters().len(), 1);
+        assert!(!table.would_deadlock(&three_wants, &in_the_way));
+    }
+
+    #[test]
+    fn description_locks_are_never_followed_for_deadlocks() {
+        let mut table = Table::new();
+        let description = Owner::Description(0x40);
+        table.set(record(ONE, Sharing::Exclusive, 0, 9)).unwrap();
+        table
+            .set(record(description, Sharing::Exclusive, 10, 19))
+            .unwrap();
+        table
+            .wait(70, record(ONE, Sharing::Exclusive, 10, 10))
+            .unwrap();
+        let wanted = record(description, Sharing::Exclusive, 0, 0);
+        let in_the_way = table.conflict(&wanted).unwrap();
+        assert!(!table.would_deadlock(&wanted, &in_the_way));
+        let whole = Lock {
+            family: Family::Whole,
+            ..record(TWO, Sharing::Exclusive, 0, OFFSET_MAX)
+        };
+        assert!(!table.would_deadlock(&whole, &whole));
     }
 
     #[test]

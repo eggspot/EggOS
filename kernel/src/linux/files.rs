@@ -171,6 +171,9 @@ pub fn lookup<P: Platform>(
 /// A character device (`/dev`, D127) opens its device, `ENXIO` when no driver serves it
 /// (`/dev/tty` without a controlling terminal, D168). A
 /// socket file (D138) is `ENXIO`, as on Linux: `connect` reaches its socket.
+/// A `/proc/<pid>/fd/<n>` link to an end of a pipe opens that pipe again, its reading end for
+/// `O_RDONLY` and its writing end for `O_WRONLY`, as Linux's "magic" links do (D173,
+/// [`super::pipe::reopen`]); the other links in `/proc` are followed by their text.
 /// A symbolic link is followed (D168), unless `O_NOFOLLOW` asks not to for the last component:
 /// then it is `ELOOP`, or the link itself with `O_PATH`; `O_NONBLOCK` and `O_APPEND` are
 /// kept as status flags, and the other flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are
@@ -325,7 +328,7 @@ fn open<P: Platform>(
                 Err(error) => return Err(error),
             }
         }
-        Err(error) => return Err(walk_error(error)),
+        Err(error) => return reopen_described(process, thread, (root, start, path), flags, error),
     };
     let directory = node.is_directory();
     let kind = if only_path {
@@ -380,6 +383,41 @@ fn open<P: Platform>(
         .lock()
         .open(Arc::clone(&file), close_on_exec, limit);
     drop(file);
+    Ok(u64::from(opened?))
+}
+
+#[cold]
+fn reopen_described<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    (root, start, path): (Node, Node, &[u8]),
+    flags: u32,
+    error: vfs::Error,
+) -> Result<u64, Errno> {
+    let follows = flags & (open_flag::PATH | open_flag::NOFOLLOW) == 0;
+    let described = match error {
+        vfs::Error::NotFound if follows => {
+            vfs::resolve_as(root, start, path, process.id().get(), false)
+                .ok()
+                .and_then(super::proc::described_file)
+        }
+        _ => None,
+    };
+    let Some(described) = described else {
+        return Err(walk_error(error));
+    };
+    let FileKind::Pipe(end) = described.kind() else {
+        return Err(walk_error(error));
+    };
+    let file = super::pipe::reopen(end, flags)?;
+    let limit = open_file_limit(process);
+    let close_on_exec = flags & open_flag::CLOEXEC != 0;
+    let opened = thread
+        .files()
+        .lock()
+        .open(Arc::clone(&file), close_on_exec, limit);
+    drop(file);
+    drop(described);
     Ok(u64::from(opened?))
 }
 

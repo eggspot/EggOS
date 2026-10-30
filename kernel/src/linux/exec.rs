@@ -1260,6 +1260,7 @@ fn start<P: Platform>(
         let Some((fd, descriptor)) = closed else {
             break;
         };
+        super::file_locks::descriptor_closed(id, &descriptor.file);
         drop(descriptor);
         from = fd + 1;
     }
