@@ -70,6 +70,7 @@ pub fn system_class(name: &[u16]) -> Option<ControlKind> {
         () if is("EDIT") => Some(ControlKind::Edit),
         () if is("STATIC") => Some(ControlKind::Static),
         () if is("LISTBOX") => Some(ControlKind::ListBox),
+        () if is("COMBOBOX") => Some(ControlKind::ComboBox),
         () => None,
     }
 }
@@ -110,6 +111,7 @@ pub fn new_state(kind: ControlKind, style: u32) -> Option<usize> {
             unsafe { address.write(ListBox::new()) };
             Some(address as usize)
         }
+        ControlKind::ComboBox => super::combo_box::new_state(0),
     }
 }
 
@@ -144,6 +146,7 @@ fn state_of(gui: &mut Gui, window: usize) -> Option<(&mut Window, State<'_>)> {
         // SAFETY: as for the button.
         ControlKind::ListBox => State::ListBox(unsafe { &mut *(address as *mut ListBox) }),
         ControlKind::Static => State::Static,
+        ControlKind::ComboBox => return None,
     };
     Some((entry, state))
 }
@@ -156,7 +159,7 @@ fn with_state<R>(window: usize, work: impl FnOnce(&mut Window, State<'_>) -> R) 
     .flatten()
 }
 
-fn invalidate(window: usize) {
+pub(super) fn invalidate(window: usize) {
     with(|gui| {
         if let Some(entry) = gui.windows.get_mut(window) {
             entry.invalidate(None, true);
@@ -165,7 +168,7 @@ fn invalidate(window: usize) {
     gui::wake();
 }
 
-fn notify(window: usize, notification: usize) {
+pub(super) fn notify(window: usize, notification: usize) {
     let target = with(|gui| {
         let entry = gui.windows.get(window)?;
         Some((entry.parent, entry.id))
@@ -183,7 +186,7 @@ fn notify(window: usize, notification: usize) {
     }
 }
 
-fn palette_of(gui: &Gui, window: usize) -> &'static Palette {
+pub(super) fn palette_of(gui: &Gui, window: usize) -> &'static Palette {
     let root = crate::gui::windows::root_of(&gui.windows, window);
     match root
         .and_then(|root| gui.windows.get(root))
@@ -268,12 +271,13 @@ fn paint_control(window: usize) {
                 };
                 label::paint(surface, rect, text, look, palette);
             }
+            ControlKind::ComboBox => {}
         }
     });
     paint::finish(hdc);
 }
 
-fn point(lparam: usize) -> (i32, i32) {
+pub(super) fn point(lparam: usize) -> (i32, i32) {
     (
         lparam as u16 as i16 as i32,
         (lparam >> 16) as u16 as i16 as i32,
@@ -327,6 +331,9 @@ pub fn procedure(
     wparam: usize,
     lparam: usize,
 ) -> usize {
+    if kind == ControlKind::ComboBox {
+        return super::combo_box::procedure(window, number, wparam, lparam);
+    }
     match number {
         message::NC_CREATE => 1,
         message::CREATE => 0,
@@ -517,7 +524,7 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             .flatten();
             list_changed(window, changed);
         }
-        ControlKind::Static => {}
+        ControlKind::Static | ControlKind::ComboBox => {}
     }
 }
 

@@ -44,6 +44,24 @@ pub mod mouse_keys {
 }
 
 const WHEEL_DELTA: i32 = 120;
+const CAPS_LOCK: u32 = 16;
+/// The virtual keys `GetKeyboardState` reports.
+pub const KEY_STATES: usize = 256;
+const HELD: u8 = 0x80;
+const TOGGLED: u8 = 0x01;
+
+mod held_key {
+    pub const LEFT_BUTTON: usize = 0x01;
+    pub const RIGHT_BUTTON: usize = 0x02;
+    pub const MIDDLE_BUTTON: usize = 0x04;
+    pub const SHIFT: usize = 0x10;
+    pub const CONTROL: usize = 0x11;
+    pub const MENU: usize = 0x12;
+    pub const CAPITAL: usize = 0x14;
+    pub const LEFT_SHIFT: usize = 0xa0;
+    pub const LEFT_CONTROL: usize = 0xa2;
+    pub const LEFT_MENU: usize = 0xa4;
+}
 
 /// One event record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -103,12 +121,52 @@ pub struct InputState {
     buttons: u32,
     modifiers: u32,
     point: (i32, i32),
+    keys_down: [u64; KEY_STATES / 64],
 }
 
 impl InputState {
     /// Whether Shift was held at the last record.
     pub fn shift_held(&self) -> bool {
         self.modifiers & SHIFT != 0
+    }
+
+    /// `GetKeyboardState`'s 256 bytes (D174): 0x80 for each key held (the keys pressed and not
+    /// yet released, the mouse buttons, Shift, Ctrl and Alt and their left forms), 0x01 for
+    /// Caps Lock while it is on.
+    pub fn keyboard_state(&self) -> [u8; KEY_STATES] {
+        let mut state = [0u8; KEY_STATES];
+        for (key, slot) in state.iter_mut().enumerate() {
+            if self.keys_down[key / 64] & (1 << (key % 64)) != 0 {
+                *slot = HELD;
+            }
+        }
+        for (held, keys) in [
+            (self.buttons & HELD_LEFT, &[held_key::LEFT_BUTTON][..]),
+            (self.buttons & HELD_RIGHT, &[held_key::RIGHT_BUTTON][..]),
+            (self.buttons & HELD_MIDDLE, &[held_key::MIDDLE_BUTTON][..]),
+            (
+                self.modifiers & SHIFT,
+                &[held_key::SHIFT, held_key::LEFT_SHIFT][..],
+            ),
+            (
+                self.modifiers & CONTROL,
+                &[held_key::CONTROL, held_key::LEFT_CONTROL][..],
+            ),
+            (
+                self.modifiers & ALT,
+                &[held_key::MENU, held_key::LEFT_MENU][..],
+            ),
+        ] {
+            if held != 0 {
+                for &key in keys {
+                    state[key] = HELD;
+                }
+            }
+        }
+        if self.modifiers & CAPS_LOCK != 0 {
+            state[held_key::CAPITAL] |= TOGGLED;
+        }
+        state
     }
 
     fn mouse_keys(&self) -> usize {
@@ -192,6 +250,7 @@ impl InputState {
             kind::FOCUS_IN => Event::FocusIn,
             kind::FOCUS_OUT => {
                 self.buttons = 0;
+                self.keys_down = [0; KEY_STATES / 64];
                 Event::FocusOut
             }
             kind::CLOSE_REQUEST => Event::CloseRequest,
@@ -213,6 +272,14 @@ impl InputState {
             return Event::Ignored;
         };
         let pressed = record.b != 0;
+        let (word, bit) = (
+            usize::from(key.virtual_key) / 64,
+            u64::from(key.virtual_key) % 64,
+        );
+        match pressed {
+            true => self.keys_down[word] |= 1 << bit,
+            false => self.keys_down[word] &= !(1 << bit),
+        }
         let alt = self.modifiers & ALT != 0;
         let number = match (pressed, alt) {
             (true, false) => message::KEY_DOWN,
@@ -527,5 +594,26 @@ mod tests {
             Event::PointerLeft
         );
         assert_eq!(state.translate(&record(13, 4, 0, 0, 0)), Event::Ignored);
+    }
+
+    #[test]
+    fn the_keyboard_state_holds_the_keys_buttons_and_modifiers_held() {
+        let mut state = InputState::default();
+        state.translate(&record(kind::KEY, 30, 1, 0, u32::from(b'a')));
+        state.translate(&record(kind::KEY, 29, 1, CONTROL, 0));
+        state.translate(&record(kind::BUTTON, 5, 5, BUTTON_LEFT, 1));
+        let held = state.keyboard_state();
+        assert_eq!(held[usize::from(b'A')], 0x80);
+        assert_eq!(held[0x11], 0x80);
+        assert_eq!(held[0xa2], 0x80);
+        assert_eq!(held[0x01], 0x80);
+        assert_eq!(held[0x10], 0);
+        state.translate(&record(kind::KEY, 30, 0, CONTROL | CAPS_LOCK, 0));
+        let held = state.keyboard_state();
+        assert_eq!(held[usize::from(b'A')], 0);
+        assert_eq!(held[0x14], 0x01);
+        state.translate(&record(kind::FOCUS_OUT, 0, 0, 0, 0));
+        assert_eq!(state.keyboard_state()[0x11], 0x80);
+        assert_eq!(state.keyboard_state()[0x01], 0);
     }
 }

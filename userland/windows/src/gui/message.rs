@@ -31,6 +31,7 @@ pub const TIMER: u32 = 0x0113;
 pub const MOUSE_MOVE: u32 = 0x0200;
 pub const LEFT_BUTTON_DOWN: u32 = 0x0201;
 pub const LEFT_BUTTON_UP: u32 = 0x0202;
+pub const LEFT_BUTTON_DOUBLE_CLICK: u32 = 0x0203;
 pub const RIGHT_BUTTON_DOWN: u32 = 0x0204;
 pub const RIGHT_BUTTON_UP: u32 = 0x0205;
 pub const MIDDLE_BUTTON_DOWN: u32 = 0x0207;

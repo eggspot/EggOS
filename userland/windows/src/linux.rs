@@ -37,6 +37,7 @@ pub mod number {
     pub const UNLINKAT: usize = 263;
     pub const PPOLL: usize = 271;
     pub const PIPE2: usize = 293;
+    pub const RENAMEAT2: usize = 316;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -72,6 +73,7 @@ pub mod number {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
+    pub const RENAMEAT2: usize = 276;
 }
 
 pub const PAGE_SIZE: usize = 4096;
@@ -550,6 +552,28 @@ pub fn remove(path: &[u8], flags: usize) -> Result<usize, Errno> {
         syscall(
             number::UNLINKAT,
             [AT_FDCWD, path.as_ptr() as usize, flags, 0, 0, 0],
+        )
+    }
+}
+
+/// Moves the name `from` to `to` (both NUL-terminated), replacing what `to` names unless
+/// `no_replace` (`renameat2`'s `RENAME_NOREPLACE`).
+pub fn rename(from: &[u8], to: &[u8], no_replace: bool) -> Result<usize, Errno> {
+    if from.last() != Some(&0) || to.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `renameat2` reads the two NUL-terminated paths.
+    unsafe {
+        syscall(
+            number::RENAMEAT2,
+            [
+                AT_FDCWD,
+                from.as_ptr() as usize,
+                AT_FDCWD,
+                to.as_ptr() as usize,
+                usize::from(no_replace),
+                0,
+            ],
         )
     }
 }

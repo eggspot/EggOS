@@ -4,7 +4,8 @@
 //! dispatches the calling thread's other messages meanwhile. Its owner's window takes no input
 //! while it is open. Paths are shown and returned in Windows' form (`C:\` is `/`). The picker's
 //! state is a heap block its window's entry points to, reached only under the lock; folders are
-//! read outside it.
+//! read outside it. The ANSI forms widen the request and narrow the answer, and `PrintDlg` finds
+//! no printer, as EggOS has none yet (D174).
 
 use super::controls::{caret_to_end, fill_list, selected_item};
 use super::dialog::{self, set_focus};
@@ -805,9 +806,231 @@ extern "efiapi" fn comm_dlg_extended_error() -> u32 {
     LAST_ERROR.load(Ordering::Relaxed)
 }
 
+#[repr(C)]
+struct OpenFileNameA {
+    size: u32,
+    owner: usize,
+    instance: usize,
+    filter: *const u8,
+    custom_filter: *mut u8,
+    max_custom_filter: u32,
+    filter_index: u32,
+    file: *mut u8,
+    max_file: u32,
+    file_title: *mut u8,
+    max_file_title: u32,
+    initial_dir: *const u8,
+    title: *const u8,
+    flags: u32,
+    file_offset: u16,
+    file_extension: u16,
+    default_extension: *const u8,
+    custom_data: usize,
+    hook: usize,
+    template_name: *const u8,
+    reserved: usize,
+    reserved_flags: u32,
+    flags_ex: u32,
+}
+
+unsafe fn widen_filter(filter: *const u8) -> Option<super::ansi::Wide> {
+    if filter.is_null() {
+        return None;
+    }
+    let mut length = 0;
+    // SAFETY: `lpstrFilter` is pairs of NUL-terminated strings ended by an empty one, so every
+    // byte up to the two NULs in a row is readable.
+    while unsafe { (filter.add(length).read(), filter.add(length + 1).read()) } != (0, 0) {
+        length += 1;
+    }
+    // SAFETY: as above, `length + 2` bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(filter, length + 2) };
+    super::ansi::widen(bytes)
+}
+
+struct UnitBlock(*mut u16);
+
+impl Drop for UnitBlock {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: a block `unit_block` allocated, used by nothing once its owner is dropped.
+            unsafe { heap::free(self.0.cast()) };
+        }
+    }
+}
+
+fn unit_block(units: usize) -> UnitBlock {
+    match units {
+        0 => UnitBlock(core::ptr::null_mut()),
+        units => UnitBlock(heap::allocate(units * 2).cast()),
+    }
+}
+
+unsafe fn narrow_into(units: &[u16], out: *mut u8, capacity: usize) {
+    if out.is_null() || capacity == 0 {
+        return;
+    }
+    // SAFETY: the caller's duty: `out` holds `capacity` writable bytes.
+    let out = unsafe { core::slice::from_raw_parts_mut(out, capacity) };
+    let (written, _) = text::write_utf8(units, &mut out[..capacity - 1]);
+    out[written] = 0;
+}
+
+unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
+    LAST_ERROR.store(0, Ordering::Relaxed);
+    if request.is_null() {
+        LAST_ERROR.store(CDERR_INITIALIZATION, Ordering::Relaxed);
+        return FALSE;
+    }
+    // SAFETY: every `OPENFILENAMEA` starts with its size, a readable `u32`.
+    let size = unsafe { request.cast::<u32>().read_unaligned() };
+    if size != OPEN_FILE_NAME_SIZE && size != OPEN_FILE_NAME_SIZE_400 {
+        LAST_ERROR.store(CDERR_STRUCTSIZE, Ordering::Relaxed);
+        return FALSE;
+    }
+    let mut copy = core::mem::MaybeUninit::<OpenFileNameA>::zeroed();
+    // SAFETY: as `pick`: `size` readable bytes, the rest zeroed, all valid field values.
+    let local = unsafe {
+        core::ptr::copy_nonoverlapping(
+            request.cast::<u8>(),
+            copy.as_mut_ptr().cast::<u8>(),
+            size as usize,
+        );
+        copy.assume_init()
+    };
+    // SAFETY: the request's strings are the caller's, as `OPENFILENAMEA` describes them.
+    let (filter, title, initial_dir, default_extension) = unsafe {
+        (
+            widen_filter(local.filter),
+            super::ansi::widen_text(local.title),
+            super::ansi::widen_text(local.initial_dir),
+            super::ansi::widen_text(local.default_extension),
+        )
+    };
+    let strings = (title, initial_dir, default_extension);
+    let (Ok(title), Ok(initial_dir), Ok(default_extension)) = strings else {
+        LAST_ERROR.store(CDERR_INITIALIZATION, Ordering::Relaxed);
+        return FALSE;
+    };
+    let max_file = local.max_file as usize;
+    let file = unit_block(max_file);
+    let file_title = unit_block(local.max_file_title as usize);
+    if max_file == 0 {
+        LAST_ERROR.store(FNERR_BUFFERTOOSMALL, Ordering::Relaxed);
+        return FALSE;
+    }
+    if file.0.is_null() || local.file.is_null() {
+        LAST_ERROR.store(CDERR_INITIALIZATION, Ordering::Relaxed);
+        return FALSE;
+    }
+    // SAFETY: `lpstrFile` holds a NUL-terminated string within its `nMaxFile` bytes; the block
+    // holds `max_file` units.
+    unsafe {
+        let start = core::ffi::CStr::from_ptr(local.file.cast()).to_bytes();
+        let out = core::slice::from_raw_parts_mut(file.0, max_file);
+        let written = text::write_utf16(start, &mut out[..max_file - 1]);
+        out[written] = 0;
+    }
+    let pointer = |wide: &Option<super::ansi::Wide>| {
+        wide.as_ref()
+            .map_or(core::ptr::null(), super::ansi::Wide::pointer)
+    };
+    let mut wide = OpenFileName {
+        size: OPEN_FILE_NAME_SIZE,
+        owner: local.owner,
+        instance: local.instance,
+        filter: pointer(&filter),
+        custom_filter: core::ptr::null_mut(),
+        max_custom_filter: 0,
+        filter_index: local.filter_index,
+        file: file.0,
+        max_file: local.max_file,
+        file_title: file_title.0,
+        max_file_title: local.max_file_title,
+        initial_dir: pointer(&initial_dir),
+        title: pointer(&title),
+        flags: local.flags,
+        file_offset: 0,
+        file_extension: 0,
+        default_extension: pointer(&default_extension),
+        custom_data: local.custom_data,
+        hook: 0,
+        template_name: core::ptr::null(),
+        reserved: 0,
+        reserved_flags: 0,
+        flags_ex: 0,
+    };
+    // SAFETY: `wide` is a complete `OPENFILENAMEW` whose buffers live until the call returns.
+    let chosen = unsafe { pick(&mut wide, kind) };
+    if chosen == FALSE {
+        return FALSE;
+    }
+    // SAFETY: the picker wrote a NUL-terminated path into the block of `max_file` units.
+    let path = unsafe { super::file::wide_string(file.0) };
+    // SAFETY: `lpstrFile` holds `nMaxFile` writable bytes.
+    unsafe { narrow_into(path, local.file, max_file) };
+    if !file_title.0.is_null() {
+        // SAFETY: the picker wrote a NUL-terminated name into the title block; `lpstrFileTitle`
+        // holds `nMaxFileTitle` writable bytes.
+        unsafe {
+            let name = super::file::wide_string(file_title.0);
+            narrow_into(name, local.file_title, local.max_file_title as usize);
+        }
+    }
+    let bytes_before = |units: u16| {
+        let units = usize::from(units).min(path.len());
+        text::utf8_length(&path[..units]).min(u16::MAX as usize) as u16
+    };
+    let base = request.cast::<u8>();
+    let fields = [
+        (
+            core::mem::offset_of!(OpenFileNameA, file_offset),
+            bytes_before(wide.file_offset),
+        ),
+        (
+            core::mem::offset_of!(OpenFileNameA, file_extension),
+            bytes_before(wide.file_extension),
+        ),
+    ];
+    for (offset, value) in fields {
+        // SAFETY: the field lies inside the version-400 structure the caller's `size` covers.
+        unsafe {
+            base.wrapping_add(offset)
+                .cast::<u16>()
+                .write_unaligned(value)
+        };
+    }
+    chosen
+}
+
+unsafe extern "efiapi" fn get_open_file_name_a(request: *mut OpenFileNameA) -> Bool {
+    // SAFETY: the caller's duty, passed on.
+    unsafe { pick_narrow(request, PickerKind::Open) }
+}
+
+unsafe extern "efiapi" fn get_save_file_name_a(request: *mut OpenFileNameA) -> Bool {
+    // SAFETY: the caller's duty, passed on.
+    unsafe { pick_narrow(request, PickerKind::Save) }
+}
+
+const PDERR_NODEFAULTPRN: u32 = 0x1008;
+
+extern "efiapi" fn print_dlg(request: usize) -> Bool {
+    let code = match request {
+        0 => CDERR_INITIALIZATION,
+        _ => PDERR_NODEFAULTPRN,
+    };
+    LAST_ERROR.store(code, Ordering::Relaxed);
+    FALSE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"GetOpenFileNameW" => get_open_file_name_w,
     b"GetSaveFileNameW" => get_save_file_name_w,
+    b"GetOpenFileNameA" => get_open_file_name_a,
+    b"GetSaveFileNameA" => get_save_file_name_a,
+    b"PrintDlgW" => print_dlg,
+    b"PrintDlgA" => print_dlg,
     b"CommDlgExtendedError" => comm_dlg_extended_error,
 ];
 

@@ -214,6 +214,96 @@ fn clamp(value: i64) -> i32 {
     value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
+/// The most points [`polygon`] and [`polyline`] take (D174).
+pub const MAX_POLYGON_POINTS: usize = 512;
+
+/// `Polyline`: a line from each point to the next with `pen`, each leaving out its end point,
+/// so the last point is not drawn.
+pub fn polyline(surface: &mut Surface<'_>, points: &[(i32, i32)], pen: Pen) {
+    for pair in points.windows(2) {
+        line(surface, pair[0], pair[1], pen);
+    }
+}
+
+/// `Polygon` with `ALTERNATE` filling: the pixels whose centre an odd number of the closed
+/// outline's edges lie to the left of are filled with `brush`, then the outline is drawn with
+/// `pen` from each point to the next and back to the first. Nothing is drawn past
+/// [`MAX_POLYGON_POINTS`].
+pub fn polygon(
+    surface: &mut Surface<'_>,
+    points: &[(i32, i32)],
+    pen: Option<Pen>,
+    brush: Option<u32>,
+) {
+    if points.len() < 2 || points.len() > MAX_POLYGON_POINTS {
+        return;
+    }
+    if let Some(brush) = brush {
+        fill_polygon(surface, points, brush);
+    }
+    if let Some(pen) = pen {
+        for (index, &from) in points.iter().enumerate() {
+            line(surface, from, points[(index + 1) % points.len()], pen);
+        }
+    }
+}
+
+fn fill_polygon(surface: &mut Surface<'_>, points: &[(i32, i32)], brush: u32) {
+    let clip = surface.clip();
+    let top = points.iter().map(|point| point.1).min().unwrap_or(0);
+    let bottom = points.iter().map(|point| point.1).max().unwrap_or(0);
+    let mut crossings = [0i64; MAX_POLYGON_POINTS];
+    for y in top.max(clip.top)..bottom.min(clip.bottom) {
+        let mut count = 0;
+        for (index, &first) in points.iter().enumerate() {
+            let second = points[(index + 1) % points.len()];
+            if let Some(start) = crossing_start(first, second, y) {
+                crossings[count] = start;
+                count += 1;
+            }
+        }
+        let crossings = &mut crossings[..count];
+        crossings.sort_unstable();
+        for pair in crossings.chunks_exact(2) {
+            surface.span(y, clamp(pair[0]), clamp(pair[1]), brush);
+        }
+    }
+}
+
+const POLYGON_COORDINATE_LIMIT: i32 = 1 << 24;
+
+fn crossing_start(first: (i32, i32), second: (i32, i32), y: i32) -> Option<i64> {
+    let limit = |point: (i32, i32)| {
+        let bound = POLYGON_COORDINATE_LIMIT;
+        (point.0.clamp(-bound, bound), point.1.clamp(-bound, bound))
+    };
+    let (first, second) = (limit(first), limit(second));
+    let (upper, lower) = match first.1 <= second.1 {
+        true => (first, second),
+        false => (second, first),
+    };
+    if upper.1 == lower.1 || y < upper.1 || y >= lower.1 {
+        return None;
+    }
+    let rise = i64::from(lower.1) - i64::from(upper.1);
+    let run = i64::from(lower.0) - i64::from(upper.0);
+    let below_top = 2 * i64::from(y) + 1 - 2 * i64::from(upper.1);
+    let numerator = i64::from(upper.0) * 2 * rise + below_top * run;
+    let denominator = 2 * rise;
+    Some(ceiling_division(
+        2 * numerator - denominator,
+        2 * denominator,
+    ))
+}
+
+fn ceiling_division(numerator: i64, positive_denominator: i64) -> i64 {
+    let quotient = numerator.div_euclid(positive_denominator);
+    match numerator.rem_euclid(positive_denominator) {
+        0 => quotient,
+        _ => quotient + 1,
+    }
+}
+
 fn divide(numerator: u128, divisor: u64) -> (u128, u64) {
     let mut quotient = 0u128;
     let mut remainder = 0u64;
@@ -254,6 +344,39 @@ mod tests {
         colour: 1,
         width: 1,
     });
+
+    #[test]
+    fn a_polygon_fills_the_pixels_whose_centres_are_inside_then_outlines_it() {
+        let square = [(2, 2), (6, 2), (6, 6), (2, 6)];
+        let rows = picture(|s| polygon(s, &square, None, Some(2)));
+        assert_eq!(rows[1], "............");
+        assert_eq!(rows[2], "..BBBB......");
+        assert_eq!(rows[5], "..BBBB......");
+        assert_eq!(rows[6], "............");
+        let rows = picture(|s| polygon(s, &square, PEN, Some(2)));
+        assert_eq!(rows[2], "..PPPPP.....");
+        assert_eq!(rows[3], "..PBBBP.....");
+        assert_eq!(rows[6], "..PPPPP.....");
+        let triangle = [(0, 0), (8, 0), (0, 8)];
+        let rows = picture(|s| polygon(s, &triangle, None, Some(2)));
+        assert_eq!(rows[0], "BBBBBBB.....");
+        assert_eq!(rows[3], "BBBB........");
+        assert_eq!(rows[6], "B...........");
+        assert_eq!(rows[7], "............");
+        assert_eq!(
+            picture(|s| polygon(s, &[(1, 1)], PEN, Some(2)))[1],
+            "............"
+        );
+    }
+
+    #[test]
+    fn a_polyline_leaves_out_its_last_point() {
+        let pen = PEN.unwrap();
+        let rows = picture(|s| polyline(s, &[(1, 1), (4, 1), (4, 3)], pen));
+        assert_eq!(rows[1], ".PPPP.......");
+        assert_eq!(rows[2], "....P.......");
+        assert_eq!(rows[3], "............");
+    }
 
     #[test]
     fn a_rectangle_leaves_out_its_right_and_bottom_edges() {

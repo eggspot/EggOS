@@ -21,6 +21,8 @@ pub struct Class {
     pub icon: usize,
     pub cursor: usize,
     pub background: usize,
+    /// Registered by `RegisterClassA`: its windows' procedures take ANSI text (D174).
+    pub ansi: bool,
 }
 
 /// How a program names a class: by its atom (`MAKEINTATOM`) or by name.

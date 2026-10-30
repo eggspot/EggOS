@@ -2,9 +2,10 @@
 //! compare ignoring ASCII case, with or without `.dll`, and the API sets
 //! (`api-ms-win-core-*`) resolve to kernel32's functions, where Windows forwards them too;
 //! shell32 has only `CommandLineToArgvW`; user32 and gdi32 have what GUI programs' windows,
-//! messages and painting need (D129), and comdlg32 the file picker (D145); the C runtime of
-//! MSVC's `/MD` programs is `vcruntime140` and the Universal C Runtime, `ucrtbase`, which
-//! programs import through the API sets `api-ms-win-crt-*` (D146).
+//! messages and painting need (D129), comdlg32 the file picker (D145) and comctl32
+//! `InitCommonControls` (D174); the C runtime of MSVC's `/MD` programs is `vcruntime140` and
+//! the Universal C Runtime, `ucrtbase`, which programs import through the API sets
+//! `api-ms-win-crt-*` (D146).
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -17,6 +18,7 @@ pub enum Library {
     User32,
     Gdi32,
     Comdlg32,
+    Comctl32,
     VcRuntime,
     Ucrt,
 }
@@ -49,6 +51,8 @@ pub fn library(name: &[u8]) -> Option<Library> {
         Some(Library::Gdi32)
     } else if is(b"comdlg32") {
         Some(Library::Comdlg32)
+    } else if is(b"comctl32") {
+        Some(Library::Comctl32)
     } else if is(b"vcruntime140") || is(b"vcruntime140_1") {
         Some(Library::VcRuntime)
     } else if is(b"ucrtbase") || starts_with_ignoring_case(name, b"api-ms-win-crt-") {

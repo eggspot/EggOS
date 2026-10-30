@@ -72,6 +72,7 @@ pub mod size {
     pub const ACT_ON_ELEMENT: usize = super::act_request::TEXT + super::ELEMENT_TEXT_CAPACITY;
     pub const READ_QUERY: usize = super::read_query_reply::TEXT + super::ELEMENT_TEXT_CAPACITY;
     pub const ANSWER_QUERY: usize = 24;
+    pub const GET_PLACEMENT: usize = 20;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -108,6 +109,7 @@ pub mod request {
     pub const ACT_ON_ELEMENT: u32 = encode(READ | WRITE, 25, size::ACT_ON_ELEMENT);
     pub const READ_QUERY: u32 = encode(READ | WRITE, 26, size::READ_QUERY);
     pub const ANSWER_QUERY: u32 = encode(WRITE, 27, size::ANSWER_QUERY);
+    pub const GET_PLACEMENT: u32 = encode(READ | WRITE, 28, size::GET_PLACEMENT);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -440,6 +442,9 @@ pub enum Request {
         buffer: u64,
         length: u64,
     },
+    GetPlacement {
+        window: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -495,6 +500,7 @@ impl Request {
             request::ACT_ON_ELEMENT => size::ACT_ON_ELEMENT,
             request::READ_QUERY => size::READ_QUERY,
             request::ANSWER_QUERY => size::ANSWER_QUERY,
+            request::GET_PLACEMENT => size::GET_PLACEMENT,
             _ => return None,
         })
     }
@@ -650,6 +656,7 @@ impl Request {
                 buffer: double_word(bytes, 8),
                 length: double_word(bytes, 16),
             },
+            request::GET_PLACEMENT => Self::GetPlacement { window: at(0) },
             _ => Self::GetWorkArea,
         })
     }
@@ -669,6 +676,14 @@ pub mod set_size_reply {
     pub const WIDTH: usize = 4;
     pub const HEIGHT: usize = 8;
     pub const OFFSET: usize = 16;
+}
+
+/// Where `GetPlacement` writes the window's outside rectangle on the screen (D174).
+pub mod placement_reply {
+    pub const X: usize = 4;
+    pub const Y: usize = 8;
+    pub const WIDTH: usize = 12;
+    pub const HEIGHT: usize = 16;
 }
 
 /// Where `CaptureWindow` writes the window's content width and height and how many rows it

@@ -3,12 +3,13 @@
 //! it once the records are handled. A top-level window is the root element, named by its
 //! text; its child windows follow in pre-order, each an element whose id is its `HWND`, with
 //! its control's role (a button, check box, radio button or group box by its style, an edit
-//! control as a text field, a static as a label, a list box as a list, any other window as a
-//! group), its text (an edit control's as the value), its rectangle in the content, and
-//! whether it is disabled, focused or the default button; below each window, the text the
-//! program drew in it with `TextOutW` and `DrawTextW` (`gui::drawn`). `invoke` clicks a button
-//! as `BM_CLICK` does, `focus` is `SetFocus` and `set-text` is `WM_SETTEXT` on an edit
-//! control, the last two for windows of the thread that reads the records.
+//! control as a text field, a static as a label, a list box or combo box as a list, any other
+//! window as a group), its text (an edit control's and a combo box's chosen item as the value),
+//! its rectangle in the content, and whether it is disabled, focused or the default button;
+//! below each window, the text the program drew in it with `TextOutW` and `DrawTextW`
+//! (`gui::drawn`). `invoke` clicks a button as `BM_CLICK` does, `focus` is `SetFocus` and
+//! `set-text` is `WM_SETTEXT` on an edit control, the last two for windows of the thread that
+//! reads the records.
 
 use super::gui::{self, Delivery, Gui, with};
 use super::window_device::Device;
@@ -114,7 +115,9 @@ fn role_of(window: &Window) -> (Role, u16) {
         },
         Procedure::Control(ControlKind::Edit, _) => (Role::TextField, flags::FOCUSABLE),
         Procedure::Control(ControlKind::Static, _) => (Role::Label, 0),
-        Procedure::Control(ControlKind::ListBox, _) => (Role::List, flags::FOCUSABLE),
+        Procedure::Control(ControlKind::ListBox | ControlKind::ComboBox, _) => {
+            (Role::List, flags::FOCUSABLE)
+        }
         _ => (Role::Group, 0),
     }
 }
@@ -146,10 +149,19 @@ fn push_children(
         if kid == focused && gui.active_root == root {
             state |= flags::FOCUSED;
         }
+        let is_combo = matches!(
+            window.procedure,
+            Procedure::Control(ControlKind::ComboBox, _)
+        );
+        let source = match is_combo {
+            true => super::combo_box::shown_text(gui, kid),
+            false => window_text::of(gui, kid),
+        };
         let mut text = [0u8; MAX_LABEL_BYTES];
-        let text = utf8(window_text::of(gui, kid), &mut text);
+        let text = utf8(source, &mut text);
         let (name, value): (&[u8], &[u8]) = match role {
             Role::TextField => (&[], text),
+            _ if is_combo => (&[], text),
             _ => (text, &[]),
         };
         let bounds = Bounds::new(

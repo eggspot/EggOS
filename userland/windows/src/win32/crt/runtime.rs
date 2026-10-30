@@ -514,7 +514,79 @@ extern "efiapi" fn dos_errno_location() -> *mut u32 {
     (thread_environment::current() + thread_environment::teb::DOS_ERRNO) as *mut u32
 }
 
+unsafe extern "efiapi" fn getenv(name: *const u8) -> *mut u8 {
+    if name.is_null() {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    }
+    // SAFETY: `getenv`'s contract: a NUL-terminated name.
+    let name = unsafe { CStr::from_ptr(name.cast()) }.to_bytes();
+    let list = narrow_environment();
+    if name.is_empty() || name.contains(&b'=') || list.is_null() {
+        return ptr::null_mut();
+    }
+    for index in 0.. {
+        // SAFETY: the environment list is NULL-terminated and lives for the program's life.
+        let entry = unsafe { list.add(index).read() };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: each entry is a NUL-terminated `NAME=value` string of the list.
+        let bytes = unsafe { CStr::from_ptr(entry.cast()) }.to_bytes();
+        let named = bytes.len() > name.len()
+            && bytes[name.len()] == b'='
+            && bytes[..name.len()].eq_ignore_ascii_case(name);
+        if named {
+            return entry.wrapping_add(name.len() + 1);
+        }
+    }
+    ptr::null_mut()
+}
+
+const ASSERTION_MESSAGE_BYTES: usize = 512;
+
+unsafe extern "efiapi" fn wassert(message: *const u16, file: *const u16, line: u32) {
+    let mut text = [0u8; ASSERTION_MESSAGE_BYTES];
+    let mut length = 0;
+    let mut push = |bytes: &[u8]| {
+        let room = text.len() - length;
+        let taken = bytes.len().min(room);
+        text[length..length + taken].copy_from_slice(&bytes[..taken]);
+        length += taken;
+    };
+    let push_wide = |units: *const u16, push: &mut dyn FnMut(&[u8])| {
+        if units.is_null() {
+            return;
+        }
+        // SAFETY: `_wassert`'s contract: NUL-terminated wide strings.
+        let units = unsafe { super::super::file::wide_string(units) };
+        let mut bytes = [0u8; ASSERTION_MESSAGE_BYTES];
+        let (written, _) = crate::text::write_utf8(units, &mut bytes);
+        push(&bytes[..written]);
+    };
+    push(b"Assertion failed: ");
+    push_wide(message, &mut push);
+    push(b", file ");
+    push_wide(file, &mut push);
+    push(b", line ");
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut rest = line;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    push(&digits[at..]);
+    end_abnormally(&text[..length], ABORT_STATUS)
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"getenv" => getenv,
+    b"_wassert" => wassert,
     b"_initterm" => initterm,
     b"_initterm_e" => initterm_e,
     b"_configure_narrow_argv" => configure_narrow_argv,

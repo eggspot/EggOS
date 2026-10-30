@@ -19,7 +19,7 @@ use super::window_device::{self, Buffer, Device};
 use super::{SpinLock, call_program, error, error_for, heap, thread_environment};
 use crate::gui::classes::ClassTable;
 use crate::gui::drawn::DrawnTexts;
-use crate::gui::input::{Event, InputState, RECORD_SIZE, Record};
+use crate::gui::input::{Event, InputState, KEY_STATES, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects::{self, ContextTable, ObjectTable};
 use crate::gui::queue::{Filter, Message, Queue};
@@ -34,6 +34,9 @@ const PENDING_CHARACTERS: usize = 8;
 const RECORDS_PER_READ: usize = 16;
 const NO_DESCRIPTOR: usize = usize::MAX;
 const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
+const CS_DBLCLKS: u32 = 0x8;
+const DOUBLE_CLICK_MS: u32 = 400;
+const DOUBLE_CLICK_DISTANCE: i32 = 4;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PendingCharacter {
@@ -53,8 +56,10 @@ pub struct Gui {
     pub timers: Timers,
     pub menus: usize,
     pub tracking: Option<super::menu::Tracking>,
+    pub combo: Option<super::combo_box::Tracking>,
     pub active_root: usize,
     pub drawn: DrawnTexts,
+    last_click: Option<(usize, u32, (i32, i32))>,
     input: InputState,
     characters: [PendingCharacter; PENDING_CHARACTERS],
     next_character: usize,
@@ -73,8 +78,10 @@ impl Gui {
             timers: Timers::new(),
             menus: 0,
             tracking: None,
+            combo: None,
             active_root: 0,
             drawn: DrawnTexts::new(),
+            last_click: None,
             input: InputState::default(),
             characters: [PendingCharacter::default(); PENDING_CHARACTERS],
             next_character: 0,
@@ -82,7 +89,9 @@ impl Gui {
         }
     }
 
-    /// The character `TranslateMessage` makes of key press `key`, once.
+    /// The character `TranslateMessage` makes of key press `key`, once: the one remembered for
+    /// that very message, else for the same window and virtual key (D174: programs pass
+    /// `TranslateMessage` a `MSG` of their own making, with a changed `lParam`).
     pub fn take_character(&mut self, key: &Message) -> Option<u32> {
         let same = |pending: &PendingCharacter| {
             let other = &pending.key;
@@ -95,8 +104,18 @@ impl Gui {
                     other.time,
                 ) == (key.window, key.message, key.wparam, key.lparam, key.time)
         };
-        let pending = self.characters.iter_mut().find(|pending| same(pending))?;
-        Some(core::mem::take(&mut pending.character))
+        let same_key = |pending: &PendingCharacter| {
+            let other = &pending.key;
+            pending.character != 0
+                && (other.window, other.message, other.wparam)
+                    == (key.window, key.message, key.wparam)
+        };
+        let index = self
+            .characters
+            .iter()
+            .position(same)
+            .or_else(|| self.characters.iter().position(same_key))?;
+        Some(core::mem::take(&mut self.characters[index].character))
     }
 
     fn remember_character(&mut self, key: Message, character: u32) {
@@ -127,6 +146,41 @@ impl Gui {
     /// Whether Shift is held, by the last input the server sent.
     pub fn shift_held(&self) -> bool {
         self.input.shift_held()
+    }
+
+    /// The keys and buttons held, by the last input the server sent, as `GetKeyboardState`
+    /// reports them (D174).
+    pub fn keyboard_state(&self) -> [u8; KEY_STATES] {
+        self.input.keyboard_state()
+    }
+
+    /// A left button press as `WM_LBUTTONDBLCLK` when it is the second within 400 ms and 4
+    /// pixels on the same window of a program's class with `CS_DBLCLKS` (D174, design section
+    /// 17); every other press is kept as it is and remembered as a first one.
+    pub fn double_click(&mut self, press: Message) -> Message {
+        let takes_double_clicks = self.windows.get(press.window).is_some_and(|window| {
+            window.class_style & CS_DBLCLKS != 0
+                && matches!(window.procedure, Procedure::Program(_))
+        });
+        let second = self.last_click.is_some_and(|(window, time, (x, y))| {
+            window == press.window
+                && press.time.wrapping_sub(time) <= DOUBLE_CLICK_MS
+                && (x - press.point.0).abs() <= DOUBLE_CLICK_DISTANCE
+                && (y - press.point.1).abs() <= DOUBLE_CLICK_DISTANCE
+        });
+        match takes_double_clicks && second {
+            true => {
+                self.last_click = None;
+                Message {
+                    message: message::LEFT_BUTTON_DOUBLE_CLICK,
+                    ..press
+                }
+            }
+            false => {
+                self.last_click = Some((press.window, press.time, press.point));
+                press
+            }
+        }
     }
 
     /// The window keys of `root`'s tree go to: its focused window while that is still in the
@@ -218,8 +272,20 @@ pub fn wake() {
 /// Calls the window procedure of `window` with a message and returns its result; 0 for a
 /// window that is gone or answered by the layer.
 pub fn send(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
-    let procedure = with(|gui| gui.windows.get(window).map(|window| window.procedure)).flatten();
+    let found = with(|gui| {
+        gui.windows
+            .get(window)
+            .map(|window| (window.procedure, window.ansi))
+    })
+    .flatten();
+    let (procedure, ansi) = match found {
+        Some((procedure, ansi)) => (Some(procedure), ansi),
+        None => (None, false),
+    };
     match procedure {
+        Some(Procedure::Program(address)) if address != 0 && ansi => {
+            super::ansi::call_procedure(address, window, number, wparam, lparam)
+        }
         Some(Procedure::Program(address)) if address != 0 => {
             // SAFETY: the address is the window procedure the program gave for this window,
             // which Windows calls with these four arguments.
@@ -353,11 +419,19 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             character,
         } => {
             let routed = with(|gui| {
+                let combo = super::combo_box::input(gui, handle, number, wparam, point, character);
+                if let Some(effect) = combo {
+                    return Routed::Combo(effect);
+                }
                 if let Some(effect) = super::menu::input(gui, handle, number, wparam, point) {
                     return Routed::Menu(effect);
                 }
                 match route_input(gui, handle, number, wparam, lparam, point, record.time) {
                     Some(message) => {
+                        let message = match message.message {
+                            message::LEFT_BUTTON_DOWN => gui.double_click(message),
+                            _ => message,
+                        };
                         gui.queue.post_input(message);
                         if let Some(character) = character {
                             gui.remember_character(message, character);
@@ -370,6 +444,9 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             match routed {
                 Some(Routed::Menu(effect)) => {
                     super::menu::finish_input(device, handle, thread, effect)
+                }
+                Some(Routed::Combo(effect)) => {
+                    super::combo_box::finish_input(device, handle, effect)
                 }
                 _ => None,
             }
@@ -397,6 +474,7 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
 
 enum Routed {
     Menu(super::menu::Effect),
+    Combo(super::combo_box::Effect),
     Queued,
     Dropped,
 }
@@ -458,7 +536,12 @@ fn route_input(
     Some(message(target, lparam, local))
 }
 
-fn resize(device: &Device, handle: usize, width: u32, height: u32) -> Option<(usize, usize)> {
+pub(super) fn resize(
+    device: &Device,
+    handle: usize,
+    width: u32,
+    height: u32,
+) -> Option<(usize, usize)> {
     let (server, size_kind) = with(|gui| {
         let window = gui.windows.get(handle)?;
         Some((window.server, window.size_kind))

@@ -81,6 +81,15 @@ impl Menu {
         &self.items[..self.count]
     }
 
+    /// Clears `clear` and sets `set` in item `index`'s flags (D174, `CheckMenuItem` and
+    /// `EnableMenuItem`); the flags it had, `None` when there is no such item.
+    pub fn change_flags(&mut self, index: usize, clear: u32, set: u32) -> Option<u32> {
+        let item = self.items[..self.count].get_mut(index)?;
+        let previous = item.flags;
+        item.flags = (previous & !clear) | set;
+        Some(previous)
+    }
+
     /// `AppendMenuW`; whether there was room.
     pub fn append(&mut self, flags: u32, id: usize, label: &[u16]) -> bool {
         if self.count == MAX_ITEMS {
@@ -107,6 +116,47 @@ pub const fn new_table() -> MenuTable {
     Slots::new(HANDLE_BASE)
 }
 
+/// The deepest drop-down a command id is searched in.
+pub const DEEPEST_SEARCH: usize = 4;
+
+/// The menu and position of the item `item` names in `menu` (D174): with `by_position`, the
+/// item at that position of `menu`; else the first item with that command id, searched in
+/// `menu` and then its drop-downs, depth first, at most [`DEEPEST_SEARCH`] deep.
+pub fn locate(
+    table: &MenuTable,
+    menu: usize,
+    item: usize,
+    by_position: bool,
+) -> Option<(usize, usize)> {
+    let entries = table.get(menu)?.items();
+    if by_position {
+        return (item < entries.len()).then_some((menu, item));
+    }
+    locate_command(table, menu, item, DEEPEST_SEARCH)
+}
+
+fn locate_command(
+    table: &MenuTable,
+    menu: usize,
+    id: usize,
+    depth: usize,
+) -> Option<(usize, usize)> {
+    let entries = table.get(menu)?.items();
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| entry.popup().is_none() && !entry.is_separator() && entry.id == id)
+    {
+        return Some((menu, index));
+    }
+    if depth == 0 {
+        return None;
+    }
+    entries
+        .iter()
+        .filter_map(MenuItem::popup)
+        .find_map(|popup| locate_command(table, popup, id, depth - 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +179,35 @@ mod tests {
         while entry.append(0, 1, &[0x41; 60]) {}
         assert_eq!(entry.count, MAX_ITEMS);
         assert_eq!(entry.items[MAX_ITEMS - 1].length, MAX_LABEL);
+    }
+
+    #[test]
+    fn items_are_found_by_position_or_by_command_in_drop_downs_and_their_flags_change() {
+        let mut table = new_table();
+        let bar = table.insert(Menu::new()).unwrap();
+        let game = table.insert(Menu::new()).unwrap();
+        let presets = table.insert(Menu::new()).unwrap();
+        table.get_mut(presets).unwrap().append(0, 300, &[0x41]);
+        let entry = table.get_mut(game).unwrap();
+        entry.append(0, 100, &[0x4e]);
+        entry.append(flag::SEPARATOR, 0, &[]);
+        entry.append(flag::POPUP, presets, &[0x50]);
+        table
+            .get_mut(bar)
+            .unwrap()
+            .append(flag::POPUP, game, &[0x47]);
+        assert_eq!(locate(&table, bar, 100, false), Some((game, 0)));
+        assert_eq!(locate(&table, bar, 300, false), Some((presets, 0)));
+        assert_eq!(locate(&table, bar, 0, true), Some((bar, 0)));
+        assert_eq!(locate(&table, bar, 1, true), None);
+        assert_eq!(locate(&table, bar, 999, false), None);
+        let entry = table.get_mut(game).unwrap();
+        assert_eq!(entry.change_flags(0, 0, flag::CHECKED), Some(0));
+        assert_eq!(
+            entry.change_flags(0, flag::CHECKED, flag::GRAYED),
+            Some(flag::CHECKED)
+        );
+        assert!(entry.items()[0].is_grayed());
+        assert_eq!(entry.change_flags(7, 0, 0), None);
     }
 }

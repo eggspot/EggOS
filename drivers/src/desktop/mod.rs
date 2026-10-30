@@ -986,6 +986,13 @@ impl Desktop {
         Ok(())
     }
 
+    /// `client`'s window `id`'s outside rectangle on the screen, its border and title bar
+    /// included (D174): where `GetPlacement` says it is.
+    pub fn placement(&self, client: u16, id: u32) -> Result<Rect, WindowError> {
+        let slot = self.owned(client, id)?;
+        Ok(self.window_at(slot).outside())
+    }
+
     /// Places `client`'s window `id` with its top-left corner at (`x`, `y`) of the work area,
     /// clamped so the whole window is inside it: at once if it is shown, else when it first is.
     pub fn set_position(

@@ -1071,7 +1071,165 @@ unsafe extern "efiapi" fn vsnwprintf_s(
     checked_result(&mut output, size, limit)
 }
 
+unsafe extern "efiapi" fn fdopen(fd: i32, mode: *const u8) -> *mut File {
+    // SAFETY: `_fdopen`'s contract: a NUL-terminated mode.
+    let Some(mode_letters) = (unsafe { narrow(mode) }) else {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    };
+    let Some(mut parsed) = Mode::parse(letters(mode_letters)) else {
+        set_errno(errno::EINVAL);
+        return ptr::null_mut();
+    };
+    let explicit = mode_letters
+        .iter()
+        .take_while(|letter| **letter != b',')
+        .any(|letter| *letter == b'b' || *letter == b't');
+    if !explicit && binary_by_default() {
+        parsed.text = false;
+    }
+    let Ok(fd) = usize::try_from(fd) else {
+        set_errno(errno::EBADF);
+        return ptr::null_mut();
+    };
+    let block = new_stream(Stream::new(
+        Descriptor { fd: Some(fd) },
+        parsed,
+        Buffering::Full,
+    ));
+    if block.is_null() {
+        set_errno(errno::ENOMEM);
+        return block;
+    }
+    let placed = STREAMS.with(|streams| {
+        let free = streams.open[STANDARD_STREAMS..]
+            .iter_mut()
+            .find(|slot| slot.is_null())?;
+        *free = block;
+        Some(())
+    });
+    if placed.is_none() {
+        // SAFETY: the block this call allocated, which nothing else holds.
+        unsafe { process_heap::free(block.cast()) };
+        set_errno(errno::EMFILE);
+        return ptr::null_mut();
+    }
+    block
+}
+
+extern "efiapi" fn open_os_handle(handle: isize, _flags: i32) -> i32 {
+    match fd_of(handle as usize) {
+        Some(fd) => fd as i32,
+        None => {
+            set_errno(errno::EBADF);
+            -1
+        }
+    }
+}
+
+const SECURE_SCANF: u64 = 0x1;
+
+fn write_integer(target: usize, value: u64, size: crate::scan::Size) {
+    use crate::scan::Size;
+    // SAFETY: the program's argument for the conversion points at an integer of its size.
+    unsafe {
+        match size {
+            Size::Byte => (target as *mut u8).write_unaligned(value as u8),
+            Size::Short => (target as *mut u16).write_unaligned(value as u16),
+            Size::Int => (target as *mut u32).write_unaligned(value as u32),
+            Size::Wide => (target as *mut u64).write_unaligned(value),
+        }
+    }
+}
+
+fn store_field(
+    field: crate::scan::Field<'_>,
+    take: &mut dyn FnMut() -> usize,
+    secure: bool,
+) -> bool {
+    use crate::scan::Field;
+    let target = take();
+    if target == 0 {
+        return false;
+    }
+    match field {
+        Field::Signed(value, size) => write_integer(target, value as u64, size),
+        Field::Unsigned(value, size) => write_integer(target, value, size),
+        Field::Count(count, size) => write_integer(target, count as u64, size),
+        // SAFETY: the argument for `%lf` and its family points at a `double`.
+        Field::Float(value, true) => unsafe { (target as *mut f64).write_unaligned(value) },
+        // SAFETY: the argument for `%f` and its family points at a `float`.
+        Field::Float(value, false) => unsafe { (target as *mut f32).write_unaligned(value as f32) },
+        Field::Characters(bytes) => {
+            if secure && (take() as u32 as usize) < bytes.len() {
+                return false;
+            }
+            // SAFETY: the argument for `%c` points at room for its characters.
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len()) };
+        }
+        Field::Text(bytes) => {
+            if secure {
+                let room = take() as u32 as usize;
+                if room <= bytes.len() {
+                    if room > 0 {
+                        // SAFETY: the buffer holds `room` bytes, at least one.
+                        unsafe { (target as *mut u8).write(0) };
+                    }
+                    return false;
+                }
+            }
+            // SAFETY: the argument for `%s` and `%[` points at room for the text and a NUL.
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len());
+                (target as *mut u8).add(bytes.len()).write(0);
+            }
+        }
+    }
+    true
+}
+
+unsafe extern "efiapi" fn stdio_common_vsscanf(
+    options: u64,
+    buffer: *const u8,
+    count: usize,
+    format: *const u8,
+    _locale: usize,
+    arguments: *const usize,
+) -> i32 {
+    if buffer.is_null() || format.is_null() {
+        set_errno(errno::EINVAL);
+        return -1;
+    }
+    let input = match count {
+        // SAFETY: `__stdio_common_vsscanf`'s contract: with no count, a NUL-terminated buffer.
+        usize::MAX => unsafe { core::ffi::CStr::from_ptr(buffer.cast()) }.to_bytes(),
+        count => {
+            // SAFETY: with a count, `count` readable bytes.
+            let bytes = unsafe { core::slice::from_raw_parts(buffer, count) };
+            let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(count);
+            &bytes[..end]
+        }
+    };
+    // SAFETY: and a NUL-terminated format.
+    let format = unsafe { core::ffi::CStr::from_ptr(format.cast()) }.to_bytes();
+    let secure = options & SECURE_SCANF != 0;
+    let mut next = 0usize;
+    let mut take = || {
+        // SAFETY: the `va_list` is a pointer to 8-byte slots, one per argument the format
+        // names; the scan reads only as many as its conversions take.
+        let value = unsafe { arguments.add(next).read_unaligned() };
+        next += 1;
+        value
+    };
+    crate::scan::scan(input, format, &mut |field| {
+        store_field(field, &mut take, secure)
+    })
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"_fdopen" => fdopen,
+    b"_open_osfhandle" => open_os_handle,
+    b"__stdio_common_vsscanf" => stdio_common_vsscanf,
     b"__acrt_iob_func" => standard_stream_at,
     b"fopen" => fopen,
     b"_wfopen" => wfopen,

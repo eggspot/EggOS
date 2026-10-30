@@ -120,7 +120,7 @@ fn new_state(controller: Controller, cells: &[Cell], owner: usize) -> *mut Messa
     state
 }
 
-unsafe extern "efiapi" fn message_box_w(
+pub(super) unsafe extern "efiapi" fn message_box_w(
     owner: usize,
     message_text: *const u16,
     caption: *const u16,

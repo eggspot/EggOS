@@ -33,6 +33,7 @@ pub enum ControlKind {
     Edit,
     Static,
     ListBox,
+    ComboBox,
 }
 
 /// Who answers a window's messages: the program's window procedure, the layer's message box
@@ -93,6 +94,8 @@ pub struct Window {
     pub erase: bool,
     pub destroying: bool,
     pub thread: u32,
+    pub ansi: bool,
+    pub font: usize,
 }
 
 /// Where a window draws: its top-level window, the point of that window's buffer its client
@@ -154,6 +157,8 @@ impl Window {
             erase: false,
             destroying: false,
             thread: 0,
+            ansi: false,
+            font: 0,
         }
     }
 

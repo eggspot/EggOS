@@ -6,7 +6,7 @@
 //! `controls.rs`, menus in `menu.rs`.
 
 use super::gui::{self, device, send, try_with, with};
-use super::window_device::{Buffer, FIXED_SIZE, ROLE_NORMAL};
+use super::window_device::{Buffer, FIXED_SIZE, ROLE_DIALOG, ROLE_NORMAL};
 use super::{
     Bool, FALSE, TRUE, call_program, controls, error, error_for, fail, paint, thread_environment,
     window_text,
@@ -22,13 +22,14 @@ use crate::text;
 use eggos_windows_gui::surface::Rect;
 
 const CW_USE_DEFAULT: i32 = i32::MIN;
+const WS_POPUP: u32 = 0x8000_0000;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_DISABLED: u32 = 0x0800_0000;
 const WS_MAXIMIZE: u32 = 0x0100_0000;
 const WS_THICK_FRAME: u32 = 0x0004_0000;
-const FRAME: i32 = 1;
-const CAPTION: i32 = 28;
+pub(super) const FRAME: i32 = 1;
+pub(super) const CAPTION: i32 = 28;
 const DEFAULT_SHARE: (i32, i32) = (3, 4);
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
@@ -73,7 +74,7 @@ struct WindowClass {
 }
 
 #[repr(C)]
-struct CreateStruct {
+pub(super) struct CreateStruct {
     create_parameters: usize,
     instance: usize,
     menu: usize,
@@ -83,8 +84,8 @@ struct CreateStruct {
     y: i32,
     x: i32,
     style: u32,
-    name: *const u16,
-    class_name: *const u16,
+    pub(super) name: *const u16,
+    pub(super) class_name: *const u16,
     ex_style: u32,
 }
 
@@ -132,7 +133,7 @@ fn class_error(error: ClassError) -> u32 {
     }
 }
 
-unsafe fn register(name: *const u16, class: Class) -> u16 {
+pub(super) unsafe fn register(name: *const u16, class: Class) -> u16 {
     if (name as usize) < ATOM_LIMIT || class.window_extra as usize > MAX_EXTRA {
         return fail(error::INVALID_PARAMETER, 0);
     }
@@ -159,6 +160,7 @@ unsafe extern "efiapi" fn register_class_ex_w(class: *const WindowClassEx) -> u1
         icon: class.icon,
         cursor: class.cursor,
         background: class.background,
+        ansi: false,
     };
     // SAFETY: the class's name is the caller's NUL-terminated string.
     unsafe { register(class.class_name, registered) }
@@ -176,6 +178,7 @@ unsafe extern "efiapi" fn register_class_w(class: *const WindowClass) -> u16 {
         icon: class.icon,
         cursor: class.cursor,
         background: class.background,
+        ansi: false,
     };
     // SAFETY: the class's name is the caller's NUL-terminated string.
     unsafe { register(class.class_name, registered) }
@@ -212,7 +215,7 @@ fn title(name: *const u16, out: &mut [u8; TITLE_BYTES]) -> &str {
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "efiapi" fn create_window_ex_w(
+pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     ex_style: u32,
     class: *const u16,
     window_name: *const u16,
@@ -314,14 +317,18 @@ unsafe extern "efiapi" fn create_window_ex_w(
         ),
         _ => (width, height),
     };
-    let flags = if style & WS_THICK_FRAME == 0 {
-        FIXED_SIZE
-    } else {
-        0
+    let owner = match style & WS_POPUP {
+        0 => None,
+        _ => owner_server(parent),
+    };
+    let (role, owner, flags) = match owner {
+        Some(server) => (ROLE_DIALOG, server, FIXED_SIZE),
+        None if style & WS_THICK_FRAME == 0 => (ROLE_NORMAL, 0, FIXED_SIZE),
+        None => (ROLE_NORMAL, 0, 0),
     };
     let buffer = match device.create(
-        ROLE_NORMAL,
-        0,
+        role,
+        owner,
         outside_width.saturating_sub(2 * FRAME).max(1) as u32,
         outside_height.saturating_sub(CAPTION + 2 * FRAME).max(1) as u32,
         flags,
@@ -350,6 +357,7 @@ unsafe extern "efiapi" fn create_window_ex_w(
         buffer.height,
     );
     window.class_atom = atom;
+    window.ansi = class_of.ansi;
     window.style = style;
     window.ex_style = ex_style;
     window.instance = instance;
@@ -401,12 +409,27 @@ unsafe extern "efiapi" fn create_window_ex_w(
     handle
 }
 
+fn owner_server(owner: usize) -> Option<u32> {
+    with(|gui| {
+        let root = windows::root_of(&gui.windows, owner)?;
+        let window = gui.windows.get(root)?;
+        window.shown.then_some(window.server)
+    })
+    .flatten()
+}
+
 /// Takes `handle` out of the program's windows, with what it holds (its timers, its text, a
 /// control's state, a top-level window's menu), and has the server destroy a top-level one;
 /// a child's area in its parent is left to repaint.
 pub fn remove_window(handle: usize) {
     let removed = with(|gui| {
         gui.queue.forget(handle);
+        if gui
+            .combo
+            .is_some_and(|tracking| tracking.combo == handle || tracking.root == handle)
+        {
+            gui.combo = None;
+        }
         gui.contexts.retain(|context| context.window != handle);
         gui.timers.kill_window(handle);
         gui.drawn.forget_window(handle);
@@ -545,6 +568,7 @@ fn create_program_child(
         request.bounds,
     );
     window.class_atom = atom;
+    window.ansi = class_of.ansi;
     window.style = request.style;
     window.ex_style = request.ex_style;
     window.instance = request.instance;
@@ -567,7 +591,13 @@ pub fn create_child(
     id: usize,
     text: &[u16],
 ) -> Option<usize> {
-    let state = controls::new_state(kind, style)?;
+    let (state, bounds) = match kind {
+        ControlKind::ComboBox => (
+            super::combo_box::new_state(bounds.height())?,
+            eggos_windows_gui::controls::combo_box::closed_box(bounds),
+        ),
+        _ => (controls::new_state(kind, style)?, bounds),
+    };
     let mut window = Window::child(Procedure::Control(kind, state), parent, bounds);
     window.style = style;
     window.id = id;
@@ -617,7 +647,7 @@ extern "efiapi" fn is_window(handle: usize) -> Bool {
     }
 }
 
-extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
+pub(super) extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
     let state = match command {
         2 | 6 | 7 | 11 => Some(1),
         SW_SHOW_MAXIMIZED => Some(2),
@@ -1026,7 +1056,9 @@ extern "efiapi" fn get_system_metrics(index: i32) -> i32 {
     match index {
         0 | 78 => work.right,
         1 | 79 => work.bottom,
+        2 | 3 | 9 | 10 | 20 | 21 => eggos_windows_gui::controls::scroll_bar::WIDTH,
         4 => CAPTION,
+        15 => eggos_windows_gui::menu::BAR_HEIGHT,
         5..=8 | 32 | 33 => FRAME,
         11..=14 => ICON_SIZE,
         16 | 61 => work.width(),
@@ -1077,4 +1109,14 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetSystemMetrics" => get_system_metrics,
     b"LoadCursorW" => load_cursor_w,
     b"LoadIconW" => load_icon_w,
+    b"GetMessageA" => get_message_w,
+    b"PeekMessageA" => peek_message_w,
+    b"DispatchMessageA" => dispatch_message_w,
+    b"PostMessageA" => post_message_w,
+    b"GetWindowLongPtrA" => get_window_long_ptr_w,
+    b"SetWindowLongPtrA" => set_window_long_ptr_w,
+    b"GetWindowLongA" => get_window_long_w,
+    b"SetWindowLongA" => set_window_long_w,
+    b"LoadCursorA" => load_cursor_w,
+    b"LoadIconA" => load_icon_w,
 ];

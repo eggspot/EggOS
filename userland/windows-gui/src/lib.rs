@@ -3,10 +3,12 @@
 //! the Windows GUI test: GDI's shapes and text with Win32's rules for which pixels each one
 //! covers, the Win32 system colours, the message box, the controls, the menu bar and the file
 //! picker laid out, painted and driven as `docs/ux/windows-gui-v0.3.md` and
-//! `docs/ux/windows-controls-v0.3.md` say.
+//! `docs/ux/windows-controls-v0.3.md` say; `BitBlt`'s raster operations and the combo box
+//! (D174).
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod blit;
 pub mod colour;
 pub mod controls;
 pub mod file_picker;

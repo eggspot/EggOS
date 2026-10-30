@@ -9,7 +9,6 @@ use crate::gui::message;
 use crate::gui::windows::{self, ControlKind, Procedure};
 use crate::library::Export;
 use eggos_windows_gui::controls::button::{ButtonKind, style as button_style};
-use eggos_windows_gui::surface::Rect;
 
 const VK_TAB: usize = 0x09;
 const VK_RETURN: usize = 0x0d;
@@ -296,34 +295,13 @@ extern "efiapi" fn move_window(
     height: i32,
     _repaint: Bool,
 ) -> Bool {
-    let moved = try_with(|gui| {
-        let entry = gui.window_mut(window)?;
-        if !entry.is_child() {
-            return Err(error::NOT_SUPPORTED);
-        }
-        let old = entry.bounds;
-        let bounds = Rect::sized(x, y, width.max(0), height.max(0));
-        entry.bounds = bounds;
-        entry.width = bounds.width() as u32;
-        entry.height = bounds.height() as u32;
-        let parent = entry.parent;
-        let resized = old.width() != bounds.width() || old.height() != bounds.height();
-        windows::invalidate_tree(&mut gui.windows, parent, Some(old.union(&bounds)), true);
-        Ok(resized.then_some(message::point_parameter(bounds.width(), bounds.height())))
-    });
-    match moved {
-        Ok(resized) => {
-            if let Some(size) = resized {
-                gui::send(window, message::SIZE, message::SIZE_RESTORED, size);
-            }
-            gui::wake();
-            TRUE
-        }
+    match super::placement::place(window, Some((x, y)), Some((width, height))) {
+        Ok(()) => TRUE,
         Err(code) => fail(code, FALSE),
     }
 }
 
-fn default_button(dialog: usize) -> Option<(usize, usize)> {
+pub(super) fn default_button(dialog: usize) -> Option<(usize, usize)> {
     with(|gui| {
         let root = windows::root_of(&gui.windows, dialog)?;
         let focus = gui.key_target(root);
@@ -389,7 +367,29 @@ unsafe extern "efiapi" fn is_dialog_message_w(dialog: usize, message: *const Msg
     Bool::from(dialog_message(dialog, &message))
 }
 
+const BM_GETCHECK: u32 = 0x00f0;
+const BM_SETCHECK: u32 = 0x00f1;
+
+extern "efiapi" fn check_dlg_button(dialog: usize, id: i32, check: u32) -> Bool {
+    match dialog_item(dialog, id) {
+        Some(item) => {
+            gui::send(item, BM_SETCHECK, check as usize, 0);
+            TRUE
+        }
+        None => fail(error::CONTROL_ID_NOT_FOUND, FALSE),
+    }
+}
+
+extern "efiapi" fn is_dlg_button_checked(dialog: usize, id: i32) -> u32 {
+    match dialog_item(dialog, id) {
+        Some(item) => gui::send(item, BM_GETCHECK, 0, 0) as u32,
+        None => fail(error::CONTROL_ID_NOT_FOUND, 0),
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"CheckDlgButton" => check_dlg_button,
+    b"IsDlgButtonChecked" => is_dlg_button_checked,
     b"SetFocus" => set_focus_export,
     b"GetFocus" => get_focus,
     b"SetCapture" => set_capture_export,

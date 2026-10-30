@@ -20,6 +20,7 @@ const SET_POINTER: usize = 0x4008_7707;
 const COMMIT: usize = 0x4088_7708;
 const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
+const GET_PLACEMENT: usize = 0xc014_771c;
 const TITLE_CAPACITY: usize = 64;
 const TRY_AGAIN: u16 = 11;
 const PIXEL_BYTES: usize = 4;
@@ -167,6 +168,19 @@ impl Device {
         put(&mut position, 4, x as u32);
         put(&mut position, 8, y as u32);
         self.request(SET_POSITION, &mut position)
+    }
+
+    /// `window`'s outside rectangle on the screen, its border and title bar included (D174).
+    pub fn placement(&self, window: u32) -> Result<Rect, Errno> {
+        let mut placement = [0u8; 20];
+        put(&mut placement, 0, window);
+        self.request(GET_PLACEMENT, &mut placement)?;
+        Ok(Rect::sized(
+            word(&placement, 4) as i32,
+            word(&placement, 8) as i32,
+            word(&placement, 12) as i32,
+            word(&placement, 16) as i32,
+        ))
     }
 
     /// Restores (0), minimises (1) or maximises (2) `window`.

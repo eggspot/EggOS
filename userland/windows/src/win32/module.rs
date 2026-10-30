@@ -15,6 +15,7 @@ static GDI32_MODULE: u64 = 5;
 static COMDLG32_MODULE: u64 = 6;
 static VCRUNTIME_MODULE: u64 = 7;
 static UCRT_MODULE: u64 = 8;
+static COMCTL32_MODULE: u64 = 9;
 
 fn module_handle(library: Library) -> usize {
     match library {
@@ -24,6 +25,7 @@ fn module_handle(library: Library) -> usize {
         Library::User32 => &raw const USER32_MODULE as usize,
         Library::Gdi32 => &raw const GDI32_MODULE as usize,
         Library::Comdlg32 => &raw const COMDLG32_MODULE as usize,
+        Library::Comctl32 => &raw const COMCTL32_MODULE as usize,
         Library::VcRuntime => &raw const VCRUNTIME_MODULE as usize,
         Library::Ucrt => &raw const UCRT_MODULE as usize,
     }
@@ -37,6 +39,7 @@ fn library_of(module: usize) -> Option<Library> {
         Library::User32,
         Library::Gdi32,
         Library::Comdlg32,
+        Library::Comctl32,
         Library::VcRuntime,
         Library::Ucrt,
     ]
@@ -132,6 +135,7 @@ unsafe extern "efiapi" fn get_proc_address(module: usize, name: *const u8) -> us
         Library::User32 => b"user32",
         Library::Gdi32 => b"gdi32",
         Library::Comdlg32 => b"comdlg32",
+        Library::Comctl32 => b"comctl32",
         Library::VcRuntime => b"vcruntime140",
         Library::Ucrt => b"ucrtbase",
     };
@@ -167,7 +171,30 @@ unsafe extern "efiapi" fn get_module_file_name_w(
     }
 }
 
+unsafe extern "efiapi" fn get_module_file_name_a(module: usize, buffer: *mut u8, size: u32) -> u32 {
+    if module != 0 && module != process().image_base as usize {
+        return fail(error::MOD_NOT_FOUND, 0);
+    }
+    if size == 0 {
+        return fail(error::INSUFFICIENT_BUFFER, 0);
+    }
+    // SAFETY: `GetModuleFileNameA`'s contract: `buffer` holds `size` writable bytes.
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer, size as usize) };
+    let program = process().program_windows;
+    let room = out.len() - 1;
+    let (written, consumed) = crate::text::write_utf8(program, &mut out[..room]);
+    out[written] = 0;
+    match consumed < program.len() {
+        true => fail(error::INSUFFICIENT_BUFFER, size),
+        false => {
+            super::thread_environment::set_last_error(error::SUCCESS);
+            written as u32
+        }
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"GetModuleFileNameA" => get_module_file_name_a,
     b"GetModuleHandleW" => get_module_handle_w,
     b"GetModuleHandleA" => get_module_handle_a,
     b"LoadLibraryW" => load_library_w,

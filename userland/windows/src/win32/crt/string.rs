@@ -271,6 +271,59 @@ unsafe extern "efiapi" fn strrchr(text: *const u8, value: i32) -> *mut u8 {
     unsafe { find_last(text, value as u8) }
 }
 
+unsafe fn span_length(text: *const u8, set: *const u8, inside: bool) -> usize {
+    // SAFETY: the caller's duty: two NUL-terminated strings.
+    let (text, set) = unsafe {
+        (
+            core::ffi::CStr::from_ptr(text.cast()).to_bytes(),
+            core::ffi::CStr::from_ptr(set.cast()).to_bytes(),
+        )
+    };
+    text.iter()
+        .take_while(|byte| set.contains(byte) == inside)
+        .count()
+}
+
+unsafe extern "efiapi" fn strspn(text: *const u8, accepted: *const u8) -> usize {
+    // SAFETY: `strspn`'s contract: NUL-terminated strings.
+    unsafe { span_length(text, accepted, true) }
+}
+
+unsafe extern "efiapi" fn strcspn(text: *const u8, rejected: *const u8) -> usize {
+    // SAFETY: `strcspn`'s contract: NUL-terminated strings.
+    unsafe { span_length(text, rejected, false) }
+}
+
+unsafe extern "efiapi" fn atof(text: *const u8) -> f64 {
+    if text.is_null() {
+        return 0.0;
+    }
+    // SAFETY: `atof`'s contract: a NUL-terminated string.
+    let bytes = unsafe { core::ffi::CStr::from_ptr(text.cast()) }.to_bytes();
+    crate::float::parse_float(bytes).0
+}
+
+unsafe extern "efiapi" fn strtod(text: *const u8, end: *mut *mut u8) -> f64 {
+    if text.is_null() {
+        return 0.0;
+    }
+    // SAFETY: `strtod`'s contract: a NUL-terminated string.
+    let bytes = unsafe { core::ffi::CStr::from_ptr(text.cast()) }.to_bytes();
+    let (value, consumed) = crate::float::parse_float(bytes);
+    if value.is_infinite() && !bytes.iter().any(u8::is_ascii_alphabetic) {
+        set_errno(errno::ERANGE);
+    }
+    if !end.is_null() {
+        // SAFETY: `strtod`'s contract: `end` is null or a writable pointer.
+        unsafe { end.write(text.wrapping_add(consumed).cast_mut()) };
+    }
+    value
+}
+
+extern "efiapi" fn sqrtf(value: f32) -> f32 {
+    crate::float::square_root(value)
+}
+
 unsafe extern "efiapi" fn strstr(haystack: *const u8, needle: *const u8) -> *mut u8 {
     // SAFETY: `strstr`'s contract: NUL-terminated strings.
     unsafe { find_text(haystack, needle) }
@@ -550,6 +603,11 @@ pub(super) const VCRUNTIME_EXPORTS: &[Export] = exports![
 ];
 
 pub(super) const EXPORTS: &[Export] = exports![
+    b"strspn" => strspn,
+    b"strcspn" => strcspn,
+    b"atof" => atof,
+    b"strtod" => strtod,
+    b"sqrtf" => sqrtf,
     b"strcmp" => strcmp,
     b"strncmp" => strncmp,
     b"_stricmp" => stricmp,

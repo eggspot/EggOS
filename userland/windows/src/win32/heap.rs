@@ -176,12 +176,8 @@ pub unsafe fn free(pointer: *mut u8) {
 }
 
 const LMEM_ZEROINIT: u32 = 0x40;
-const LMEM_MOVEABLE: u32 = 0x2;
 
 extern "efiapi" fn local_alloc(flags: u32, size: usize) -> *mut u8 {
-    if flags & LMEM_MOVEABLE != 0 {
-        return fail(error::NOT_SUPPORTED, ptr::null_mut());
-    }
     let block = allocate_with(size, flags & LMEM_ZEROINIT != 0);
     if block.is_null() {
         return fail(error::NOT_ENOUGH_MEMORY, block);
@@ -200,6 +196,34 @@ unsafe extern "efiapi" fn local_free(pointer: *mut u8) -> *mut u8 {
             ptr::null_mut()
         }
         None => fail(error::INVALID_HANDLE, pointer),
+    }
+}
+
+unsafe extern "efiapi" fn global_lock(memory: *mut u8) -> *mut u8 {
+    // SAFETY: `GlobalLock`'s contract: a block `GlobalAlloc` returned, moveable ones included,
+    // whose handle is the block itself.
+    match unsafe { block_of(memory) } {
+        Some(_) => memory,
+        None => fail(error::INVALID_HANDLE, ptr::null_mut()),
+    }
+}
+
+unsafe extern "efiapi" fn global_unlock(memory: *mut u8) -> Bool {
+    // SAFETY: as `GlobalLock`.
+    match unsafe { block_of(memory) } {
+        Some(_) => {
+            super::thread_environment::set_last_error(error::SUCCESS);
+            FALSE
+        }
+        None => fail(error::INVALID_HANDLE, FALSE),
+    }
+}
+
+unsafe extern "efiapi" fn global_size(memory: *mut u8) -> usize {
+    // SAFETY: as `GlobalLock`.
+    match unsafe { block_of(memory) } {
+        Some(block) => block.size,
+        None => fail(error::INVALID_HANDLE, 0),
     }
 }
 
@@ -298,4 +322,10 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"LocalFree" => local_free,
     b"GlobalAlloc" => local_alloc,
     b"GlobalFree" => local_free,
+    b"GlobalLock" => global_lock,
+    b"LocalLock" => global_lock,
+    b"GlobalUnlock" => global_unlock,
+    b"LocalUnlock" => global_unlock,
+    b"GlobalSize" => global_size,
+    b"LocalSize" => global_size,
 ];

@@ -18,6 +18,11 @@ const SYSTEM_BRUSH_BASE: usize = 0x0190_0000;
 const CURSOR_BASE: usize = 0x0170_0000;
 const ICON_BASE: usize = 0x0160_0000;
 const RESOURCE_IDS: usize = 0x1_0000;
+/// The default bitmap's handle, what the first `SelectObject` of a bitmap into a memory device
+/// context gives back.
+pub const DEFAULT_BITMAP: usize = STOCK_BASE + 0x40;
+/// A memory device context's clip before the program narrows it: no limit but its bitmap.
+pub const UNLIMITED: Rect = Rect::new(-(1 << 30), -(1 << 30), 1 << 30, 1 << 30);
 
 /// `LoadCursorW`'s system cursor ids this layer maps to the server's pointer shapes.
 pub mod cursor {
@@ -79,13 +84,38 @@ pub mod stock {
     pub const DC_PEN: u32 = 19;
 }
 
-/// A drawing object: a brush (`None` paints nothing), a pen (`None` draws nothing) or a font
-/// (every font is Egg Mono in part 1).
+/// A bitmap's pixels (`0x00RRGGBB`, rows of `width`): a heap block of the layer's, or none for
+/// the default bitmap a memory device context starts with (D174).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bitmap {
+    pub address: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Bitmap {
+    /// The 1 by 1 bitmap a memory device context starts with, which draws nowhere.
+    pub const EMPTY: Bitmap = Bitmap {
+        address: 0,
+        width: 1,
+        height: 1,
+    };
+
+    /// Its rectangle, from (0, 0).
+    pub fn bounds(&self) -> Rect {
+        Rect::new(0, 0, self.width as i32, self.height as i32)
+    }
+}
+
+/// A drawing object: a brush (`None` paints nothing), a pen (`None` draws nothing), a font
+/// (every font is Egg Mono), a bitmap or a rectangular region (D174).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Object {
     Brush(Option<u32>),
     Pen(Option<Pen>),
     Font,
+    Bitmap(Bitmap),
+    Region(Rect),
 }
 
 fn stock_object(index: u32) -> Option<Object> {
@@ -127,6 +157,9 @@ pub const fn new_objects() -> ObjectTable {
 
 /// The object `handle` names: a stock object, a system-colour brush or one of `table`'s.
 pub fn object(table: &ObjectTable, handle: usize) -> Option<Object> {
+    if handle == DEFAULT_BITMAP {
+        return Some(Object::Bitmap(Bitmap::EMPTY));
+    }
     if let Some(index) = handle.checked_sub(STOCK_BASE).filter(|index| *index < 32) {
         return stock_object(index as u32);
     }
@@ -141,7 +174,8 @@ pub fn object(table: &ObjectTable, handle: usize) -> Option<Object> {
 
 /// Whether `handle` is a stock object or a system-colour brush, which deleting leaves alone.
 pub fn is_permanent(handle: usize) -> bool {
-    (STOCK_BASE..STOCK_BASE + 32).contains(&handle)
+    handle == DEFAULT_BITMAP
+        || (STOCK_BASE..STOCK_BASE + 32).contains(&handle)
         || (SYSTEM_BRUSH_BASE..SYSTEM_BRUSH_BASE + 32).contains(&handle)
 }
 
@@ -161,12 +195,20 @@ pub fn brush_colour(table: &ObjectTable, handle: usize) -> Option<u32> {
 pub const TRANSPARENT: u32 = 1;
 pub const OPAQUE: u32 = 2;
 
-/// A device context: the window it draws on (0 for one that draws nowhere), where it may draw,
-/// what it drew, and its selected objects and text state.
+/// What `SelectObject` gives back for a region: the clip is one rectangle.
+pub const SIMPLE_REGION: usize = 2;
+
+/// A device context: the window it draws on (0 for one that draws nowhere) or, for a memory
+/// context, the bitmap selected into it (D174), where it may draw (`clip`, inside
+/// `base_clip`, which `SelectClipRgn(NULL)` returns to), what it drew, and its selected objects
+/// and text state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceContext {
     pub window: usize,
     pub painting: bool,
+    pub memory: bool,
+    pub bitmap: usize,
+    pub base_clip: Rect,
     pub clip: Rect,
     pub drawn: Rect,
     pub pen: usize,
@@ -186,6 +228,9 @@ impl DeviceContext {
         DeviceContext {
             window,
             painting,
+            memory: false,
+            bitmap: 0,
+            base_clip: clip,
             clip,
             drawn: Rect::default(),
             pen: stock(stock::BLACK_PEN),
@@ -198,14 +243,40 @@ impl DeviceContext {
         }
     }
 
-    /// Selects `handle`, which is `object`, and returns the handle it replaces.
+    /// `CreateCompatibleDC`'s context: Windows' defaults, drawing on its bitmap, at first the
+    /// default one.
+    pub fn memory() -> Self {
+        DeviceContext {
+            memory: true,
+            bitmap: DEFAULT_BITMAP,
+            ..DeviceContext::new(0, false, UNLIMITED)
+        }
+    }
+
+    /// Selects `handle`, which is `object`, and returns the handle it replaces; a region
+    /// becomes the clip (inside the base clip) and gives [`SIMPLE_REGION`]; a bitmap goes only
+    /// into a memory context (0 otherwise).
     pub fn select(&mut self, handle: usize, object: Object) -> usize {
         let slot = match object {
             Object::Brush(_) => &mut self.brush,
             Object::Pen(_) => &mut self.pen,
             Object::Font => &mut self.font,
+            Object::Bitmap(_) if self.memory => &mut self.bitmap,
+            Object::Bitmap(_) => return 0,
+            Object::Region(rect) => {
+                self.clip = self.base_clip.intersection(&rect.normalised());
+                return SIMPLE_REGION;
+            }
         };
         core::mem::replace(slot, handle)
+    }
+
+    /// The bitmap a memory context draws on.
+    pub fn selected_bitmap(&self, table: &ObjectTable) -> Option<Bitmap> {
+        match object(table, self.bitmap)? {
+            Object::Bitmap(bitmap) if self.memory => Some(bitmap),
+            _ => None,
+        }
     }
 
     /// The pen it draws with.
@@ -311,5 +382,32 @@ mod tests {
         context.background_colour = 0x0000_00ff;
         context.background_mode = OPAQUE;
         assert_eq!(context.text_background(), Some(0x00ff_0000));
+    }
+
+    #[test]
+    fn a_memory_context_draws_on_its_selected_bitmap_and_a_region_clips() {
+        let mut table = new_objects();
+        let bitmap = Bitmap {
+            address: 0x5000,
+            width: 33,
+            height: 33,
+        };
+        let handle = table.insert(Object::Bitmap(bitmap)).unwrap();
+        let mut memory = DeviceContext::memory();
+        assert_eq!(memory.selected_bitmap(&table), Some(Bitmap::EMPTY));
+        assert_eq!(
+            memory.select(handle, Object::Bitmap(bitmap)),
+            DEFAULT_BITMAP
+        );
+        assert_eq!(memory.selected_bitmap(&table), Some(bitmap));
+        assert_eq!(bitmap.bounds(), Rect::new(0, 0, 33, 33));
+        assert!(is_permanent(DEFAULT_BITMAP));
+        let mut window = DeviceContext::new(0x1_0010, false, Rect::new(0, 0, 100, 100));
+        assert_eq!(window.select(handle, Object::Bitmap(bitmap)), 0);
+        assert_eq!(window.selected_bitmap(&table), None);
+        let region = Object::Region(Rect::new(50, 50, 150, 150));
+        assert_eq!(window.select(0, region), SIMPLE_REGION);
+        assert_eq!(window.clip, Rect::new(50, 50, 100, 100));
+        assert_eq!(window.base_clip, Rect::new(0, 0, 100, 100));
     }
 }

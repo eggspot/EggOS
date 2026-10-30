@@ -147,7 +147,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     image::relocate(&pe, image, base as u64).map_err(Failure::Invalid)?;
     image::bind_imports(&pe, image, |library, import| match import {
         image::Import::Name(function) => win32::resolve(library, function),
-        image::Import::Ordinal(_) => None,
+        image::Import::Ordinal(ordinal) => win32::resolve_ordinal(library, ordinal),
     })
     .map_err(Failure::Unresolved)?;
     let tls = image::thread_local_storage(&pe, image, base as u64).map_err(Failure::Invalid)?;

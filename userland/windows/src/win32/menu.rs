@@ -366,7 +366,7 @@ extern "efiapi" fn create_popup_menu() -> usize {
     create()
 }
 
-unsafe extern "efiapi" fn append_menu_w(
+pub(super) unsafe extern "efiapi" fn append_menu_w(
     menu: usize,
     flags: u32,
     id: usize,
@@ -509,7 +509,91 @@ extern "efiapi" fn get_menu_item_id(menu: usize, position: i32) -> u32 {
     .unwrap_or(NO_ID)
 }
 
+const MF_BYPOSITION: u32 = 0x400;
+const NO_SUCH_ITEM: u32 = u32::MAX;
+const STATE_FLAGS: u32 = flag::GRAYED | flag::DISABLED | flag::CHECKED | flag::POPUP;
+
+fn change_item(menu: usize, item: u32, flags: u32, clear: u32, set: u32) -> u32 {
+    with(|gui| {
+        let table = table_mut(gui)?;
+        let by_position = flags & MF_BYPOSITION != 0;
+        let (owner, index) = menus::locate(table, menu, item as usize, by_position)?;
+        table.get_mut(owner)?.change_flags(index, clear, set)
+    })
+    .flatten()
+    .map_or(NO_SUCH_ITEM, |previous| previous & clear)
+}
+
+extern "efiapi" fn check_menu_item(menu: usize, item: u32, flags: u32) -> u32 {
+    change_item(menu, item, flags, flag::CHECKED, flags & flag::CHECKED)
+}
+
+extern "efiapi" fn enable_menu_item(menu: usize, item: u32, flags: u32) -> i32 {
+    let states = flag::GRAYED | flag::DISABLED;
+    change_item(menu, item, flags, states, flags & states) as i32
+}
+
+extern "efiapi" fn get_menu_state(menu: usize, item: u32, flags: u32) -> u32 {
+    with(|gui| {
+        let table = table(gui)?;
+        let by_position = flags & MF_BYPOSITION != 0;
+        let (owner, index) = menus::locate(table, menu, item as usize, by_position)?;
+        table
+            .get(owner)?
+            .items()
+            .get(index)
+            .map(|entry| entry.flags & STATE_FLAGS)
+    })
+    .flatten()
+    .unwrap_or(NO_SUCH_ITEM)
+}
+
+unsafe extern "efiapi" fn get_menu_item_rect(
+    window: usize,
+    menu: usize,
+    item: u32,
+    rect: *mut super::user32::Win32Rect,
+) -> Bool {
+    if rect.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let found = with(|gui| {
+        let target = gui.windows.get(window)?;
+        if menu == 0 || target.menu != menu {
+            return None;
+        }
+        let width = target.buffer_width as i32;
+        let bar = table(gui)?.get(menu)?;
+        let entries = labels(bar, false);
+        layout::entry_rect(&entries[..bar.count], item as usize, width)
+    })
+    .flatten();
+    let origin = found.map(|_| super::placement::content_origin(window));
+    let placed = match (found, origin) {
+        (Some(entry), Some(Ok((x, y)))) => Some(entry.offset(x, y)),
+        _ => None,
+    };
+    let written = placed.unwrap_or_default();
+    // SAFETY: the caller passes a writable `RECT`.
+    unsafe {
+        rect.write(super::user32::Win32Rect {
+            left: written.left,
+            top: written.top,
+            right: written.right,
+            bottom: written.bottom,
+        })
+    };
+    match placed {
+        Some(_) => TRUE,
+        None => fail(error::INVALID_PARAMETER, FALSE),
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"CheckMenuItem" => check_menu_item,
+    b"EnableMenuItem" => enable_menu_item,
+    b"GetMenuState" => get_menu_state,
+    b"GetMenuItemRect" => get_menu_item_rect,
     b"CreateMenu" => create_menu,
     b"CreatePopupMenu" => create_popup_menu,
     b"AppendMenuW" => append_menu_w,

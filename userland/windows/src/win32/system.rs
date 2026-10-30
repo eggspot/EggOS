@@ -93,7 +93,28 @@ extern "efiapi" fn get_version() -> u32 {
     BUILD_NUMBER << 16 | MINOR_VERSION << 8 | MAJOR_VERSION
 }
 
+/// `MulDiv`: `number * numerator / denominator` with a 64-bit product, rounded half away from
+/// zero; -1 for a zero denominator or a result past 32 bits (D174).
+pub fn multiply_divide(number: i32, numerator: i32, denominator: i32) -> i32 {
+    if denominator == 0 {
+        return -1;
+    }
+    let product = i64::from(number) * i64::from(numerator);
+    let denominator = i64::from(denominator);
+    let half = denominator.abs() / 2;
+    let rounded = match (product < 0) == (denominator < 0) {
+        true => (product.abs() + half) / denominator.abs(),
+        false => -((product.abs() + half) / denominator.abs()),
+    };
+    i32::try_from(rounded).unwrap_or(-1)
+}
+
+extern "efiapi" fn mul_div(number: i32, numerator: i32, denominator: i32) -> i32 {
+    multiply_divide(number, numerator, denominator)
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"MulDiv" => mul_div,
     b"GetSystemInfo" => get_system_info,
     b"GetNativeSystemInfo" => get_system_info,
     b"GetVersionExW" => get_version_ex_w,

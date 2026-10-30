@@ -320,7 +320,56 @@ unsafe extern "efiapi" fn format_message_w(
     length as u32
 }
 
+unsafe extern "efiapi" fn format_message_a(
+    flags: u32,
+    _source: usize,
+    message_id: u32,
+    _language: u32,
+    buffer: *mut u8,
+    size: u32,
+    _arguments: usize,
+) -> u32 {
+    let known = FORMAT_MESSAGE_ALLOCATE_BUFFER
+        | FORMAT_MESSAGE_IGNORE_INSERTS
+        | FORMAT_MESSAGE_FROM_SYSTEM
+        | FORMAT_MESSAGE_MAX_WIDTH_MASK;
+    if flags & FORMAT_MESSAGE_FROM_SYSTEM == 0 || flags & !known != 0 || buffer.is_null() {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    let Some(message) = errors::message(message_id) else {
+        return fail(ERROR_MR_MID_NOT_FOUND, 0);
+    };
+    let line_end = if flags & FORMAT_MESSAGE_MAX_WIDTH_MASK == 0 {
+        "\r\n"
+    } else {
+        ""
+    };
+    let length = message.len() + line_end.len();
+    let out = if flags & FORMAT_MESSAGE_ALLOCATE_BUFFER != 0 {
+        let block = heap::allocate(length.max(size as usize) + 1);
+        if block.is_null() {
+            return fail(error::NOT_ENOUGH_MEMORY, 0);
+        }
+        // SAFETY: with `FORMAT_MESSAGE_ALLOCATE_BUFFER`, `buffer` is a writable `LPSTR*` that
+        // receives the block, which the caller frees with `LocalFree`.
+        unsafe { buffer.cast::<*mut u8>().write(block) };
+        block
+    } else if length < size as usize {
+        buffer
+    } else {
+        return fail(error::INSUFFICIENT_BUFFER, 0);
+    };
+    let bytes = message.bytes().chain(line_end.bytes()).chain([0]);
+    for (at, byte) in bytes.enumerate() {
+        // SAFETY: `out` holds more than `length` bytes.
+        unsafe { out.wrapping_add(at).write(byte) };
+    }
+    super::thread_environment::set_last_error(error::SUCCESS);
+    length as u32
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"FormatMessageA" => format_message_a,
     b"MultiByteToWideChar" => multi_byte_to_wide_char,
     b"WideCharToMultiByte" => wide_char_to_multi_byte,
     b"lstrlenW" => lstrlen_w,

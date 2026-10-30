@@ -16,15 +16,21 @@ macro_rules! exports {
     };
 }
 
+mod ansi;
+mod clipboard;
+mod combo_box;
+mod common_controls;
 mod console;
 mod controls;
 mod crt;
 mod dialog;
+mod dialog_window;
 mod directory;
 mod elements;
 mod environment;
 mod file;
 mod file_picker;
+mod gdi;
 mod gui;
 mod heap;
 mod memory;
@@ -32,6 +38,7 @@ mod menu;
 mod message_box;
 mod module;
 mod paint;
+mod placement;
 mod process;
 mod shell;
 mod strings;
@@ -179,11 +186,17 @@ const USER32: &[&[Export]] = &[
     dialog::EXPORTS,
     menu::EXPORTS,
     timer::EXPORTS,
+    ansi::EXPORTS,
+    dialog_window::EXPORTS,
+    placement::EXPORTS,
+    clipboard::EXPORTS,
 ];
 
 const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];
 
-const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS];
+const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS, gdi::EXPORTS];
+
+const COMCTL32: &[&[Export]] = &[common_controls::EXPORTS];
 
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
@@ -193,6 +206,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::User32 => USER32,
         Library::Gdi32 => GDI32,
         Library::Comdlg32 => COMDLG32,
+        Library::Comctl32 => COMCTL32,
         Library::VcRuntime => crt::VCRUNTIME,
         Library::Ucrt => crt::UCRT,
     }
@@ -202,4 +216,13 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
 pub fn resolve(library: &[u8], function: &[u8]) -> Option<u64> {
     let exports = exports(library::library(library)?);
     library::find(exports, function).map(|address| address as u64)
+}
+
+/// The address of the function an import names by `ordinal` in `library` (D174: comctl32's
+/// `InitCommonControls` is the one programs import so).
+pub fn resolve_ordinal(library: &[u8], ordinal: u16) -> Option<u64> {
+    match library::library(library)? {
+        Library::Comctl32 => common_controls::by_ordinal(ordinal).map(|address| address as u64),
+        _ => None,
+    }
 }

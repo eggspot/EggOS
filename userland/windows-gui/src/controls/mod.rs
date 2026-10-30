@@ -4,9 +4,11 @@
 //! the boot test's host render paints from.
 
 pub mod button;
+pub mod combo_box;
 pub mod edit;
 pub mod label;
 pub mod list_box;
+pub mod scroll_bar;
 
 use crate::surface::{Rect, Surface};
 use crate::text::{self, CELL_HEIGHT, CELL_WIDTH, Cell, Reading};
@@ -60,6 +62,10 @@ pub struct Palette {
     pub menu_highlight: u32,
     pub menu_text: u32,
     pub menu_text_disabled: u32,
+    pub scroll_track: u32,
+    pub scroll_thumb: u32,
+    pub scroll_arrow: u32,
+    pub scroll_arrow_disabled: u32,
 }
 
 /// Inside a program: Win32's light colours.
@@ -102,6 +108,10 @@ pub const LIGHT: Palette = Palette {
     menu_highlight: 0x0091_c9f7,
     menu_text: 0x0000_0000,
     menu_text_disabled: 0x006d_6d6d,
+    scroll_track: 0x00f0_f0f0,
+    scroll_thumb: 0x00cd_cdcd,
+    scroll_arrow: 0x0060_6060,
+    scroll_arrow_disabled: 0x00bf_bfbf,
 };
 
 /// In EggOS's own dialogs: the desktop's dark tokens.
@@ -144,6 +154,10 @@ pub const DARK: Palette = Palette {
     menu_highlight: 0x002a_3440,
     menu_text: 0x00e6_eaf0,
     menu_text_disabled: 0x008a_94a6,
+    scroll_track: 0x0026_303f,
+    scroll_thumb: 0x0033_4052,
+    scroll_arrow: 0x008a_94a6,
+    scroll_arrow_disabled: 0x003a_4454,
 };
 
 /// The dark palette's focus ring on a default button.

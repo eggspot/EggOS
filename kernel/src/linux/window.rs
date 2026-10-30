@@ -28,8 +28,8 @@ use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
     MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
     create_reply, element_action, get_menu_reply, get_tree_reply, input_outcome, list_reply,
-    put_double_word, put_word, query_kind, read_query_reply, request, send_input_reply,
-    set_size_reply, size, tree_answer,
+    placement_reply, put_double_word, put_word, query_kind, read_query_reply, request,
+    send_input_reply, set_size_reply, size, tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -484,6 +484,20 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::ENOENT);
             }
             crate::console::wake_input_waiters::<P>();
+        }
+        Request::GetPlacement { window } => {
+            let rect = on_windows::<P, _>(|desktop, _, _, _| desktop.placement(client, window))?;
+            for (offset, value) in [
+                (placement_reply::X, rect.x),
+                (placement_reply::Y, rect.y),
+                (placement_reply::WIDTH, rect.width),
+                (placement_reply::HEIGHT, rect.height),
+            ] {
+                put_word(bytes, offset, value);
+            }
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
         }
     }
     Ok(0)

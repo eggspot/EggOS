@@ -28,6 +28,8 @@ mod fault_handler;
 #[cfg(any(test, runs_windows_programs))]
 mod find;
 #[cfg(any(test, runs_windows_programs))]
+mod float;
+#[cfg(any(test, runs_windows_programs))]
 mod gui;
 #[cfg(any(test, runs_windows_programs))]
 mod image;
@@ -37,6 +39,8 @@ mod library;
 mod linux;
 #[cfg(any(test, runs_windows_programs))]
 mod pe;
+#[cfg(any(test, runs_windows_programs))]
+mod scan;
 #[cfg(runs_windows_programs)]
 mod start;
 #[cfg(any(test, runs_windows_programs))]
