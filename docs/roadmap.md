@@ -42,8 +42,13 @@ Must-have, in order:
    respawns it with a back-off or takes the machine down as configured; `reboot(2)` powers
    off, halts and resets through the HAL on all three, parking the other CPUs first; a QEMU
    test per architecture boots the release kernel into a test init that powers off, and
-   another that resets (D106). Follow-ups: init's shutdown signals once `kill` reaches other
-   processes, a protected init (`SIGKILL` and default actions not delivered to pid 1).
+   another that resets (D106). Since then: init cannot be killed (D137), and the machine goes
+   down through init (D183): `poweroff`, `reboot`, `halt` and the desktop's power menu ask it
+   with systemd's signals, and it sends every other program `SIGTERM` (and `SIGCONT`), then
+   `SIGKILL` to those left after 3 s, before `sync` and `reboot(2)`, as it does when the login
+   program ends and its configuration says to; `kill(-1)` reaches every process but the caller
+   and init; process ids are reused once all 4194303 have been given out, never one still in
+   use. Next: `shutdown` with a delay and a message to users, and futex spaces reused too.
 9. **done** — the `eggsh` shell (`userland/eggsh`, at `/bin/eggsh` in the release kernel's
    initramfs, which init starts): a prompt, quoting, `$` expansion, assignments and an
    environment prefix, `;` and comments, `PATH` search, the builtins `cd`, `pwd`, `exit`,
@@ -64,9 +69,9 @@ Must-have, in order:
     `true` and `uname` as hard links to it, which the initramfs now supports: one copy of the
     data), and a boot-to-prompt QEMU test on all three architectures in CI: the release kernel
     boots to the shell's prompt, the test runs each utility and powers off with `poweroff`, and
-    reports the time to the first prompt (D108, docs/coreutils.md). Follow-ups: `ls` in
-    columns on a terminal and with user names, more utilities (`mkdir`, `rm`, `cp` once there
-    is a writable file system), `poweroff` through init.
+    reports the time to the first prompt (D108, docs/coreutils.md). Since then: many more
+    utilities, `ls` in columns on a terminal (`-C`, `-1`), and `poweroff` through init (D183).
+    Next: `ls` with user names.
 11. **done** — design done (D109): UI design (Claude Fable, D16) for the boot screen,
     the terminal and a minimal desktop is in `docs/ux/desktop-v0.3.md` (with `terminal-v0.3.md`
     and the font `font-8x16.txt`), including the rendering plan and the acceptance criteria for

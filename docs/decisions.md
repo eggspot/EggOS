@@ -13506,3 +13506,112 @@ the license, by an explicit instruction recorded here.
   descriptors past 2; `^C` interrupting `read` and `wait`; a cache of where compound commands
   end, so loops do not read a nested one's text twice a round; the pipe fast path for small
   here-documents; running the last stage of a pipeline in the shell (bash's `lastpipe`).
+
+## D183 A clean shutdown through init: `poweroff`, `reboot`, `halt` and the desktop's power menu ask init, which sends every other program `SIGTERM`, then `SIGKILL`, before `sync` and `reboot(2)`; `kill(-1)`; process ids reused; `ls` in columns on a terminal (batch part 31; v0.3.0 items 8 and 10's follow-ups; D106's and D108's "Not yet"; extends D105, D106, D108, D137, D181) — Decided by the build loop (the signals that ask init, the waits and process id reuse decided by research)
+
+- **What users get.** Powering off, restarting or halting from the shell (`poweroff`,
+  `reboot`, `halt`), from the desktop's power menu, from an agent (the MCP tool `run` with
+  `poweroff`), or by the login program ending under `login-exit=poweroff|restart|halt`, now
+  ends every program first: init sends every other process `SIGTERM` and then `SIGCONT`, so a
+  stopped job sees it (D181), waits until all have ended, at most 3 s, sends those left
+  `SIGKILL`, waits 1 s more at most, puts the disks' changes on them (`sync`) and calls
+  `reboot(2)`. In the normal case it says nothing and takes as long as the programs take to
+  end (it looks every 10 ms); only a program that outlives the grace makes it say `init: some
+  programs did not end in time; killing them`. Init cannot be taken down by accident: `kill
+  1` (`SIGTERM`) does nothing, as before (D137). `kill(-1, signal)` works for every program
+  (Linux's "every process but the caller and init"), process ids are reused once all of them
+  have been given out, and `ls` writes names in columns on a terminal.
+- **Front-ends (D22).** GUI: the desktop's existing Power off and Restart (no new look, so no
+  Fable design: `reboot::shut_down` asks init and returns, and takes the machine down at once
+  only when no init takes the signal). CLI: `poweroff`, `reboot`, `halt` (`-f` keeps calling
+  `reboot(2)` at once), `ls -C` and `ls -1`. MCP: `run` with `poweroff` (the server is one of
+  the programs init ends, so the call's reply may not reach the agent, as before when the
+  kernel went down at once); `ls`'s records (`--json`, the MCP folder tools) are unchanged.
+- **Init (`userland/init/src/shutdown.rs`, pure with host tests; `system.rs`).** Init catches
+  the request signals with a handler that runs the whole shutdown and never returns, so a
+  request can't be lost between a check and init's `wait4`; the handler blocks the other
+  requests (a second `poweroff` changes nothing), and the shutdown code is only system calls.
+  It reaps with `WNOHANG` while it waits and restarts nothing; "every other process has
+  ended" is `kill(-1, 0)` answering `ESRCH` (zombies count until reaped, as on Linux). The
+  login-exit path runs the same sequence (the boot tests' shell and init tests use it). If
+  `reboot(2)` fails init says so and only reaps.
+- **The utilities (`userland/coreutils/src/power.rs`).** Without `-f` they let `SIGTERM` end
+  them (default action, unblocked: a `nohup`'d `poweroff` would otherwise outlive the grace),
+  send the request to process 1 (`System::signal_init`), and wait 2 s, by which time init's
+  `SIGTERM` has ended them; if they are still running, init did not answer (a test init, a
+  foreign `/init`), so they say `init did not answer; powering off now` and `sync` and call
+  `reboot(2)` themselves. `ESRCH` (no process 1) goes straight to `reboot(2)`; `EPERM` is
+  reported and fails, as `reboot(2)` would.
+- **The kernel.** `kill(-1)` (`signals::kill`, `Table::every_target_but`): every process in
+  the table but the caller and init, ended ones found and taking nothing; `ESRCH` when there is
+  none, `EPERM` when the caller may signal none (`may_signal`). `signals::ask_init` sends a
+  kernel signal to init only if init has a handler for it (`init_takes`); `reboot::shut_down`
+  and `reboot::init_signal` are the power menu's side.
+- **Process ids (`kernel/src/linux/process_ids.rs`).** Ids go from 1 to `ProcessId::MAX`
+  (4194303, one below Linux's largest `pid_max`, 2^22; `/proc` encodes ids in 30 bits), with
+  the same one atomic update per id as before; after that round, `process_ids::allocate_again`
+  hands out ids again from 300 up (Linux's `RESERVED_PIDS`), cyclically after the last one
+  handed out, in runs of free ids: when a run is used up it collects the ids in use (every
+  table entry's id, group and session, zombies included; init; the console's session and
+  foreground group, `Table::ids_in_use`; each running process's other threads,
+  `Signals::other_thread_ids`) and takes the first free run after the cursor. Ids just
+  handed out (the last 64, and the 64 below the cursor) are held back, since a process or
+  thread may hold one before the table or its process shows it. To keep that window short,
+  `Process::new_child` now puts the child in the table the moment its id is allocated (before
+  copying memory; a child dropped before it starts leaves through its record, as before) and
+  passes over an id the table already holds (`EAGAIN` from `Table::add`, 4 tries), `clone`
+  allocates a thread's id just before recording the thread, and the desktop's launcher
+  (`apps::start`) adds the app's process before loading its program. So the table never holds
+  two processes with one id, and a wait or a signal sent to an id reaches the process that
+  holds it now; the race a program has between a child's reaping and a later `kill` of its
+  id is POSIX's, which Linux answers with `pidfd` (left out).
+- **`ls` columns (`userland/coreutils/src/ls.rs`).** On a terminal (`TIOCGWINSZ` on standard
+  output answers; its width, 80 when it says 0) the names come in columns sorted down each
+  column, in the fewest rows whose line is narrower than the terminal (a line exactly as wide
+  as the terminal would wrap on some), each column as wide as its widest name, two spaces
+  apart, the last unpadded; the files given as operands get columns of their own, then each
+  folder. `-C` gives columns anywhere (80 wide off a terminal), `-1` one a line, the later of
+  them winning; `-l` and `--json` stay one entry a line. A name's width is its count of UTF-8
+  characters. The layout needs no memory beyond the listing: each candidate row count is
+  measured over the names (at most 1024).
+- **Checks.** Host tests: `shutdown.rs` (the request signals, the waits as a state machine),
+  `power.rs` (the signal for each name, `-f`, an init that does not answer, refusals),
+  `ls.rs` (columns at several widths, the strict width, pipes, `-C`/`-1`, `-l`/`--json`,
+  operands, character widths), `process_table.rs` (`kill(-1)`'s targets, a group and session
+  holding their id after their leader is reaped, a reused id taking its sorted place once),
+  `process_ids.rs` (the search: reserved ids, after the cursor, wrapping, held-back ids, none
+  free), `reboot.rs` (the signal for each action). QEMU, every architecture: the shell test
+  leaves a program in a session of its own waiting for `SIGTERM`
+  (`eggos-std-selftest shell-child term-at-power-off`), exits, and checks that the program
+  wrote `EGGOS-SHELL-CHILD: SIGTERM at power-off` before the power-down; the boot-to-prompt
+  test's `ls /` and `ls /proc/sys/kernel` lines are columns on its 80-column terminal, and the
+  tests that read `ls`'s names line by line (GTK, Qt, SDL, persistent disk, work disk) use
+  `ls -1`.
+- **Cost (D24, D78).** Until the first round of ids ends, allocating one costs what it did
+  (the round's bound is a constant; the rest is out of line and cold); the reuse state is
+  about 280 bytes of `.bss`. `fork` does the same work in another order (the table entry first).
+  `kill`'s new arm is off the signal hot paths. Init grows by the handler and the shutdown
+  loop; coreutils by the column layout and two system calls.
+- **Decided by research** (a research subagent, 2026-10-30, from the systemd(1), kill(2),
+  halt(8), shutdown(8) and proc_sys_kernel(5) manual pages and POSIX's definitions):
+  (1) systemd's signals ask init (`SIGRTMIN+3` halt, `+4` power off, `+5` restart, 37 to 39
+  with C libraries' `SIGRTMIN` of 34), with busybox's `SIGUSR1` (halt) and `SIGUSR2` (power
+  off) too, never busybox's `SIGTERM` reboot, which a plain `kill 1` would send: this
+  supersedes D106's plan to use busybox's protocol. (2) `-f` skips init, as halt(8) says. (3)
+  sysvinit's 3 s between `SIGTERM` and `SIGKILL`, ending the wait as soon as everything has
+  ended, and `SIGCONT` after `SIGTERM` so stopped processes see it. (4) Ids up to 2^22 - 1,
+  cyclic reuse (not the lowest free one, which brings a reaped id back at once), skipping 1 to
+  299 after the first round, and never an id a process, zombie, thread, group or session
+  holds; a stale `kill` of a reaped id is the program's race (POSIX), not the kernel's.
+- **Decided without research.** Doing the shutdown inside the signal handler; saying nothing
+  during a normal shutdown (only when `SIGKILL` is needed); looking every 10 ms; 1 s after
+  `SIGKILL`; the utilities' 2 s wait for init and their fallback to `reboot(2)`; runs of free
+  ids found by collecting the ids in use, held back 64 at a time; 4 tries for a child's id;
+  the strict "narrower than the terminal" fit; counting UTF-8 characters for width; `-l` and
+  `--json` overriding `-C`.
+- **Not yet.** `shutdown` with a delay, a message to users and `wall`; services stopped in an
+  order (there is no service manager); futex spaces reused (each `fork` and `execve` takes one
+  of 2^31, never given back); `pidfd_open` and `CLONE_PIDFD`; `/proc/<pid>` descriptors
+  pinned to their process (one opened before its process ended shows the id's next process);
+  `/proc/sys/kernel/pid_max`; `ls -x`, `-w`, `COLUMNS`, wide characters as two columns and
+  control characters shown as `?`; a reply to the agent whose `run` powered off.

@@ -315,6 +315,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   (`TOSTOP` is not acted on), `wait` cannot be interrupted with `^C`, and line editing redraws
   a line longer than the terminal is wide wrongly once the cursor moves back across its end
   (D181).
+- **Powering off goes through init (D183).** `poweroff`, `reboot`, `halt` and the desktop's
+  power menu ask init, which sends every program `SIGTERM` at once (there are no services to
+  stop in order), then `SIGKILL` to those left after 3 s; the waits are fixed, and there is no
+  `shutdown` with a delay or a message to users. `ls` writes columns on a terminal, counting a
+  wide character (CJK, emoji) as one column. Process ids are reused once all 4194303 have been
+  given out, from 300 up and never one still in use, but each `fork` and `execve` still takes
+  a futex space that is never reused, so about two billion of them in one boot use those up.
+  `/proc/<pid>` names an id, so a descriptor opened in it before its process ended shows the
+  next process given that id.
 - The core utilities are `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`,
   `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `sync`, `tail`, `touch`, `true`,
   `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
