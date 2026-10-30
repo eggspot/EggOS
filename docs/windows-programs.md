@@ -48,7 +48,11 @@ ahead of time into AArch64 code (D191, [Translation](translation.md)): the first
 translates it and keeps the result in `/var/cache/eggos/translate/<key>.tx`, later launches
 map it from there. Its calls into Windows go through generated bridges to the layer's own
 functions, and the layer's callbacks (window procedures, thread start routines, TLS
-callbacks) come back through the translation's entry trampoline. An instruction EggOS does
+callbacks) come back through the translation's entry trampoline. A function the program finds
+with `GetProcAddress` comes back as the address of a stub of the translated code whose
+bridge is made on its first use (64 functions at most; past them the program gets the native
+address, which its translated code cannot call). `app install` accepts an x64 program on
+aarch64; its first launch translates it. An instruction EggOS does
 not translate, or a jump to code the translator did not find, ends the program with a line
 that names its address (`the program uses an instruction EggOS does not translate yet, at
 ...`); a fault in translated code ends it too, with the exception's status, since its own

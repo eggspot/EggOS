@@ -15203,3 +15203,49 @@ the license, by an explicit instruction recorded here.
   the refused-site report and the benchmarks, including `translate_install_bytes` (39e).
   Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87, arm64
   programs on x86_64.
+- **Slice 39e1: `GetProcAddress` bridges, x64 installs on Arm, the translated QEMU run, the
+  System V bridges and the translator benchmark.** A translation now carries 64 procedure
+  stubs at the relative addresses 16 bytes apart from the end of the mapped image
+  (`translated::procedure_stub_rvas`, keys of the entries table that no guest code has); at
+  install each stub jumps to a procedure trampoline (`bridge::procedure_trampoline`: `ldr x17`
+  of a literal, `ldr x17, [x17]`, `br x17`) that reads its slot in a writable page mapped
+  right after the executable code. `GetProcAddress` (by name or ordinal) gives a translated
+  program `translation::guest_procedure`: the guest address of the stub already given for
+  that function, else the next free one, whose forward bridge is made then on a page of its
+  own (read-only and executable once written) and recorded in its slot under a spin lock;
+  `call_program` maps such an address back to the function (`native_procedure`), so passing
+  it as a callback works. `app install` accepts an x64 Windows program on aarch64
+  (`program::runs_translated`; the manifest keeps `architecture=x86_64`); its first launch
+  translates it as before. The aarch64 windows-programs session runs `other-cpu.exe` (the x64
+  build of `windows-console`) with `GREETING=hi` and two arguments and expects the native
+  program's twelve lines (x86_64 still expects the ARM64 build's refusal). The translator's
+  `bridge::sysv_argument_moves` maps System V AMD64 arguments (six integers from `rdi`, `rsi`,
+  `rdx`, `rcx`, `r8`, `r9`, eight values from `xmm0`-`xmm7`, the rest from the guest stack
+  after the return address, `rcx` moved first) to AAPCS64, and `sysv_forward_bridge` adds a
+  copy of `x1` to `rdx` after the call. The kernel benchmark `translate_block_16` (the kernel
+  depends on `eggos-translate`, referenced only by the benchmarks) decodes, forms and lowers a
+  16-instruction block per iteration. Host tests: the trampoline's words, the stub addresses
+  and their lookup, the System V moves and bridge.
+- **Slice 39e1's choices made without research.** 64 procedure stubs (a program that finds
+  more functions at run time gets native addresses past them, which its translated code
+  cannot call); one page per run-time bridge; the stubs past the image's end rather than in
+  its headers (a section may start right after the headers); a spin lock for the procedure
+  slots (`GetProcAddress` is rare and short); the installer accepts only Windows programs
+  for translation until the macOS layer runs x86_64 programs; the windows-programs session
+  passes the other-CPU program the same arguments as the native one so one expectation
+  serves both.
+- **Not yet** (slice 39e2 and later): the macOS layer on aarch64 (it still refuses an
+  x86_64-only file with `has code only for x86_64`): the translator's input from the Mach-O
+  (executable segments, `LC_FUNCTION_STARTS`, the exports trie, `LC_MAIN`/`LC_UNIXTHREAD`'s
+  entry, rebase targets in code), import stubs for the bind locations of functions (data
+  imports such as `___stderrp` and class symbols keep native addresses), System V bridges
+  per import with argument kinds by name, variadic imports (System V passes variadic values
+  in registers with `al` counting the vector ones, Darwin arm64 on the stack: the bridge must
+  call the layer's `v` function with a System V `va_list` it builds), reverse bridges for
+  callbacks (blocks, IMPs, `atexit`, signal handlers, `qsort`), `__thread_vars` through
+  `tlv_get_addr`, `objc_msgSend` and its family through the bridge, and the macos-programs
+  session's x86_64 programs on aarch64; `app install` translating at install with progress and
+  the refused-site count, `app info` listing refused sites, and the cache removed with its
+  app; `GetProcAddress` past 64 functions; the translated compute-loop benchmark against the
+  native loop and `translate_install_bytes`; `benchmarks/baseline.txt` lines for
+  `translate_block_16` (added after the first measured run).

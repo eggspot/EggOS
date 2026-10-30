@@ -142,6 +142,14 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   discovery uses decoded, and the enabled nodes with a `compatible` counted. About what the
   device-tree platform bus pays per walk at boot (it walks twice, D110).
 
+## Translation
+
+- `translate_block_16`: the x86-64 translator (D191) decoding, forming and lowering one block
+  of fifteen register `add`, `sub` and `xor` instructions and a `jnz` back, with every flag
+  live and atomics on (FEAT_LSE), per iteration: a sixteenth of it is the cost of translating
+  one instruction. It measures the translator on every architecture, not translated code;
+  translated programs' own run-time benchmarks are reported apart from native ones (planned).
+
 ## Release kernel
 
 Two results per architecture come from the release kernel rather than the benchmark kernel

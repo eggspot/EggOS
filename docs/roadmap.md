@@ -243,7 +243,8 @@ Must-have, in order:
     `SignalObjectAndWait` and get wildcard arguments expanded (D189, slice 37d, checked by
     `eggnamed.exe`); then x64 programs on Arm through ahead-of-time translation (D121's and
     D124's "Not yet"): designed in D191 (docs/translation.md), with its x86-64 decoder in the
-    new `translate/` crate (slice 39a); code generation, the cache and `app install` next.
+    new `translate/` crate (slice 39a); x64 Windows programs run translated on aarch64 and install
+    as apps (39b-39e1); next: the macOS layer's translated loader and translating at install.
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
     docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which

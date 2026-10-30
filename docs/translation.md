@@ -18,8 +18,11 @@ instructions; slice 39c lowered SSE and SSE2, MXCSR, `cpuid`, `rdtsc`, `xgetbv`,
 lowered the minimal x87 set, the string instructions, `xlat`, `enter`, `rcl` and `rcr`; slice
 39d1 built code discovery, flag liveness across blocks, the image builder (layout, linking,
 veneers, the entries table, the back-map, the refused sites, the indirect dispatch and the
-entry trampoline) and the `.tx` cache file format and directory policy; the bridges, the
-loader, the cache on disk and the install and launch integration are slices 39d2 and 39e
+entry trampoline) and the `.tx` cache file format and directory policy; slice 39d2 the
+Win64 bridges, the Windows loader on aarch64 and the cache on disk; slice 39e1 `GetProcAddress`
+bridges, `app install` accepting x64 Windows programs on aarch64, the translated QEMU run of
+an x64 Windows program, the System V AMD64 bridges and the `translate_block_16` benchmark; the
+macOS loader, translating at install and the translated-run benchmarks are later slices
 (D191's "Not yet").
 
 ## What is translated
@@ -204,6 +207,10 @@ missing or stale (the program was copied in by hand, the translator changed), th
 translates first, with progress, before any of the program runs.
 
 ## Benchmarks
+
+Built (slice 39e1): `translate_block_16`, one 16-instruction block (fifteen register
+add/sub/xor and a `jnz` back) decoded, formed and lowered with every flag live, per
+iteration; a translated instruction costs a sixteenth of it. The rest below is planned.
 
 Reported in their own section of the benchmark results, never mixed with native numbers:
 translation speed (`translate_install_bytes`, guest bytes per second), and per kind the
