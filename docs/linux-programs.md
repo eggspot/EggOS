@@ -185,8 +185,10 @@ SDL apps run (D172), GTK 3 apps run (D176) and Qt 6 Widgets apps run (D179,
 - **Parts of `/proc` and `/dev`.** `/proc/self` and `/proc/<pid>` have `cmdline`, `exe`,
   `fd`, `maps`, `stat` and `status`, so `std::env::current_exe`, glibc's `$ORIGIN` and
   `pthread_getattr_np` work, and `/dev` has `null`, `zero`, `full`, `random`, `urandom`, `tty`,
-  `console`, `fd` and the standard streams (D168); there is no `/proc/<pid>/task`, `environ`
-  or `cwd`, and no `/sys`. Files can be written in `/tmp`, `/run`, `/home` and `/var`
+  `console`, `fd` and the standard streams (D168), and the pseudo-terminals `ptmx` and
+  `pts/<n>` (`posix_openpt`, `grantpt`, `unlockpt`, `ptsname`, a controlling terminal per
+  session with job control, `SIGWINCH` and the hang-up, D187); there is no `/proc/<pid>/task`,
+  `environ` or `cwd`, and no `/sys`. Files can be written in `/tmp`, `/run`, `/home` and `/var`
   (D125, D131).
 - **Links, scripts and removed files** (D170). `symlink`, `symlinkat`, `link`, `linkat`,
   `readlink`, `chmod`, `fchmod`, `fchmodat` and `fchmodat2` work on `/tmp`, `/home`, the work

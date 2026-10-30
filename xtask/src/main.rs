@@ -338,6 +338,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-wayland",
     "eggos-files",
     "eggos-terminal",
+    "eggos-terminal-window",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
@@ -411,6 +412,8 @@ const FILES_PATH: &str = "bin/files";
 const TEXT_EDITOR_PATH: &str = "bin/text-editor";
 
 const EDIT_PATH: &str = "bin/edit";
+
+const TERMINAL_PATH: &str = "bin/terminal";
 
 const PROC_PATH: &str = "proc";
 
@@ -1541,6 +1544,7 @@ fn release_initramfs(
             initramfs::Content::HardLink(SETTINGS_PATH),
         ),
         (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (TERMINAL_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (

@@ -46,6 +46,7 @@ const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
 const FILES_PROGRAM_NAME: &[u8] = b"files";
 const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
+const TERMINAL_PROGRAM_NAME: &[u8] = b"terminal";
 const EDIT_COMMAND_NAME: &[u8] = b"edit";
 const CLOCK_REALTIME: usize = 0;
 const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
@@ -655,6 +656,7 @@ pub fn run(startup: &Startup) -> i32 {
         FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
         EDITOR_PROGRAM_NAME => return eggos_editor::program::run(startup),
         EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
+        TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
         _ => {}
     }
     let mut arguments = [""; MAX_ARGUMENTS];

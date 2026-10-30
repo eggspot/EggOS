@@ -1694,6 +1694,25 @@ pub const EDIT: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("the Text Editor: File > Open"),
 };
 
+/// `terminal`, the terminal program (D187).
+pub const TERMINAL: CommandDefinition = CommandDefinition {
+    words: &["terminal"],
+    summary: "Opens a terminal window running the shell.",
+    description: "Opens a new terminal window, with the shell running in the current folder, \
+                  and returns at once; the window closes when its shell ends.",
+    options: &[],
+    operands: &[],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_WINDOW_SERVER, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[],
+    surface: Surface::Gui("the launcher: Terminal"),
+};
+
 const fn reading_proc(
     words: &'static [&'static str],
     summary: &'static str,
@@ -2191,7 +2210,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 64] = [
+pub const COMMANDS: [CommandDefinition; 65] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
@@ -2233,6 +2252,7 @@ pub const COMMANDS: [CommandDefinition; 64] = [
     SYNC,
     TAIL,
     TEE,
+    TERMINAL,
     TOUCH,
     TRASH,
     TRUE,

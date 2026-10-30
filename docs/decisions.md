@@ -13928,3 +13928,118 @@ the license, by an explicit instruction recorded here.
   `KEYS_TO_TERMINAL` starting false (D115's `.data` note); the caret's blink in the launcher's
   search field; a QEMU screendump of the boot screen itself (it is gone by the time QMP looks:
   the self-test checks it); measured costs.
+
+## D187 Terminals as programs: several terminal windows, resizable, closable and readable by agents, on pseudo-terminals (`/dev/ptmx`, `/dev/pts`); the engine as the shared crate `eggos-terminal`; the kernel's window titled `Console` (batch part 35; v0.3.0 item 14's "Next"; D115's and D141's "Not yet"; extends D105, D109, D114, D127, D141, D149, D163, D168, D181) — Decided by the build loop (the shared crate's shape decided by research; the windows, titles, sizes, closing and the agents' view designed by Claude Fable, `docs/ux/terminal-windows-v0.3.md`)
+
+- **What.** Users can open as many terminal windows as they like (the launcher's or desktop's
+  Terminal, `terminal` at a prompt, MCP `app_open Terminal`, Ctrl+Shift+N or Cmd+N in a
+  terminal), resize and maximise them (the grid follows, the shell gets `SIGWINCH`, a
+  `<cols>x<rows>` indicator shows while it changes), close them (asking first only while a
+  program runs in the foreground), and agents capture, type into and read them like any window
+  (`wm capture`, `wm type`, `wm show`, `wm_capture`, `wm_type`). Programs set the title with
+  `OSC 0`/`OSC 2`. The kernel's console window stays as it was, titled `Console`.
+- **The shared crate.** `terminal/` (`eggos-terminal`): the engine (moved from
+  `drivers/src/terminal`), `geometry` (`Rect`, `Damage`, `MAX_DAMAGE_RECTS`, moved from
+  `drivers/src/display.rs`) and `key`/`keymap` (moved from `drivers/src/input`), re-exported by
+  `eggos-drivers` under the old paths (`eggos_drivers::terminal`, `display::{Rect, Damage}`,
+  `input::{key, keymap}`), so the kernel and xtask did not change. New in the engine:
+  `Terminal::{title, take_title_change}` (`OSC 0` and `OSC 2`, `ESC \` or BEL ending, control
+  characters dropped, `TITLE_CAPACITY` 64 bytes kept, the rest flagged cut), `resize(columns,
+  rows)` (no reflow: narrower cuts for good; shorter drops blank rows below the cursor, then
+  moves the top into the scrollback; taller adds blank rows; the alternate screen cleared; the
+  scrolling region reset; the scrollback rebuilt at the new width), `row_text` and
+  `cursor_row` for the element tree; `eggos_font::character`, `glyph_id`'s inverse.
+- **Pseudo-terminals** (`kernel/src/linux/pseudo_terminal.rs`, Linux's Unix 98 interface from
+  `pty(7)`, `pts(4)` and `ioctl_tty(2)`). `/dev/ptmx` (5:2) makes one, at most
+  `MAX_PSEUDO_TERMINALS` (64), and returns its controlling side; `/dev/pts/<n>` (136:n) opens the
+  program side once unlocked (`TIOCSPTLCK`, `TIOCGPTLCK`, `TIOCGPTN`). The controlling side's
+  writes pass through a `LineDiscipline` of its own (editing, echo, `ICRNL`, the signal
+  characters, which signal the terminal's foreground group) and never wait; the program side's
+  writes are processed (`OPOST|ONLCR`) into a 16 KiB ring the controlling side reads, waiting
+  for room. Settings start as Linux's (`SETTINGS`: the serial console's at 38400 baud, no
+  `CLOCAL`); `TCGETS2` reports 38400. The last close of the controlling side hangs up: the
+  foreground group and the session's leader get `SIGHUP` then `SIGCONT`, the session loses the
+  terminal, program-side reads return 0 and writes `EIO`; once the program side was opened and
+  closed again, controlling-side reads fail with `EIO`. Both sides poll and `epoll` through a
+  wake list, `fstat` as character devices, show in `/proc/<pid>/fd` as `/dev/ptmx` and
+  `/dev/pts/<n>`, refuse seeks. `/dev/pts` lists the terminals whose controlling side is open.
+  `linux/terminal.rs` reads and answers terminal requests for any `Line` (the console's
+  `Console`, a `PseudoTerminal`); the console's paths are the same code, monomorphised.
+- **Controlling terminals.** The process table keeps a `Controlled { terminal, session,
+  foreground }` per terminal (`process_table::Terminal::{Console, Pseudo(n)}`): one terminal per
+  session, one session per terminal; `give_if_free` (a session leader opening a terminal
+  without `O_NOCTTY`), `take` (`TIOCSCTTY`, `EPERM` for a session that has another),
+  `set_foreground`, `controlling`, `background_on`, `foreground_members`, `hang_up`,
+  `controlling_terminal_of`; the console-named methods stay as wrappers. Job control
+  (`terminal_access`, `send_to_foreground`, `signal_foreground`, the job-control `ioctl`s) takes
+  the terminal; `/dev/tty` opens the caller's controlling terminal, console or pseudo-terminal;
+  `/proc/<pid>/stat`'s `tty_nr` says which. The runtime's `Spawn::with_controlling_terminal`
+  (`setsid`, then `TIOCSCTTY` on standard input) starts a shell on one.
+- **The terminal program** (`userland/terminal`, `eggos-terminal-window`, served by
+  `/bin/settings` as `/bin/terminal`, a hard link, so the toolkit is in the image once, D149's
+  pattern). It checks for a window server (`terminal: no display`, 1), forks (the parent exits
+  0), leaves the caller's session, opens a pseudo-terminal, starts `/bin/eggsh` on it with
+  `TERM=xterm`, the caller's environment and folder (the home folder when started at `/`), and
+  serves a `TAKES_CTRL_KEYS` window of 656x400 (80x24), at least 176x96 (20x5). Its state
+  (`window::TerminalWindow` over a `Shell` trait) is host-tested: `grid_for`, the title
+  (`title::Title`: `<text> - Terminal`, cut to 50 bytes and `...` past 53), the keys
+  (`keys::key_action`: the layout's character as UTF-8, `ESC` first with Alt, the keymap's
+  sequences with Ctrl and for keys that type nothing, Shift with the page keys for the
+  scrollback, Ctrl+Shift+N or Super+N a new window, Ctrl+Shift+W or Super+W close), the
+  indicator (600 ms), the cursor's look and blink, the close question (the toolkit's panel,
+  `Close this terminal?` / `A program is still running in it and will be ended.`, `Cancel`,
+  `Close` primary), the element tree (a `group` `screen` valued `<cols>x<rows>`, a `text` per
+  row named `row <n>` with the row's characters, the cursor's row focused, the top rows left out
+  when they do not fit; every action not supported). Memory comes from the kernel a mapping at a
+  time (`program::Pages`, the userland's first global allocator, used only by this program).
+  The toolkit gained `Window::create_with_flags` and `TAKES_CTRL_KEYS`,
+  `Window::read_events_or` (a second descriptor in the same `ppoll`), `View::watched_descriptor`
+  and `descriptor_ready`, and `Canvas::blit` (a scale-1 image shown at the window's scale).
+  `SIGTERM` (init's shutdown, D183) ends it as any program: the kernel closes its controlling
+  side, which hangs the shell up.
+- **The desktop.** The catalogue knows `/bin/terminal` (`set_terminal_present`,
+  `terminal_present`); with it, launching Terminal starts a new window each time (the
+  `starting` guard as for the Text Editor), without it the console is focused as before;
+  `app_of` counts windows titled `Terminal` or ending with ` - Terminal` as Terminal's;
+  `Desktop::focus_console` focuses the console for `TYPE_IN_TERMINAL`; `WINDOW_TITLE` is
+  `Console`.
+- **Front-ends (D22).** GUI: the launcher, desktop icon and dock (Terminal), the window's
+  controls and keys. CLI: `terminal` (registry `TERMINAL`, a kept name). MCP: `app_open
+  Terminal`; `wm_capture`, `wm_type`, `wm_press`, `wm_show` work on terminal windows, which are
+  ordinary clients. No new MCP tool (Fable's section 8).
+- **Checks.** Host: the engine's titles, resizes, row text and the alternate screen; the font's
+  round trip; `/dev/pts` names, numbers and modes; the process table's terminals, `take`,
+  `background_on` and `hang_up`; the pseudo-terminal's line discipline, echo, `ONLCR`, a full
+  ring, the hang-up and `poll` events; the terminal program's grid, titles, keys, indicator,
+  close question, title from `OSC 2`, the shell's end and the element tree.
+- **Cost (D24, D78).** Not measured (no builds in this batch). Expected: no change to the
+  console's paths beyond the generic `Line` (monomorphised for `Console`, every method inlined);
+  `read` has one more `FileKind` arm; the settings program grows by the terminal program (the
+  engine was in the kernel only before); per terminal window about 1 MiB of picture at 80x24 and
+  1x, 100 KiB of grid and scrollback, 18 KiB of kernel memory per pseudo-terminal. To report in
+  the build phase: `term_*`, `gfx_*`, `input_key_to_bytes`, `linux_openat_close`,
+  `linux_file_read`, image size.
+- **Decided by research** (a research subagent, 2026-10-30, reading the repository): the engine,
+  `Rect`/`Damage` and the keymap move into one new crate `eggos-terminal`, re-exported by
+  `eggos-drivers` so no path changes, rather than a second tiny crate for the geometry or the
+  terminal program depending on `eggos-drivers` (which would pull the desktop and the virtio
+  drivers into a user program); the program maps the toolkit's modifier bits to the keymap's
+  instead of copying xterm's table.
+- **Decided without research.** At most 64 pseudo-terminals, a 16 KiB output ring and a
+  controlling side that never waits (bytes past the line discipline's 2 KiB are dropped); the
+  hang-up signalling both the foreground group and the session's leader (Linux signals the
+  leader, whose end then signals the foreground group); `/dev/pts` listing only terminals whose
+  controlling side is open; the console keeping the job-control fast path through the same
+  generic code; the terminal program forking before it opens its window and leaving the
+  caller's session; a mapping per allocation as its allocator; the window's grid capped at
+  512x256; Super+W also closing in every profile (the server takes Cmd+W in the macOS profile
+  first); a closed question restoring the picture by showing the cells again rather than
+  redrawing them; installed console apps still typed into the console.
+- **Not yet.** The QEMU check (two terminals from the launcher, one resized with QMP, `stty
+  size` read in it, an MCP capture of a terminal) and a `stty` command to read the size;
+  selection, copy and paste; installed console apps and `terminal -e <command>` in a window of
+  their own; reflow and pulling the scrollback back when a window grows; the shell setting its
+  title (`OSC 0` from `eggsh`'s prompt, `OSC 7`) and a new window in the current window's
+  folder; the panel narrowed to a window narrower than 416 (Fable's section 4); packet mode,
+  `TIOCSTI`, `TIOCGPTPEER`, a controlling side that waits when the line discipline is full, and
+  `TOSTOP`; the console's own window resizing; measured costs.

@@ -21,7 +21,8 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
 command fixes the error, a second line says it: `  try: wm list` (D160).
 
 The command model (D160, D163, docs/ux/command-model.md) describes every command in its
-registry (`userland/commands`): each utility here, `app`, `wm`, `edit` and `settings`. `help`
+registry (`userland/commands`): each utility here, `app`, `wm`, `edit`, `settings` and
+`terminal` (D187: opens a terminal window running the shell and returns at once). `help`
 lists them, `help <words>` shows one's usage, options, error codes, examples and GUI, and
 `help --json` writes the definitions as JSON lines. The examples run as tests against the
 utilities' fake system, so they are what the commands print. Every utility reads its options

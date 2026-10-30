@@ -159,8 +159,9 @@ pub const GRID_SIZE: (u32, u32) = (
 pub const WINDOW_WIDTH: u32 = GRID_SIZE.0 + 2 * PADDING + 2;
 /// The terminal window's height, its 1 px border included.
 pub const WINDOW_HEIGHT: u32 = GRID_SIZE.1 + 2 * PADDING + TITLE_HEIGHT + 2;
-/// The terminal window's title.
-pub const WINDOW_TITLE: &str = "Terminal";
+/// The console terminal window's title, which tells it apart from the terminal program's
+/// windows (D187).
+pub const WINDOW_TITLE: &str = "Console";
 /// The power menu's width.
 pub const MENU_WIDTH: u32 = 160;
 /// One power menu item's height.

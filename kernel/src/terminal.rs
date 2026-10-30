@@ -853,9 +853,8 @@ pub fn type_in_terminal<P: Platform>(line: &[u8]) -> bool {
     typed[0] = KILL_LINE;
     typed[1..end - 1].copy_from_slice(line);
     typed[end - 1] = b'\r';
-    let focused = with_windows::<P, _>(|desktop, _, damage, events| {
-        desktop.launch(AppId::Terminal, damage, events)
-    });
+    let focused =
+        with_windows::<P, _>(|desktop, _, damage, events| desktop.focus_console(damage, events));
     if focused.is_none() && !CONSOLE_ALONE.load(Ordering::Relaxed) {
         return false;
     }

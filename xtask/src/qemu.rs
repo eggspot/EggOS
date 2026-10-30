@@ -494,7 +494,7 @@ fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
         ],
         vec![
             Line::Whole(WM_LIST_HEADER.to_owned()),
-            Line::Around("64 normal ", " kernel Terminal"),
+            Line::Around("64 normal ", " kernel Console"),
         ],
         vec![line(SHELL_EXIT_LINE), line(POWER_DOWN_LINE)],
     ]

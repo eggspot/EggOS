@@ -18,6 +18,7 @@ eggos-files = { path = "../files", features = ["window"] }
 eggos-mcp = { path = "../mcp" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
+eggos-terminal-window = { path = "../terminal" }
 eggos-toolkit = { path = "../toolkit" }
 
 [lints]

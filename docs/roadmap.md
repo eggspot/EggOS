@@ -132,10 +132,13 @@ Must-have, in order:
     desktop in the macOS profile; a display smaller than the desktop gets a full-screen
     terminal; the cursor blinks, and is an outline while the terminal is unfocused; console
     output never waits for the desktop's repaint; `TERM=xterm` in init's environment; the
-    window controls' pressed look came with D156; the wall clock with D150. Next, as user
-    capabilities: users can double-click the title bar to maximise the terminal (terminals as
-    programs); users can drag a window partly off the left edge; the display follows a window
-    resized by the host (display mode change events).
+    window controls' pressed look came with D156; the wall clock with D150. Since D187: users
+    open as many terminal windows as they like (the launcher's Terminal, `terminal`, Ctrl+Shift+N
+    or Cmd+N in a terminal), resize, maximise and close them, programs set their titles, and
+    agents capture, read and type into them like any window; the kernel's window is now titled
+    `Console`. Next, as user capabilities: users can drag a window partly off the left edge; the
+    display follows a window resized by the host (display mode change events); users can copy
+    and paste in terminals and run installed console apps in a terminal window of their own.
 15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
     script, run it, and boot EggOS in a QEMU window with its desktop and terminal, or on the
     serial console alone with `--serial`, at an `eggsh` prompt (D116): `cargo xtask release`

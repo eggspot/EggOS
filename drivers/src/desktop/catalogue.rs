@@ -22,6 +22,7 @@ const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate",
 const SETTINGS_PROGRAM: &str = "/bin/settings";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
+const TERMINAL_PROGRAM: &str = "/bin/terminal";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
 const HOST_SHARE: &str = "/media/host";
 const PLAIN_PATH_BYTES: &[u8] = b"/._-+";
@@ -44,7 +45,8 @@ const BUILT_INS: [AppId; 4] = [
 /// An app the shell can launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AppId {
-    /// The console terminal's window.
+    /// The terminal: the terminal program's windows (`/bin/terminal`, D187) when the build has
+    /// it, and the console terminal's.
     Terminal,
     /// The Files app (`/bin/files`), when the build has it.
     Files,
@@ -241,6 +243,7 @@ pub struct Catalogue {
     host_share: bool,
     files_present: bool,
     text_editor_present: bool,
+    terminal_present: bool,
 }
 
 fn contains_ignoring_case(text: &str, query: &str) -> bool {
@@ -367,6 +370,16 @@ impl Catalogue {
     /// Whether the build has the Text Editor.
     pub fn text_editor_present(&self) -> bool {
         self.text_editor_present
+    }
+
+    /// Records whether the build has the terminal program (D187).
+    pub fn set_terminal_present(&mut self, present: bool) {
+        self.terminal_present = present;
+    }
+
+    /// Whether the build has the terminal program.
+    pub fn terminal_present(&self) -> bool {
+        self.terminal_present
     }
 
     /// How many apps are installed.
@@ -501,10 +514,14 @@ impl Catalogue {
     /// the terminal (the program's path, single-quoted when it holds more than letters, digits
     /// and `/._-+`; for a Linux program carrying its own dynamic loader, the loader first with
     /// `--library-path` and its library folders; then the app's arguments, D172), after Ctrl-U
-    /// so a half-typed line does not run with it; the terminal is only focused, which the
+    /// so a half-typed line does not run with it; Terminal starts the terminal program, a new
+    /// window each time (D187), and without it the console terminal is only focused, which the
     /// desktop does itself.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
+            AppId::Terminal if self.terminal_present => {
+                Some(Launch::Start(Command::from(TERMINAL_PROGRAM)))
+            }
             AppId::Terminal => None,
             AppId::Files => Some(Launch::Start(Command::from(FILES_PROGRAM))),
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),

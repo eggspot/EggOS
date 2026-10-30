@@ -179,6 +179,17 @@ pub trait View {
     fn act(&mut self, _element: u32, _action: Action, _text: &str, _time_ms: u32) -> Outcome {
         Outcome::NoSuchElement
     }
+
+    /// A descriptor the loop also waits on, such as a terminal's pseudo-terminal (D187).
+    fn watched_descriptor(&self) -> Option<usize> {
+        None
+    }
+
+    /// The watched descriptor has something to read or hung up, at `time_ms`; `false` once the
+    /// window should close.
+    fn descriptor_ready(&mut self, _time_ms: u32) -> bool {
+        true
+    }
 }
 
 struct Tree<'a, A, const N: usize>(&'a mut A);
@@ -265,8 +276,12 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
         let now = now_ms();
         let deadline = view.deadline(now);
         let timeout = deadline.map(|deadline| (deadline.wrapping_sub(now) as i32).max(0) as u32);
-        let read = window.read_events(&mut records, timeout)?;
+        let watched = view.watched_descriptor();
+        let (read, watched_ready) = window.read_events_or(&mut records, timeout, watched)?;
         view.tick(now_ms());
+        if watched_ready && !view.descriptor_ready(now_ms()) {
+            return Ok(());
+        }
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
             if let Some(query) = Query::from_record(record) {
                 answer(window, view, &query);

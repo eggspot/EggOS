@@ -147,6 +147,31 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Copies `image`, rows `image_width` pixels apart at scale 1 with its top-left at the
+    /// content's, into the clipped part of the canvas, each pixel a scale by scale square: how a
+    /// program that renders its content itself (the terminal, D187) shows it.
+    pub fn blit(&mut self, image: &[u32], image_width: usize) {
+        let scale = self.scale as usize;
+        let clip = self.clip;
+        if clip.is_empty() || image_width == 0 {
+            return;
+        }
+        for row in clip.y.max(0)..clip.bottom() {
+            let image_row = row as usize / scale;
+            let Some(line) = image.get(image_row * image_width..(image_row + 1) * image_width)
+            else {
+                break;
+            };
+            let start = row as usize * self.width as usize;
+            for column in clip.x.max(0)..clip.right() {
+                let Some(&pixel) = line.get(column as usize / scale) else {
+                    break;
+                };
+                self.pixels[start + column as usize] = pixel;
+            }
+        }
+    }
+
     /// Fills one pixel.
     pub fn pixel(&mut self, x: i32, y: i32, colour: u32) {
         self.row(y, x, x + 1, colour);

@@ -1116,7 +1116,7 @@ fn wm_lists_shown_windows_and_manages_any_of_them() {
     let terminal = desktop.listed_window(0).unwrap();
     assert_eq!(terminal.id, desktop.terminal_window());
     assert_eq!(terminal.client, KERNEL_CLIENT);
-    assert_eq!(&terminal.title[..terminal.title_length], b"Terminal");
+    assert_eq!(&terminal.title[..terminal.title_length], b"Console");
     let info = desktop.listed_window(1).unwrap();
     assert_eq!((info.id, info.state), (window, WindowState::Normal));
     assert_eq!(desktop.listed_window(2), Err(WindowError::NoSuchWindow));

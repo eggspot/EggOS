@@ -2,8 +2,8 @@
 //! set <key> <value>` and `settings list` get and set the same settings from the command line
 //! (D22, D132). Started as `/usr/libexec/app-window`, a hard link to the same program, it is
 //! the installer's window (D134), as `/bin/files` the Files window (D135), and as
-//! `/bin/text-editor` the Text Editor with `/bin/edit` its command (D149), so the toolkit is in
-//! the image once.
+//! `/bin/text-editor` the Text Editor with `/bin/edit` its command (D149), and as
+//! `/bin/terminal` the terminal program (D187), so the toolkit is in the image once.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 

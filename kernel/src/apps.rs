@@ -22,6 +22,8 @@ pub const HOST_SHARE: &[u8] = b"/media/host";
 pub const FILES_PROGRAM: &[u8] = b"/bin/files";
 /// The Text Editor's program, when the build has it (D149).
 pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
+/// The terminal program (D187), a name of the Settings program.
+pub const TERMINAL_PROGRAM: &[u8] = b"/bin/terminal";
 
 const ENVIRONMENT: [&[u8]; 4] = [
     b"HOME=/",
@@ -52,6 +54,7 @@ pub fn catalogue() -> Catalogue {
     catalogue.set_host_share(vfs::is_mount_point(HOST_SHARE));
     catalogue.set_files_present(vfs::resolve(root, root, FILES_PROGRAM).is_ok());
     catalogue.set_text_editor_present(vfs::resolve(root, root, TEXT_EDITOR_PROGRAM).is_ok());
+    catalogue.set_terminal_present(vfs::resolve(root, root, TERMINAL_PROGRAM).is_ok());
     let Ok(directory) = vfs::resolve(root, root, manifest::DIRECTORY.as_bytes()) else {
         return catalogue;
     };
@@ -113,8 +116,7 @@ pub fn start<P: Platform>(beside: &Process<P>, command: &[u8]) -> Result<(), &'s
         .lock()
         .add(id, None)
         .map_err(|_| "no room in the process table")?;
-    let Ok(context) = exec::load(&mut process, image.bytes(), path, arguments, &ENVIRONMENT)
-    else {
+    let Ok(context) = exec::load(&mut process, image.bytes(), path, arguments, &ENVIRONMENT) else {
         process_table::TABLE.lock().remove_unended(id);
         return Err("not a program this machine runs");
     };

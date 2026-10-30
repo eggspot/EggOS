@@ -141,8 +141,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `/proc/thread-self`; `stat`'s times and fault counts are 0, `status` has no signal or memory
   lines but `VmSize`, links in `fd` to sockets cannot be opened (to pipes they can, D173), and
   every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
-  standard streams' links, `window`, `agent` and `shm` (a memory file system for `shm_open`,
-  D169), but no `/dev/pts` or block devices;
+  standard streams' links, `window`, `agent`, `shm` (a memory file system for `shm_open`,
+  D169) and the pseudo-terminals `ptmx` and `pts` (D187: at most 64 at once, no packet mode,
+  `TIOCGPTPEER`, `TIOCSTI` or `TIOCPKT`, a controlling side that never waits and drops what its
+  line discipline cannot hold, and a background write that never stops a program), but no
+  block devices;
   symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
   `/tmp`, `/home` and the work disk (D170), but `O_CREAT` through a link that names nothing
   is `EEXIST` rather than creating its target; `openat2` answers `RESOLVE_NO_SYMLINKS` and
@@ -283,8 +286,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   stack probe `___chkstk_darwin` touches nothing, so a single frame over 1 MiB could pass the
   stack's guard gap unnoticed.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
-  app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it, but
-  the terminal's window can't be captured, takes no pointer input or sideways scrolling, and
+  app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it,
+  terminal windows included (D187), but the console's window can't be captured, takes no
+  pointer input or sideways scrolling, and
   characters no US key types reach apps as characters of their own (code 0, D185), which a
   program that reads keys rather than characters does not see; clicks, drags and scrolling aimed at a window with a dialog
   open are refused (keys go to the dialog: D162); Windows programs get `WM_LBUTTONDBLCLK`
@@ -364,7 +368,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 
 ## The desktop
 The desktop is minimal (D115, D127, D128): wallpaper, a top bar with the uptime and a power
-menu, the shell in an 80x24 terminal window, and the windows programs open through
+menu, the shell in an 80x24 console window, terminal windows (D187) and the windows programs
+open through
 `/dev/window` ([windows from programs](windows.md)). You can focus any window by clicking it or
 with Alt+Tab, drag it by its title bar, resize it from its edges and corners, maximise and
 restore it (its green control, a double-click on the title bar, Super+Up and Super+Down), snap
@@ -385,7 +390,9 @@ shortcuts), kept on the disk across reboots. Not yet:
   composite arrow-and-hourglass pointer; Mac apps choose no pointer shape (no `NSCursor`);
 - a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
   layout;
-- resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
+- resizing the console's window: its grid stays 80x24 (terminal windows resize, D187); a
+  terminal window reflows nothing (cells cut by a narrower window do not come back) and has no
+  selection, copy and paste, tabs or `terminal -e`;
 - the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
   blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
 - removing or installing the Windows or macOS layer on its own (the component manager, D18,
@@ -414,8 +421,9 @@ shortcuts), kept on the disk across reboots. Not yet:
   generic tile; a native EggOS app cannot name its own icon in its manifest yet beyond `icon=`
   pointing at an `app.icon` it ships; `app icon` (writing an app's icon as a PNG) and the MCP
   tool `app_icon` from `docs/ux/app-icons-v0.3.md` section 7 are not built yet;
-- closing the terminal (its close control is disabled) and a second terminal: launching
-  Terminal focuses the one console terminal, and installed console apps are typed into it, so
+- closing the console's window (its close control is disabled; terminal windows close, D187),
+  and console apps in their own terminal window: installed console apps are typed into the
+  console, so
   they reach whatever reads the console at that moment (docs/apps.md);
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`

@@ -25,6 +25,10 @@ const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
 
+/// The window flag that has every Ctrl key reach the window, as a terminal needs (`CREATE`'s
+/// `TAKES_CTRL_KEYS`, docs/windows.md).
+pub const TAKES_CTRL_KEYS: u32 = 2;
+
 const TITLE_CAPACITY: usize = 64;
 const AT_FDCWD: usize = -100isize as usize;
 const O_RDWR_CLOEXEC: usize = 0o2 | 0o2_000_000;
@@ -215,11 +219,23 @@ impl Window {
         height: u32,
         minimum: (u32, u32),
     ) -> Result<Self, Errno> {
+        Self::create_with_flags(title, width, height, minimum, 0)
+    }
+
+    /// [`Self::create`] with `CREATE`'s `flags` ([`TAKES_CTRL_KEYS`]).
+    pub fn create_with_flags(
+        title: &str,
+        width: u32,
+        height: u32,
+        minimum: (u32, u32),
+        flags: u32,
+    ) -> Result<Self, Errno> {
         let server = WindowServer::open()?;
         let scale = server.work_area()?.scale;
         let mut create = [0u8; 32];
         put(&mut create, 8, width * scale);
         put(&mut create, 12, height * scale);
+        put(&mut create, 16, flags);
         server.ioctl(CREATE, &mut create)?;
         let offset = u64::from_ne_bytes(create[24..32].try_into().unwrap_or([0; 8])) as usize;
         let mut window = Self {
@@ -380,23 +396,49 @@ impl Window {
     /// Waits up to `timeout_ms` (for ever when `None`) for event records and reads as many as
     /// fit `records`; how many bytes, 0 when the time ran out or a signal interrupted the wait.
     pub fn read_events(&self, records: &mut [u8], timeout_ms: Option<u32>) -> Result<usize, Errno> {
-        let mut poll = [0u8; 8];
+        self.read_events_or(records, timeout_ms, None)
+            .map(|(read, _)| read)
+    }
+
+    /// [`Self::read_events`], also waking when descriptor `also`, if any, has something to
+    /// read or hung up, as a terminal's pseudo-terminal does (D187); returns how many bytes of
+    /// records it read, and whether `also` is ready.
+    pub fn read_events_or(
+        &self,
+        records: &mut [u8],
+        timeout_ms: Option<u32>,
+        also: Option<usize>,
+    ) -> Result<(usize, bool), Errno> {
+        let mut poll = [0u8; 16];
         poll[0..4].copy_from_slice(&(self.server.fd as i32).to_ne_bytes());
         poll[4..6].copy_from_slice(&POLLIN.to_ne_bytes());
+        let count = match also {
+            Some(descriptor) => {
+                poll[8..12].copy_from_slice(&(descriptor as i32).to_ne_bytes());
+                poll[12..14].copy_from_slice(&POLLIN.to_ne_bytes());
+                2
+            }
+            None => 1,
+        };
         let timeout = timeout_ms.map(|ms| [u64::from(ms / 1000), u64::from(ms % 1000) * 1_000_000]);
         let timeout_pointer = timeout.as_ref().map_or(0, |time| time.as_ptr() as usize);
-        // SAFETY: `ppoll` reads the one `pollfd` in `poll` and the `timespec` at
-        // `timeout_pointer` (or none), both owned here, and writes `revents` into `poll`.
+        // SAFETY: `ppoll` reads the `count` `pollfd`s in `poll` and the `timespec` at
+        // `timeout_pointer` (or none), all owned here, and writes their `revents` into `poll`.
         let ready = unsafe {
             call(
                 number::PPOLL,
-                [poll.as_mut_ptr() as usize, 1, timeout_pointer, 0, 8, 0],
+                [poll.as_mut_ptr() as usize, count, timeout_pointer, 0, 8, 0],
             )
         };
         match result(ready) {
-            Ok(0) | Err(Errno::EINTR) => return Ok(0),
+            Ok(0) | Err(Errno::EINTR) => return Ok((0, false)),
             Ok(_) => {}
             Err(error) => return Err(error),
+        }
+        let returned = |at: usize| u16::from_ne_bytes([poll[at], poll[at + 1]]) != 0;
+        let also_ready = count == 2 && returned(14);
+        if !returned(6) {
+            return Ok((0, also_ready));
         }
         let length = records.len() / RECORD_SIZE * RECORD_SIZE;
         // SAFETY: `read` writes at most `length` bytes into `records`, owned by the caller and
@@ -415,8 +457,8 @@ impl Window {
             )
         };
         match result(read) {
-            Err(Errno::EINTR) => Ok(0),
-            read => read,
+            Err(Errno::EINTR) => Ok((0, also_ready)),
+            read => read.map(|read| (read, also_ready)),
         }
     }
 
