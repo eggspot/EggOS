@@ -2054,6 +2054,10 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
             host: host("macos-objc", own),
             path: "bin/macos-objc".to_owned(),
         },
+        image::AddedFile {
+            host: host("macos-swift", own),
+            path: "bin/macos-swift".to_owned(),
+        },
     ];
     let mut extra = vec![(
         "etc/eggos/init.conf",

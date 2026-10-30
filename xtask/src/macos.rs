@@ -8,6 +8,8 @@
 //! (D147), which the macOS GUI boot test installs from `mac-paint.zip` (D148), the
 //! `mac-paint.app` bundle `assemble_app` writes with the icon `test_icns` draws, archived by
 //! `archive_app`; `cargo xtask sample-apps` writes the same archive for people to try (D152).
+//! The Swift program, `tests/macos-swift/main.swift`, is test data too, built by Apple's `swiftc`
+//! the same way (D180).
 
 use crate::qmp::Picture;
 use std::path::{Path, PathBuf};
@@ -49,6 +51,19 @@ pub const OBJC_PROGRAMS: [ObjcProgram; 2] = [
         frameworks: &["AppKit", "Foundation"],
     },
 ];
+
+/// A program built from Swift source with Apple's `swiftc`: `tests/<folder>/main.swift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwiftProgram {
+    pub name: &'static str,
+    pub folder: &'static str,
+}
+
+/// The programs built from Swift sources with Apple's `swiftc`.
+pub const SWIFT_PROGRAMS: [SwiftProgram; 1] = [SwiftProgram {
+    name: "macos-swift",
+    folder: "macos-swift",
+}];
 
 const BUNDLE_SUFFIX: &str = ".app";
 /// The bundle's property list, beside an app's `main.m` and in its bundle's `Contents`.
@@ -229,7 +244,8 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         };
         crate::ci_artifact::fetch_when_built("macos-programs", &programs.directory)?;
         let objc_names = OBJC_PROGRAMS.into_iter().map(|program| program.name);
-        for program in PROGRAMS.into_iter().chain(objc_names) {
+        let swift_names = SWIFT_PROGRAMS.into_iter().map(|program| program.name);
+        for program in PROGRAMS.into_iter().chain(objc_names).chain(swift_names) {
             for cpu in ["arm64", "x86_64"] {
                 let path = programs.path(program, cpu);
                 if !path.is_file() {
@@ -263,8 +279,42 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
             let output = directory.join(format!("{}-{cpu}", program.name));
             build_objc_program(program, cpu, &output)?;
         }
+        for program in SWIFT_PROGRAMS {
+            let output = directory.join(format!("{}-{cpu}", program.name));
+            build_swift_program(program, cpu, &output)?;
+        }
     }
     Ok(Some(Programs { directory }))
+}
+
+/// The `swiftc` arguments that build `source` for `cpu` into `output`: optimized, as a release
+/// build is, for macOS 13 and later, whose Swift runtime is the system's.
+pub fn swift_arguments(source: &Path, cpu: &str, output: &Path) -> Vec<String> {
+    vec![
+        "swiftc".to_owned(),
+        "-O".to_owned(),
+        "-target".to_owned(),
+        format!("{cpu}-apple-macos{DEPLOYMENT_TARGET}"),
+        "-o".to_owned(),
+        output.to_string_lossy().into_owned(),
+        source.to_string_lossy().into_owned(),
+    ]
+}
+
+fn build_swift_program(program: SwiftProgram, cpu: &str, output: &Path) -> Result<(), String> {
+    let source = crate::workspace_root()
+        .join("tests")
+        .join(program.folder)
+        .join("main.swift");
+    let arguments = swift_arguments(&source, cpu, output);
+    let status = std::process::Command::new("xcrun")
+        .args(&arguments)
+        .status()
+        .map_err(|e| format!("xcrun swiftc: {e}"))?;
+    if !status.success() {
+        return Err(format!("xcrun swiftc {}: {status}", source.display()));
+    }
+    Ok(())
 }
 
 /// The `clang` arguments that build `source` for `cpu` into `output` linked with `frameworks`:
@@ -479,6 +529,29 @@ mod tests {
         assert!(source_folder(&app).ends_with(Path::new("tests").join("macos-gui")));
         assert!(source_folder(&app).join("main.m").is_file());
         assert!(source_folder(&app).join(INFO_PLIST).is_file());
+    }
+
+    #[test]
+    fn swift_programs_build_optimized_for_macos_13_on_each_cpu() {
+        let arguments = swift_arguments(Path::new("main.swift"), "x86_64", Path::new("out"));
+        assert_eq!(arguments[0], "swiftc");
+        assert!(arguments.contains(&"-O".to_owned()));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-target", "x86_64-apple-macos13.0"])
+        );
+        assert_eq!(
+            &arguments[arguments.len() - 3..],
+            ["-o", "out", "main.swift"]
+        );
+        let names: Vec<&str> = SWIFT_PROGRAMS.iter().map(|program| program.name).collect();
+        assert_eq!(names, ["macos-swift"]);
+        let source = crate::workspace_root()
+            .join("tests")
+            .join(SWIFT_PROGRAMS[0].folder)
+            .join("main.swift");
+        assert!(source.is_file());
     }
 
     #[test]

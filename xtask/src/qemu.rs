@@ -669,7 +669,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 18] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 20] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -688,6 +688,8 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 18] = [
     b"macos-objc bench; echo MACOS-CONSOLE status $?\r",
     b"macos-objc language; echo MACOS-CONSOLE status $?\r",
     b"macos-objc uncaught; echo MACOS-CONSOLE status $?\r",
+    b"macos-swift; echo MACOS-CONSOLE status $?\r",
+    b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -786,6 +788,40 @@ const OBJC_LANGUAGE_LINES: [&str; 25] = [
     "MACOS-CONSOLE status 0",
 ];
 
+const SWIFT_PROGRAM_LINES: [&str; 13] = [
+    "MACOS-SWIFT main",
+    "MACOS-SWIFT count 2 names 2 square 13.0 circle 3.0 largest 3.0",
+    "MACOS-SWIFT shapes square,circle,square",
+    "MACOS-SWIFT grow eggs are longer than fifteen bytes",
+    "MACOS-SWIFT keyed 3 1 2 -1",
+    "MACOS-SWIFT compare true true false",
+    "MACOS-SWIFT hatch first",
+    "MACOS-SWIFT holding first",
+    "MACOS-SWIFT deinit first",
+    "MACOS-SWIFT ints -42 9223372036854775807 200 doubles 0.1 1.5e+300 -2.0 0.3333333333333333",
+    "MACOS-SWIFT|items|3",
+    "MACOS-SWIFT done",
+    "MACOS-CONSOLE status 0",
+];
+
+fn swift_program_output() -> [Vec<Line>; 2] {
+    let program = SWIFT_PROGRAM_LINES
+        .iter()
+        .map(|line| Line::Whole((*line).to_owned()))
+        .collect();
+    let conflict = vec![
+        Line::Whole("MACOS-SWIFT conflict".to_owned()),
+        Line::Around(
+            "Simultaneous accesses to 0x",
+            ", but modification requires exclusive access.",
+        ),
+        Line::Whole("Fatal access conflict detected.".to_owned()),
+        Line::Whole("Aborted".to_owned()),
+        Line::Whole("MACOS-CONSOLE status 134".to_owned()),
+    ];
+    [program, conflict]
+}
+
 const OBJC_UNCAUGHT_LINES: [&str; 5] = [
     "MACOS-OBJC handler EggFatal",
     "*** Terminating app due to uncaught exception 'EggFatal', reason: 'no catch for 9'",
@@ -864,11 +900,14 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
+            refused("macos-swift"),
+            refused("macos-swift"),
             end,
         ];
     }
     let own = if arch == "x86_64" { "x86_64" } else { "arm64" };
     let mut objc_program = objc_program_output().into_iter();
+    let mut swift_program = swift_program_output().into_iter();
     [
         whole(&[
             "MACOS-CONSOLE macos-console args a|b c",
@@ -949,6 +988,8 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
+        swift_program.next().unwrap_or_default(),
+        swift_program.next().unwrap_or_default(),
         end,
     ]
 }
