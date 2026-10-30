@@ -605,8 +605,8 @@ scale 2 both are pixel-doubled. Host tests hash every icon at both sizes.
 
 (As built, section 8.1 supersedes the details below where they differ: the host share is
 `/media/host`, `Apps` is `/Applications` (D133), home is `/home/root`, there is a Trash, so
-Delete no longer asks under `/home`, there is no `X free` in the status bar, and the window's
-dialogs and context menus are drawn inside the window.)
+Delete no longer asks under `/home`, the status bar's `X free` follows files-free-space-v0.3.md
+(D171), and the window's dialogs and context menus are drawn inside the window.)
 
 A `Normal` window titled `Files`, default content 720x480, minimum 480x300, resizable. A
 userland program (`/bin/files`) drawing into its buffer with the shared widget code (buttons,
@@ -791,8 +791,9 @@ toolkit draws it (`toolkit-v0.3.md` section 1).
     top +4 of the first row under the header: `This folder is empty`, `Trash is empty`
     (`Recycle Bin is empty`), `The host share is not mounted`, `Cannot read this folder
     (<errno name>)`.
-15. **Status bar**: `N items` only (`1 item`; in the Trash the trashed count); `X free` is a
-    listed 0.3.0 limitation. The `Delete <name>?` dialog above and `/mnt/host` are superseded.
+15. **Status bar**: `N items` (`1 item`; in the Trash the trashed count) on the left; on the
+    right the free space, `12.0 GB free` or `Read-only`, as files-free-space-v0.3.md says
+    (D171). The `Delete <name>?` dialog above and `/mnt/host` are superseded.
 
 ## 9. Install and uninstall (item 36)
 

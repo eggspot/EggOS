@@ -196,7 +196,7 @@ definition (D163), and each example runs as a test against the fakes of the prog
 it (the core utilities' fake system with a home folder holding `notes.txt`; Settings' example
 facts).
 
-**Kept names:** `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `echo`, `edit`, `false`, `fetch`,
+**Kept names:** `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `df` (D171), `echo`, `edit`, `false`, `fetch`,
 `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `ls`, `mkdir`, `mv`, `nslookup`,
 `ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `cd`,
@@ -207,7 +207,7 @@ defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the tests, D
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
 item 48; `show` is a core verb), `drag` (D162).
 
-**Commands in the registry** (62, D163, D170: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `echo`, `edit`, `false`,
+**Commands in the registry** (63, D163, D170, D171: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
 `fetch`, `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `settings` (the window), `settings
 get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
@@ -227,6 +227,7 @@ get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`
 | `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
 | `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
 | `readlink --json` | `path`, `target`, one per link (D170) |
+| `df --json` | `file_system`, `type`, `mounted_on`, `size_bytes`, `used_bytes`, `available_bytes`, `read_only`, one per file system (D171) |
 | `free --json` | one object: `total_bytes`, `used_bytes`, `free_bytes`, `available_bytes`, `reserve_bytes` (or `null`) (D163) |
 | `uptime --json` | one object: `uptime_ms` (D163) |
 | `uname --json` | one object: `kernel_name`, `node_name`, `kernel_release`, `kernel_version`, `machine`, `operating_system` (D163) |

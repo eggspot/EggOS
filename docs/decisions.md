@@ -11576,3 +11576,175 @@ the license, by an explicit instruction recorded here.
   Files' link badges on desktop icons and in the launcher, `Paste link`, re-pointing a broken
   link, hard-link counts; the Text Editor saving through a link (it replaces the link with a
   file); hard links packed from a Windows host; the QEMU screenshots Fable's design lists.
+
+## D171 A hello-world crate builds and runs inside EggOS: file locks, `statfs` with `/proc/mounts`, `df` and Files' free space, RAM above 4 GiB on x86_64, `--memory` and `--room`, and CI's `hello-crate` job comparing the program with Linux's (the CI track's stage 2, milestone 2; extends D33, D101, D131, D135, D137, D160, D163, D166, D167, D168, D169, D170) — Decided by the build loop (the linker path decided by research; the Files free space designed by Claude Fable)
+- **Why.** The CI track's second milestone (D166) is `cargo build` and `cargo run` of a small
+  crate inside EggOS. cargo locks its build folder and package cache with `flock` and rustc
+  its sessions likewise, build tools ask `statfs` how much room a folder has, and a toolchain
+  that loads LLVM twice (rustc, then `rust-lld`) wants more memory than the boot tests'
+  128 MiB, which on x86_64 means memory QEMU puts above 4 GiB (q35 keeps only 2 GiB below it
+  once a machine has more than 2.75 GiB).
+- **File locks** (`kernel/src/linux/file_locks.rs`). `flock` (x86_64 73, generic 32): shared
+  and exclusive whole-file locks owned by the open file description, converted by letting go
+  first as Linux does, gone with `LOCK_UN` or the description's last close. `fcntl`'s
+  `F_GETLK`, `F_SETLK`, `F_SETLKW` (record locks owned by the process: gone with any `close`
+  of the file by it, and with its end, `end_process`) and `F_OFD_GETLK`, `F_OFD_SETLK`,
+  `F_OFD_SETLKW` (owned by the description): Linux's `struct flock` (`l_type`, `l_whence` from
+  the start, the offset or the end, `l_start`, a length of 0 to the largest offset or a
+  negative one before the start, `l_pid`), a process's own ranges split, replaced and merged
+  as Linux does, `EBADF` for a read lock without read access or a write lock without write
+  access, `EINVAL` and `EOVERFLOW` as Linux, `F_GETLK` writing back the lock in the way
+  (`l_pid` -1 for a description's) or `F_UNLCK`. The two families never conflict. A file is
+  its node, a memory file, or for anything else its description. Conflicts fail with `EAGAIN`
+  (`LOCK_NB`, `F_SETLK`) or wait (`poll::wait_for` on one wake list for every lock, woken by
+  every unlock), interrupted by signals and restarted after an `SA_RESTART` handler
+  (`Interrupted::RestartsIfAsked`), as Linux's `-ERESTARTSYS`. One table behind a spin lock,
+  made by the first lock (a null `Option<Box<_>>` until then, so its static stays in `.bss`),
+  with a relaxed count read first, so `close`, a description's drop and a process's end cost
+  one load while no lock exists; `ENOLCK` without memory. `fcntl`'s other commands are as
+  before (the dispatcher sends only the lock commands to the new module).
+- **`statfs` and `fstatfs`** (`kernel/src/linux/statfs.rs`; x86_64 137 and 138, generic 43 and
+  44). `crate::vfs::FileSystem::usage` (default: no blocks, `rootfs`'s type) gives
+  `vfs::Usage` (type number, block size, blocks, free blocks, nodes, free nodes, read-only);
+  `vfs::magic` holds Linux's type numbers and EggFS's own (`EggF`). tmpfs reports its budget
+  in pages and what is left of it, EggFS its volume's blocks and inodes and their free counts
+  (a removed file still held keeps its blocks counted until the commit after its last
+  release, which frees them: D170's orphans), the initramfs its archive's pages and nodes with
+  nothing free, FAT its clusters with nothing free, `/proc` and `/dev` no blocks; read-only
+  file systems set `ST_RDONLY`. `struct statfs` is one 120-byte layout on the three
+  architectures; available blocks are all the free ones (no reserve for root), the id is the
+  device in Linux's `new_encode_dev` form. A descriptor without a node reports `pipefs`,
+  `sockfs`, `tmpfs` (memory files) or `anon_inodefs` (event files), and the console, windows
+  and the agent channel `/dev`'s file system. `/proc/mounts` (new) lists the root and every
+  directory mount in Linux's layout (`vfs::each_mount`, `vfs::type_name`): the type as the
+  source, the mount point, the type, `ro` or `rw`, `0 0`.
+- **`df`** (CLI, `userland/coreutils/src/df.rs`; `System::file_system_usage`, `statfs`, or
+  `openat2` refusing links then `fstatfs` for the MCP twins). GNU's columns: `Filesystem`,
+  `1K-blocks`, `Used`, `Available`, `Use%` (rounded up), `Mounted on`; `-h` (K, M, G, T, one
+  decimal under 10, rounded up), `-T` (type), `-a` (file systems without blocks too), `--json`
+  (records `file_system`, `type`, `mounted_on`, `size_bytes`, `used_bytes`,
+  `available_bytes`, `read_only`). With paths, each path's file system, its mount found in
+  `/proc/mounts` by the longest mount point the absolute path is under; without, every listed
+  file system with blocks. In the registry (63 commands, `df` a kept name) with examples run as
+  tests.
+- **The MCP tool `df`** (read, no grant): `df --json -- <path>` for a path in `/home`,
+  `/media/host` or `/work` (default `/home`), resolved and checked as `ls`'s; the MCP check
+  calls it on `/media/host`.
+- **Files' free space** (GUI; Claude Fable's docs/ux/files-free-space-v0.3.md). The status
+  bar's right end says `<size> free` (the Size column's formatter: `12.0 GB free`) or
+  `Read-only`, ending 12 px from the right, dropped whole when it would come within 16 px of
+  `N items`; nothing for a file system without blocks, an answer `statfs` cannot give, or a
+  folder the list cannot show. The Trash view asks `/home/root`. It is read once per reload
+  (entering a folder, F5, after Files' own work), never on a timer; the element tree has the
+  status bar's texts as elements 40 (`N items`) and 41 (the free space, while drawn).
+  `eggos_app::files::{Space, Files::space}` (default `ENOSYS`), `LinuxFiles::space`,
+  `MemoryFiles::sized` and `space_calls`, `listing::{FreeSpace, free_space_text}`,
+  `FilesWindow::{free_space, items_rect, free_space_area, free_space_rect}`; the QEMU Files
+  check masks `free_space_area` (the guest's disks are not the host mirror's).
+- **RAM above 4 GiB on x86_64** (D33's follow-up). `Platform::boot_direct_map_end` (new, no
+  limit by default; x86_64's 4 GiB) and x86_64's `memory_map` no longer clipped to it:
+  `paging::enable` builds the kernel's tables with a frame allocator over the free memory
+  below it (`split_at`), and once the tables, whose direct map covers every range of
+  `physical_memory`, are active, makes the final allocator over what that one never handed
+  out (`FrameAllocator::untouched_memory`, the buddy bitmap's frames included) and the memory
+  above (`with_memory_beyond`); if the first allocator had freed or used its buddy allocator,
+  or the two do not fit one map, the memory above goes unused. Devices are given high frames
+  first: every driver EggOS has takes 64-bit DMA addresses (modern virtio); the secondary CPUs'
+  trampoline still uses the boot tables below 4 GiB.
+- **`--memory` and `--room`** (xtask, run scripts). `cargo xtask run --memory <size>` and the
+  run scripts' `--memory`/`-Memory` add `-m` after the default `128M` (QEMU takes the last),
+  a whole number of MiB or GiB (`512M`, `4G`), at least `128M`, checked by the scripts
+  themselves; `cargo xtask run --room <size>` (with `--work`) and `cargo xtask work pack
+  --room <size>` size a work disk with that much room instead of 1 GiB
+  (`work_disk::pack_with_room`, public now).
+- **The CI job** (`cargo xtask hello-crate --arch <arch>`, `xtask/src/hello_crate.rs` and
+  `xtask/src/qemu/hello_crate.rs`, ci.yml `hello-crate`, x86_64 and aarch64, part of `check`).
+  The pinned 1.99.1 `rustc` and `cargo` of the architecture's glibc target and `rust-std` of
+  its musl target (`rustc_version::{PINNED, pinned, fetch, unpack, copy_libraries}`, now
+  shared; downloads cached in `target/hello-crate/downloads`) are merged into `/work/rustc`;
+  `/work/glibc` gets the libraries `rustc`, `cargo`, `rust-lld` and the toolchain's libraries
+  need from the runner; `/work/hello` is `tests/hello-crate` (our own std program: a line, a
+  word count, sums from four threads, a file written and read back in `TMPDIR`, `OS` and
+  `ARCH`; its own workspace, no dependencies, a committed `Cargo.lock`) with a
+  `.cargo/config.toml` naming the musl target, `rust-lld`, `--threads=1` and no debug
+  information. The same crate is built and run first on the runner with the runner's
+  architecture's toolchain, in a temporary folder outside the repository (whose own
+  `.cargo/config.toml` sets musl targets' `link-self-contained=no`), natively for x86_64 and
+  through `qemu-aarch64` (Ubuntu's `qemu-user`) for aarch64. EggOS boots with 4 GiB and a
+  3600 s budget; the shell exports `RUSTC`, `CARGO_HOME`, `TMPDIR`, `CARGO_INCREMENTAL=0`,
+  `CARGO_BUILD_JOBS=1`, `CARGO_NET_OFFLINE=true`, no colour or progress, `LD_LIBRARY_PATH`,
+  `PATH` and `HOME`, runs `cargo build --locked` and `cargo run --locked --quiet >
+  /work/hello.out` in `/work/hello`, and both must end with 0; xtask unpacks the disk and the
+  output must equal Linux's byte for byte (whether the two programs are the same file is
+  reported, not required). On a host that is not Linux, the output the source gives stands
+  in; with `CI` set that is refused. The downloads and the runner's libraries are test data,
+  never committed, shipped or uploaded.
+- **Front-ends.** `statfs`: CLI `df`, MCP `df`, GUI Files' status bar. File locks: ABI only
+  (programs use them; no capability to show or break a lock yet). Memory: the run scripts' and
+  xtask's `--memory`.
+- **Checks.** Host tests: the lock table (conflicts, splits, merges, an owner's locks going
+  together, families apart), `struct flock`'s ranges and round trip, the lock commands;
+  through the system-call layer, `flock`'s take, convert, let go and errors, `F_SETLK` and
+  `F_GETLK` by one process, `statfs`'s and `fstatfs`'s answers and errors; `struct statfs`'s
+  layout and the device encoding; tmpfs's usage as files take and give back its budget;
+  EggFS's usage, the same for two folders of one volume, and a held, removed file's blocks
+  counted until the commit after its release; `/proc/mounts`' first line and `/proc`'s
+  listing; the split at the boot direct map's end and an allocator's untouched memory;
+  `df`'s text, `-h`, `-T`, `-a`, JSON and a missing path, and its registry examples against
+  the fake; the free space's text, where it is drawn, the Trash's, nothing for a file system
+  without blocks or an answer, one `space` call per reload and none from the clock, the tree's
+  elements 40 and 41; sizes for `--memory` and `--room`, the run scripts' `--memory`; the
+  hello-crate config, environment, session, verdict and comparison. QEMU: the MCP boot calls
+  `df`; the `hello-crate` job.
+- **Decided by research (the linker path, and how the job gets one).** A research subagent
+  read the 1.99.1 channel manifest, downloaded the x86_64 `rustc`, `cargo` and musl `rust-std`
+  components (their SHA-256s match the manifest; aarch64's are the manifest's) and read their
+  ELF headers. Its recommendation, followed: build for `<arch>-unknown-linux-musl` and link
+  with the `rust-lld` the `rustc` component already holds (`lib/rustlib/<host>/bin/rust-lld`,
+  linked to the component's `libLLVM.so`, found through its run path), with the musl target's
+  self-contained start files, C library and unwinder: one `rust-lld -flavor gnu` call, a
+  static program (a static PIE on x86_64), no C compiler, no glibc development files. The glibc
+  targets' default linker is a `cc` driver: shipping gcc, collect2, `as`, `ld` and glibc's
+  start files and linker scripts (or feeding them to `rust-lld` by hand) is far more to run and
+  debug blind under TCG. A musl-hosted `rustc` was refused (it needs `libgcc_s` on musl and is
+  several times larger). cargo needs only glibc's own libraries (no OpenSSL, curl or zlib).
+  The Linux side builds the same target with the same configuration, so the comparison is of
+  the kernels, not of two C libraries. Its suggested environment is the one the job exports.
+  Unverified by the research and left to the job: whether rustc spawns the linker with
+  `fork` or `posix_spawn` here, whether `rust-lld` writes its output through a writable
+  shared mapping (D169 has one), whether cargo touches its global cache database without
+  registry dependencies, and the time and memory under TCG.
+- **Decided by the command model.** The MCP tool is `df`, not the `disk_usage` the plan and
+  the design named: the approved model (D160) names a new tool after its command's words, as
+  `ln` was (D170), so `df`'s twin is the tool `df`; Fable's design file says so now.
+- **Decided without research.** One wake list for every lock waiter, woken by every unlock
+  (locks are rare and short; a list per file would cost a lookup per wake); record locks
+  released by `close` but not yet by `close_range`, `dup2` or `execve`'s close-on-exec; no
+  deadlock detection (a deadlocked `F_SETLKW` waits until a signal); locks on files with no
+  node keyed by their description; read-only file systems reporting no free blocks;
+  `/proc/mounts` listing directory mounts only (not `/etc/resolv.conf`'s file mount), with the
+  type as the source; `df` without paths hiding file systems without blocks, as GNU hides
+  pseudo file systems; the MCP tool's JSON form and `/home` default; the free space masked
+  as a whole area in the QEMU Files check rather than drawn in the host mirror; the final
+  frame allocator rebuilt rather than grown (the buddy bitmap must cover the whole span); the
+  job's 4 GiB, 3600 s, one cargo job, debug build without debug information; the Linux side
+  through `qemu-user` for aarch64 on the x86_64 runner; the test crate's contents. The owner
+  can overrule any of these.
+- **Performance and size (D24).** `close` and an open file description's drop gain one
+  relaxed load of the lock count, a process's end one more; `fcntl`'s lock commands take a
+  guarded arm of the out-of-line dispatcher; nothing else on a hot path changes. With more
+  memory than 4 GiB below the PCI hole on x86_64, frames above 4 GiB are handed out first;
+  the boot tests' 128 MiB machines are unchanged. The kernel grows by the two modules,
+  `/proc/mounts` and each file system's `usage`; coreutils by `df`; Files by one `statfs` per
+  reload. No benchmark is added: locks are taken a few times per build, and report-only CI
+  (D122) shows any move, the `close`-heavy `linux_openat` first.
+- **Not yet.** `EDEADLK` for a deadlocked `F_SETLKW`; record locks released by
+  `close_range`, `dup2` over a descriptor and `execve`'s close-on-exec; leases
+  (`F_SETLEASE`), `F_NOTIFY` and mandatory locks; free blocks of the read-only host share; a
+  per-file system `f_flags` beyond `ST_RDONLY` (`nosuid`, `nodev`, `noexec` for `/proc`);
+  `/proc/self/mountinfo` and file mounts in `/proc/mounts`; `df -i` and `--output`; Files'
+  free space for a Properties panel, and read again when another program changes a disk; the
+  glibc targets linking inside EggOS (a C compiler); cargo with more than one job (milestone
+  3); the gaps the job finds against Linux, recorded in the roadmap once it has run; growing a
+  work disk that fills; RAM beyond the direct map's reach on riscv64 (Sv48) and the device
+  tree's RAM above the boot direct map on aarch64.

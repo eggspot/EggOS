@@ -305,8 +305,9 @@ D16):
     dialog; new folders, rename in place, Properties; a real Trash in the freedesktop.org layout
     (`Move to Trash`, Restore, `Empty Trash`, permanent delete after a question); and the same
     on the command line: `cp -r`, `mv` of folders across file systems, and `trash` with
-    `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`. Next: the MCP tools with the MCP server, free
-    space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
+    `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`; the free space of the folder's file system in the
+    status bar (D171, `df` and the MCP tool `df` beside it). Next: the MCP tools with the MCP
+    server, multiple selection, a shared clipboard, the Text Editor (item 46).
 28. **Done** — users can now connect Claude Code or any MCP client to EggOS and let it work
     with files, programs and apps under the grants they set (D136, D137, docs/mcp.md):
     `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` with no screen, D144) wires a named
@@ -551,8 +552,17 @@ The release path (the release-path review's issues #141-#145, after the items ab
   lines but `VmSize`; `/proc/<pid>/fd` links to pipes and sockets cannot be opened; files are
   owned by root; no `/sys` (jemalloc and glibc read `/sys/devices/system/cpu/online` and the
   transparent huge page settings, and fall back); no `/proc/sys/vm/overcommit_memory`; no
-  vDSO; `clone3` and `rseq` are `ENOSYS` (glibc falls back).
-  Next: milestone 2, a hello-world crate builds and runs (part 19).
+  vDSO; `clone3` and `rseq` are `ENOSYS` (glibc falls back). Stage 2, milestone 2 **written,
+  unchecked** (D171): `flock` and `fcntl`'s record and open-file-description locks (waits that
+  a signal restarts), `statfs` and `fstatfs` from every file system with `/proc/mounts`, the
+  `df` utility, the MCP tool `df` and Files' free space in its status bar (Claude Fable's
+  docs/ux/files-free-space-v0.3.md), RAM above 4 GiB on x86_64, `--memory` for `cargo xtask
+  run` and both run scripts, `--room` for a work disk's spare space, and CI's `hello-crate`
+  job: the official `rustc` and `cargo` with the musl target's standard library on a work disk,
+  `cargo build` and `cargo run` of `tests/hello-crate` inside EggOS with 4 GiB, linked by the
+  toolchain's `rust-lld` (decided by research), its output compared with the same build run on
+  Linux. Gaps against Linux recorded once the job has run. Next: milestone 3, a multi-crate
+  workspace builds, measured against Linux (part 21).
 - After v0.3.0, the Real apps track (alternating with the CI track): real Linux, Windows and
   macOS apps install and run, each to be listed in a new docs/compatibility.md. Its first step,
   event loops, copy-on-write `fork` and POSIX shared memory, **written, unchecked** (D169): `epoll`,
@@ -604,7 +614,7 @@ leaves instead of measuring, TSC-deadline mode, and the ACPI PM timer or HPET as
 reference clocks when there is no 8254; `stimecmp` directly when RISC-V Sstc is present; GICv3; device-tree timebase and GIC
 addresses (M5).
 
-Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4; user address spaces need none yet, D45); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off, the boot tables included, and a boot direct map built from the device tree instead of QEMU `virt`'s fixed device/RAM split (real hardware, M13); secondary CPUs start on the kernel's tables, global kernel pages and PCID (M4); a device window behind a mapping call instead of the direct map's (done for drivers, D110: the early devices still use the direct map's); unmapping device windows, with cross-CPU TLB shootdown for kernel mappings (M5); RAM above 4 GiB on x86_64; on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5; early device pages and the MCFG's ECAM are already left out, D38, D110); keep the PVH start info and memory map in `physical_memory` even when a loader map has more than 62 disjoint entries; hardware probes in the boot self-tests that the low half, the image's direct-map alias and the stack guard page really fault (they check the tables in software today); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
+Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4; user address spaces need none yet, D45); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off, the boot tables included, and a boot direct map built from the device tree instead of QEMU `virt`'s fixed device/RAM split (real hardware, M13); secondary CPUs start on the kernel's tables, global kernel pages and PCID (M4); a device window behind a mapping call instead of the direct map's (done for drivers, D110: the early devices still use the direct map's); unmapping device windows, with cross-CPU TLB shootdown for kernel mappings (M5); RAM above 4 GiB on x86_64 (done, D171: the page tables are built from memory below 4 GiB, then the rest is handed out); on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5; early device pages and the MCFG's ECAM are already left out, D38, D110); keep the PVH start info and memory map in `physical_memory` even when a loader map has more than 62 disjoint entries; hardware probes in the boot self-tests that the low half, the image's direct-map alias and the stack guard page really fault (they check the tables in software today); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
 
 Address-space follow-ups (D45): (threads that carry an address space, switched only when it
 differs: done, lazily at the point of use, D48; the first trip to user mode and back: done, D47);

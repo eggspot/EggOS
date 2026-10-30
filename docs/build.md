@@ -219,6 +219,23 @@ holds what used to be written in them.
   unpacks with `tar` into `target/dynamic-linking/`, linked by `rust-lld`), adds both with
   their loaders (at the paths their `PT_INTERP` names) and glibc's `libc.so.6` to the release
   image, boots it and wants both programs' lines. The libraries are test data, never shipped.
+- **`cargo xtask hello-crate --arch <arch>`** (D171, Linux hosts, x86_64 and aarch64)
+  downloads the pinned release's `rustc` and `cargo` for the architecture's glibc target and
+  the standard library of its musl target from static.rust-lang.org (checked against their
+  pinned SHA-256s, kept in `target/hello-crate/downloads`), merges them into one toolchain,
+  copies the glibc libraries its programs need from this host, and a copy of
+  `tests/hello-crate` with a `.cargo/config.toml` naming the musl target and `rust-lld`, onto
+  a work disk; builds and runs the same crate here with this host's toolchain in a folder
+  outside the repository (natively, or through `qemu-<arch>` for the other architecture);
+  boots the release image with glibc's loader and 4 GiB, runs `cargo build` and `cargo run`
+  in `/work/hello`, unpacks the disk and wants the program's output to be Linux's. On a host
+  that is not Linux it compares with the output the program's source gives, and with `CI` set
+  it refuses to.
+- **`--memory` and `--room`** (D171). `cargo xtask run --memory <size>` (such as `4G`, at
+  least `128M`) and the run scripts' `--memory`/`-Memory` give the machine more memory, which
+  on x86_64 reaches above 4 GiB; `cargo xtask run --work <folder> --room <size>` and `cargo
+  xtask work pack --room <size> <folder> <image>` leave that much room on the work disk instead
+  of 1 GiB.
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
@@ -359,7 +376,9 @@ holds what used to be written in them.
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
   programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
-  installing the glibc cross compilers and target in the CI image, D167) and, on PRs, `hosts`
+  installing the glibc cross compilers and target in the CI image, D167), `rustc-version` (D168)
+  and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run) and,
+  on PRs, `hosts`
   (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other

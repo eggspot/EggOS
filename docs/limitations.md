@@ -8,7 +8,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 ## Where it runs
 - **QEMU only.** The images boot on QEMU's `virt` machines (aarch64 with a Cortex-A72 and GICv2,
   riscv64 through OpenSBI) and `q35` (x86_64), with 128 MiB of memory and 4 CPUs, as the run
-  scripts start them; they need QEMU 8.2 or later (CI tests with Ubuntu 24.04's 8.2.2). No real
+  scripts start them (`--memory`/`-Memory` gives more, such as `4G`; on x86_64 the memory QEMU
+  puts above 4 GiB is used too, D171); they need QEMU 8.2 or later (CI tests with Ubuntu 24.04's 8.2.2). No real
   hardware, no other hypervisor, no UEFI or bootable disk image yet.
 - **No acceleration.** QEMU emulates the CPU (TCG) on every host, so the system runs slower than
   it will on hardware; boot to the prompt still takes about a quarter of a second (120 ms on
@@ -56,7 +57,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   D157). `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
-  `uptime`, `ps`, `version`, `sys/kernel`, `net/interfaces`, `net/route`, `net/arp`, `net/unix`,
+  `uptime`, `ps`, `version`, `mounts` (D171), `sys/kernel`, `net/interfaces`, `net/route`, `net/arp`, `net/unix`,
   `driver/rtc`, `self` and a folder per process (D125, D137, D150, D157, D168). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS
   (on-disk version 2, D170) holds symbolic and hard links (at most 65 000 names per file, no
@@ -93,8 +94,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   skipped with a warning otherwise); names must be valid Unicode and at most 255 bytes. The run scripts
   cannot pack or unpack a folder themselves: that needs `cargo xtask` in an EggOS checkout.
   Only one work disk can be attached. The image is sized once, when it is packed (the folder
-  plus a thirty-second plus 1 GiB): a build that writes more fills it (`No space left on
-  device`). Unpacking reads the whole image's metadata and checks it first, so a damaged image
+  plus a thirty-second plus 1 GiB, or `--room`'s size instead of the gibibyte, D171): a build
+  that writes more fills it (`No space left on device`); it does not grow. `df /work` shows how
+  much is left. Unpacking reads the whole image's metadata and checks it first, so a damaged image
   gives nothing back. Agents read `/work` without a grant, as `/media/host`; the write tools
   still reach only `/home/root`.
 - **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
@@ -169,7 +171,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   executable or `PROT_NONE` mapping of one (`EPERM`), no `F_SEAL_WRITE` or
   `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
   with mode 0 only, and a write, `fallocate` or mapping at a gigabyte-scale offset fails
-  (`ENOSPC`, `ENOMEM`).
+  (`ENOSPC`, `ENOMEM`). File locks work (D171): `flock` and `fcntl`'s record and
+  open-file-description locks, waiting or not; a wait that would deadlock waits instead of
+  failing with `EDEADLK`, and a process's record locks go with `close` and its end but not yet
+  with `close_range`, a `dup2` over the descriptor or `execve`'s close-on-exec; no leases
+  (`F_SETLEASE`) or mandatory locks. `statfs` and `fstatfs` work (D171), from what each file
+  system keeps in memory: the read-only host share and the initramfs report no free blocks,
+  `/proc` and `/dev` none at all, and `/tmp` its share of memory.
+- **cargo builds inside EggOS, in CI** (D171). CI's `hello-crate` job hands EggOS the official
+  toolchain's `rustc` and `cargo` (glibc builds, 1.99.1, test data) with the musl target's
+  standard library on a work disk, and `cargo build` and `cargo run` a hello-world crate,
+  linked by the toolchain's `rust-lld` with musl's self-contained files; the program must print
+  what it prints on Linux. EggOS ships no toolchain, C compiler or linker: programs for the
+  glibc targets (whose linker is a C compiler) do not link inside it yet, and builds use one
+  job (`CARGO_BUILD_JOBS=1`).
 - **Linux GUI programs: static Wayland clients only.** `eggway` (D140) shows a static program's
   `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need their libraries and
   protocols eggway does not serve yet ([Linux
@@ -318,7 +333,8 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - Files (D135, docs/ux/desktop-v0.3-gui.md section 8.1) selects one item at a time (no
   multiple selection, dragging or drop), has one list view (no icons, thumbnails or columns
   to sort by), hides names starting with `.`, shows at most 512 entries (32 KiB of names) of
-  a folder, and shows no free space in its status bar (no `statfs` yet); its clipboard holds
+  a folder, and reads the free space in its status bar only when it shows a folder (F5 reads it
+  again, D171); its clipboard holds
   one item inside the Files process, shared with no other program and lost when Files
   closes; a text file opens in the Text Editor (D149), or with `cat` in the Terminal window
   in an image without it; each click on the desktop's `Host share` opens another Files window; folders nest at
