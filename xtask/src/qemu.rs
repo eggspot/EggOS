@@ -793,7 +793,7 @@ const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi windows-console.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
     b"/bin/windows-console.exe exit 300; echo WINDOWS-CONSOLE status $?\r",
     b"windows-unsupported.exe; echo WINDOWS-CONSOLE status $?\r",
-    b"other-cpu.exe; echo WINDOWS-CONSOLE status $?\r",
+    b"GREETING=hi other-cpu.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
     b"windows-tools.exe dir 'C:\\bin\\windows-*.exe' 'C:\\bin\\windows-?ools.exe' \
       'C:\\usr\\share\\windows-tools\\*' 'C:\\nope\\*' 'C:\\bin\\*.zzz'; \
       echo WINDOWS-TOOLS status $?\r",
@@ -1305,6 +1305,20 @@ fn android_console_lines(name: &str, loader: &str) -> Vec<Line> {
     lines
 }
 
+const WINDOWS_CONSOLE_CHECK_LINES: [&str; 11] = [
+    "WINDOWS-CONSOLE env GREETING=hi",
+    "WINDOWS-CONSOLE teb ok",
+    "WINDOWS-CONSOLE file eggos",
+    "WINDOWS-CONSOLE missing file refused error 3",
+    "WINDOWS-CONSOLE heap ok",
+    "WINDOWS-CONSOLE time ok",
+    "WINDOWS-CONSOLE stack ok",
+    "WINDOWS-CONSOLE library ok",
+    "WINDOWS-CONSOLE tls ok",
+    "WINDOWS-CONSOLE stderr",
+    "WINDOWS-CONSOLE status 0",
+];
+
 fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len()] {
     let whole = |lines: &[&str]| -> Vec<Line> {
         lines
@@ -1313,16 +1327,24 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             .collect()
     };
     let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
+    let console_lines = |name: &str| -> Vec<Line> {
+        let first = format!("WINDOWS-CONSOLE {name} args a|b c");
+        let mut lines = whole(&[first.as_str()]);
+        lines.extend(whole(&WINDOWS_CONSOLE_CHECK_LINES));
+        lines
+    };
     let (architecture, other_cpu) = match arch {
         "x86_64" => (
             9,
-            "other-cpu.exe: an ARM64 program, and this computer runs x64 programs",
+            vec![
+                Line::Around(
+                    "windows: ",
+                    "other-cpu.exe: an ARM64 program, and this computer runs x64 programs",
+                ),
+                Line::Whole("WINDOWS-CONSOLE status 126".into()),
+            ],
         ),
-        "aarch64" => (
-            12,
-            "other-cpu.exe: an x64 program, and this computer runs ARM64 programs \
-             (EggOS does not translate x64 programs for Arm yet)",
-        ),
+        "aarch64" => (12, console_lines("other-cpu.exe")),
         _ => {
             let refused = |name: &str| {
                 vec![
@@ -1354,20 +1376,7 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
          version 10.0.26100 module C:\\bin\\windows-tools.exe"
     );
     [
-        whole(&[
-            "WINDOWS-CONSOLE windows-console.exe args a|b c",
-            "WINDOWS-CONSOLE env GREETING=hi",
-            "WINDOWS-CONSOLE teb ok",
-            "WINDOWS-CONSOLE file eggos",
-            "WINDOWS-CONSOLE missing file refused error 3",
-            "WINDOWS-CONSOLE heap ok",
-            "WINDOWS-CONSOLE time ok",
-            "WINDOWS-CONSOLE stack ok",
-            "WINDOWS-CONSOLE library ok",
-            "WINDOWS-CONSOLE tls ok",
-            "WINDOWS-CONSOLE stderr",
-            "WINDOWS-CONSOLE status 0",
-        ]),
+        console_lines("windows-console.exe"),
         whole(&["WINDOWS-CONSOLE status 44"]),
         vec![
             Line::Around(
@@ -1377,10 +1386,7 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             ),
             Line::Whole("WINDOWS-CONSOLE status 126".into()),
         ],
-        vec![
-            Line::Around("windows: ", other_cpu),
-            Line::Whole("WINDOWS-CONSOLE status 126".into()),
-        ],
+        other_cpu,
         whole(&[
             concat!(
                 r"WINDOWS-TOOLS dir C:\bin\windows-*.exe: windows-console.exe ",
@@ -4197,7 +4203,8 @@ mod tests {
         }
         let arm = windows_programs_console("aarch64");
         assert!(arm.contains("system arch 12 "));
-        assert!(arm.contains("other-cpu.exe: an x64 program"));
+        assert!(arm.contains("WINDOWS-CONSOLE other-cpu.exe args a|b c"));
+        assert!(!arm.contains("other-cpu.exe: an x64 program"));
     }
 
     fn windows_crt_console() -> String {

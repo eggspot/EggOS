@@ -16,6 +16,7 @@ eggos-android-properties = { path = "../android-properties" }
 eggos-android-log = { path = "../android-log" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-wayland = { path = "../wayland" }
+eggos-translate = { path = "../translate" }
 
 [lints]
 workspace = true

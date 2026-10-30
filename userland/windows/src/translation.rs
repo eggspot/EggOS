@@ -17,7 +17,7 @@ use crate::win32::thread_environment::teb;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use eggos_translate::cache::{self, CacheFile, policy};
 use eggos_translate::codegen::state;
 use eggos_translate::image::bridge::{self, thread};
@@ -46,6 +46,8 @@ struct Translation {
     mapped: usize,
     entries: usize,
     enter: usize,
+    dispatch: u64,
+    procedures: usize,
     back_map: Vec<BackMapEntry>,
 }
 
@@ -85,8 +87,11 @@ pub fn prepare(
     let mut translation = translate_image(&input, mode)
         .map_err(|_| "EggOS could not translate this x64 program's code")?;
     let slots = translated::import_slots(pe, image).ok_or("the import table is damaged")?;
-    let slot_addresses: Vec<u32> = slots.iter().map(|slot| slot.rva).collect();
-    bridge::add_import_stubs(&mut translation, &slot_addresses)
+    let mut stub_addresses: Vec<u32> = slots.iter().map(|slot| slot.rva).collect();
+    stub_addresses.extend(
+        translated::procedure_stub_rvas(pe.mapped_size()).ok_or("the program is too large")?,
+    );
+    bridge::add_import_stubs(&mut translation, &stub_addresses)
         .map_err(|_| "EggOS could not translate this x64 program's imports")?;
     let file = CacheFile {
         input_digest: digest,
@@ -132,13 +137,20 @@ pub fn install(
         bridge_bytes += (words.len() * 4).next_multiple_of(BRIDGE_ALIGNMENT);
         bridges.push(words);
     }
+    let procedure_rvas =
+        translated::procedure_stub_rvas(pe.mapped_size()).ok_or("the program is too large")?;
     let bridges_start = code_bytes.next_multiple_of(BRIDGE_ALIGNMENT);
-    let mapped = (bridges_start + bridge_bytes).next_multiple_of(linux::PAGE_SIZE);
-    let code =
-        linux::map_anonymous(0, mapped, PROT_READ | PROT_WRITE, false).map_err(|_| FAILED)?;
-    // SAFETY: `code` is a new private mapping of `mapped` zeroed bytes that only this slice
-    // uses until it is made executable.
-    let host = unsafe { core::slice::from_raw_parts_mut(code as *mut u8, mapped) };
+    let trampolines_start = bridges_start + bridge_bytes;
+    let trampoline_bytes =
+        (bridge::PROCEDURE_TRAMPOLINE_BYTES as usize).next_multiple_of(BRIDGE_ALIGNMENT);
+    let mapped = (trampolines_start + procedure_rvas.len() * trampoline_bytes)
+        .next_multiple_of(linux::PAGE_SIZE);
+    let total = mapped + linux::PAGE_SIZE;
+    let code = linux::map_anonymous(0, total, PROT_READ | PROT_WRITE, false).map_err(|_| FAILED)?;
+    // SAFETY: `code` is a new private mapping of `total` zeroed bytes that only this slice
+    // uses until its first `mapped` bytes are made executable.
+    let host = unsafe { core::slice::from_raw_parts_mut(code as *mut u8, total) };
+    let procedures = code + mapped;
     host[..code_bytes].copy_from_slice(&translation.code);
     let delta = (base as u64).wrapping_sub(pe.image_base);
     for &offset in &translation.guest_address_literals {
@@ -165,6 +177,17 @@ pub fn install(
         image[slot..slot + 8].copy_from_slice(&slot_address.to_le_bytes());
         at += (length * 4).next_multiple_of(BRIDGE_ALIGNMENT);
     }
+    for (index, &rva) in procedure_rvas.iter().enumerate() {
+        let at = trampolines_start + index * trampoline_bytes;
+        let slot = (procedures + 8 * index) as u64;
+        let words = bridge::procedure_trampoline(slot);
+        for (byte, word) in (at..).step_by(4).zip(words) {
+            host[byte..byte + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let stub = translation.entries.lookup(rva).ok_or(FAILED)? as usize;
+        let literal = stub + bridge::IMPORT_STUB_LITERAL as usize;
+        host[literal..literal + 8].copy_from_slice(&((code + at) as u64).to_le_bytes());
+    }
     let table = translation.entries.runtime_bytes(base as u64, code as u64);
     let entries_bytes = table.len().next_multiple_of(linux::PAGE_SIZE);
     let entries = linux::map_anonymous(0, entries_bytes, PROT_READ | PROT_WRITE, false)
@@ -186,6 +209,8 @@ pub fn install(
         mapped,
         entries,
         enter: code + translation.enter as usize,
+        dispatch,
+        procedures,
         back_map,
     });
     TRANSLATION.store(Box::into_raw(state), Ordering::Release);
@@ -274,6 +299,90 @@ impl Context {
 
 fn general(register: u32) -> u32 {
     context::GENERAL + 8 * register
+}
+
+static PROCEDURES_LOCK: AtomicBool = AtomicBool::new(false);
+
+struct ProceduresGuard;
+
+impl ProceduresGuard {
+    fn take() -> Self {
+        while PROCEDURES_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+
+impl Drop for ProceduresGuard {
+    fn drop(&mut self) {
+        PROCEDURES_LOCK.store(false, Ordering::Release);
+    }
+}
+
+fn procedure_bridge(native: usize, function: &[u8], dispatch: u64) -> Option<usize> {
+    let moves = bridge::argument_moves(translated::function_arguments(function));
+    let words = bridge::forward_bridge(&moves, native as u64, dispatch).ok()?;
+    let bytes = (words.len() * 4).next_multiple_of(linux::PAGE_SIZE);
+    let page = linux::map_anonymous(0, bytes, PROT_READ | PROT_WRITE, false).ok()?;
+    // SAFETY: `page` is a new private mapping of `bytes` zeroed bytes, room for every word.
+    let host = unsafe { core::slice::from_raw_parts_mut(page as *mut u8, bytes) };
+    for (at, word) in (0..).step_by(4).zip(&words) {
+        host[at..at + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    synchronize_instruction_cache(page, bytes);
+    // SAFETY: the bridge is complete; from now on it is only executed and read.
+    unsafe { linux::protect(page, bytes, PROT_READ | PROT_EXEC) }.ok()?;
+    Some(page)
+}
+
+/// What `GetProcAddress` gives a translated program for the layer's function at `native`
+/// named `function`: the guest address of a procedure stub whose bridge calls it (the same
+/// one each time for the same function). An ARM64 program, or a translated one past
+/// [`translated::PROCEDURE_STUBS`] functions, gets `native` itself.
+pub fn guest_procedure(native: usize, function: &[u8]) -> usize {
+    let Some(translation) = current() else {
+        return native;
+    };
+    let Some(rvas) = translated::procedure_stub_rvas(translation.guest_size) else {
+        return native;
+    };
+    let _guard = ProceduresGuard::take();
+    let natives = translation.procedures + 8 * translated::PROCEDURE_STUBS;
+    let mut free = None;
+    for (index, &rva) in rvas.iter().enumerate() {
+        let recorded = read_u64_at(natives + 8 * index) as usize;
+        if recorded == native {
+            return (translation.guest_base + u64::from(rva)) as usize;
+        }
+        if recorded == 0 && free.is_none() {
+            free = Some((index, rva));
+        }
+    }
+    let Some((index, rva)) = free else {
+        return native;
+    };
+    let Some(bridge) = procedure_bridge(native, function, translation.dispatch) else {
+        return native;
+    };
+    write_u64(translation.procedures + 8 * index, bridge as u64);
+    write_u64(natives + 8 * index, native as u64);
+    (translation.guest_base + u64::from(rva)) as usize
+}
+
+/// The layer's function behind a guest address `GetProcAddress` handed out, so native code
+/// given it as a callback calls the function itself; `None` for any other address.
+pub fn native_procedure(address: usize) -> Option<usize> {
+    let translation = current()?;
+    let rva = (address as u64).checked_sub(translation.guest_base)?;
+    let index = translated::procedure_stub_index(translation.guest_size, rva)?;
+    let natives = translation.procedures + 8 * translated::PROCEDURE_STUBS;
+    let _guard = ProceduresGuard::take();
+    let native = read_u64_at(natives + 8 * index) as usize;
+    (native != 0).then_some(native)
 }
 
 /// Calls the program's function at `address` with `arguments` in `rcx`, `rdx`, `r8` and `r9`

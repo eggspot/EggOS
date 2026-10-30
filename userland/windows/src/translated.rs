@@ -187,11 +187,45 @@ impl ImportSlot {
     /// [`DEFAULT_ARGUMENTS`] integers (variadic ones too) except the few the layer exports
     /// with floating-point arguments.
     pub fn arguments(&self) -> &'static [ArgumentKind] {
-        match (self.library.is_empty(), self.function.as_slice()) {
-            (false, b"sqrtf") => &ONE_FLOATING_POINT,
-            _ => &INTEGERS,
+        if self.library.is_empty() {
+            &INTEGERS
+        } else {
+            function_arguments(&self.function)
         }
     }
+}
+
+/// How the layer's export `function` takes its arguments, for its bridge: [`DEFAULT_ARGUMENTS`]
+/// integers unless it is one of the few with floating-point arguments; an empty name (an
+/// ordinal) is taken as integers.
+pub fn function_arguments(function: &[u8]) -> &'static [ArgumentKind] {
+    match function {
+        b"sqrtf" => &ONE_FLOATING_POINT,
+        _ => &INTEGERS,
+    }
+}
+
+/// How many functions found while the program runs (`GetProcAddress`) can be called from
+/// translated code: each gets one of the procedure stubs the translation carries.
+pub const PROCEDURE_STUBS: usize = 64;
+const PROCEDURE_STUB_SPACING: u32 = 16;
+
+/// The relative addresses of the procedure stubs, the guest addresses `GetProcAddress` hands
+/// out: 16 bytes apart from the first page past the image (`mapped_size`, a multiple of the
+/// page size), where no guest code is. `None` when they would not fit in 32 bits.
+pub fn procedure_stub_rvas(mapped_size: u64) -> Option<Vec<u32>> {
+    let first = u32::try_from(mapped_size).ok()?;
+    (0..PROCEDURE_STUBS as u32)
+        .map(|index| first.checked_add(index * PROCEDURE_STUB_SPACING))
+        .collect()
+}
+
+/// Which procedure stub a guest address relative to the image base is, if any.
+pub fn procedure_stub_index(mapped_size: u64, rva: u64) -> Option<usize> {
+    let offset = rva.checked_sub(mapped_size)?;
+    let index = usize::try_from(offset / u64::from(PROCEDURE_STUB_SPACING)).ok()?;
+    (offset.is_multiple_of(u64::from(PROCEDURE_STUB_SPACING)) && index < PROCEDURE_STUBS)
+        .then_some(index)
 }
 
 fn c_string(image: &[u8], at: usize) -> Option<&[u8]> {
@@ -518,6 +552,21 @@ mod tests {
         let none = Builder::new();
         let pe = Pe::parse(&none.file).unwrap();
         assert_eq!(import_slots(&pe, &laid_out(&pe)), Some(Vec::new()));
+    }
+
+    #[test]
+    fn procedure_stubs_follow_the_image_and_are_found_by_their_address() {
+        let rvas = procedure_stub_rvas(0x4000).unwrap();
+        assert_eq!(rvas.len(), PROCEDURE_STUBS);
+        assert_eq!(rvas[0], 0x4000);
+        assert_eq!(rvas[1], 0x4010);
+        assert_eq!(procedure_stub_index(0x4000, 0x4010), Some(1));
+        assert_eq!(procedure_stub_index(0x4000, 0x4018), None);
+        assert_eq!(procedure_stub_index(0x4000, 0x3ff0), None);
+        assert_eq!(procedure_stub_index(0x4000, 0x4000 + 16 * 64), None);
+        assert_eq!(procedure_stub_rvas(1 << 32), None);
+        assert_eq!(function_arguments(b"sqrtf"), [ArgumentKind::FloatingPoint]);
+        assert_eq!(function_arguments(b"").len(), DEFAULT_ARGUMENTS);
     }
 
     #[test]

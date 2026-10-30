@@ -173,6 +173,15 @@ fn mach_o_architecture(cpu: u32) -> Architecture {
     }
 }
 
+/// Whether a program built for `built_for` runs on `machine` through ahead-of-time translation
+/// (D191): x64 Windows programs on aarch64, whose layer translates them at their first launch.
+pub fn runs_translated(source: Source, built_for: Architecture, machine: Architecture) -> bool {
+    matches!(
+        (source, built_for, machine),
+        (Source::Windows, Architecture::X86_64, Architecture::Aarch64)
+    )
+}
+
 fn foreign(
     source: Source,
     built_for: Architecture,
@@ -184,7 +193,7 @@ fn foreign(
     if !built_for.is_64_bit() {
         return Err(NotRunnable::ThirtyTwoBit);
     }
-    if built_for != machine {
+    if built_for != machine && !runs_translated(source, built_for, machine) {
         return Err(NotRunnable::OtherCpu(built_for));
     }
     Ok(Program {
@@ -440,7 +449,10 @@ mod tests {
             recognise(&arm64, Aarch64),
             program(Source::Windows, Aarch64)
         );
-        assert_eq!(recognise(&x64, Aarch64), Err(NotRunnable::OtherCpu(X86_64)));
+        assert_eq!(recognise(&x64, Aarch64), program(Source::Windows, X86_64));
+        assert!(runs_translated(Source::Windows, X86_64, Aarch64));
+        assert!(!runs_translated(Source::Windows, Aarch64, X86_64));
+        assert!(!runs_translated(Source::Macos, X86_64, Aarch64));
         assert_eq!(
             recognise(&x64, Riscv64),
             Err(NotRunnable::LayerNotOnThisCpu(Source::Windows))

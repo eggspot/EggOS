@@ -160,20 +160,30 @@ extern "efiapi" fn free_library(module: usize) -> Bool {
     }
 }
 
+#[cfg(all(runs_windows_programs, target_arch = "aarch64"))]
+fn for_the_program(native: usize, name: &[u8]) -> usize {
+    crate::translation::guest_procedure(native, name)
+}
+
+#[cfg(not(all(runs_windows_programs, target_arch = "aarch64")))]
+fn for_the_program(native: usize, _name: &[u8]) -> usize {
+    native
+}
+
 unsafe extern "efiapi" fn get_proc_address(module: usize, name: *const u8) -> usize {
     let Some(library) = library_of(module) else {
         return fail(error::PROC_NOT_FOUND, 0);
     };
     if (name as usize) < 0x1_0000 {
         return match super::resolve_ordinal(library.name(), name as usize as u16) {
-            Some(address) => address as usize,
+            Some(address) => for_the_program(address as usize, b""),
             None => fail(error::PROC_NOT_FOUND, 0),
         };
     }
     // SAFETY: `GetProcAddress`'s contract: a NUL-terminated name (ordinals are below 64 Ki).
     let name = unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
     match super::resolve(library.name(), name) {
-        Some(address) => address as usize,
+        Some(address) => for_the_program(address as usize, name),
         None => fail(error::PROC_NOT_FOUND, 0),
     }
 }

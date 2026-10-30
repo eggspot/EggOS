@@ -373,6 +373,23 @@ pub fn import_stub(bridge: u64) -> [u32; 4] {
     ]
 }
 
+/// The bytes of one procedure trampoline.
+pub const PROCEDURE_TRAMPOLINE_BYTES: u32 = 24;
+
+/// The words of a procedure trampoline: a jump to the address held in the writable word at
+/// `slot`, for functions a program finds while it runs (`GetProcAddress`, `dlsym`), whose
+/// bridges the loader makes then and records in their slots.
+pub fn procedure_trampoline(slot: u64) -> [u32; 6] {
+    [
+        encode::load_literal(LINK_TARGET, 4),
+        encode::load_store(LoadStore::LdrX, LINK_TARGET, LINK_TARGET, 0).unwrap_or(0),
+        encode::br(LINK_TARGET),
+        encode::nop(),
+        slot as u32,
+        (slot >> 32) as u32,
+    ]
+}
+
 /// Adds an import stub for every import address table slot in `slot_rvas` to `image`'s code
 /// and maps each slot's relative address to its stub in the entries table, growing the table
 /// (and rewriting the dispatch for the new size) when it needs room. The stubs' literals stay
@@ -585,5 +602,16 @@ mod tests {
         let length = image.code.len();
         add_import_stubs(&mut image, &slots).unwrap();
         assert_eq!(image.code.len(), length);
+    }
+
+    #[test]
+    fn a_procedure_trampoline_loads_its_slot_and_jumps_to_what_it_holds() {
+        let words = procedure_trampoline(0x0000_7F12_3456_7890);
+        assert_eq!(words[0], 0x5800_0091);
+        assert_eq!(words[1], 0xF940_0231);
+        assert_eq!(words[2], 0xD61F_0220);
+        assert_eq!(words[4], 0x3456_7890);
+        assert_eq!(words[5], 0x0000_7F12);
+        assert_eq!(words.len() * 4, PROCEDURE_TRAMPOLINE_BYTES as usize);
     }
 }

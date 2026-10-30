@@ -162,6 +162,7 @@ dependencies = [
  "eggos-hal",
  "eggos-net",
  "eggos-settings-file",
+ "eggos-translate",
  "eggos-wayland",
 ]
 

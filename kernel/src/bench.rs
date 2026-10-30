@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 59] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 60] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -118,6 +118,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 59] {
             linux_unix_stream_send_recv(n)
         }),
         ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
+        ("translate_block_16", |_, n| translate_block_16(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -969,6 +970,41 @@ fn wayland_blit_rows(n: u64) {
             WIDTH,
             band,
         );
+    }
+}
+
+const TRANSLATE_BENCH_PATTERN: [[u8; 3]; 3] =
+    [[0x48, 0x01, 0xd8], [0x48, 0x29, 0xca], [0x48, 0x31, 0xf7]];
+const TRANSLATE_BENCH_ARITHMETIC: usize = 15;
+const TRANSLATE_BENCH_BACK_BRANCH: [u8; 6] = [0x0f, 0x85, 0xcd, 0xff, 0xff, 0xff];
+const TRANSLATE_BENCH_BYTES: usize = 3 * TRANSLATE_BENCH_ARITHMETIC + 6 + 1;
+const TRANSLATE_BENCH_ADDRESS: u64 = 0x1_4000_1000;
+
+fn translate_bench_code() -> [u8; TRANSLATE_BENCH_BYTES] {
+    let mut code = [0u8; TRANSLATE_BENCH_BYTES];
+    for index in 0..TRANSLATE_BENCH_ARITHMETIC {
+        code[3 * index..3 * index + 3].copy_from_slice(&TRANSLATE_BENCH_PATTERN[index % 3]);
+    }
+    let branch = 3 * TRANSLATE_BENCH_ARITHMETIC;
+    code[branch..branch + 6].copy_from_slice(&TRANSLATE_BENCH_BACK_BRANCH);
+    code[branch + 6] = 0xc3;
+    code
+}
+
+fn translate_block_16(n: u64) {
+    use eggos_translate::codegen::{CodegenMode, Flags, form_block, translate_block};
+    let code = translate_bench_code();
+    let mode = CodegenMode {
+        lse: true,
+        ..CodegenMode::default()
+    };
+    for _ in 0..n {
+        let block = form_block(
+            black_box(&code),
+            TRANSLATE_BENCH_ADDRESS,
+            TRANSLATE_BENCH_ADDRESS,
+        );
+        let _ = black_box(translate_block(&block, mode, Flags::ALL));
     }
 }
 
