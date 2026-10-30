@@ -59,7 +59,7 @@ and `hwclock` (docs/coreutils.md), not `settings`.
 | `display.scale` | `1` | no (2x comes later) |
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
-| `keyboard.layout` | `us` | no |
+| `keyboard.layout` | `us` (the default), `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `de`, `it`, `no`, `br`, `es` or `se` (D185, the Keyboard pane, docs/ux/keyboard-v0.3.md) | yes |
 | `system.version`, `system.arch`, `system.cpus`, `system.memory_mb`, `system.uptime_s` | facts about the machine | no |
 
 ## The settings file
@@ -70,8 +70,10 @@ text file: the line `eggos-settings 1`, then `key=value` lines. A file of anothe
 longer one than 4 KiB or garbage holds nothing, so every setting takes its default; unknown
 keys are kept when the file is written, and the last line of a key wins. A change is written to
 `settings.tmp.<process id>` beside it (one per writer), synced, and renamed over it, so a failure leaves the old file whole. Before it writes, a writer removes the temporary files of writers that `/proc/ps` no longer lists (one that crashed), best effort (D134).
-The kernel reads `shell.profile` from it after mounting the disks and before the desktop starts,
-so the first frame is already in the saved profile. The format is the `eggos-settings-file`
+The kernel reads `shell.profile` and `keyboard.layout` from it after mounting the disks and
+before the desktop starts, so the first frame is already in the saved profile and the first key
+types in the saved layout. `settings set keyboard.layout` and the Keyboard pane apply a layout
+at once through `/dev/window`'s `SET_KEYBOARD_LAYOUT` (without a display, from the next boot). The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.
 
 Not yet: the boot parameter `eggos.profile=` (the kernel has no command line yet), per-user

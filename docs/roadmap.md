@@ -96,8 +96,11 @@ Must-have, in order:
     button, wheel and key events QMP sends. On device interrupts since D184 (batch part 32):
     the input thread sleeps until a device interrupts or a held key repeats (`input: on
     interrupts` in the boot log, checked by the boot-to-prompt test on all three), polling
-    only when a device's interrupt cannot be routed. Follow-ups: the keyboard layout setting,
-    LEDs (the status queue).
+    only when a device's interrupt cannot be routed. Keyboard layouts since D185 (batch part
+    33): 14 layouts with dead keys and the AltGr/Option layer, chosen with `keyboard.layout`
+    (Settings' Keyboard pane, `settings set`, MCP `settings_set`), Caps Lock's light through
+    the status queue; the boot-to-prompt test types `é` with the German layout's dead acute
+    through QMP and checks the frame. Follow-ups: D185's "Not yet".
 13. **done** — graphical terminal (D114, docs/drivers.md): the Egg Mono 8x16 font (the design
     file's 95 ASCII glyphs, checked by a host test, and the box drawing, block, shape and arrow
     extras) and the terminal emulator of `terminal-v0.3.md` in `eggos-drivers` (cell grid,
@@ -1011,7 +1014,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184) | **done** (interrupts for block, console, GPU, network and entropy: planned) |
 | virtio-rng (polled) | **done** (D111) |
 | virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112) | **done** (cursor queue, interrupts: planned) |
-| virtio-input (polled): keyboard, tablet and mouse, capabilities from the device's configuration, the US keymap and key repeat, the input event queue (D113) | **done** (interrupts, LEDs, keyboard layouts: planned) |
+| virtio-input: keyboard, tablet and mouse, capabilities from the device's configuration, keyboard layouts with dead keys and AltGr, key repeat, Caps Lock's light, the input event queue (D113, D184, D185) | **done** (more layouts, Num and Scroll Lock lights: planned) |
 | Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
 | virtio-blk (polled): capacity, read-only disks, reads, writes and flushes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
 | EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync` (D131, docs/eggfs.md) | **done** (repair tool, links, several requests in flight: planned) |

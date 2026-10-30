@@ -285,7 +285,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
   app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input or sideways scrolling, and
-  non-ASCII typing is not in yet; clicks, drags and scrolling aimed at a window with a dialog
+  characters no US key types reach apps as characters of their own (code 0, D185), which a
+  program that reads keys rather than characters does not see; clicks, drags and scrolling aimed at a window with a dialog
   open are refused (keys go to the dialog: D162); Windows programs get `WM_LBUTTONDBLCLK`
   only in windows of their own classes with `CS_DBLCLKS` (the system's controls still see two
   presses, D174), and no mouse sends a sideways wheel yet (only
@@ -351,7 +352,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   written as they are, control characters included.
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
-- The keyboard layout is US only (D113).
+- Keyboard layouts (D185): 14 of them (US, US international, UK, Dvorak, Colemak, Danish,
+  Finnish, French, German, Italian, Norwegian, Brazilian, Spanish, Swedish); no others yet, one
+  at a time, no switch key. Dead keys combine into Latin-1 only (diaeresis and Y types `¨Y`).
+  Without a display the layout set with `settings set` applies from the next boot. Wayland
+  apps get the US keymap whatever the layout; Windows programs' `ToUnicode`,
+  `MapVirtualKey` and `GetKeyState` still answer for the US layout and AltGr is not reported
+  as Ctrl+Alt; Mac apps see Option but no Mac-specific Option layouts. The fonts cover ASCII,
+  Latin-1 and `€`: other characters show as `?`. Only Caps Lock's light is set, on virtio
+  keyboards.
 
 ## The desktop
 The desktop is minimal (D115, D127, D128): wallpaper, a top bar with the uptime and a power
@@ -427,7 +436,7 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   or `/Applications` is deleted for good after a question, and the read-only host share's are
   neither trashed nor changed;
 - the Text Editor (D149) edits UTF-8 text of up to 4 MiB in Egg Mono, so a character beyond
-  ASCII and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
+  ASCII, Latin-1, `€` and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
   go-to-line, no syntax colouring and no file picker (Open and Save As take a typed path); its
   clipboard is its own, shared with no other program; a file that is not text is refused, not
   shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
@@ -435,5 +444,6 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   holds one `\r\n`; saving replaces a symbolic link by a regular file and breaks hard links;
   a save cut short (power lost, the editor killed) leaves its hidden `.<name>.saving` beside the
   file, which later saves leave alone (they write `.<name>.<n>.saving` instead);
-  Alt and Option with a letter type nothing (the keymap has no Option or AltGr layer yet);
+  Alt with a letter types nothing (AltGr and, in the macOS profile, Option type the layout's
+  third level, D185);
 - copy and paste of text, and scaling for high-density displays.

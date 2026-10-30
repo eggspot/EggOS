@@ -20,6 +20,9 @@ behaviour. A UX regression is treated like a performance regression.
   box as an EggOS dialog, the Win32 system colours inside a program's client area, and the
   `IDC_*` pointer mapping.
 - `font-8x16.txt`: Egg Mono 8x16, the system font, every printable ASCII glyph as pixel art.
+- `font-8x16-latin-1.txt`: Egg Mono's Latin-1 supplement (U+00A0-U+00FF) and `€`, 97 glyphs (D185).
+- `keyboard-v0.3.md`: Settings' Keyboard pane, dead keys and the AltGr/Option layer as users feel
+  them, and the notes on the Latin-1 glyphs (D185).
 - `font-ui-16.txt`: Egg Sans 16, the proportional UI font of the toolkit, ASCII and Latin-1 as
   pixel art with each glyph's advance width (D132).
 - `app-icons-v0.3.md`: installed apps' own icons (item 45, D148): where they show, no badge,

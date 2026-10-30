@@ -13708,3 +13708,107 @@ the license, by an explicit instruction recorded here.
   from virtio-rng; Settings' About list (the toolkit's `Table`, docs/ux/devices-v0.3.md); device
   lines through the I/O APIC (x86 INTx) and on other CPUs; a line per queue; lines given back
   when a driver lets a device go; the measured costs above.
+
+## D185 Text beyond ASCII and keyboard layouts: Egg Mono's Latin-1 glyphs and `€`, 14 keyboard layouts with dead keys and the AltGr/Option layer, `keyboard.layout` from Settings' Keyboard pane, `settings set` and MCP `settings_set`, Caps Lock's light, and non-ASCII characters from `wm type` and `wm_type` (batch part 33; v0.3.0 items 12, 32 and 46's follow-ups; D113's, D114's and D141's "Not yet"; extends D109, D113, D114, D129, D132, D141, D163, D184) — Decided by the build loop (the layouts, their names and data, dead-key rules, the AltGr/Option rule, where the kernel learns the layout and the LED decided by research; the glyphs and the Keyboard pane designed by Claude Fable, `docs/ux/font-8x16-latin-1.txt`, `docs/ux/keyboard-v0.3.md`)
+
+- **What users get.** Latin-1 text (U+00A0 to U+00FF) and `€` everywhere text is drawn: the
+  terminal, the desktop, the Text Editor and toolkit fields, Windows programs' `TextOutW` and
+  edit controls (Egg Mono) and Mac apps' strings (Egg Sans, which had Latin-1 and gains `€`).
+  A keyboard layout chosen from 14 (`us`, `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`,
+  `fi`, `fr`, `de`, `it`, `no`, `br`, `es`, `se`) types in the console, every window and both
+  compatibility layers, with dead keys (´ ` ^ ¨ ~) and the third level (AltGr, or Option in
+  the macOS profile). Caps Lock lights the keyboard's light. Agents type `é` and `€` into any
+  window with `wm type` and `wm_type`.
+- **The font.** Egg Mono's glyph ids 0xA0 to 0xFF are the Latin-1 characters themselves and
+  0x7F (no character of its own: the terminal never prints DEL) is `€`
+  (`eggos_font::{FIRST_LATIN_1, EURO, covers}`); the 97 glyphs are read from
+  `docs/ux/font-8x16-latin-1.txt` while the crate compiles (`font/src/latin_1.rs`, a const
+  parser like Egg Sans's), so the file is the source. Accented letters keep the ASCII letters
+  pixel for pixel. Egg Sans has 192 glyphs. Nothing else in the drawing paths changed: every
+  caller already turned UTF-8 or UTF-16 into code points and asked `glyph_id`.
+- **Layouts.** `eggos_drivers::input::layout`: per layout, the four levels of the 49 keys of
+  the main block (codes 2-13, 16-27, 30-41, 43-53, the ISO key 86 and ABNT2's 89) as `u16`
+  (392 bytes a layout, 13 tables, `fi` and `se` share one: about 5 KiB of kernel image); the
+  space bar and the keypad come from the US keymap, the keypad's decimal key per layout. Dead
+  keys are combining marks (U+0300 grave, U+0301 acute, U+0302 circumflex, U+0303 tilde,
+  U+0308 diaeresis) in the tables. A `Typist` (layout number and the waiting accent, two bytes)
+  turns a press into a `Press`: `Typed` (one or two characters, `meta` for Alt), `Dead`,
+  `Cancelled` (Backspace took the accent back), `Shortcut` (Ctrl or Super with a character key:
+  the first two levels' character, so Ctrl+Z works on QWERTZ) or `Other`.
+  `Press::terminal_bytes` gives the console its UTF-8 (control characters for Ctrl, the US
+  keymap's sequences for the other keys) and `Press::character` the desktop's.
+- **The kernel.** `input::InputState` holds the `Typist`; `input::set_layout(number)` (an
+  atomic, applied at the next poll with the desktop's profile, `ThirdLevelKeys`),
+  `input::layout_number()`, `input::caps_lock()`. `InputEvent::Key` gains `character` (bits
+  40-63 of the packed word); a dead key's accent that does not combine reaches the desktop as
+  a `Key` event of code 0 before the key's own; a Backspace that took an accent back sends no
+  event. The key repeat sends the bytes the press sent. `Modifiers::ALT_GRAPH` (32): Right Alt
+  on layouts with a third level (no longer Alt), either Alt in the macOS profile (still Alt
+  too). `terminal::load_saved_settings` (was `load_saved_profile`) reads `keyboard.layout` at
+  boot. `/dev/window` gains `GET_KEYBOARD_LAYOUT` (layout and flags: Caps Lock, keyboard
+  present) and `SET_KEYBOARD_LAYOUT` (the `SET_PROFILE` permission). `InputDevice` gains
+  `set_caps_lock_light`; virtio-input sets up its status queue (queue 1, 4 entries, in the
+  driver's existing 4 KiB) when the device reports `LED_CAPSL`, and writes one `EV_LED`
+  event per change.
+- **The desktop and the layers.** `Desktop::key_typing(code, pressed, modifiers, character)`
+  (`key` stays, with the US character, for tests and injection); the launcher's search uses
+  the typed character. `protocol::modifier::ALT_GRAPH`. `SEND_INPUT`'s character kind takes any
+  non-control character: ASCII through the US keymap's key as before, others as a `Key` record
+  of code 0; the terminal's window gets them in UTF-8. The Windows layer turns code 0 into
+  `VK_PACKET` (so `TranslateMessage` posts the `WM_CHAR`, as Windows does for injected Unicode
+  input), maps the ISO key (86, `VK_OEM_102`) and ABNT2's (89, `VK_ABNT_C1`), and does not
+  treat AltGr as Alt (`WM_KEYDOWN`, not `WM_SYSKEYDOWN`). AppKit text fields type with Option
+  (as on a Mac). The toolkit's `Modifiers::ALT_GRAPH`, `command()` no longer counts Alt held
+  with AltGr, and text fields take every character Egg Sans draws (`€` included); the Text
+  Editor types with AltGr.
+- **Front-ends (D22).** GUI: Settings' Keyboard pane (Fable's design: the layout list, the
+  third-level and dead-keys lines, a field to try typing, the Caps Lock and no-keyboard line,
+  the no-disk line; `CAPACITY` 52, the installer's too). CLI: `settings set keyboard.layout
+  <name>` (applies and saves; the refusal lists the names), `settings get`/`list`. MCP:
+  `settings_set` with `keyboard.layout` (no new tool; the descriptions name the values).
+  `wm type` and `wm_type` take printable UTF-8 (96 bytes for the tool).
+- **Checks.** Host: the font's Latin-1 glyphs equal the design file, keep column 7 empty and
+  the ASCII letters' bodies; the terminal draws `café ½ €5 ÿ`; every layout's rows decode (a
+  const assert per row), the US layout types what the US keymap does, dead keys, Backspace,
+  AltGr, Option, Caps Lock, Ctrl shortcuts, the terminal bytes and window characters; the
+  kernel's input layer with the German layout (UTF-8 `é´2`, the code-0 event, AltGr+E `€`,
+  the macOS profile's Option) and the layouts table matching the settings file's;
+  `settings set keyboard.layout` and its refusal; the Keyboard pane (lines, a click on German,
+  the profile's line, Caps Lock, no keyboard) and its search words; injection of `é` and `€`;
+  `wm type café €`. QEMU: the boot-to-prompt test runs `settings set keyboard.layout de`, then
+  types `echo EGGOS ACCENT café` on the virtio keyboard through QMP, `é` as the German dead
+  acute (the US `=` key) and E, expects the output line, and compares the frame with the host's
+  desktop rendering of the same console.
+- **Cost (D24, D78).** Not measured (no builds in this batch). Expected: the kernel image about
+  5 KiB larger (layout tables) and 1.6 KiB (97 Egg Mono glyphs); one more branch per key press
+  and a copy of up to 8 bytes for the repeat; `InputState` 12 bytes larger; `.bss` two
+  atomics. No change on paths other than key presses. Benchmarks to report in the build phase:
+  the input translation benchmark if one exists (`kernel/src/bench.rs`'s keyboard), image size.
+- **Decided by research** (a research subagent, 2026-10-30, from Microsoft's published layout
+  descriptions and xkb's names, without reading GPL sources): (1) the 13 tables and 14 names
+  above, `gb` not `uk`, `br` for ABNT2 (Fable's design said `pt-br`; the shorter xkb name was
+  kept), `fi` its own name over the `se` table; Latin American Spanish, Portuguese (Portugal),
+  Swiss, Belgian, Canadian and a Mac US layout wait. (2) The data: Windows's levels where
+  Windows and Linux differ; characters outside Latin-1 and `€` (‘ ’ on `us-intl`, ₢ on `br`)
+  left out. (3) Dead key then Space types the key's printed accent (`'` and `"` on `us-intl`),
+  the same dead key twice types it once, a key it does not combine with types the accent then
+  itself, acute + c gives ç on `us-intl` and `br`. (4) Caps Lock uses the Shift level only when
+  it is the uppercase of the plain letter. (5) Right Alt is AltGr only on layouts with a third
+  level; in the macOS profile either Option reaches it and apps still see Option. (6) The
+  kernel learns the layout through `/dev/window` and the settings file at boot, as the profile
+  (not a `/proc` file or Linux's console keymap ioctls). (7) The LED through the status queue,
+  one `EV_LED` event, no `SYN_REPORT`, only when `EV_BITS` for `EV_LED` has `LED_CAPSL`.
+- **Decided without research.** Glyph id 0x7F for `€`; the `u16` table form and combining marks
+  for dead keys; the key repeat sending the press's bytes; a Backspace that cancels an accent
+  sending no key event; the code-0 key event for an accent that does not combine; `VK_PACKET`
+  for code 0 in the Windows layer; Option typing in AppKit text fields; `wm_type`'s limit kept
+  at 96 bytes; the QEMU check's line and its third frame; Ctrl+Alt is not AltGr (Fable's design).
+- **Not yet.** A layout without a display applies only from the next boot (no CLI route to the
+  kernel without `/dev/window`); Wayland clients still get the US keymap (eggway's
+  `wl_keyboard` keymap per layout); the Windows layer's `ToUnicode`, `MapVirtualKey`,
+  `VkKeyScan` and `GetKeyState` for the layout (AltGr as Ctrl+Alt); Mac-specific Option
+  layouts and the dead-key highlight; more layouts (Latin American, Portugal, Swiss, Belgian,
+  Canadian); a layout switch key and several layouts; Num and Scroll Lock lights, LEDs on
+  other keyboards; the launcher's search beyond ASCII; characters beyond Latin-1 and `€` in
+  the fonts (Ÿ first, D185's glyph notes); the Settings pane's Caps Lock line follows the key
+  only while Settings is focused; measured costs.

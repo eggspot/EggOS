@@ -329,11 +329,25 @@ folder, the disk and the channel uses all 8.
    QEMU arguments in `xtask` (`ARCHES`). A hot path gets a gated benchmark (D27).
 5. Record the decision in `docs/decisions.md` and the driver in the roadmap's support matrix.
 
+## Keyboard layouts and Caps Lock's light (D185)
+
+The input layer (`kernel/src/input.rs`) turns key presses into characters through the chosen
+layout (`drivers/src/input/layout.rs`: 14 layouts, four levels per key of the main block: plain,
+Shift, the third level and the third level with Shift), then into UTF-8 for the console and a
+`character` in each `Key` event for the desktop. A dead key's accent waits for the next key:
+it combines into a Latin-1 letter, or types alone after Space or itself, or before a key it
+does not combine with (that accent then reaches windows as a `Key` record of code 0);
+Backspace takes it back. Right Alt is AltGr (the `ALT_GRAPH` modifier, 32) on layouts with a
+third level, and either Alt is Option in the macOS profile. Caps Lock capitalises letters
+only, accented ones included. A virtio keyboard that reports `LED_CAPSL` in its `EV_LED` bits
+gets its status queue (queue 1, 4 entries) set up, and the driver writes one `EV_LED` event
+whenever Caps Lock changes.
+
 ## Not yet
 
 Interrupts for the other virtio drivers (block, console and the agent channel, GPU, network,
 entropy: they still poll until an answer comes), the I/O APIC for device lines and a line per
-queue, keyboard layouts other than US and the keyboard's LEDs, the virtio GPU's
+queue, keyboard layouts beyond D185's 14 and the Num and Scroll Lock lights, the virtio GPU's
 cursor queue, display events (a mode change), several requests in flight on virtio-blk,
 virtio-console input as a console, reseeding the kernel's generator from virtio-rng, the About
 pane's device list, modes whose buffer is larger than one DMA
