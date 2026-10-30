@@ -5,7 +5,9 @@
 //! modification time: EggOS keeps no creation time) and `SetFileAttributesW` (the read-only
 //! attribute is the write permission; the others have no place on EggOS's files, D178). Paths
 //! are UTF-16 or ANSI (UTF-8) and may use `\`, a drive letter (`C:\` is `/`) or the `\\?\`
-//! prefix.
+//! prefix. A file is inherited by children only when its `SECURITY_ATTRIBUTES` ask for it, and
+//! `ReadFile` at a pipe's end fails with `ERROR_BROKEN_PIPE` and `WriteFile` to a pipe nobody
+//! reads with `ERROR_NO_DATA`, as on Windows (D189).
 
 use super::{Bool, FALSE, INVALID_HANDLE_VALUE, TRUE, error, error_for, fail};
 use crate::library::Export;
@@ -27,6 +29,7 @@ const FILE_TYPE_CHAR: u32 = 2;
 const FILE_TYPE_PIPE: u32 = 3;
 const INVALID_SET_FILE_POINTER: u32 = u32::MAX;
 const MAX_FD: usize = 1 << 20;
+const EPIPE: u16 = 32;
 
 /// The descriptor a file handle names.
 pub fn fd_of(handle: usize) -> Option<usize> {
@@ -51,6 +54,10 @@ pub unsafe fn read_into(handle: usize, buffer: *mut u8, length: usize) -> Option
     };
     // SAFETY: the caller's duty.
     let buffer = unsafe { core::slice::from_raw_parts_mut(buffer, length) };
+    let peeked = super::pipe::take_peeked(fd, buffer);
+    if peeked != 0 {
+        return Some(peeked);
+    }
     match linux::read(fd, buffer) {
         Ok(read) => Some(read),
         Err(errno) => fail(error_for(errno), None),
@@ -64,6 +71,7 @@ pub fn write_bytes(handle: usize, bytes: &[u8]) -> bool {
     };
     match linux::write_all(fd, bytes) {
         Ok(()) => true,
+        Err(errno) if errno.0 == EPIPE => fail(error::NO_DATA, false),
         Err(errno) => fail(error_for(errno), false),
     }
 }
@@ -85,6 +93,10 @@ unsafe extern "efiapi" fn read_file(
     if !read.is_null() {
         // SAFETY: the caller passes a writable `DWORD` for the count.
         unsafe { read.write(count as u32) };
+    }
+    let pipe_ended = count == 0 && length != 0 && fd_of(handle).is_some_and(super::pipe::is_pipe);
+    if pipe_ended {
+        return fail(error::BROKEN_PIPE, FALSE);
     }
     TRUE
 }
@@ -111,7 +123,7 @@ unsafe extern "efiapi" fn write_file(
     TRUE
 }
 
-extern "efiapi" fn close_handle(handle: usize) -> Bool {
+pub(super) extern "efiapi" fn close_handle(handle: usize) -> Bool {
     if handle >= super::CURRENT_THREAD {
         return TRUE;
     }
@@ -121,6 +133,9 @@ extern "efiapi" fn close_handle(handle: usize) -> Bool {
     let Some(fd) = fd_of(handle) else {
         return fail(error::INVALID_HANDLE, FALSE);
     };
+    if !super::pipe::closing(fd) {
+        return fail(error::INVALID_HANDLE, FALSE);
+    }
     match linux::close(fd) {
         Ok(_) => TRUE,
         Err(_) => fail(error::INVALID_HANDLE, FALSE),
@@ -146,11 +161,11 @@ fn open_flags(access: u32, disposition: u32) -> Option<usize> {
     Some(mode | creation)
 }
 
-fn create_file(path: &[u8], access: u32, disposition: u32) -> usize {
+fn create_file(path: &[u8], access: u32, disposition: u32, inherit: bool) -> usize {
     let Some(flags) = open_flags(access, disposition) else {
         return fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE);
     };
-    let fd = match linux::open(path, flags) {
+    let fd = match linux::open(path, flags | super::pipe::close_on_exec_unless(inherit)) {
         Ok(fd) => fd,
         Err(errno) => {
             return fail(
@@ -172,16 +187,18 @@ unsafe extern "efiapi" fn create_file_w(
     name: *const u16,
     access: u32,
     _share: u32,
-    _security: *mut c_void,
+    security: *const u8,
     disposition: u32,
     _flags: u32,
     _template: usize,
 ) -> usize {
     // SAFETY: `CreateFileW`'s contract: a NUL-terminated UTF-16 name.
     let name = unsafe { wide_string(name) };
+    // SAFETY: `CreateFileW`'s contract: null or a readable `SECURITY_ATTRIBUTES`.
+    let inherit = unsafe { super::pipe::inherits(security) };
     let mut path = [0u8; text::PATH_CAPACITY];
     match text::eggos_path(text::utf16_chars(name), &mut path) {
-        Some(length) => create_file(&path[..length], access, disposition),
+        Some(length) => create_file(&path[..length], access, disposition, inherit),
         None => fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE),
     }
 }
@@ -190,16 +207,18 @@ unsafe extern "efiapi" fn create_file_a(
     name: *const u8,
     access: u32,
     _share: u32,
-    _security: *mut c_void,
+    security: *const u8,
     disposition: u32,
     _flags: u32,
     _template: usize,
 ) -> usize {
     // SAFETY: `CreateFileA`'s contract: a NUL-terminated name.
     let name = unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
+    // SAFETY: `CreateFileA`'s contract: null or a readable `SECURITY_ATTRIBUTES`.
+    let inherit = unsafe { super::pipe::inherits(security) };
     let mut path = [0u8; text::PATH_CAPACITY];
     match text::eggos_path(text::utf8_chars(name), &mut path) {
-        Some(length) => create_file(&path[..length], access, disposition),
+        Some(length) => create_file(&path[..length], access, disposition, inherit),
         None => fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE),
     }
 }

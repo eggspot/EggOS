@@ -8,6 +8,7 @@
 //! `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
+use crate::handle_flags;
 use crate::library::Export;
 use crate::linux;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -58,6 +59,7 @@ pub struct Object {
 
 struct Table {
     objects: [*mut Object; MAX_OBJECTS],
+    flags: [u8; MAX_OBJECTS],
     pending_threads: [*mut Object; MAX_PENDING_THREADS],
 }
 
@@ -66,6 +68,7 @@ unsafe impl Send for Table {}
 
 static TABLE: SpinLock<Table> = SpinLock::new(Table {
     objects: [core::ptr::null_mut(); MAX_OBJECTS],
+    flags: [0; MAX_OBJECTS],
     pending_threads: [core::ptr::null_mut(); MAX_PENDING_THREADS],
 });
 static WAKE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
@@ -105,6 +108,7 @@ pub fn insert(kind: Kind, extra_references: usize) -> (usize, *mut Object) {
     let slot = TABLE.with(|table| {
         let slot = table.objects.iter().position(|slot| slot.is_null())?;
         table.objects[slot] = pointer;
+        table.flags[slot] = 0;
         Some(slot)
     });
     match slot {
@@ -138,6 +142,9 @@ pub fn close(handle: usize) -> Bool {
     reap_threads();
     let closed = TABLE.with(|table| {
         let slot = slot_of(handle)?;
+        if u32::from(table.flags[slot]) & handle_flags::PROTECT_FROM_CLOSE != 0 {
+            return None;
+        }
         let pointer = core::mem::replace(&mut table.objects[slot], core::ptr::null_mut());
         if pointer.is_null() {
             return None;
@@ -161,12 +168,35 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     let slot = TABLE.with(|table| {
         let slot = table.objects.iter().position(|slot| slot.is_null());
         match slot {
-            Some(slot) => table.objects[slot] = pointer,
+            Some(slot) => {
+                table.objects[slot] = pointer;
+                table.flags[slot] = 0;
+            }
             None => release_reference(pointer),
         }
         slot
     });
     slot.map(|slot| OBJECT_HANDLES + slot * 4)
+}
+
+/// The handle flags (`handle_flags.rs`) of the object handle `handle`, which the layer keeps
+/// for the handle alone: objects live in the layer's memory, so children never inherit them.
+pub fn flags_of(handle: usize) -> Option<u32> {
+    TABLE.with(|table| {
+        let slot = slot_of(handle)?;
+        (!table.objects[slot].is_null()).then(|| u32::from(table.flags[slot]))
+    })
+}
+
+/// Sets the handle flags of the object handle `handle`; `false` if it names no object.
+pub fn set_flags(handle: usize, flags: u32) -> bool {
+    TABLE.with(|table| match slot_of(handle) {
+        Some(slot) if !table.objects[slot].is_null() => {
+            table.flags[slot] = (flags & 0xff) as u8;
+            true
+        }
+        _ => false,
+    })
 }
 
 /// Runs `work` on the object `handle` names, under the table's lock, and wakes every waiter
@@ -1066,23 +1096,51 @@ unsafe extern "efiapi" fn duplicate_handle(
     target_process: usize,
     target: *mut usize,
     _access: u32,
-    _inherit: Bool,
+    inherit: Bool,
     options: u32,
 ) -> Bool {
-    if source_process != super::CURRENT_PROCESS || target_process != super::CURRENT_PROCESS {
+    let own = |process| super::processes::process_id_of(process) == Some(linux::process_id());
+    if !own(source_process) || !own(target_process) {
         return fail(error::ACCESS_DENIED, FALSE);
     }
-    let Some(new) = duplicate(source) else {
-        return fail(error::INVALID_HANDLE, FALSE);
-    };
     if !target.is_null() {
+        let new = match duplicated(source, inherit != FALSE) {
+            Ok(new) => new,
+            Err(code) => return fail(code, FALSE),
+        };
         // SAFETY: the caller passes a writable `HANDLE` for the new handle.
         unsafe { target.write(new) };
     }
     if options & DUPLICATE_CLOSE_SOURCE != 0 {
-        close(source);
+        super::file::close_handle(source);
     }
     TRUE
+}
+
+/// Another handle for what `source` names (D189): the same object; for a file or pipe a new
+/// descriptor, inherited by children when `inherit`; for the caller's own pseudo-handle a
+/// real handle for its process.
+fn duplicated(source: usize, inherit: bool) -> Result<usize, u32> {
+    if source == super::CURRENT_PROCESS {
+        return super::processes::own_process_handle().ok_or(error::NOT_ENOUGH_MEMORY);
+    }
+    if is_object_handle(source) {
+        let new = duplicate(source).ok_or(error::INVALID_HANDLE)?;
+        let flags = match inherit {
+            true => handle_flags::INHERIT,
+            false => 0,
+        };
+        set_flags(new, flags);
+        return Ok(new);
+    }
+    let fd = super::file::fd_of(source).ok_or(error::INVALID_HANDLE)?;
+    let command = match inherit {
+        true => linux::F_DUPFD,
+        false => linux::F_DUPFD_CLOEXEC,
+    };
+    linux::control(fd, command, 0)
+        .map(super::file::handle_of)
+        .map_err(super::error_for)
 }
 
 pub(super) const EXPORTS: &[Export] = exports![

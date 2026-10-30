@@ -1485,10 +1485,11 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
     build_release_kernel(arch, &initramfs)
 }
 
-const WINDOWS_CRT_PROGRAMS: [(&str, &str); 3] = [
+const WINDOWS_CRT_PROGRAMS: [(&str, &str); 4] = [
     ("eggpad", "bin/eggpad.exe"),
     ("eggcpp", "bin/eggcpp.exe"),
     ("eggcpp-fh3", "bin/eggcpp-fh3.exe"),
+    ("eggspawn", "bin/eggspawn.exe"),
 ];
 
 fn windows_crt_boot_test(arch: &Arch) -> Result<(), String> {

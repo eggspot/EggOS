@@ -3,14 +3,16 @@
 //! catches C++ exceptions and handles faults with `__try`, are test data that MSVC's `cl.exe`
 //! builds as `/MD` programs (on the C runtime's DLLs) for x64 and ARM64; `eggcpp-fh3` is
 //! `eggcpp.cpp` built for `__CxxFrameHandler3` on x64 (`/d2FH4-`), whose default is
-//! `__CxxFrameHandler4`. Only a Windows host with Visual Studio's C++ tools can build them,
-//! found through `vswhere`; CI builds them on its Windows runner and hands them to the Linux
-//! job through `EGGOS_WINDOWS_PROGRAMS`. They are never shipped.
+//! `__CxxFrameHandler4`; `tests/windows-crt/eggspawn.c`, our own C program that starts copies of
+//! itself through `CreateProcessW` and `CreateProcessA` and reads one's output through a pipe
+//! (D189), builds as a console program for both. Only a Windows host with Visual Studio's C++
+//! tools can build them, found through `vswhere`; CI builds them on its Windows runner and
+//! hands them to the Linux job through `EGGOS_WINDOWS_PROGRAMS`. They are never shipped.
 
 use std::path::{Path, PathBuf};
 
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_WINDOWS_PROGRAMS";
-pub const PROGRAMS: [&str; 3] = ["eggpad", "eggcpp", "eggcpp-fh3"];
+pub const PROGRAMS: [&str; 4] = ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn"];
 const TARGETS: [&str; 2] = ["x64", "arm64"];
 const VISUAL_STUDIO_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
@@ -204,6 +206,7 @@ pub fn environment_lines(text: &str) -> Vec<(String, String)> {
 pub fn source_file(program: &str) -> &'static str {
     match program {
         "eggpad" => "eggpad.c",
+        "eggspawn" => "eggspawn.c",
         _ => "eggcpp.cpp",
     }
 }
@@ -212,6 +215,7 @@ pub fn source_file(program: &str) -> &'static str {
 /// `target` on the C runtime's DLLs (`/MD`), optimized, with warnings as errors, its objects
 /// in `objects`: eggpad as a GUI program; the C++ programs as console programs with C++
 /// exceptions (`/EHsc`), `eggcpp-fh3` on x64 with `__CxxFrameHandler3`'s data (`/d2FH4-`).
+/// `eggspawn` is a C console program.
 pub fn compiler_arguments(
     program: &str,
     target: &str,
@@ -230,6 +234,7 @@ pub fn compiler_arguments(
     ];
     let language: &[&str] = match (program, target) {
         ("eggpad", _) => &["/DUNICODE", "/D_UNICODE"],
+        ("eggspawn", _) => &[],
         ("eggcpp-fh3", "x64") => &["/EHsc", "/d2FH4-"],
         _ => &["/EHsc"],
     };
@@ -316,7 +321,7 @@ mod tests {
         let source = arguments.iter().position(|argument| argument == "eggpad.c");
         assert!(source < link);
         assert!(!arguments.contains(&"/EHsc".to_owned()));
-        assert_eq!(PROGRAMS, ["eggpad", "eggcpp", "eggcpp-fh3"]);
+        assert_eq!(PROGRAMS, ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn"]);
     }
 
     #[test]
@@ -353,5 +358,23 @@ mod tests {
         assert!(frame_handler_3.contains(&"/d2FH4-".to_owned()));
         assert_eq!(source_file("eggpad"), "eggpad.c");
         assert_eq!(source_file("eggcpp-fh3"), "eggcpp.cpp");
+    }
+
+    #[test]
+    fn eggspawn_builds_as_a_c_console_program() {
+        for target in TARGETS {
+            let arguments = compiler_arguments(
+                "eggspawn",
+                target,
+                Path::new("eggspawn.c"),
+                Path::new("out.exe"),
+                Path::new("objects"),
+            );
+            for wanted in ["/MD", "/WX", "/SUBSYSTEM:CONSOLE", "eggspawn.c"] {
+                assert!(arguments.contains(&wanted.to_owned()), "{target} {wanted}");
+            }
+            assert!(!arguments.contains(&"/EHsc".to_owned()), "{target}");
+        }
+        assert_eq!(source_file("eggspawn"), "eggspawn.c");
     }
 }

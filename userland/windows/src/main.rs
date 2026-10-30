@@ -3,7 +3,8 @@
 //! (x64 programs) and aarch64 (ARM64 programs, D124). The PE format, the image's layout,
 //! relocations and imports, UTF-16 text, the command line, the GUI's tables (`gui/`) and the C
 //! runtime's streams, numbers and counted `printf` endings (`stream.rs`, `c_text.rs`,
-//! `counted_print.rs`) are pure logic with host tests;
+//! `counted_print.rs`) and handle flags and peeked pipe bytes (`handle_flags.rs`,
+//! `peeked_pipes.rs`, D189) are pure logic with host tests;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
@@ -38,6 +39,8 @@ mod float;
 #[cfg(any(test, runs_windows_programs))]
 mod gui;
 #[cfg(any(test, runs_windows_programs))]
+mod handle_flags;
+#[cfg(any(test, runs_windows_programs))]
 mod image;
 #[cfg(any(test, runs_windows_programs))]
 mod ini;
@@ -53,6 +56,8 @@ mod locale;
 mod low_level_io;
 #[cfg(any(test, runs_windows_programs))]
 mod pe;
+#[cfg(any(test, runs_windows_programs))]
+mod peeked_pipes;
 #[cfg(any(test, runs_windows_programs))]
 mod process_list;
 #[cfg(any(test, runs_windows_programs))]

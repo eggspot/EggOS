@@ -57,6 +57,7 @@ mod paint;
 mod placement;
 mod private_profile;
 mod process;
+mod pipe;
 mod processes;
 mod psapi;
 mod resource;
@@ -213,6 +214,7 @@ const KERNEL32: &[&[Export]] = &[
     nls::EXPORTS,
     private_profile::EXPORTS,
     processes::EXPORTS,
+    pipe::EXPORTS,
     toolhelp::EXPORTS,
     volume::EXPORTS,
 ];

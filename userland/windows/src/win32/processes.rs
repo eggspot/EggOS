@@ -3,7 +3,11 @@
 //! Linux program as it is), `OpenProcess` names any process by its id, and a process handle
 //! is a kernel object (`sync.rs`) that waits, `GetExitCodeProcess` and `TerminateProcess` use;
 //! the child's end is learned with `wait4` and others' with `kill(id, 0)`. A process's memory is
-//! only the caller's own: other processes' is `ERROR_ACCESS_DENIED`.
+//! only the caller's own: other processes' is `ERROR_ACCESS_DENIED`. `CreateProcessA` is the
+//! same with ANSI strings (D189); a child started without inherited handles keeps only its
+//! standard streams, and with them every descriptor not marked to close on `execve`
+//! (`handle_flags.rs`); `CREATE_SUSPENDED` starts it at once, and `ResumeThread` on its thread
+//! handle answers as if it had waited.
 
 use super::sync::{self, Kind};
 use super::{Bool, CURRENT_PROCESS, FALSE, SpinLock, TRUE, error, error_for, fail, heap};
@@ -44,12 +48,19 @@ pub struct ProcessObject {
     id: u32,
     ended: bool,
     exit_code: Option<u32>,
+    suspended: bool,
 }
 
 impl ProcessObject {
     /// Whether the process was seen to end.
     pub fn ended(&self) -> bool {
         self.ended
+    }
+
+    /// `ResumeThread` on the thread handle of a child started with `CREATE_SUSPENDED`, which
+    /// the layer starts running at once (D189): the suspend count it had, 1 the first time.
+    pub fn resume(&mut self) -> u32 {
+        u32::from(core::mem::replace(&mut self.suspended, false))
     }
 
     /// Looks whether the process ended, reaping it when it is the layer's child.
@@ -79,16 +90,25 @@ fn exit_code_of(status: u32) -> u32 {
     }
 }
 
-fn new_process_handle(id: u32) -> usize {
+fn new_process_handle(id: u32, suspended: bool) -> usize {
     sync::insert(
         Kind::Process(ProcessObject {
             id,
             ended: false,
             exit_code: None,
+            suspended,
         }),
         0,
     )
     .0
+}
+
+/// A new handle for the caller's own process, as `DuplicateHandle` makes from its pseudo-handle.
+pub(super) fn own_process_handle() -> Option<usize> {
+    match new_process_handle(linux::process_id(), false) {
+        0 => None,
+        handle => Some(handle),
+    }
 }
 
 /// The id of the process `handle` names, the caller's own for its pseudo-handle.
@@ -146,7 +166,7 @@ extern "efiapi" fn open_process(_access: u32, _inherit: Bool, id: u32) -> usize 
         return fail(error::INVALID_PARAMETER, 0);
     }
     match linux::kill(id, 0) {
-        Ok(_) => new_process_handle(id),
+        Ok(_) => new_process_handle(id, false),
         Err(errno) if errno.0 == ESRCH => fail(error::INVALID_PARAMETER, 0),
         Err(errno) => fail(error_for(errno), 0),
     }
@@ -497,6 +517,8 @@ pub(super) struct Launch<'a> {
     pub environment: Environment,
     pub streams: [usize; 3],
     pub own_group: bool,
+    pub inherit_handles: bool,
+    pub suspended: bool,
 }
 
 /// The strings at `block`, each ended by a zero, without the zero that ends the list.
@@ -598,6 +620,9 @@ pub(super) fn launch(launch: &Launch<'_>) -> Result<(usize, u32), u32> {
     if launch.own_group {
         request = request.in_own_process_group();
     }
+    if !launch.inherit_handles {
+        request = request.inheriting_only_streams();
+    }
     let id = CHILD_STACK
         .with(|stack| spawn(stack, &request))
         .map_err(|errno| match errno.0 {
@@ -605,7 +630,7 @@ pub(super) fn launch(launch: &Launch<'_>) -> Result<(usize, u32), u32> {
             ENOEXEC => error::BAD_EXE_FORMAT,
             _ => error_for(errno),
         })? as u32;
-    match new_process_handle(id) {
+    match new_process_handle(id, launch.suspended) {
         0 => Err(error::NOT_ENOUGH_MEMORY),
         handle => Ok((handle, id)),
     }
@@ -645,50 +670,52 @@ unsafe fn standard_streams(startup: *const u8, inherit: bool) -> [usize; 3] {
     streams
 }
 
-#[allow(clippy::too_many_arguments)]
-unsafe extern "efiapi" fn create_process_w(
-    application: *const u16,
-    command_line: *mut u16,
-    _process_attributes: usize,
-    _thread_attributes: usize,
-    inherit_handles: Bool,
+/// What `CreateProcessW` and `CreateProcessA` share once their strings are UTF-16.
+struct Creation<'a> {
+    application: Option<&'a [u16]>,
+    command_line: Option<&'a [u16]>,
+    inherit_handles: bool,
     flags: u32,
     environment: *const u8,
-    directory: *const u16,
+    directory: Option<&'a [u16]>,
     startup: *const u8,
     information: *mut u8,
-) -> Bool {
-    if information.is_null() || (application.is_null() && command_line.is_null()) {
+}
+
+/// Starts the program `creation` describes and fills its `PROCESS_INFORMATION`.
+///
+/// # Safety
+/// `creation.startup` must be null or a readable `STARTUPINFO` (the W and A structures share
+/// one layout), `creation.environment` null or an environment block of the kind its flags
+/// say, and `creation.information` null or a writable `PROCESS_INFORMATION`.
+unsafe fn create_process(creation: &Creation<'_>) -> Bool {
+    let information = creation.information;
+    let nothing_to_run = creation.application.is_none() && creation.command_line.is_none();
+    if information.is_null() || nothing_to_run {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    if flags & CREATE_SUSPENDED != 0 {
-        return fail(error::NOT_SUPPORTED, FALSE);
-    }
-    let string = |text: *const u16| match text.is_null() {
-        true => None,
-        // SAFETY: `CreateProcessW`'s contract: NUL-terminated strings.
-        false => Some(unsafe { super::file::wide_string(text) }),
-    };
-    let application = string(application);
-    let line = string(command_line.cast_const())
-        .or(application)
-        .unwrap_or(&[]);
+    let flags = creation.flags;
     let environment = match (
-        environment.is_null(),
+        creation.environment.is_null(),
         flags & CREATE_UNICODE_ENVIRONMENT != 0,
     ) {
         (true, _) => Environment::Inherited,
-        (false, true) => Environment::Wide(environment.cast()),
-        (false, false) => Environment::Narrow(environment),
+        (false, true) => Environment::Wide(creation.environment.cast()),
+        (false, false) => Environment::Narrow(creation.environment),
     };
     let request = Launch {
-        application,
-        command_line: line,
-        directory: string(directory),
+        application: creation.application,
+        command_line: creation
+            .command_line
+            .or(creation.application)
+            .unwrap_or(&[]),
+        directory: creation.directory,
         environment,
-        // SAFETY: `CreateProcessW`'s contract: a readable `STARTUPINFOW`.
-        streams: unsafe { standard_streams(startup, inherit_handles != FALSE) },
+        // SAFETY: the caller's duty: null or a readable `STARTUPINFO`.
+        streams: unsafe { standard_streams(creation.startup, creation.inherit_handles) },
         own_group: flags & CREATE_NEW_PROCESS_GROUP != 0,
+        inherit_handles: creation.inherit_handles,
+        suspended: flags & CREATE_SUSPENDED != 0,
     };
     let (handle, id) = match launch(&request) {
         Ok(started) => started,
@@ -697,7 +724,7 @@ unsafe extern "efiapi" fn create_process_w(
     let thread = sync::duplicate(handle).unwrap_or(0);
     let fields = [(0, handle), (POINTER, thread)];
     for (offset, value) in fields {
-        // SAFETY: the caller passes a writable `PROCESS_INFORMATION`: the process and thread
+        // SAFETY: the caller's duty: a writable `PROCESS_INFORMATION`: the process and thread
         // handles, then their ids.
         unsafe {
             information
@@ -719,8 +746,122 @@ unsafe extern "efiapi" fn create_process_w(
     TRUE
 }
 
+#[allow(clippy::too_many_arguments)]
+unsafe extern "efiapi" fn create_process_w(
+    application: *const u16,
+    command_line: *mut u16,
+    _process_attributes: usize,
+    _thread_attributes: usize,
+    inherit_handles: Bool,
+    flags: u32,
+    environment: *const u8,
+    directory: *const u16,
+    startup: *const u8,
+    information: *mut u8,
+) -> Bool {
+    let string = |text: *const u16| match text.is_null() {
+        true => None,
+        // SAFETY: `CreateProcessW`'s contract: NUL-terminated strings.
+        false => Some(unsafe { super::file::wide_string(text) }),
+    };
+    let creation = Creation {
+        application: string(application),
+        command_line: string(command_line.cast_const()),
+        inherit_handles: inherit_handles != FALSE,
+        flags,
+        environment,
+        directory: string(directory),
+        startup,
+        information,
+    };
+    // SAFETY: `CreateProcessW`'s contract: a readable `STARTUPINFOW`, an environment block of
+    // the kind the flags say and a writable `PROCESS_INFORMATION`.
+    unsafe { create_process(&creation) }
+}
+
+/// A UTF-16 copy of an ANSI (UTF-8) string, without its NUL, in a heap block of its own.
+struct WideCopy {
+    units: *mut u16,
+    length: usize,
+}
+
+impl WideCopy {
+    /// The copy of the NUL-terminated `text`, `None` for a null one.
+    ///
+    /// # Safety
+    /// `text` must be null or a NUL-terminated string.
+    unsafe fn of(text: *const u8) -> Result<Option<Self>, u32> {
+        if text.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: the caller's duty.
+        let bytes = unsafe { CStr::from_ptr(text.cast()) }.to_bytes();
+        let length = text::utf16_length(bytes);
+        let units = heap::allocate(length.max(1) * 2).cast::<u16>();
+        if units.is_null() {
+            return Err(error::NOT_ENOUGH_MEMORY);
+        }
+        // SAFETY: the fresh block holds `length` units.
+        let out = unsafe { core::slice::from_raw_parts_mut(units, length) };
+        text::write_utf16(bytes, out);
+        Ok(Some(Self { units, length }))
+    }
+
+    fn units(&self) -> &[u16] {
+        // SAFETY: `of` filled `length` units of the block, which this copy owns.
+        unsafe { core::slice::from_raw_parts(self.units, self.length) }
+    }
+}
+
+impl Drop for WideCopy {
+    fn drop(&mut self) {
+        // SAFETY: the block is this copy's alone.
+        unsafe { heap::free(self.units.cast()) };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "efiapi" fn create_process_a(
+    application: *const u8,
+    command_line: *mut u8,
+    _process_attributes: usize,
+    _thread_attributes: usize,
+    inherit_handles: Bool,
+    flags: u32,
+    environment: *const u8,
+    directory: *const u8,
+    startup: *const u8,
+    information: *mut u8,
+) -> Bool {
+    // SAFETY: `CreateProcessA`'s contract: null or NUL-terminated strings.
+    let application = unsafe { WideCopy::of(application) };
+    // SAFETY: as above.
+    let command_line = unsafe { WideCopy::of(command_line.cast_const()) };
+    // SAFETY: as above.
+    let directory = unsafe { WideCopy::of(directory) };
+    let copies = (application, command_line, directory);
+    let (Ok(application), Ok(command_line), Ok(directory)) = copies else {
+        return fail(error::NOT_ENOUGH_MEMORY, FALSE);
+    };
+    let creation = Creation {
+        application: application.as_ref().map(WideCopy::units),
+        command_line: command_line.as_ref().map(WideCopy::units),
+        inherit_handles: inherit_handles != FALSE,
+        flags,
+        environment,
+        directory: directory.as_ref().map(WideCopy::units),
+        startup,
+        information,
+    };
+    // SAFETY: `CreateProcessA`'s contract: a readable `STARTUPINFOA`, which `STARTUPINFOW`'s
+    // layout shares, an environment block of the kind the flags say and a writable
+    // `PROCESS_INFORMATION`.
+    unsafe { create_process(&creation) }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"CreateProcessW" => create_process_w [two_stack_arguments],
+    b"CreateProcessA" => create_process_a [two_stack_arguments],
     b"OpenProcess" => open_process,
     b"GetProcessId" => get_process_id,
     b"GetExitCodeProcess" => get_exit_code_process,

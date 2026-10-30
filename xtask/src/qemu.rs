@@ -221,6 +221,14 @@ pub enum Expect {
     /// violation, a division by zero and an illegal instruction in `__try` blocks, ran a
     /// `__finally` block, continued from a vectored handler and a filter and raised a signal;
     /// and an uncaught exception ends it through `terminate` with status 3.
+    /// Then `eggspawn.exe`, our own C program (D189): it starts a copy of itself with
+    /// `CreateProcessW` whose standard output is an inherited pipe, and its lines say the read
+    /// end was kept from the child, `PeekNamedPipe` saw what `ReadFile` then took before the
+    /// pipe's end, the child got its arguments, environment and folder, the exit code 42 came
+    /// back through the process handle and a duplicate, a protected handle refused to close,
+    /// `TerminateProcess` ended a waiting child with code 9, `CreateProcessA` with
+    /// `CREATE_SUSPENDED` ran a child that `ResumeThread` let go, and a missing program is
+    /// `ERROR_FILE_NOT_FOUND`; then its status 0.
     WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
@@ -558,13 +566,14 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 7] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 8] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
     b"eggcpp.exe; echo EGGCPP status $?\r",
     b"eggcpp-fh3.exe; echo EGGCPP-FH3 status $?\r",
     b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
+    b"eggspawn.exe; echo EGGSPAWN status $?\r",
     b"exit 7\r",
 ];
 
@@ -584,6 +593,21 @@ const EGGCPP_LINES: [&str; 15] = [
     "EGGCPP illegal instruction c000001d",
     "EGGCPP signal 2",
     "EGGCPP done",
+];
+
+const EGGSPAWN_LINES: [&str; 12] = [
+    "EGGSPAWN pipe inherit read 0 write 1",
+    "EGGSPAWN peeked 8, all 1 read, same 1, then broken pipe 1",
+    "EGGSPAWN child said args 4: child|two words|back\\slash|q\"uote",
+    "EGGSPAWN child said greeting hello",
+    "EGGSPAWN child said directory C:\\tmp",
+    "EGGSPAWN child exit 42, through a duplicate 42",
+    "EGGSPAWN duplicate inherit 1, protected close refused 1 then closed 1",
+    "EGGSPAWN terminate: running 259, timeout 1, exit 9",
+    "EGGSPAWN ansi suspended resumed 1 then 0, exit 5",
+    "EGGSPAWN missing program started 0 error 2",
+    "EGGSPAWN done",
+    "EGGSPAWN status 0",
 ];
 
 const EGGPAD_LINES: [&str; 5] = [
@@ -617,6 +641,7 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             "windows: the program called terminate",
             "EGGCPP uncaught status 3",
         ]),
+        whole(&EGGSPAWN_LINES),
         whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
     ]
 }
@@ -4039,6 +4064,21 @@ mod tests {
         let twice = ok.replace("EGGCPP divide by zero c0000094\r\n", "");
         assert!(verdict("aarch64", Expect::WindowsCrt, true, &twice).is_err());
         assert!(verdict("aarch64", Expect::WindowsCrt, true, &ok).is_ok());
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_the_spawned_children_and_their_pipe() {
+        let ok = windows_crt_console();
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &ok).is_ok());
+        let unread = ok.replace("EGGSPAWN child said greeting hello\r\n", "");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &unread).is_err());
+        let leaked = ok.replace(
+            "EGGSPAWN pipe inherit read 0 write 1",
+            "EGGSPAWN pipe inherit read 1 write 1",
+        );
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &leaked).is_err());
+        let failed = ok.replace("EGGSPAWN status 0", "EGGSPAWN status 1");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
     }
 
     #[test]

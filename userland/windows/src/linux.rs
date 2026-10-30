@@ -269,21 +269,15 @@ pub fn map_shared(fd: usize, length: usize, offset: usize) -> Result<usize, Errn
 
 /// A pipe whose ends do not block and close on `execve`: its read end, then its write end.
 pub fn pipe() -> Result<(usize, usize), Errno> {
+    pipe_with(O_NONBLOCK | O_CLOEXEC)
+}
+
+/// A pipe whose ends have `flags` (`O_NONBLOCK`, `O_CLOEXEC`): its read end, then its write
+/// end.
+pub fn pipe_with(flags: usize) -> Result<(usize, usize), Errno> {
     let mut ends = [0i32; 2];
     // SAFETY: `pipe2` writes two descriptors into the borrowed array.
-    unsafe {
-        syscall(
-            number::PIPE2,
-            [
-                ends.as_mut_ptr() as usize,
-                O_NONBLOCK | O_CLOEXEC,
-                0,
-                0,
-                0,
-                0,
-            ],
-        )
-    }?;
+    unsafe { syscall(number::PIPE2, [ends.as_mut_ptr() as usize, flags, 0, 0, 0, 0]) }?;
     Ok((ends[0] as usize, ends[1] as usize))
 }
 
@@ -419,6 +413,7 @@ pub fn thread_id() -> u32 {
 pub type SignalHandler = extern "C" fn(i32, *const u8, *mut u8);
 
 const SIGNAL_DEFAULT: usize = 0;
+const SIGNAL_IGNORE: usize = 1;
 const SA_SIGINFO: u64 = 4;
 #[cfg(target_arch = "x86_64")]
 const SA_RESTORER: u64 = 0x0400_0000;
@@ -458,6 +453,11 @@ pub fn handle_signal(signal: i32, handler: SignalHandler) -> Result<usize, Errno
 /// Gives `signal` back its default action.
 pub fn default_signal_action(signal: i32) -> Result<usize, Errno> {
     set_signal_action(signal, SIGNAL_DEFAULT, 0)
+}
+
+/// Has the process ignore `signal`.
+pub fn ignore_signal(signal: i32) -> Result<usize, Errno> {
+    set_signal_action(signal, SIGNAL_IGNORE, 0)
 }
 
 /// Sends `signal` to the calling thread.
@@ -743,9 +743,14 @@ pub fn exit(status: u32) -> ! {
 
 pub const AF_INET: usize = 2;
 pub const MSG_NOSIGNAL: usize = 0x4000;
+pub const F_DUPFD: usize = 0;
+pub const F_GETFD: usize = 1;
+pub const F_SETFD: usize = 2;
 pub const F_GETFL: usize = 3;
 pub const F_SETFL: usize = 4;
+pub const F_DUPFD_CLOEXEC: usize = 1030;
 pub const SIGKILL: i32 = 9;
+pub const SIGPIPE: i32 = 13;
 pub const STATFS_WORDS: usize = 15;
 pub const UTIME_OMIT: i64 = (1 << 30) - 2;
 const FIONREAD: usize = 0x541b;

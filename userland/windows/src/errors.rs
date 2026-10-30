@@ -14,6 +14,7 @@ pub mod code {
     pub const NO_MORE_FILES: u32 = 18;
     pub const WRITE_PROTECT: u32 = 19;
     pub const BROKEN_PIPE: u32 = 109;
+    pub const NO_DATA: u32 = 232;
     pub const NOT_SUPPORTED: u32 = 50;
     pub const FILE_EXISTS: u32 = 80;
     pub const INVALID_PARAMETER: u32 = 87;
@@ -114,6 +115,7 @@ pub fn message(code: u32) -> Option<&'static str> {
         code::FILE_EXISTS => "The file exists.",
         code::INVALID_PARAMETER => "The parameter is incorrect.",
         code::BROKEN_PIPE => "The pipe has been ended.",
+        code::NO_DATA => "The pipe is being closed.",
         code::DISK_FULL => "There is not enough space on the disk.",
         code::INSUFFICIENT_BUFFER => "The data area passed to a system call is too small.",
         code::INVALID_NAME => "The filename, directory name, or volume label syntax is incorrect.",
@@ -205,6 +207,7 @@ mod tests {
             code::INVALID_HANDLE,
             code::NO_MORE_FILES,
             code::INVALID_PARAMETER,
+            code::NO_DATA,
             code::INSUFFICIENT_BUFFER,
             code::ALREADY_EXISTS,
             code::ENVVAR_NOT_FOUND,

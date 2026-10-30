@@ -213,11 +213,14 @@ extern "efiapi" fn get_thread_id(handle: usize) -> u32 {
 
 extern "efiapi" fn resume_thread(handle: usize) -> u32 {
     let run = sync::change(handle, |kind| match kind {
-        Kind::Thread(thread) => (thread.run.as_ptr() as usize, false),
-        _ => (0, false),
+        Kind::Thread(thread) => (Ok(thread.run.as_ptr() as usize), false),
+        Kind::Process(process) => (Err(process.resume()), false),
+        _ => (Ok(0), false),
     });
-    let Some(run) = run.filter(|run| *run != 0) else {
-        return fail(error::INVALID_HANDLE, u32::MAX);
+    let run = match run {
+        Some(Ok(run)) if run != 0 => run,
+        Some(Err(previous_count)) => return previous_count,
+        _ => return fail(error::INVALID_HANDLE, u32::MAX),
     };
     // SAFETY: the run word lives in the thread's object, which the caller's handle keeps alive.
     let word = unsafe { AtomicU32::from_ptr(run as *mut u32) };

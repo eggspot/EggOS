@@ -202,6 +202,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             size: size as u64,
         },
     );
+    let _ = linux::ignore_signal(linux::SIGPIPE);
     // SAFETY: the file's copy is not used after this: the image holds everything it needs.
     let _ = unsafe { linux::unmap(file.as_ptr() as usize, file.len().max(1)) };
     // SAFETY: the thread's TEB register gets the TEB this process's Win32 functions read

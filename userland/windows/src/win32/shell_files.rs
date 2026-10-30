@@ -546,6 +546,8 @@ unsafe fn execute(info: *mut u8) -> Result<usize, (u32, usize)> {
         environment: super::processes::Environment::Inherited,
         streams: [0, 1, 2],
         own_group: false,
+        inherit_handles: false,
+        suspended: false,
     };
     let started = super::processes::launch(&launch);
     // SAFETY: the block is the one `command_line_for` made, no longer used.
