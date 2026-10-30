@@ -18,4 +18,9 @@ pub mod memory;
 pub mod names;
 #[cfg(all(feature = "window", target_env = "musl"))]
 pub mod program;
+#[cfg(feature = "storage")]
+pub mod storage;
 pub mod trash;
+
+#[cfg(feature = "storage")]
+extern crate alloc;

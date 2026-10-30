@@ -431,6 +431,8 @@ const TEXT_EDITOR_PATH: &str = "bin/text-editor";
 
 const EDIT_PATH: &str = "bin/edit";
 
+const DISK_PATH: &str = "bin/disk";
+
 const TERMINAL_PATH: &str = "bin/terminal";
 
 const PROC_PATH: &str = "proc";
@@ -1594,6 +1596,7 @@ fn release_initramfs(
             initramfs::Content::HardLink(SETTINGS_PATH),
         ),
         (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (DISK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (TERMINAL_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
@@ -2446,7 +2449,7 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, EDIT_PATH, arch_option, foreign_layers, host_folder,
+        APP_PATH, COREUTILS, DISK_PATH, EDIT_PATH, arch_option, foreign_layers, host_folder,
         json_string_field, room_bytes, size_in_mebibytes, with_value, without_flag,
     };
 
@@ -2481,7 +2484,11 @@ mod tests {
         let programs: Vec<String> = COREUTILS
             .iter()
             .map(|name| format!("/bin/{name}"))
-            .chain([format!("/{APP_PATH}"), format!("/{EDIT_PATH}")])
+            .chain([
+                format!("/{APP_PATH}"),
+                format!("/{EDIT_PATH}"),
+                format!("/{DISK_PATH}"),
+            ])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {
             match tool.twin.program {

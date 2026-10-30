@@ -75,6 +75,8 @@ pub const MAX_SETTING_VALUE_BYTES: usize = 64;
 pub const MAX_PROPERTY_VALUE_BYTES: usize = 91;
 /// The longest tag `logcat` takes, kept where a setting's key is (D188).
 pub const MAX_LOG_TAG_BYTES: usize = 64;
+/// The longest label `disk_format` takes, in bytes (EggFS's, D192).
+pub const MAX_LABEL_BYTES: usize = 64;
 /// The longest `after` a list tool takes: a cursor (D164).
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 /// The longest `target` `ln` takes (D170).
@@ -179,6 +181,10 @@ pub enum ArgumentProblem {
     /// `ln`'s `target` is empty, longer than [`MAX_LINK_TARGET_BYTES`], holds a NUL or starts
     /// with `-` (D170).
     BadLinkTarget,
+    /// `device` is not /dev/vda to /dev/vdd (D192).
+    BadDevice,
+    /// `label` is longer than 64 bytes or holds a control character (D192).
+    BadLabel,
 }
 
 impl ArgumentProblem {
@@ -317,6 +323,10 @@ impl ArgumentProblem {
             ArgumentProblem::BadLinkTarget => {
                 "target must be 1 to 4095 bytes without NUL, not starting with - (write ./-name)"
             }
+            ArgumentProblem::BadDevice => "device must be a disk's file: /dev/vda to /dev/vdd",
+            ArgumentProblem::BadLabel => {
+                "label must be at most 64 bytes without control characters"
+            }
         }
     }
 }
@@ -347,6 +357,34 @@ impl TimeText {
     /// The time's text.
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.0).unwrap_or("")
+    }
+}
+
+/// `disk_format`'s label, kept whole: at most [`MAX_LABEL_BYTES`] bytes without control
+/// characters (D192).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelText {
+    bytes: [u8; MAX_LABEL_BYTES],
+    length: usize,
+}
+
+impl LabelText {
+    /// `text` as a label, if it fits.
+    pub fn of(text: &[u8]) -> Result<Self, ArgumentProblem> {
+        if text.len() > MAX_LABEL_BYTES || text.iter().any(u8::is_ascii_control) {
+            return Err(ArgumentProblem::BadLabel);
+        }
+        let mut bytes = [0u8; MAX_LABEL_BYTES];
+        bytes[..text.len()].copy_from_slice(text);
+        Ok(Self {
+            bytes,
+            length: text.len(),
+        })
+    }
+
+    /// The label's text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(self.bytes.get(..self.length).unwrap_or_default()).unwrap_or("")
     }
 }
 
@@ -527,6 +565,8 @@ pub struct Checked {
     pub link_target: Option<usize>,
     /// `ln`'s `symbolic`, true unless the agent says false (D170).
     pub symbolic: bool,
+    /// `disk_format`'s label (D192).
+    pub label: Option<LabelText>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -775,6 +815,31 @@ pub fn check(
             return Err(ArgumentProblem::BadLinkTarget);
         }
         checked.link_target = Some(length);
+    }
+    if matches!(
+        tool.kind,
+        Kind::DiskCheck | Kind::DiskRepair | Kind::DiskFormat
+    ) {
+        let device = checked
+            .path
+            .and_then(|length| decoded.path.get(..length))
+            .unwrap_or_default();
+        if !is_disk_device(device) {
+            return Err(ArgumentProblem::BadDevice);
+        }
+    }
+    if tool.kind == Kind::DiskFormat {
+        checked.label = match get("label") {
+            None => None,
+            Some(Value::Str(text)) => {
+                let mut bytes = [0u8; MAX_LABEL_BYTES];
+                let decoded = text
+                    .decode_into(&mut bytes)
+                    .ok_or(ArgumentProblem::BadLabel)?;
+                Some(LabelText::of(decoded.as_bytes())?)
+            }
+            Some(_) => return Err(ArgumentProblem::BadLabel),
+        };
     }
     if tool.kind == Kind::Fetch {
         let length = short_text(
@@ -1312,6 +1377,13 @@ pub fn after_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
 /// (D170).
 pub fn link_target_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     core::str::from_utf8(buffer.get(..checked.link_target?)?).ok()
+}
+
+fn is_disk_device(device: &[u8]) -> bool {
+    matches!(
+        device,
+        [b'/', b'd', b'e', b'v', b'/', b'v', b'd', b'a'..=b'd']
+    )
 }
 
 /// The path or program in `buffer` that [`Checked::path`] measures.
@@ -1893,6 +1965,57 @@ mod tests {
                 "{tool}"
             );
         }
+    }
+
+    #[test]
+    fn disk_tools_take_a_disk_s_file_and_format_a_label_of_64_bytes() {
+        let (result, buffers) = checked("disk_check", r#"{"device":"/dev/vdb"}"#);
+        assert_eq!(path_text(&result.unwrap(), &buffers.path), Some("/dev/vdb"));
+        for device in [
+            "/dev/vde",
+            "/dev/vdb/x",
+            "/dev/../dev/vdb",
+            "/home/root/a",
+            "vdb",
+        ] {
+            let arguments = format!(r#"{{"device":"{device}"}}"#);
+            assert_eq!(
+                checked("disk_repair", &arguments).0,
+                Err(ArgumentProblem::BadDevice),
+                "{device}"
+            );
+        }
+        let (result, _) = checked(
+            "disk_format",
+            r#"{"device":"/dev/vdc","label":"scratch","confirm":true}"#,
+        );
+        let result = result.unwrap();
+        assert_eq!(
+            result.label.map(|label| label.as_str() == "scratch"),
+            Some(true)
+        );
+        assert!(result.confirm);
+        assert_eq!(
+            checked("disk_format", r#"{"device":"/dev/vdc"}"#)
+                .0
+                .unwrap()
+                .label,
+            None
+        );
+        let long = format!(r#"{{"device":"/dev/vdc","label":"{}"}}"#, "x".repeat(65));
+        assert_eq!(
+            checked("disk_format", &long).0,
+            Err(ArgumentProblem::BadLabel)
+        );
+        let control = r#"{"device":"/dev/vdc","label":"a\nb"}"#;
+        assert_eq!(
+            checked("disk_format", control).0,
+            Err(ArgumentProblem::BadLabel)
+        );
+        assert_eq!(
+            checked("disk_check", r#"{"device":"/dev/vdb","label":"x"}"#).0,
+            Err(ArgumentProblem::Unknown)
+        );
     }
 
     #[test]

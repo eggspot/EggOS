@@ -2332,8 +2332,194 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Settings: Desktop layout"),
 };
 
+/// `disk list --json`'s records: one a disk (D192).
+pub const DISK_FIELDS: [Field; 8] = [
+    field("device", FieldType::Text),
+    field("size_bytes", FieldType::Integer),
+    field("read_only", FieldType::Boolean),
+    field("file_system", FieldType::Text),
+    nullable("label", FieldType::Text),
+    nullable("mounted_on", FieldType::Text),
+    nullable("used_bytes", FieldType::Integer),
+    nullable("available_bytes", FieldType::Integer),
+];
+
+/// `disk check --json`'s and `disk repair --json`'s object: the report and its findings, each
+/// with `code`, `description`, `inode`, `block` and `outcome` (D192).
+pub const DISK_CHECK_FIELDS: [Field; 6] = [
+    field("device", FieldType::Text),
+    field("clean", FieldType::Boolean),
+    field("repairable", FieldType::Boolean),
+    field("blocks", FieldType::Integer),
+    field("free_blocks", FieldType::Integer),
+    field("findings", FieldType::List),
+];
+
+const DISK_OPERAND: OperandDefinition = operand("device", ValueType::Path, Count::One);
+
+const DISK_SURFACE: Surface = Surface::Gui("Settings: Storage");
+
+const fn refused_example(line: &'static str) -> Example {
+    Example {
+        line,
+        output: "",
+        status: 1,
+    }
+}
+
+/// `disk check`.
+pub const DISK_CHECK: CommandDefinition = CommandDefinition {
+    words: &["disk", "check"],
+    summary: "Checks an unmounted EggFS disk.",
+    description: "Reads every structure of the EggFS file system on an unmounted disk \
+                  (/dev/vda to /dev/vdd) and lists each problem with its code, where it is, \
+                  whether a repair would fix it and what it is, after a headline; changes \
+                  nothing. It ends with status 0 whenever the check ran: --json's clean says \
+                  whether anything is wrong. A mounted disk is refused.",
+    options: &[JSON_OPTION],
+    operands: &[DISK_OPERAND],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&DISK_CHECK_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::NO_SUCH_DISK, 1),
+        exits(&crate::errors::DISK_IN_USE, 1),
+        exits(&crate::errors::NOT_EGGFS, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        refused_example("disk check /dev/vda"),
+        refused_example("disk check vdb"),
+    ],
+    surface: DISK_SURFACE,
+};
+
+/// `disk format`.
+pub const DISK_FORMAT: CommandDefinition = CommandDefinition {
+    words: &["disk", "format"],
+    summary: "Erases an unmounted disk and makes it an empty EggFS disk.",
+    description: "Erases everything on an unmounted disk (/dev/vda to /dev/vdd) and writes an \
+                  empty EggFS file system on all of it, with the --label given (at most 64 \
+                  bytes). It asks the user to type the disk's short name (vdb) first on a \
+                  terminal; --yes answers for them, and without a terminal it needs --yes. \
+                  --dry-run says what would be erased and writes nothing. A mounted or \
+                  read-only disk is refused.",
+    options: &[
+        valued(
+            None,
+            Some("label"),
+            "name",
+            ValueType::Text,
+            "The new file system's label, at most 64 bytes.",
+        ),
+        named_flag(b'y', "yes", "Format without asking."),
+        DRY_RUN_OPTION,
+    ],
+    operands: &[DISK_OPERAND],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Destroy,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::NO_SUCH_DISK, 1),
+        exits(&crate::errors::DISK_IN_USE, 1),
+        exits(&READ_ONLY, 1),
+        exits(&crate::errors::LABEL_TOO_LONG, 2),
+        exits(&crate::errors::NEEDS_CONFIRMATION, 1),
+        exits(&crate::errors::DECLINED_BY_USER, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example(
+            "disk format --yes --label scratch /dev/vdb",
+            "Formatted /dev/vdb as EggFS \"scratch\".\n",
+        ),
+        example(
+            "disk format --dry-run /dev/vdb",
+            "would erase /dev/vdb (Blank, 2.0 MB) and make an empty EggFS file system with \
+             no label\n",
+        ),
+        refused_example("disk format /dev/vdb"),
+        refused_example("disk format --yes /dev/vda"),
+    ],
+    surface: DISK_SURFACE,
+};
+
+/// `disk list`.
+pub const DISK_LIST: CommandDefinition = CommandDefinition {
+    words: &["disk", "list"],
+    summary: "Lists the disks.",
+    description: "Lists every disk attached, /dev/vda to /dev/vdd: its size, whether it takes \
+                  writes, what it holds (EggFS, FAT, blank or unknown), its EggFS label, where \
+                  it is mounted, and the space used and free when known; - where a value is \
+                  unknown. --json writes one record a disk, sizes in bytes.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&DISK_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&FAILED, 1)],
+    examples: &[
+        example(
+            "disk list",
+            "DEVICE  SIZE  RW  FS  LABEL  MOUNTED  USED  FREE\n/dev/vda  2.0 MB  rw  EggFS  -  \
+             /home  1.0 MB  1.0 MB\n/dev/vdb  2.0 MB  rw  blank  -  -  -  -\n",
+        ),
+        example(
+            "disk list --json",
+            "{\"device\":\"/dev/vda\",\"size_bytes\":2097152,\"read_only\":false,\
+             \"file_system\":\"eggfs\",\"label\":null,\"mounted_on\":\"/home\",\
+             \"used_bytes\":1048576,\"available_bytes\":1048576}\n{\"device\":\"/dev/vdb\",\
+             \"size_bytes\":2097152,\"read_only\":false,\"file_system\":\"blank\",\
+             \"label\":null,\"mounted_on\":null,\"used_bytes\":null,\
+             \"available_bytes\":null}\n",
+        ),
+    ],
+    surface: DISK_SURFACE,
+};
+
+/// `disk repair`.
+pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
+    words: &["disk", "repair"],
+    summary: "Repairs an unmounted EggFS disk.",
+    description: "Checks the EggFS file system on an unmounted disk (/dev/vda to /dev/vdd) as \
+                  disk check does and repairs what can be repaired safely, through the journal, \
+                  then lists what it found and did. Running it again finds nothing. --dry-run \
+                  reports what a repair would do and writes nothing. It ends with \
+                  not_repairable when problems are left. A mounted or read-only disk is \
+                  refused.",
+    options: &[JSON_OPTION, DRY_RUN_OPTION],
+    operands: &[DISK_OPERAND],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&DISK_CHECK_FIELDS),
+    },
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::NO_SUCH_DISK, 1),
+        exits(&crate::errors::DISK_IN_USE, 1),
+        exits(&crate::errors::NOT_EGGFS, 1),
+        exits(&READ_ONLY, 1),
+        exits(&crate::errors::NOT_REPAIRABLE, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        refused_example("disk repair --dry-run /dev/vda"),
+        refused_example("disk repair /dev/vdb"),
+    ],
+    surface: DISK_SURFACE,
+};
+
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 69] = [
+pub const COMMANDS: [CommandDefinition; 73] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
@@ -2346,6 +2532,10 @@ pub const COMMANDS: [CommandDefinition; 69] = [
     DATE,
     DEVICE_LIST,
     DF,
+    DISK_CHECK,
+    DISK_FORMAT,
+    DISK_LIST,
+    DISK_REPAIR,
     ECHO,
     EDIT,
     FALSE,

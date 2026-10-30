@@ -14,12 +14,16 @@ eggos-app = { path = "../app", features = ["window"] }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }
 eggos-editor = { path = "../editor", features = ["window"] }
-eggos-files = { path = "../files", features = ["window"] }
+eggos-files = { path = "../files", features = ["window", "storage"] }
+eggos-eggfs = { path = "../../eggfs" }
 eggos-mcp = { path = "../mcp" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-terminal-window = { path = "../terminal" }
 eggos-toolkit = { path = "../toolkit" }
+
+[dev-dependencies]
+eggos-files = { path = "../files", features = ["window", "storage", "memory"] }
 
 [lints]
 workspace = true

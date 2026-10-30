@@ -215,7 +215,11 @@ fn the_tools_are_listed_once_initialized() {
             "getprop",
             "setprop",
             "logcat",
-            "app_show"
+            "app_show",
+            "disk_list",
+            "disk_check",
+            "disk_repair",
+            "disk_format"
         ]
     );
 }

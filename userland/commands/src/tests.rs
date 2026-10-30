@@ -455,11 +455,30 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
         .filter(|tool| tool.takes("dry_run"))
         .map(|tool| tool.name)
         .collect();
-    assert_eq!(dry, ["tee", "trash", "app_uninstall", "settings_set"]);
+    assert_eq!(
+        dry,
+        [
+            "tee",
+            "trash",
+            "app_uninstall",
+            "settings_set",
+            "disk_repair",
+            "disk_format"
+        ]
+    );
     let commands: Vec<String> = COMMANDS
         .iter()
         .filter(|command| command.has_dry_run())
         .map(|command| command.words.join(" "))
         .collect();
-    assert_eq!(commands, ["app uninstall", "settings set", "trash"]);
+    assert_eq!(
+        commands,
+        [
+            "app uninstall",
+            "disk format",
+            "disk repair",
+            "settings set",
+            "trash"
+        ]
+    );
 }

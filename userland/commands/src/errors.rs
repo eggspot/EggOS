@@ -250,6 +250,41 @@ pub const NOT_APPLIED: ErrorDefinition = error(
     "The value is saved and applies when the desktop starts next; try again to apply it now.",
     None,
 );
+/// `disk`: no disk of that name is attached (D192).
+pub const NO_SUCH_DISK: ErrorDefinition = error(
+    "no_such_disk",
+    Category::NotFound,
+    "Name a disk disk list shows: /dev/vda to /dev/vdd.",
+    Some("disk list"),
+);
+/// `disk`: a file system holds the disk (D192).
+pub const DISK_IN_USE: ErrorDefinition = error(
+    "disk_in_use",
+    Category::Busy,
+    "A mounted disk cannot be checked, repaired or formatted in this version.",
+    None,
+);
+/// `disk check` and `disk repair`: the disk holds no EggFS file system (D192).
+pub const NOT_EGGFS: ErrorDefinition = error(
+    "not_eggfs",
+    Category::Refused,
+    "Format the disk to make it an EggFS disk.",
+    Some("disk format"),
+);
+/// `disk format`: the label is longer than 64 bytes (D192).
+pub const LABEL_TOO_LONG: ErrorDefinition = error(
+    "label_too_long",
+    Category::Usage,
+    "Use a label of at most 64 bytes.",
+    None,
+);
+/// `disk repair`: problems are left that cannot be repaired safely (D192).
+pub const NOT_REPAIRABLE: ErrorDefinition = error(
+    "not_repairable",
+    Category::Damaged,
+    "Copy what can still be read from the disk, then format it.",
+    None,
+);
 
 /// MCP: the path is outside the folders the tool may reach.
 pub const PATH_NOT_ALLOWED: ErrorDefinition = error(
@@ -344,7 +379,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 46] = [
+pub const ALL: [&ErrorDefinition; 51] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -379,6 +414,11 @@ pub const ALL: [&ErrorDefinition; 46] = [
     &SETTING_READ_ONLY,
     &INVALID_VALUE,
     &NOT_APPLIED,
+    &NO_SUCH_DISK,
+    &DISK_IN_USE,
+    &NOT_EGGFS,
+    &LABEL_TOO_LONG,
+    &NOT_REPAIRABLE,
     &PATH_NOT_ALLOWED,
     &NEEDS_GRANT,
     &NEEDS_CONFIRMATION,

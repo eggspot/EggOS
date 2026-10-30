@@ -1463,6 +1463,10 @@ impl Server {
         if let Some(url) = arguments::url_text(&prepared.checked, buffers.content) {
             push_word(&mut words, &mut count, url);
         }
+        if let Some(label) = prepared.checked.label.as_ref() {
+            push_word(&mut words, &mut count, "--label");
+            push_word(&mut words, &mut count, label.as_str());
+        }
         if let Some(key) = arguments::setting_key_text(&prepared.checked, buffers.words) {
             if tool.kind == Kind::Logcat {
                 push_word(&mut words, &mut count, "-s");
@@ -2249,6 +2253,7 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
         Kind::Trash => text.put("trash moves the file to the Trash"),
         Kind::ClockSet => text.put("clock_set sets the machine's clock"),
         Kind::AppUninstall => text.put("app_uninstall removes the app"),
+        Kind::DiskFormat => text.put("disk_format erases the disk"),
         _ => {
             text.put(tool.name);
             text.put(" needs the user's yes");
@@ -2317,6 +2322,16 @@ fn question_text(
             text.put("An agent asks to uninstall the app ");
             text.put(text_prefix(&name, length));
             text.put(". Allow it?");
+        }
+        Kind::DiskFormat => {
+            text.put("An agent asks to format the disk ");
+            text.put(shown);
+            if let FileState::File(size) = state {
+                text.put(" (");
+                text.number(size as i64);
+                text.put(" bytes)");
+            }
+            text.put(", erasing everything on it. Allow it?");
         }
         _ => {
             text.put("An agent asks to run ");
@@ -2396,6 +2411,16 @@ fn would_text(
             text.put(name);
             text.put(" and everything in it");
         }
+        (Kind::DiskFormat, _) => {
+            text.put(" would erase everything on ");
+            text.put(shown);
+            size(&mut text);
+            text.put(" and write an empty EggFS file system");
+            if let Some(label) = checked.label.as_ref() {
+                text.put(" labelled ");
+                text.put(label.as_str());
+            }
+        }
         _ => text.put(" would make its change"),
     }
     text.length
@@ -2421,6 +2446,10 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if let Some(name) = checked.name {
         writer.key("name");
         writer.string(name.as_str());
+    }
+    if let Some(label) = checked.label.as_ref() {
+        writer.key("label");
+        writer.string(label.as_str());
     }
     if let Some(entry) = arguments::archive_entry_text(checked, scratch.words) {
         writer.key("entry");

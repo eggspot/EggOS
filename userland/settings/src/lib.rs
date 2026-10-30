@@ -5,8 +5,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub mod art;
 pub mod command;
+pub mod disk;
 pub mod facts;
 pub mod keys;
 pub mod settings_window;

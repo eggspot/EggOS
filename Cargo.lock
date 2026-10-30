@@ -120,6 +120,7 @@ version = "0.2.0"
 dependencies = [
  "eggos-app",
  "eggos-app-manifest",
+ "eggos-eggfs",
  "eggos-runtime",
  "eggos-toolkit",
 ]
@@ -271,6 +272,7 @@ dependencies = [
  "eggos-app",
  "eggos-calendar",
  "eggos-commands",
+ "eggos-eggfs",
  "eggos-editor",
  "eggos-files",
  "eggos-mcp",

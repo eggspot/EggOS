@@ -75,7 +75,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 14] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 15] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -102,6 +102,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 14] = [
     ("device_list", r#"{"all":true}"#, "\"state\":\"bound\""),
     ("getprop", r#"{"name":"eggos.mcp.unset"}"#, ""),
     ("logcat", r#"{"tag":"eggos-mcp-unset"}"#, ""),
+    ("disk_list", "{}", ""),
 ];
 
 /// Every call of a reading tool whose result depends on the network the machine was started
@@ -123,7 +124,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 30] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 33] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
@@ -204,6 +205,13 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 30] = [
     (
         "setprop",
         r#"{"name":"eggos.mcp.test","value":"1"}"#,
+        "write",
+    ),
+    ("disk_check", r#"{"device":"/dev/vdd"}"#, "view"),
+    ("disk_repair", r#"{"device":"/dev/vdd"}"#, "write"),
+    (
+        "disk_format",
+        r#"{"device":"/dev/vdd","confirm":true}"#,
         "write",
     ),
 ];

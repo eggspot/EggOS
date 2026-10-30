@@ -137,6 +137,14 @@ pub enum Kind {
     Logcat,
     /// `app_show`: one app and its translation kept at install (D191).
     AppShow,
+    /// `disk_list`: the disks (D192).
+    DiskList,
+    /// `disk_check`: checks an unmounted disk (D192).
+    DiskCheck,
+    /// `disk_repair`: repairs an unmounted disk (D192).
+    DiskRepair,
+    /// `disk_format`: erases a disk and makes it an empty EggFS disk (D192).
+    DiskFormat,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -303,6 +311,18 @@ const INSTALL_PATH: PathArgument = PathArgument {
     outside: "Refused: apps are installed from /media/host, the host's shared folder, only.",
 };
 
+/// The disks' files a disk tool may name (D192).
+pub const DISK_DEVICES: [&str; 4] = ["/dev/vda", "/dev/vdb", "/dev/vdc", "/dev/vdd"];
+
+const DEVICE_PATH: PathArgument = PathArgument {
+    name: "device",
+    default: None,
+    roots: &DISK_DEVICES,
+    strictly: false,
+    excluded: &[],
+    outside: "Refused: the device is not a disk's file: /dev/vda to /dev/vdd.",
+};
+
 /// `run`'s program: any absolute path.
 pub const PROGRAM_PATH: PathArgument = PathArgument {
     name: "program",
@@ -328,7 +348,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 46] = [
+pub const TOOLS: [Tool; 50] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -540,6 +560,38 @@ pub const TOOLS: [Tool; 46] = [
         &registry::APP_SHOW,
         Kind::AppShow,
         twin("/bin/app", &["show"], Operand::Name),
+    ),
+    tool(
+        &registry::DISK_LIST,
+        Kind::DiskList,
+        twin("/bin/disk", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::DISK_CHECK,
+        Kind::DiskCheck,
+        twin(
+            "/bin/disk",
+            &["check", "--json"],
+            Operand::Path(DEVICE_PATH),
+        ),
+    ),
+    tool(
+        &registry::DISK_REPAIR,
+        Kind::DiskRepair,
+        twin(
+            "/bin/disk",
+            &["repair", "--json"],
+            Operand::Path(DEVICE_PATH),
+        ),
+    ),
+    tool(
+        &registry::DISK_FORMAT,
+        Kind::DiskFormat,
+        twin(
+            "/bin/disk",
+            &["format", "--yes"],
+            Operand::Path(DEVICE_PATH),
+        ),
     ),
 ];
 

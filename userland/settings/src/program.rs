@@ -48,6 +48,7 @@ const FILES_PROGRAM_NAME: &[u8] = b"files";
 const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
 const TERMINAL_PROGRAM_NAME: &[u8] = b"terminal";
 const EDIT_COMMAND_NAME: &[u8] = b"edit";
+const DISK_COMMAND_NAME: &[u8] = b"disk";
 const CLOCK_REALTIME: usize = 0;
 const HARDWARE_CLOCK: &str = "/proc/driver/rtc";
 const SAVED_WITHIN_S: u64 = 2;
@@ -648,7 +649,7 @@ fn open_window() -> i32 {
 
 /// The program: see the crate's documentation. Started as `app-window`, it is the
 /// installer's window instead (D134); as `files` the Files window (D135); as `text-editor` the
-/// Text Editor and as `edit` its command (D149).
+/// Text Editor and as `edit` its command (D149); as `disk` the `disk` command (D192).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {
@@ -656,6 +657,7 @@ pub fn run(startup: &Startup) -> i32 {
         FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
         EDITOR_PROGRAM_NAME => return eggos_editor::program::run(startup),
         EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
+        DISK_COMMAND_NAME => return crate::disk_system::run(startup),
         TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
         _ => {}
     }

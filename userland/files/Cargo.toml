@@ -8,10 +8,12 @@ repository.workspace = true
 [features]
 window = ["dep:eggos-toolkit"]
 memory = []
+storage = ["dep:eggos-eggfs"]
 
 [dependencies]
 eggos-app = { path = "../app" }
 eggos-app-manifest = { path = "../../app-manifest" }
+eggos-eggfs = { path = "../../eggfs", optional = true }
 eggos-runtime = { path = "../runtime" }
 eggos-toolkit = { path = "../toolkit", optional = true }
 
