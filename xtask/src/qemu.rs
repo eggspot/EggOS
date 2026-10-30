@@ -238,7 +238,7 @@ const BOOT_CLOCK_LINE: &str = "EGGOS-BENCH: boot_to_prompt ";
 
 const SHELL_PROMPT: &str = "eggsh:/";
 
-const SHELL_SESSION: [&[u8]; 17] = [
+const SHELL_SESSION: [&[u8]; 34] = [
     b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
     b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
     b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
@@ -249,14 +249,33 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
     b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
     b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
-    b"echo a && b; echo EGGSH-TEST never\r",
-    b"echo EGGSH-TEST after unsupported $?\r",
+    b"true && echo EGGSH-TEST and ok; false && echo EGGSH-TEST never; false || echo EGGSH-TEST or ok\r",
+    b"eggsh -c 'echo echo EGGSH-TEST redirected stderr >&2' 2> /tmp/e; . /tmp/e\r",
+    b"eggsh -c 'echo echo EGGSH-TEST stderr joined >&2' > /tmp/d 2>&1; . /tmp/d\r",
+    CURSOR_LINE,
+    b"eggos-std-selftest shell-child show NOTHING bg & wait $!; echo EGGSH-TEST background $?\r",
+    b"eggos-std-selftest shell-child stop-and-continue\r",
+    b"jobs\r",
+    b"bg\r",
+    b"jobs\r",
+    b"fg; echo EGGSH-TEST fg status $?\r",
+    b"eggos-std-selftest shell-child read-line & wait %1; echo EGGSH-TEST ttin $?\r",
+    b"fg\r",
+    b"echo EGGSH-TEST read status $?\r",
+    b"eggos-std-selftest shell-child sleep & kill %1; wait %1; echo EGGSH-TEST killed job $?\r",
+    b"eggos-std-selftest shell-child window-change; echo EGGSH-TEST window status $?\r",
+    b"echo EGGSH-TEST remembered $X\r",
+    b"X=nested eggsh\r",
+    RECALL_THE_LINE_BEFORE_LAST,
+    b"exit 0\r",
     b"eggos-std-selftest shell-child wait-for-interrupt\r",
     b"echo EGGSH-TEST interrupted $?\r",
     b"\x03",
     b"echo EGGSH-TEST prompt interrupt $?\r",
     b"exit 7\r",
 ];
+
+const CURSOR_LINE: &[u8] = b"EGGSH-TEST cursr\x1b[Do\x01echo \x05 moved\r";
 
 const LINUX_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
@@ -1269,7 +1288,7 @@ struct Reaction {
     keys: &'static [u8],
 }
 
-const REACTIONS: [Reaction; 2] = [
+const REACTIONS: [Reaction; 4] = [
     Reaction {
         line_ends_with: "# cat | grep EGGOS-PIPE",
         occurrences: 1,
@@ -1279,6 +1298,16 @@ const REACTIONS: [Reaction; 2] = [
         line_ends_with: PIPELINE_INPUT_LINE,
         occurrences: 2,
         keys: b"\x03",
+    },
+    Reaction {
+        line_ends_with: "EGGOS-SHELL-CHILD: waiting for ^Z in the foreground group",
+        occurrences: 1,
+        keys: b"\x1a",
+    },
+    Reaction {
+        line_ends_with: "eggos-std-selftest shell-child read-line",
+        occurrences: 2,
+        keys: b"typed-after-fg\r",
     },
 ];
 
@@ -1448,10 +1477,10 @@ struct ShellTyping {
     reactions: [bool; REACTIONS.len()],
 }
 
-const SHELL_LINES: [&str; 19] = [
-    "EGGSH-TEST quoting single  quoted double / $HOME",
+const SHELL_LINES: [&str; 37] = [
+    "EGGSH-TEST quoting single  quoted double /home/root $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
-    "EGGSH-TEST cd /usr/libexec /",
+    "EGGSH-TEST cd /usr/libexec /home/root",
     "EGGSH-TEST home /home/root",
     "EGGSH-TEST status 1",
     "eggsh: no-such-command: command not found",
@@ -1464,11 +1493,32 @@ const SHELL_LINES: [&str; 19] = [
     "EGGSH-TEST sourced yes",
     "EGGSH-TEST script status 5",
     "EGGSH-TEST dash-c name arg",
-    "eggsh: `&&` is not supported yet",
-    "EGGSH-TEST after unsupported 2",
+    "EGGSH-TEST and ok",
+    "EGGSH-TEST or ok",
+    "EGGSH-TEST redirected stderr",
+    "EGGSH-TEST stderr joined",
+    "EGGSH-TEST cursor moved",
+    "EGGOS-SHELL-CHILD: NOTHING=<unset> args=bg",
+    "EGGSH-TEST background 3",
+    STOPPED_JOB_LINE,
+    "[1]+  Running                 eggos-std-selftest shell-child stop-and-continue &",
+    "[1]+ eggos-std-selftest shell-child stop-and-continue &",
+    "EGGOS-SHELL-CHILD: back in the foreground",
+    "EGGSH-TEST fg status 4",
+    "[1]+  Stopped (tty input)     eggos-std-selftest shell-child read-line",
+    "EGGSH-TEST ttin 149",
+    "EGGOS-SHELL-CHILD: read typed-after-fg",
+    "EGGSH-TEST read status 0",
+    "EGGSH-TEST killed job 143",
+    "EGGOS-SHELL-CHILD: SIGWINCH 31x101",
+    "EGGSH-TEST window status 0",
+    "EGGSH-TEST remembered nested",
     "EGGSH-TEST interrupted 130",
     "EGGSH-TEST prompt interrupt 130",
 ];
+
+const STOPPED_JOB_LINE: &str =
+    "[1]+  Stopped                 eggos-std-selftest shell-child stop-and-continue";
 
 const SHELL_EXIT_LINE: &str = "init: /bin/eggsh exited with status 7";
 

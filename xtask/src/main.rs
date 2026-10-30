@@ -1673,6 +1673,8 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
                 SHELL_TEST_SOURCED_PATH,
                 initramfs::Content::Text(SHELL_TEST_SOURCED),
             ),
+            (TMP_PATH, initramfs::Content::Directory),
+            (HOME_PATH, initramfs::Content::Directory),
         ],
         &format!("initramfs-shell-{}.cpio", arch.user_target),
     )?;

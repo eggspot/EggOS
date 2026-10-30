@@ -13,6 +13,8 @@ impl Errno {
     pub const ESRCH: Self = Self(3);
     /// `EINTR`.
     pub const EINTR: Self = Self(4);
+    /// `ECHILD`.
+    pub const ECHILD: Self = Self(10);
     /// `EIO`.
     pub const EIO: Self = Self(5);
     /// `ENXIO`.

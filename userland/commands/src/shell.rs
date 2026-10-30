@@ -2,10 +2,10 @@
 //! the registry (it stays small), so they are described here for the docs and the tests only,
 //! command line only, and are not in [`crate::COMMANDS`] or `help --json`.
 
-use crate::errors::{NO_SUCH_COMMAND, NO_SUCH_FILE, USAGE};
+use crate::errors::{FAILED, NO_SUCH_COMMAND, NO_SUCH_FILE, USAGE};
 use crate::{
-    CommandDefinition, CommandError, Count, Effect, ErrorDefinition, OperandDefinition, Output,
-    Outputs, Surface, ValueType, flag, operand,
+    CommandDefinition, CommandError, Count, Effect, ErrorDefinition, OperandDefinition,
+    OptionDefinition, OptionValue, Output, Outputs, Surface, ValueType, flag, operand,
 };
 
 const fn exits(error: &'static ErrorDefinition, exit: i32) -> CommandError {
@@ -53,6 +53,33 @@ const USAGE_1: [CommandError; 1] = [exits(&USAGE, 1)];
 
 const NOT_FOUND: [CommandError; 1] = [exits(&NO_SUCH_COMMAND, 1)];
 
+const JOB: [OperandDefinition; 1] = [operand("job", ValueType::Text, Count::ZeroOrOne)];
+
+const TARGETS: [OperandDefinition; 1] = [operand("target", ValueType::Text, Count::OneOrMore)];
+
+const WAITED: [OperandDefinition; 1] = [operand("target", ValueType::Text, Count::ZeroOrMore)];
+
+const JOB_ERRORS: [CommandError; 1] = [exits(&FAILED, 1)];
+
+const KILL_ERRORS: [CommandError; 2] = [exits(&USAGE, 2), exits(&FAILED, 1)];
+
+const WAIT_ERRORS: [CommandError; 1] = [exits(&FAILED, 127)];
+
+const KILL_OPTIONS: [OptionDefinition; 2] = [
+    OptionDefinition {
+        short: Some(b's'),
+        long: None,
+        value: Some(OptionValue {
+            name: "signal",
+            value: ValueType::Text,
+        }),
+        repeatable: false,
+        default: Some("TERM"),
+        help: "The signal to send, by name (TERM, SIGKILL, cont) or number; -NAME says it too.",
+    },
+    flag(b'l', "List the signals' names."),
+];
+
 const fn built_in(
     words: &'static [&'static str],
     summary: &'static str,
@@ -77,7 +104,7 @@ const fn built_in(
 }
 
 /// `eggsh`'s built-ins, in the order of [`crate::SHELL_BUILTINS`].
-pub const SHELL_COMMANDS: [CommandDefinition; 13] = [
+pub const SHELL_COMMANDS: [CommandDefinition; 18] = [
     built_in(
         &["."],
         "Runs a file's commands in this shell.",
@@ -96,6 +123,17 @@ pub const SHELL_COMMANDS: [CommandDefinition; 13] = [
         NOTHING,
         Effect::Read,
         &[],
+    ),
+    built_in(
+        &["bg"],
+        "Continues a stopped job in the background.",
+        "Sends a stopped job SIGCONT and leaves it running in the background, writing [n]+ \
+         command &; the job is the current one, or the one %n, n, %%, %- or %name names; \
+         needs an interactive shell.",
+        &JOB,
+        TEXT,
+        Effect::Control,
+        &JOB_ERRORS,
     ),
     built_in(
         &["cd"],
@@ -149,6 +187,17 @@ pub const SHELL_COMMANDS: [CommandDefinition; 13] = [
         &[],
     ),
     built_in(
+        &["fg"],
+        "Brings a job to the foreground.",
+        "Writes the job's command line, gives it the terminal, sends it SIGCONT if it is \
+         stopped and waits for it as for a command typed at the prompt (the current job \
+         without an operand); needs an interactive shell.",
+        &JOB,
+        TEXT,
+        Effect::Control,
+        &JOB_ERRORS,
+    ),
+    built_in(
         &["help"],
         "Describes the shell, or an EggOS command.",
         "Alone, describes the shell's syntax and built-ins; with words, runs /bin/help, which \
@@ -158,6 +207,36 @@ pub const SHELL_COMMANDS: [CommandDefinition; 13] = [
         Effect::Read,
         &NOT_FOUND,
     ),
+    CommandDefinition {
+        options: &[
+            flag(b'l', "Also write each job's process id."),
+            flag(b'p', "Write only each job's process id."),
+        ],
+        ..built_in(
+            &["jobs"],
+            "Lists the shell's jobs.",
+            "Writes one line a job, [n]+ state command: Running, Stopped, Done or Exit n, + for \
+             the current job and - for the previous one; jobs that are done are listed once.",
+            &[],
+            TEXT,
+            Effect::Read,
+            &USAGE_2,
+        )
+    },
+    CommandDefinition {
+        options: &KILL_OPTIONS,
+        ..built_in(
+            &["kill"],
+            "Sends a signal to processes or jobs.",
+            "Sends the signal, TERM unless named, to each process id, -group, or %job (its \
+             process group; a stopped job is continued so it takes the signal); kill -l lists \
+             the signals.",
+            &TARGETS,
+            TEXT,
+            Effect::Control,
+            &KILL_ERRORS,
+        )
+    },
     built_in(
         &["pwd"],
         "Writes the working folder.",
@@ -204,6 +283,16 @@ pub const SHELL_COMMANDS: [CommandDefinition; 13] = [
         NOTHING,
         Effect::Change,
         &USAGE_1,
+    ),
+    built_in(
+        &["wait"],
+        "Waits for background jobs.",
+        "Waits for every job, or for each process id or %job named, and ends with the last \
+         one's status, 127 for one that is not the shell's child.",
+        &WAITED,
+        NOTHING,
+        Effect::Read,
+        &WAIT_ERRORS,
     ),
 ];
 

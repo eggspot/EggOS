@@ -15,6 +15,40 @@ pub const SIGINT: u8 = 2;
 
 const SIGPIPE: u8 = 13;
 
+/// What a wait found of a child (D181): its end, its stop, or its continuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// It ended.
+    Ended(Ended),
+    /// This signal stopped it.
+    Stopped(u8),
+    /// `SIGCONT` continued it.
+    Continued,
+}
+
+impl Change {
+    /// How `wait4`'s `status` says the child changed (`WIFSTOPPED`, `WIFCONTINUED`).
+    pub fn from_wait_status(status: i32) -> Self {
+        if status == 0xffff {
+            Self::Continued
+        } else if status & 0xff == 0x7f {
+            Self::Stopped(((status >> 8) & 0xff) as u8)
+        } else {
+            Self::Ended(Ended::from_wait_status(status))
+        }
+    }
+}
+
+/// What a job's report says of a job this signal stopped, as bash writes it.
+pub fn stopped_state(signal: u8) -> &'static [u8] {
+    match signal {
+        19 => b"Stopped (signal)",
+        21 => b"Stopped (tty input)",
+        22 => b"Stopped (tty output)",
+        _ => b"Stopped",
+    }
+}
+
 /// How a program ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
@@ -49,6 +83,26 @@ impl Ended {
             Self::Exited(_) | Self::Killed(SIGPIPE) => b"",
             Self::Killed(SIGINT) => b"\n",
             Self::Killed(signal) => description(signal),
+        }
+    }
+
+    /// What a job's report says of a job that ended this way (D181), written into `buffer`:
+    /// `Done`, `Exit 3`, or the signal's description (`Terminated`, `Interrupt` for `SIGINT`).
+    pub fn job_state(self, buffer: &mut [u8; 24]) -> &[u8] {
+        match self {
+            Self::Exited(0) => b"Done",
+            Self::Exited(status) => {
+                buffer[..5].copy_from_slice(b"Exit ");
+                let mut digits = [0; 20];
+                let digits = crate::syntax::decimal(u64::from(status), &mut digits);
+                buffer[5..5 + digits.len()].copy_from_slice(digits);
+                &buffer[..5 + digits.len()]
+            }
+            Self::Killed(SIGINT) => b"Interrupt",
+            Self::Killed(signal) => {
+                let text = description(signal);
+                &text[..text.len() - 1]
+            }
         }
     }
 }
@@ -129,6 +183,33 @@ mod tests {
             b"Killed by a signal\n"
         );
         assert_eq!(Ended::from_wait_status(255 << 8), Ended::Exited(255));
+    }
+
+    #[test]
+    fn stops_and_continuations_are_told_from_ends() {
+        assert_eq!(Change::from_wait_status(0x147f), Change::Stopped(20));
+        assert_eq!(Change::from_wait_status(0x157f), Change::Stopped(21));
+        assert_eq!(Change::from_wait_status(0xffff), Change::Continued);
+        assert_eq!(
+            Change::from_wait_status(3 << 8),
+            Change::Ended(Ended::Exited(3))
+        );
+        assert_eq!(Change::from_wait_status(9), Change::Ended(Ended::Killed(9)));
+        assert_eq!(stopped_state(20), b"Stopped");
+        assert_eq!(stopped_state(21), b"Stopped (tty input)");
+        assert_eq!(stopped_state(22), b"Stopped (tty output)");
+        assert_eq!(stopped_state(19), b"Stopped (signal)");
+    }
+
+    #[test]
+    fn job_states_read_as_bash_writes_them() {
+        let mut buffer = [0; 24];
+        assert_eq!(Ended::Exited(0).job_state(&mut buffer), b"Done");
+        assert_eq!(Ended::Exited(3).job_state(&mut buffer), b"Exit 3");
+        assert_eq!(Ended::Exited(255).job_state(&mut buffer), b"Exit 255");
+        assert_eq!(Ended::Killed(15).job_state(&mut buffer), b"Terminated");
+        assert_eq!(Ended::Killed(2).job_state(&mut buffer), b"Interrupt");
+        assert_eq!(Ended::Killed(9).job_state(&mut buffer), b"Killed");
     }
 
     #[test]

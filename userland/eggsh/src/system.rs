@@ -1,6 +1,8 @@
-use crate::editor::{Editor, Fed, History};
+use crate::editor::{
+    Editor, Fed, HISTORY_FILE_LIMIT, History, HistoryLoader, LOADED_LINE_CAPACITY, should_remember,
+};
 use crate::path::{Files, Kind, PATH_CAPACITY};
-use crate::shell::{Errno, Group, MAX_POSITIONAL, Read, Shell, Streams, System};
+use crate::shell::{Errno, Group, MAX_POSITIONAL, Read, Shell, Streams, System, Wait};
 use crate::status::USAGE;
 use crate::syntax::{MAX_WORDS, Redirection};
 use crate::variables::MAX_VARIABLES;
@@ -22,8 +24,13 @@ const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_APPEND: usize = 0o2000;
 const NEW_FILE_MODE: usize = 0o666;
-const STANDARD_INPUT: usize = 0;
-const STANDARD_OUTPUT: usize = 1;
+const HISTORY_FILE_MODE: usize = 0o600;
+const HISTORY_PIECE: usize = 1024;
+const TEMPORARY_SUFFIX: &[u8] = b".tmp";
+const F_DUPFD_CLOEXEC: usize = 1030;
+const WNOHANG: usize = 1;
+const WUNTRACED: usize = 2;
+const WCONTINUED: usize = 8;
 const SIGPIPE: usize = 13;
 const EINTR: isize = 4;
 const ENOENT: isize = 2;
@@ -235,6 +242,10 @@ extern "C" fn start_child(request: usize) -> ! {
             set_foreground(call(number::GETPID, [0; 6]) as i32);
             true
         }
+        Group::Background => {
+            call(number::SETPGID, [0; 6]);
+            true
+        }
         Group::Join(leader) => {
             call(number::SETPGID, [0, leader as usize, 0, 0, 0, 0]);
             true
@@ -248,12 +259,22 @@ extern "C" fn start_child(request: usize) -> ! {
         set_signal_mask(SIG_SETMASK, 0);
     }
     set_signal_action(SIGPIPE, SIG_DFL);
-    for (from, to) in [
-        (request.streams.input, STANDARD_INPUT),
-        (request.streams.output, STANDARD_OUTPUT),
-    ] {
-        if from != to {
-            call(number::DUP3, [from, to, 0, 0, 0, 0]);
+    let mut sources = [
+        request.streams.input,
+        request.streams.output,
+        request.streams.error,
+    ];
+    for (target, source) in sources.iter_mut().enumerate() {
+        if *source <= STANDARD_ERROR && *source != target {
+            let copy = call(number::FCNTL, [*source, F_DUPFD_CLOEXEC, 3, 0, 0, 0]);
+            if copy >= 0 {
+                *source = copy as usize;
+            }
+        }
+    }
+    for (target, &source) in sources.iter().enumerate() {
+        if source != target {
+            call(number::DUP3, [source, target, 0, 0, 0, 0]);
         }
     }
     let result = call(
@@ -275,18 +296,150 @@ extern "C" fn start_child(request: usize) -> ! {
     })
 }
 
-fn wait_for(child: isize) -> Result<i32, Errno> {
+fn wait_for(child: isize, options: usize) -> Result<Option<(i32, i32)>, Errno> {
     loop {
         let mut status = 0i32;
-        let ended = call(
+        let changed = call(
             number::WAIT4,
-            [child as usize, &raw mut status as usize, 0, 0, 0, 0],
+            [child as usize, &raw mut status as usize, options, 0, 0, 0],
         );
-        match ended {
-            _ if ended == child => return Ok(status),
-            _ if ended == -EINTR => {}
-            _ => return Err(Errno(ended.unsigned_abs() as u16)),
+        match changed {
+            0 => return Ok(None),
+            1.. => return Ok(Some((changed as i32, status))),
+            _ if changed == -EINTR => {}
+            _ => return Err(Errno(changed.unsigned_abs() as u16)),
         }
+    }
+}
+
+fn open_file(path: &[u8], flags: usize, mode: usize) -> Result<usize, Errno> {
+    let descriptor = call(
+        number::OPENAT,
+        [AT_FDCWD, path.as_ptr() as usize, flags, mode, 0, 0],
+    );
+    match descriptor {
+        0.. => Ok(descriptor as usize),
+        _ => Err(Errno(descriptor.unsigned_abs() as u16)),
+    }
+}
+
+fn close(descriptor: usize) {
+    call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
+}
+
+#[derive(Debug)]
+struct HistoryFile {
+    path: [u8; PATH_CAPACITY],
+    length: usize,
+    loaded: bool,
+}
+
+impl HistoryFile {
+    fn path_with_nul(&self) -> Option<&[u8]> {
+        (self.length > 0).then(|| &self.path[..=self.length])
+    }
+
+    fn name(&mut self, file: Option<&[u8]>, history: &mut History) {
+        let file = file.unwrap_or_default();
+        if file == &self.path[..self.length] {
+            return;
+        }
+        if file.len() + TEMPORARY_SUFFIX.len() >= PATH_CAPACITY {
+            self.length = 0;
+            return;
+        }
+        self.path[..file.len()].copy_from_slice(file);
+        self.path[file.len()] = 0;
+        self.length = file.len();
+        if self.length > 0 && !self.loaded {
+            self.loaded = true;
+            self.load(history);
+        }
+    }
+
+    fn load(&mut self, history: &mut History) {
+        let Some(path) = self.path_with_nul() else {
+            return;
+        };
+        let Ok(descriptor) = open_file(path, O_RDONLY_CLOEXEC, 0) else {
+            return;
+        };
+        let mut loader = HistoryLoader::default();
+        let mut piece = [0u8; HISTORY_PIECE];
+        let mut size = 0;
+        loop {
+            let read = call(
+                number::READ,
+                [
+                    descriptor,
+                    piece.as_mut_ptr() as usize,
+                    piece.len(),
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            if read <= 0 {
+                break;
+            }
+            size += read as usize;
+            loader.feed(&piece[..read as usize], history);
+        }
+        loader.finish(history);
+        close(descriptor);
+        if size > HISTORY_FILE_LIMIT {
+            self.write_again(history);
+        }
+    }
+
+    fn write_again(&self, history: &History) {
+        let mut temporary = [0u8; PATH_CAPACITY];
+        let end = self.length + TEMPORARY_SUFFIX.len();
+        temporary[..self.length].copy_from_slice(&self.path[..self.length]);
+        temporary[self.length..end].copy_from_slice(TEMPORARY_SUFFIX);
+        let flags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
+        let Ok(descriptor) = open_file(&temporary[..=end], flags, HISTORY_FILE_MODE) else {
+            return;
+        };
+        let mut line = [0u8; LOADED_LINE_CAPACITY + 1];
+        for back in (0..history.len()).rev() {
+            if let Some(kept) = history.get(back)
+                && kept.len() < line.len()
+            {
+                line[..kept.len()].copy_from_slice(kept);
+                line[kept.len()] = b'\n';
+                syscall::write_all(descriptor, &line[..=kept.len()]);
+            }
+        }
+        close(descriptor);
+        call(
+            number::RENAMEAT2,
+            [
+                AT_FDCWD,
+                temporary.as_ptr() as usize,
+                AT_FDCWD,
+                self.path.as_ptr() as usize,
+                0,
+                0,
+            ],
+        );
+    }
+
+    fn append(&self, line: &[u8]) {
+        let Some(path) = self.path_with_nul() else {
+            return;
+        };
+        let flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC;
+        let Ok(descriptor) = open_file(path, flags, HISTORY_FILE_MODE) else {
+            return;
+        };
+        let mut kept = [0u8; LOADED_LINE_CAPACITY + 1];
+        if line.len() < kept.len() {
+            kept[..line.len()].copy_from_slice(line);
+            kept[line.len()] = b'\n';
+            syscall::write_all(descriptor, &kept[..=line.len()]);
+        }
+        close(descriptor);
     }
 }
 
@@ -297,6 +450,7 @@ struct Linux {
     editing: bool,
     editor: Editor,
     history: History,
+    history_file: HistoryFile,
 }
 
 impl Linux {
@@ -336,7 +490,10 @@ impl Linux {
             match fed {
                 Fed::Editing => {}
                 Fed::Line(length) => {
-                    self.history.add(&buffer[..length - 1]);
+                    let line = &buffer[..length - 1];
+                    if should_remember(line) && self.history.add(line) {
+                        self.history_file.append(line);
+                    }
                     return Read::Bytes(length);
                 }
                 Fed::End => return Read::End,
@@ -474,14 +631,46 @@ impl System for Linux {
         }
     }
 
-    fn wait(&mut self, child: i32) -> Result<i32, Errno> {
-        wait_for(child as isize)
+    fn wait(&mut self, child: i32, how: Wait) -> Result<Option<(i32, i32)>, Errno> {
+        let job_control = match self.has_the_terminal() {
+            true => WUNTRACED,
+            false => 0,
+        };
+        let options = match how {
+            Wait::Block => job_control,
+            Wait::Poll if job_control != 0 => WNOHANG | WUNTRACED | WCONTINUED,
+            Wait::Poll => WNOHANG,
+        };
+        wait_for(child as isize, options)
     }
 
     fn take_back_terminal(&mut self) {
         if self.has_the_terminal() {
             set_foreground(self.group);
             self.edit_lines(true);
+        }
+    }
+
+    fn give_terminal(&mut self, group: i32) {
+        if self.has_the_terminal() && group != 0 {
+            self.edit_lines(false);
+            set_foreground(group);
+        }
+    }
+
+    fn kill(&mut self, target: i32, signal: u8) -> Result<(), Errno> {
+        match call(
+            number::KILL,
+            [target as isize as usize, usize::from(signal), 0, 0, 0, 0],
+        ) {
+            0 => Ok(()),
+            error => Err(Errno(error.unsigned_abs() as u16)),
+        }
+    }
+
+    fn keep_history_in(&mut self, file: Option<&[u8]>) {
+        if self.settings.is_some() {
+            self.history_file.name(file, &mut self.history);
         }
     }
 
@@ -531,7 +720,7 @@ impl System for Linux {
         match request.error.load(Ordering::Acquire) {
             0 => Ok(child as i32),
             error => {
-                let _ = wait_for(child);
+                let _ = wait_for(child, 0);
                 if group == Group::New {
                     self.take_back_terminal();
                 }
@@ -592,6 +781,11 @@ pub fn run(startup: &Startup) -> i32 {
         editing: false,
         editor: Editor::new(),
         history: History::default(),
+        history_file: HistoryFile {
+            path: [0; PATH_CAPACITY],
+            length: 0,
+            loaded: false,
+        },
     };
     if interactive {
         linux.edit_lines(true);
