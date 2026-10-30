@@ -1,0 +1,13 @@
+[package]
+name = "eggos-translation-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-runtime = { path = "../runtime" }
+eggos-translate = { path = "../../translate" }
+
+[lints]
+workspace = true

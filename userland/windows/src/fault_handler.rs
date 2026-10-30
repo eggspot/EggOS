@@ -254,7 +254,7 @@ fn end_translated(signal: i32, cause: Option<crate::translated::TrapCause>, gues
     let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
     let status = cause.map_or(
         crate::translated::fault_status(signal),
-        crate::translated::TrapCause::status,
+        crate::translated::trap_status,
     );
     linux::exit(status)
 }

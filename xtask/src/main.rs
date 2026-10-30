@@ -340,6 +340,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-tls",
     "eggos-png",
     "eggos-translate",
+    "eggos-translation-loader",
     "eggos-c-format",
     "eggos-init",
     "eggos-eggsh",
