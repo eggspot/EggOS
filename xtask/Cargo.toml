@@ -12,6 +12,7 @@ eggos-files = { path = "../userland/files", features = ["window", "memory"] }
 eggos-mcp = { path = "../userland/mcp", features = ["fuzz"] }
 eggos-eggway = { path = "../userland/eggway", features = ["fuzz"] }
 eggos-linux-gui-tests = { path = "../tests/linux-gui" }
+eggos-macos-gui = { path = "../userland/macos-gui" }
 eggos-macos-gui-tests = { path = "../tests/macos-gui" }
 eggos-wayland = { path = "../wayland" }
 eggos-app-manifest = { path = "../app-manifest" }

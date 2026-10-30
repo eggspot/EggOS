@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod cocoa_app;
 pub mod dynamic_linking;
 pub mod files;
 pub mod hello_crate;
@@ -624,7 +625,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 16] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 18] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -641,6 +642,8 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 16] = [
     b"macos-objc unrecognized; echo MACOS-CONSOLE status $?\r",
     b"macos-objc unimplemented; echo MACOS-CONSOLE status $?\r",
     b"macos-objc bench; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc language; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc uncaught; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -711,7 +714,43 @@ const OBJC_UNRECOGNIZED: &str = "*** Terminating app due to uncaught exception \
      'NSInvalidArgumentException', reason: '-[Counter frobnicate]: unrecognized selector sent to \
      instance 0x";
 
-fn objc_program_output() -> [Vec<Line>; 4] {
+const OBJC_LANGUAGE_LINES: [&str; 25] = [
+    "MACOS-OBJC block 42",
+    "MACOS-OBJC byref 3",
+    "MACOS-OBJC enumerate a0,b1",
+    "MACOS-OBJC captured cap7",
+    "MACOS-OBJC weak set",
+    "MACOS-OBJC dealloc Weakling",
+    "MACOS-OBJC weak nil",
+    "MACOS-OBJC caught EggError cracked",
+    "MACOS-OBJC finally",
+    "MACOS-OBJC passing 3",
+    "MACOS-OBJC caught EggRaise code 3",
+    "MACOS-OBJC inner EggRaise",
+    "MACOS-OBJC outer code 4",
+    "MACOS-OBJC caught any plain string",
+    "MACOS-OBJC set 2 1 0",
+    "MACOS-OBJC set a,c",
+    "MACOS-OBJC date 1970-01-01 00:00:00 +0000 1971-01-01 00:00:00 +0000 -1 31536000",
+    "MACOS-OBJC data {length = 3, bytes = 0x616263} 5 1",
+    "MACOS-OBJC error NSPOSIXErrorDomain 2 Egg missing",
+    "MACOS-OBJC process macos-objc language 1 1",
+    "MACOS-OBJC range 6 3 1 6 11",
+    "MACOS-OBJC timer 3 0",
+    "MACOS-OBJC tick once",
+    "MACOS-OBJC language done",
+    "MACOS-CONSOLE status 0",
+];
+
+const OBJC_UNCAUGHT_LINES: [&str; 5] = [
+    "MACOS-OBJC handler EggFatal",
+    "*** Terminating app due to uncaught exception 'EggFatal', reason: 'no catch for 9'",
+    "libc++abi: terminating due to uncaught exception of type NSException",
+    "Aborted",
+    "MACOS-CONSOLE status 134",
+];
+
+fn objc_program_output() -> [Vec<Line>; 6] {
     let whole = |line: &str| Line::Whole(line.to_owned());
     let loads = || OBJC_LOAD_LINES.iter().map(|line| whole(line));
     let mut program: Vec<Line> = loads().collect();
@@ -730,7 +769,7 @@ fn objc_program_output() -> [Vec<Line>; 4] {
     ]);
     let mut unimplemented: Vec<Line> = loads().collect();
     unimplemented.extend([
-        whole("eggos-macos: unimplemented CoreFoundation class NSDate"),
+        Line::Around("eggos-macos: unimplemented ", " class NSUUID"),
         whole("MACOS-CONSOLE status 127"),
     ]);
     let mut bench: Vec<Line> = loads().collect();
@@ -740,7 +779,11 @@ fn objc_program_output() -> [Vec<Line>; 4] {
         whole("MACOS-OBJC dealloc bench"),
         whole("MACOS-CONSOLE status 0"),
     ]);
-    [program, unrecognized, unimplemented, bench]
+    let mut language: Vec<Line> = loads().collect();
+    language.extend(OBJC_LANGUAGE_LINES.iter().map(|line| whole(line)));
+    let mut uncaught: Vec<Line> = loads().collect();
+    uncaught.extend(OBJC_UNCAUGHT_LINES.iter().map(|line| whole(line)));
+    [program, unrecognized, unimplemented, bench, language, uncaught]
 }
 
 fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] {
@@ -771,6 +814,8 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-std"),
             refused("macos-tools"),
             refused("macos-tools"),
+            refused("macos-objc"),
+            refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
@@ -854,6 +899,8 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             "MACOS-CONSOLE status 0",
         ]),
         whole(&["macos-tools: illegal option -- x", "MACOS-CONSOLE status 2"]),
+        objc_program.next().unwrap_or_default(),
+        objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),

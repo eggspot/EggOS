@@ -7,6 +7,7 @@
 mod android;
 mod bench;
 mod ci_artifact;
+mod cocoa_app;
 mod dynamic_linking;
 mod elf;
 mod hello_crate;
@@ -132,6 +133,12 @@ commands:
                          open it, play, undo and redo a move, change the board from its
                          menu, open its About box, quit, and compare the frames (x86_64:
                          the app ships no ARM64 build)
+  cocoa-app --arch <arch>
+                         download CocoaGame, a real Objective-C Mac app (test data, pinned
+                         SHA-256), and boot the release image: install it from its .zip,
+                         open it, move its player and eat the food, read its element tree,
+                         open its About panel, quit with Cmd+Q, and compare the frames
+                         (aarch64 and x86_64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -561,6 +568,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("win32-app") => {
             for arch in arch()? {
                 win32_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("cocoa-app") => {
+            for arch in arch()? {
+                cocoa_app::check(arch)?;
             }
             Ok(())
         }

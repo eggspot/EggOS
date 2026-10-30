@@ -66,26 +66,26 @@ fn after_line() -> String {
 
 const POWER_OFF: &str = "poweroff\r";
 
-fn type_line(boot: &mut Boot<'_>, line: &str) -> Result<(), String> {
+pub(super) fn type_line(boot: &mut Boot<'_>, line: &str) -> Result<(), String> {
     boot.keyboard
         .write_all(line.as_bytes())
         .and_then(|()| boot.keyboard.flush())
         .map_err(|e| format!("{}: could not type on the console: {e}", boot.arch.name))
 }
 
-fn picture(screen: &mut Screen, arch: &Arch, suffix: &str) -> Result<Picture, String> {
+pub(super) fn picture(screen: &mut Screen, arch: &Arch, suffix: &str) -> Result<Picture, String> {
     let path = screendump_path(arch, suffix)?;
     screen.qmp.screendump(&path)?;
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     Picture::from_ppm(&bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn pixel(picture: &Picture, x: u32, y: u32) -> Option<u32> {
+pub(super) fn pixel(picture: &Picture, x: u32, y: u32) -> Option<u32> {
     (x < picture.width && y < picture.height)
         .then(|| picture.pixels[(y * picture.width + x) as usize] & 0x00ff_ffff)
 }
 
-fn changed(before: &Picture, after: &Picture, area: Rect) -> usize {
+pub(super) fn changed(before: &Picture, after: &Picture, area: Rect) -> usize {
     if (before.width, before.height) != (after.width, after.height) {
         return usize::MAX;
     }
@@ -101,11 +101,11 @@ fn changed(before: &Picture, after: &Picture, area: Rect) -> usize {
     count
 }
 
-fn whole(picture: &Picture) -> Rect {
+pub(super) fn whole(picture: &Picture) -> Rect {
     Rect::new(0, 0, picture.width, picture.height)
 }
 
-fn crop(picture: &Picture, area: Rect) -> Vec<u32> {
+pub(super) fn crop(picture: &Picture, area: Rect) -> Vec<u32> {
     let mut pixels = Vec::new();
     for y in area.y..area.bottom().min(picture.height) {
         for x in area.x..area.right().min(picture.width) {
@@ -115,7 +115,7 @@ fn crop(picture: &Picture, area: Rect) -> Vec<u32> {
     pixels
 }
 
-fn window_area(before: &Picture, after: &Picture) -> Option<Rect> {
+pub(super) fn window_area(before: &Picture, after: &Picture) -> Option<Rect> {
     if (before.width, before.height) != (after.width, after.height) {
         return None;
     }
@@ -195,13 +195,13 @@ fn click(screen: &mut Screen, (x, y): (u32, u32)) -> Result<(), String> {
     Ok(())
 }
 
-fn press(screen: &mut Screen, character: char) -> Result<(), String> {
+pub(super) fn press(screen: &mut Screen, character: char) -> Result<(), String> {
     screen.qmp.send_input(&qmp::typing(character)?)?;
     std::thread::sleep(KEY_PAUSE);
     Ok(())
 }
 
-fn tap(screen: &mut Screen, qcodes: &[&'static str]) -> Result<(), String> {
+pub(super) fn tap(screen: &mut Screen, qcodes: &[&'static str]) -> Result<(), String> {
     for &qcode in qcodes {
         screen
             .qmp

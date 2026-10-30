@@ -111,6 +111,50 @@ typedef struct {
 
 @end
 
+@interface Weakling : NSObject
+@end
+
+@implementation Weakling
+
+- (void)dealloc {
+    printf("MACOS-OBJC dealloc Weakling\n");
+}
+
+@end
+
+@interface Thrower : NSObject
+- (void)failWith:(int)code;
+- (void)passThrough:(int)code;
+@end
+
+@implementation Thrower
+
+- (void)failWith:(int)code {
+    [NSException raise:@"EggRaise" format:@"code %d", code];
+}
+
+- (void)passThrough:(int)code {
+    @try {
+        [self failWith:code];
+    } @finally {
+        printf("MACOS-OBJC passing %d\n", code);
+    }
+}
+
+@end
+
+@interface Ticker : NSObject
+- (void)tick:(NSTimer *)timer;
+@end
+
+@implementation Ticker
+
+- (void)tick:(NSTimer *)timer {
+    printf("MACOS-OBJC tick %s\n", [timer.userInfo UTF8String]);
+}
+
+@end
+
 static void *worker(void *argument) {
     Noisy *noisy = [Noisy noisy];
     printf("MACOS-OBJC thread %s\n", [noisy class] == [Noisy class] ? "noisy" : "other");
@@ -119,6 +163,156 @@ static void *worker(void *argument) {
 
 static void say(NSString *line) {
     printf("MACOS-OBJC %s\n", line.UTF8String);
+}
+
+static void blocks(void) {
+    int base = 40;
+    int (^add)(int) = ^(int value) {
+        return base + value;
+    };
+    printf("MACOS-OBJC block %d\n", add(2));
+    __block int counter = 0;
+    void (^bump)(void) = ^{
+        counter += 1;
+    };
+    bump();
+    bump();
+    void (^copied)(void) = [bump copy];
+    copied();
+    printf("MACOS-OBJC byref %d\n", counter);
+    NSMutableArray *calls = [NSMutableArray array];
+    [@[ @"a", @"b", @"c" ] enumerateObjectsUsingBlock:^(id item, NSUInteger index, BOOL *stop) {
+        [calls addObject:[NSString stringWithFormat:@"%@%lu", item, (unsigned long)index]];
+        if (index == 1) {
+            *stop = YES;
+        }
+    }];
+    say([NSString stringWithFormat:@"enumerate %@", [calls componentsJoinedByString:@","]]);
+    NSString *captured = [NSString stringWithFormat:@"cap%d", 7];
+    NSString * (^later)(void) = ^{
+        return captured;
+    };
+    NSString * (^kept)(void) = [later copy];
+    say([NSString stringWithFormat:@"captured %@", kept()]);
+}
+
+static void weak_references(void) {
+    __weak Weakling *weak = nil;
+    @autoreleasepool {
+        __attribute__((objc_precise_lifetime)) Weakling *strong = [Weakling new];
+        weak = strong;
+        printf("MACOS-OBJC weak %s\n", weak ? "set" : "nil");
+    }
+    printf("MACOS-OBJC weak %s\n", weak ? "set" : "nil");
+}
+
+static void exceptions(void) {
+    @try {
+        @throw [NSException exceptionWithName:@"EggError" reason:@"cracked" userInfo:nil];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    } @finally {
+        say(@"finally");
+    }
+    Thrower *thrower = [Thrower new];
+    @try {
+        [thrower passThrough:3];
+    } @catch (NSException *exception) {
+        say([NSString stringWithFormat:@"caught %@ %@", exception.name, exception.reason]);
+    }
+    @try {
+        @try {
+            [thrower failWith:4];
+        } @catch (NSException *exception) {
+            say([NSString stringWithFormat:@"inner %@", exception.name]);
+            @throw;
+        }
+    } @catch (id any) {
+        say([NSString stringWithFormat:@"outer %@", [any reason]]);
+    }
+    @try {
+        @throw @"plain string";
+    } @catch (NSException *exception) {
+        say(@"wrong catch");
+    } @catch (id any) {
+        say([NSString stringWithFormat:@"caught any %@", any]);
+    }
+}
+
+static void foundation_classes(void) {
+    NSSet *set = [NSSet setWithObjects:@"b", @"a", @"b", nil];
+    printf("MACOS-OBJC set %lu %d %d\n", (unsigned long)set.count, [set containsObject:@"a"],
+           [set containsObject:@"z"]);
+    NSMutableSet *mutable = [set mutableCopy];
+    [mutable removeObject:@"b"];
+    [mutable addObject:@"c"];
+    [mutable addObject:@"a"];
+    NSArray *sorted = [mutable.allObjects sortedArrayUsingSelector:@selector(compare:)];
+    say([NSString stringWithFormat:@"set %@", [sorted componentsJoinedByString:@","]]);
+    NSDate *epoch = [NSDate dateWithTimeIntervalSince1970:0];
+    NSDate *later = [epoch dateByAddingTimeInterval:86400 * 365];
+    say([NSString stringWithFormat:@"date %@ %@ %ld %.0f", epoch, later, (long)[epoch compare:later],
+                                   [later timeIntervalSinceDate:epoch]]);
+    NSData *data = [NSData dataWithBytes:"abc" length:3];
+    NSMutableData *grown = [data mutableCopy];
+    [grown appendBytes:"de" length:2];
+    say([NSString stringWithFormat:@"data %@ %lu %d", data, (unsigned long)grown.length,
+                                   [data isEqual:[NSData dataWithBytes:"abc" length:3]]]);
+    NSError *error = [NSError errorWithDomain:NSPOSIXErrorDomain
+                                         code:2
+                                     userInfo:@{NSLocalizedDescriptionKey : @"Egg missing"}];
+    say([NSString stringWithFormat:@"error %@ %ld %@", error.domain, (long)error.code,
+                                   error.localizedDescription]);
+    NSProcessInfo *process = [NSProcessInfo processInfo];
+    say([NSString stringWithFormat:@"process %@ %@ %d %d", process.processName,
+                                   process.arguments.lastObject, process.processIdentifier > 0,
+                                   process.activeProcessorCount >= 1]);
+    NSString *text = @"hello egg world";
+    NSRange found = [text rangeOfString:@"egg"];
+    NSRange missing = [text rangeOfString:@"spam"];
+    NSRange folded = [text rangeOfString:@"EGG" options:NSCaseInsensitiveSearch];
+    NSRange last = [text rangeOfString:@"o" options:NSBackwardsSearch];
+    printf("MACOS-OBJC range %lu %lu %d %lu %lu\n", (unsigned long)found.location,
+           (unsigned long)found.length, missing.location == NSNotFound,
+           (unsigned long)folded.location, (unsigned long)last.location);
+}
+
+static void timers(void) {
+    __block int ticks = 0;
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:0.01
+                                                     repeats:YES
+                                                       block:^(NSTimer *fired) {
+                                                         ticks += 1;
+                                                         if (ticks == 3) {
+                                                             [fired invalidate];
+                                                         }
+                                                       }];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+    printf("MACOS-OBJC timer %d %d\n", ticks, timer.isValid);
+    Ticker *ticker = [Ticker new];
+    [NSTimer scheduledTimerWithTimeInterval:0.02
+                                     target:ticker
+                                   selector:@selector(tick:)
+                                   userInfo:@"once"
+                                    repeats:NO];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+}
+
+static int language(void) {
+    @autoreleasepool {
+        blocks();
+        weak_references();
+        exceptions();
+        foundation_classes();
+        timers();
+        say(@"language done");
+    }
+    return 0;
+}
+
+static void uncaught(NSException *exception) {
+    printf("MACOS-OBJC handler %s\n", exception.name.UTF8String);
+    fflush(stdout);
 }
 
 static int bench(void) {
@@ -151,7 +345,15 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (argc > 1 && strcmp(argv[1], "unimplemented") == 0) {
-        say([[NSDate date] description]);
+        say([[NSUUID UUID] UUIDString]);
+        return 1;
+    }
+    if (argc > 1 && strcmp(argv[1], "language") == 0) {
+        return language();
+    }
+    if (argc > 1 && strcmp(argv[1], "uncaught") == 0) {
+        NSSetUncaughtExceptionHandler(&uncaught);
+        [NSException raise:@"EggFatal" format:@"no catch for %d", 9];
         return 1;
     }
     if (argc > 1 && strcmp(argv[1], "bench") == 0) {
