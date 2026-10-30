@@ -18,6 +18,7 @@ mod qemu;
 mod qmp;
 mod release;
 mod rustc_version;
+mod sdl_app;
 mod sha256;
 mod windows;
 mod work_disk;
@@ -109,6 +110,14 @@ commands:
                          run tests/hello-crate with them here on Linux, then inside EggOS
                          from a work disk, and check both print the same (x86_64 and
                          aarch64)
+  sdl3 --arch <arch>     build SDL's pinned commit (test data, checked against its pinned
+                         SHA-256) as libSDL3.so.0 for Alpine's musl, with its Wayland video
+                         driver and no GPU, in an alpine:3.24 Docker container, into
+                         target/sdl-app/sdl3-<arch> (x86_64 and aarch64; needs Docker)
+  sdl-app --arch <arch>  download Brogue CE and its libraries from Alpine (test data,
+                         pinned SHA-256s), pack them with libSDL3.so.0 into brogue.zip, and
+                         boot the release image: install it, open it, play and save, and
+                         check it closed and saved (x86_64 and aarch64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -513,6 +522,18 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("hello-crate") => {
             for arch in arch()? {
                 hello_crate::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("sdl3") => {
+            for arch in arch()? {
+                println!("{}", sdl_app::build_sdl3(arch)?.display());
+            }
+            Ok(())
+        }
+        Some("sdl-app") => {
+            for arch in arch()? {
+                sdl_app::check(arch)?;
             }
             Ok(())
         }

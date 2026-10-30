@@ -15,6 +15,7 @@ pub mod real_time;
 pub mod reboot;
 pub mod run_scripts;
 pub mod rustc_version;
+pub mod sdl_app;
 pub mod settings;
 pub mod shell;
 pub mod text_editor;

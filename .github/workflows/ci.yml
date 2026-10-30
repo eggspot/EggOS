@@ -309,6 +309,96 @@ jobs:
       - name: cargo builds and runs a hello-world crate inside EggOS, printing what it prints on Linux
         run: cargo xtask hello-crate --arch ${{ matrix.arch }}
 
+  sdl3:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: target/sdl-app/sdl3-${{ matrix.arch }}
+          key: sdl3-${{ matrix.arch }}-${{ hashFiles('xtask/src/sdl_app.rs') }}
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: rustup toolchain install
+
+      - name: Build SDL's pinned commit for Alpine's musl in an alpine:3.24 container on this CPU (test data only, never shipped)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: cargo xtask sdl3 --arch ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdl3-${{ matrix.arch }}
+          path: target/sdl-app/sdl3-${{ matrix.arch }}
+          retention-days: 1
+
+  sdl-app:
+    needs: [changes, sdl3]
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/sdl-app/downloads-${{ matrix.arch }}
+          key: sdl-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/sdl_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: sdl3-${{ matrix.arch }}
+          path: target/sdl-app/sdl3-${{ matrix.arch }}
+
+      - name: A real SDL app, Brogue CE, installs, opens, plays a few turns, saves and closes inside EggOS
+        run: cargo xtask sdl-app --arch ${{ matrix.arch }}
+
   bench:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -507,7 +597,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
+    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, sdl3, sdl-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
