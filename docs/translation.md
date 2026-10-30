@@ -24,10 +24,29 @@ bridges, `app install` accepting x64 Windows programs on aarch64, the translated
 an x64 Windows program, the System V AMD64 bridges and the `translate_block_16` benchmark;
 slice 39e2a the translator's input from an x86_64 Mach-O (instruction sections, function
 starts, exports, rebase targets, bound pointers) and the System V variadic bridge; slice 39e2b
-the macOS loader on aarch64 (C console programs; callbacks into translated code, Objective-C
-methods and threads are not yet) and the crate `eggos-translation-loader` the two layers share
-(the cache on disk, traps, installing the code, entering it); translating at install and the
-translated-run benchmarks are later slices (D191's "Not yet").
+the macOS loader on aarch64 (C console programs) and the crate `eggos-translation-loader` the
+two layers share (the cache on disk, traps, installing the code, entering it); slice 39e2c the
+callback thunks through which the macOS layer calls the program's functions (handlers,
+comparators, thread starts, signal handlers, blocks, Objective-C methods), `app install`
+accepting x86_64 macOS programs on aarch64 and the macOS QEMU run of the x86_64 program on
+aarch64; translating at install, `app info` listing refused sites, the cache removed with its
+app and the translated-run benchmarks are later work (D191's "Not yet").
+
+## Callbacks into translated code
+
+The Windows layer calls every function a program hands it through `call_program`, which enters
+the translated code. The macOS layer's code instead calls function pointers directly (and
+`objc_msgSend` tail-calls an IMP), so every place given one of the program's functions passes it
+through `callback::native_callable`: for an address in a translated image it returns a native
+thunk, made once per address. A thunk page holds 64 thunks of 64 bytes and is followed by a
+writable data page with one guest address per thunk and the layer's entry; a thunk moves
+`x0`-`x5` to `x1`-`x6`, loads its guest address into `x0` and branches to the entry, which calls
+the guest function through the entry trampoline with the six values in `rdi`-`r9` and returns
+`rax`. Objective-C method lists keep the program's addresses (so `method_getImplementation`
+gives them back), and the method cache that `objc_msgSend` reads holds the thunks. Signal
+handlers take another path without a lock: when the signal interrupted translated code, the
+handler's guest frames go below the interrupted guest stack pointer (`x4`) and its 128-byte red
+zone rather than below where the thread last called the layer.
 
 ## What is translated
 

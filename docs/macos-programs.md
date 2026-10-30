@@ -36,8 +36,12 @@ or without added files, so a program in the host folder (`--apps`) runs too
 
 An x86_64-only program on aarch64 runs translated ahead of time ([translation](translation.md),
 D191): its code is translated on its first launch and cached under `/var/cache/eggos/translate`;
-C console programs run, while a program the layer must call back into (an `atexit` handler, a
-`qsort` comparator, a thread, its own Objective-C methods) ends with a line saying so. A file
+C console programs run, and the layer calls the program's own functions (`atexit` handlers,
+`qsort` and `bsearch` comparators, thread starts, signal handlers, blocks and its Objective-C
+methods, which `objc_msgSend` reaches) through a native thunk per function that enters the
+translated code. Up to six integer or pointer arguments and an integer result pass through a
+callback; floating-point ones do not yet. `app install` accepts such a program; it is translated
+at its first launch, not yet at install. A file
 without code the machine can run (an arm64e program, an arm64-only program on x86_64) is
 refused with a message naming the CPUs it has and status 126. On riscv64 (no macOS
 program exists for it, and its image carries no macOS layer), a macOS program is refused with

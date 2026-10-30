@@ -15366,3 +15366,55 @@ the license, by an explicit instruction recorded here.
   refused-site count, `app info` listing refused sites, the cache removed with its app; the
   benchmarks `translated_loop_ratio` and `translate_install_bytes`; `GetProcAddress` past 64
   functions; freeing a thread's guest state when it ends.
+- **Slice 39e2c: callbacks into translated code in the macOS layer, x86_64 macOS programs
+  accepted by `app install` on aarch64, and the macOS QEMU run of the x86_64 program.** As
+  39e2b's research decided, every place in the macOS layer that is given one of the program's
+  functions calls it through `callback::native_callable`, which for an address in the
+  translated image returns a native thunk made once per address (`translation::native_callable`,
+  a map from guest address to thunk under the layer's lock): `exit`'s `atexit` handlers,
+  `tlv_atexit` and `pthread_key_create` destructors, `qsort` and `bsearch` comparators,
+  `pthread_create` starts, `pthread_once` routines, block functions and their copy, dispose,
+  keep and destroy helpers (`objc::block::function_at`, behind `invoke_address`), `+load`,
+  `.cxx_destruct`, and the IMP that `class::lookup` puts in the method cache, so `objc_msgSend`
+  tail-calls a thunk rather than a guest address (method lists, `class_addMethod` and
+  `method_getImplementation` keep the program's addresses). The shared crate's new
+  `callback_thunks` lays out a code page of 64 thunks of 64 bytes and `installed::
+  callback_thunk_page(entry)` maps it read-only and executable with a writable data page after
+  it holding each thunk's guest address and the entry; a thunk moves `x0`-`x5` to `x1`-`x6`,
+  loads its guest address into `x0` and branches to the layer's `callback_entry`, which calls
+  the guest through the entry trampoline (`call_guest`, six System V integer registers) and
+  returns `rax`. Signal handlers go through `callback::call_signal_handler`, which takes no
+  lock: when the interrupted `pc` is in the translated mapping and the guest stack pointer
+  (`x4`) lies within 8 MiB below the thread's recorded one, the handler's frames start below it
+  and its 128-byte red zone, with the shadow ring from `x20`, and both fields are put back
+  after. `app`'s `runs_translated` accepts x86_64 macOS programs on aarch64 (thin, or a fat
+  file without an arm64 slice). The macos-programs session runs `macos-other` (the x86_64
+  `macos-console` on aarch64) with the same arguments as the native one and expects its 21
+  check lines (`MACOS_CONSOLE_CHECK_LINES`, among them `qsort` and `atexit`); on x86_64 the
+  arm64 `macos-other` is still refused. The Windows layer already calls every program function
+  through `call_program` and needs no thunks; its `other-cpu.exe` expectation is unchanged.
+  Host tests: the thunk words, each thunk reaching its slot and the entry, the page layout; the
+  installer's recognition of x86_64 Mach-O files on aarch64; the session's translated line.
+- **Slice 39e2c's choices made without research.** The thunks read their guest address from a
+  data page rather than holding it as a literal, so a code page is written once and made
+  executable before any thunk on it is used (no re-protection while other threads run it); 64
+  bytes per thunk keeps each one aligned and leaves room; the stored values (handlers, method
+  lists, block fields) stay the program's addresses and are converted where they are called, so
+  what the program reads back (`sigaction`'s old action, `method_getImplementation`) is its
+  own; the method cache is the one place IMPs are converted because it is what `objc_msgSend`
+  reads; a signal handler does not use the thunk map, whose lock a signal may interrupt; a
+  failure to make the thread's guest state in a callback ends the program with a line and
+  status 139 rather than returning 0.
+- **Not yet** (later work on part 39): callbacks with floating-point arguments or results (the
+  thunk passes only `x0`-`x5` and returns `rax`; `v0`-`v7` and `xmm0` are not carried), with
+  more than six integer arguments, or Objective-C methods with more than four arguments after
+  `self` and `_cmd`; Swift programs' accessors and instantiators; functions given to Foundation
+  as C function pointers (`sortedArrayUsingFunction:context:`) beyond blocks and selectors;
+  `app install` translating at install with progress and the refused-site count, `app info`
+  listing refused sites, and the cache removed with its app (the installer does not depend on
+  the translator, and the macOS and Windows translator inputs live in the layers; a
+  translate-only mode of each layer that the installer starts is the likely shape); the
+  benchmarks `translated_loop_ratio` and `translate_install_bytes`; exceptions and unwinding
+  through translated frames; arguments past six integers or eight vectors to the layer's
+  functions by kind; `GetProcAddress` past 64 functions; freeing a thread's guest state and its
+  thunks when it ends.

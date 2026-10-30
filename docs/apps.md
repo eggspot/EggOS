@@ -155,8 +155,8 @@ is built on a Mac (Apple's linker builds it).
   installed (`it is already installed`: uninstall it first), a name or program path the
   manifest cannot hold, and what this machine cannot run, as `EggOS cannot run <file> on
   <arch>: <reason>`: a Windows or macOS program where its layer does not run (riscv64), a
-  program built for another CPU (except an x64 Windows program on aarch64, which runs
-  translated, D191), a 32-bit program, a Linux program that needs a dynamic loader. A
+  program built for another CPU (except an x64 Windows or x86_64 macOS program on aarch64,
+  which runs translated, D191), a 32-bit program, a Linux program that needs a dynamic loader. A
   Windows or macOS program whose layer is not installed (`/usr/lib/eggos/windows`,
   `/usr/lib/eggos/macos`) is refused too (`it needs the Windows layer, which is not
   installed`), since nothing could open it (D18).

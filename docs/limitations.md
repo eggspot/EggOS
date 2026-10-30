@@ -296,8 +296,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   X 10.6 on x86_64 and macOS 11 on arm64) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
-  programs on x86_64 (and x86_64 C console programs on aarch64 translated ahead of time;
-  callbacks into translated code, its Objective-C methods and threads not yet, D191), from the
+  programs on x86_64 (and x86_64 programs on aarch64 translated ahead of time, callbacks
+  included; callbacks with floating-point arguments or results or more than six arguments,
+  Swift programs, exceptions through translated frames and translating at install not yet,
+  D191), from the
   host folder or installed as apps (a real one, CocoaGame, is
   checked in CI: [Real apps](compatibility.md)); the layer is in the base of those images until
   the component manager makes it optional (D152)
