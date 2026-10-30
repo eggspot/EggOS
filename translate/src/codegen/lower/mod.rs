@@ -17,6 +17,8 @@ use crate::instruction::{
 mod arith;
 mod bits;
 mod control;
+mod sse;
+mod system;
 
 #[cfg(test)]
 mod tests;
@@ -168,7 +170,10 @@ pub(super) fn lower(
                 guest: address,
             });
             let code = match error {
-                DecodeErrorKind::Unsupported { .. } => trap::REFUSED,
+                DecodeErrorKind::Unsupported { .. } => {
+                    lowerer.guest_address(ADDRESS, address);
+                    trap::REFUSED
+                }
                 _ => trap::INVALID_OPCODE,
             };
             lowerer.asm.emit(encode::brk(code));
@@ -258,7 +263,13 @@ impl Lowerer {
                 [Operand::Immediate(3)] => self.trap(trap::BREAKPOINT),
                 _ => self.trap(trap::GENERAL_PROTECTION),
             },
-            other => Err(LowerErrorKind::Unhandled(other)),
+            other => {
+                if self.sse(instruction)? || self.system(instruction)? {
+                    Ok(())
+                } else {
+                    Err(LowerErrorKind::Unhandled(other))
+                }
+            }
         }
     }
 

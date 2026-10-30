@@ -225,8 +225,8 @@ fn every_integer_form_lowers() {
 
 #[test]
 fn an_instruction_left_to_a_later_slice_is_reported() {
-    let error = translate_block(&straight(&[0x0F, 0xA2]), ORDERED, Flags::NONE).unwrap_err();
-    assert_eq!(error.kind, LowerErrorKind::Unhandled(Mnemonic::Cpuid));
+    let error = translate_block(&straight(&[0xA4]), ORDERED, Flags::NONE).unwrap_err();
+    assert_eq!(error.kind, LowerErrorKind::Unhandled(Mnemonic::Movs));
     assert_eq!(error.address, BASE);
 }
 
@@ -253,6 +253,161 @@ fn a_refused_instruction_becomes_a_trap_at_its_address() {
     let block = form_block(&[0x90, 0xC5, 0xF8, 0x77], BASE, BASE);
     assert!(matches!(block.end, BlockEnd::Refused { address, .. } if address == BASE + 1));
     let code = translate_block(&block, ORDERED, Flags::NONE).unwrap();
-    assert_eq!(code.code, [encode::brk(trap::REFUSED)]);
+    assert_eq!(
+        code.code,
+        [
+            encode::load_literal(crate::codegen::aarch64::Reg(16), 2),
+            encode::brk(trap::REFUSED),
+            (BASE + 1) as u32,
+            0
+        ]
+    );
+    assert_eq!(code.guest_address_literals, [2]);
     assert_eq!(code.starts.last().map(|start| start.guest), Some(BASE + 1));
+}
+
+#[test]
+fn a_packed_single_add_is_one_vector_instruction() {
+    use crate::codegen::aarch64::simd::{self, Float, FloatThreeSame};
+    let block = translate_block(&straight(&[0x0F, 0x58, 0xC1]), ORDERED, Flags::NONE).unwrap();
+    assert_eq!(
+        block.code,
+        [
+            simd::float_three_same(FloatThreeSame::Fadd, Float::Single, 0, 0, 1),
+            UNLINKED
+        ]
+    );
+}
+
+#[test]
+fn a_scalar_add_keeps_the_upper_lanes() {
+    use crate::codegen::aarch64::simd::{self, Element, Float, Scalar};
+    let block =
+        translate_block(&straight(&[0xF3, 0x0F, 0x58, 0xC1]), ORDERED, Flags::NONE).unwrap();
+    assert_eq!(
+        block.code,
+        [
+            simd::scalar(Scalar::Fadd, Float::Single, 17, 0, 1),
+            simd::insert_element(Element::S, 0, 0, 17, 0),
+            UNLINKED
+        ]
+    );
+}
+
+#[test]
+fn an_unordered_compare_sets_zero_and_carry() {
+    use crate::codegen::aarch64::encode::Logic;
+    use crate::codegen::aarch64::simd::{self, Float};
+    use crate::codegen::aarch64::{Cond, Reg, Size};
+    let block = translate_block(&straight(&[0x66, 0x0F, 0x2E, 0xC1]), ORDERED, Flags::ZF).unwrap();
+    let scratch = Reg(17);
+    assert_eq!(
+        block.code,
+        [
+            simd::fcmp(Float::Double, 0, 1),
+            encode::b_cond(Cond::Vc, 4),
+            encode::logical_immediate(Logic::Orr, Size::W, scratch, Reg::ZR, 0x4000_0000).unwrap(),
+            encode::msr_nzcv(scratch),
+            encode::b(1),
+            UNLINKED
+        ]
+    );
+}
+
+#[test]
+fn cpuid_reports_sse2_without_avx() {
+    let leaf = super::system::CPUID_LEAVES
+        .iter()
+        .find(|(leaf, _)| *leaf == 1)
+        .map(|(_, values)| *values)
+        .unwrap();
+    assert_ne!(leaf[3] & (1 << 26), 0);
+    assert_ne!(leaf[2] & (1 << 23), 0);
+    assert_eq!(leaf[2] & (1 << 28), 0);
+    assert_eq!(leaf[2] & (1 << 27), 0);
+    let brand = super::system::CPUID_LEAVES[5].1[0];
+    assert_eq!(brand.to_le_bytes(), *b"EggO");
+    let block = translate_block(&straight(&[0x0F, 0xA2]), ORDERED, Flags::NONE).unwrap();
+    assert!(block.code.len() > 4 * super::system::CPUID_LEAVES.len());
+}
+
+#[test]
+fn every_sse_and_system_form_lowers() {
+    let sequences: [&[u8]; 66] = [
+        &[0x0F, 0x28, 0xC1],
+        &[0x0F, 0x10, 0x00],
+        &[0x0F, 0x29, 0x00],
+        &[0xF3, 0x0F, 0x10, 0x00],
+        &[0xF2, 0x0F, 0x11, 0x00],
+        &[0x66, 0x0F, 0x6E, 0xC0],
+        &[0x66, 0x48, 0x0F, 0x7E, 0xC0],
+        &[0xF3, 0x0F, 0x7E, 0xC1],
+        &[0x66, 0x0F, 0xD6, 0x00],
+        &[0x0F, 0x16, 0x00],
+        &[0x0F, 0x17, 0x00],
+        &[0x0F, 0x12, 0xC1],
+        &[0x0F, 0x50, 0xC1],
+        &[0x66, 0x0F, 0xD7, 0xC1],
+        &[0x0F, 0x5D, 0xC1],
+        &[0xF2, 0x0F, 0x5F, 0xC1],
+        &[0xF3, 0x0F, 0x51, 0xC1],
+        &[0x0F, 0x53, 0xC1],
+        &[0x0F, 0xC2, 0xC1, 0x01],
+        &[0xF2, 0x0F, 0xC2, 0xC1, 0x07],
+        &[0x66, 0x0F, 0x2F, 0xC1],
+        &[0x0F, 0x2E, 0x00],
+        &[0x66, 0x0F, 0x63, 0xC1],
+        &[0x66, 0x0F, 0x67, 0xC1],
+        &[0x66, 0x0F, 0xE5, 0xC1],
+        &[0x66, 0x0F, 0xF4, 0xC1],
+        &[0x66, 0x0F, 0xF5, 0xC1],
+        &[0x66, 0x0F, 0xF6, 0xC1],
+        &[0x66, 0x0F, 0x73, 0xD8, 0x04],
+        &[0x66, 0x0F, 0x73, 0xF8, 0x14],
+        &[0x66, 0x0F, 0x71, 0xF0, 0x03],
+        &[0x66, 0x0F, 0x72, 0xE0, 0x40],
+        &[0x66, 0x0F, 0xE2, 0xC1],
+        &[0x66, 0x0F, 0xD3, 0x00],
+        &[0x66, 0x0F, 0x70, 0xC1, 0x1B],
+        &[0x66, 0x0F, 0x70, 0xC0, 0x00],
+        &[0xF2, 0x0F, 0x70, 0xC1, 0x1B],
+        &[0xF3, 0x0F, 0x70, 0xC0, 0x1B],
+        &[0x0F, 0xC6, 0xC1, 0x44],
+        &[0x66, 0x0F, 0xC6, 0xC0, 0x01],
+        &[0x66, 0x0F, 0xC5, 0xC1, 0x02],
+        &[0x66, 0x0F, 0xC4, 0xC0, 0x03],
+        &[0xF2, 0x48, 0x0F, 0x2A, 0xC0],
+        &[0xF3, 0x0F, 0x2D, 0xC0],
+        &[0xF2, 0x48, 0x0F, 0x2C, 0xC0],
+        &[0x0F, 0x5B, 0xC1],
+        &[0x66, 0x0F, 0xE6, 0xC1],
+        &[0xF3, 0x0F, 0x5B, 0xC1],
+        &[0xF3, 0x0F, 0xE6, 0xC1],
+        &[0x0F, 0x5A, 0xC1],
+        &[0x66, 0x0F, 0x60, 0xC1],
+        &[0x66, 0x0F, 0x74, 0xC1],
+        &[0x66, 0x0F, 0xFE, 0x00],
+        &[0x0F, 0xAE, 0x10],
+        &[0x0F, 0xAE, 0x18],
+        &[0x9F],
+        &[0x9E],
+        &[0x9C],
+        &[0x9D],
+        &[0xFC],
+        &[0xFD],
+        &[0x0F, 0x31],
+        &[0x0F, 0x01, 0xD0],
+        &[0x0F, 0xC7, 0x08],
+        &[0x48, 0x0F, 0xC7, 0x08],
+        &[0x0F, 0xAE, 0x38],
+    ];
+    for mode in [ORDERED, TSO, CodegenMode::default()] {
+        for bytes in sequences {
+            let block = straight(bytes);
+            assert!(
+                translate_block(&block, mode, Flags::ALL).is_ok(),
+                "{bytes:02x?} in {mode:?}"
+            );
+        }
+    }
 }

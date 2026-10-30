@@ -13,8 +13,10 @@ other translators.
 
 Status: slice 39a built the x86-64 decoder and slice 39b the AArch64 encoder, the block
 former, the flag liveness pass and the lowering of the integer, stack and control-flow
-instructions; SSE, SSE2, x87 and strings, the bridges, the cache and the install and launch
-integration are slices 39c to 39e (D191's "Not yet").
+instructions; slice 39c lowered SSE and SSE2, MXCSR, `cpuid`, `rdtsc`, `xgetbv`, `lahf`, `sahf`,
+`pushf`, `popf`, `cld`, `std`, `cmpxchg8b`, `cmpxchg16b` and the refused-site stubs; x87 and
+strings (slice 39c2), the bridges, the cache and the install and launch integration are slices
+39c2 to 39e (D191's "Not yet").
 
 ## What is translated
 
@@ -82,14 +84,18 @@ nearest known function); it is never translated then.
 | indirect-branch table of the current image | `x19` |
 | return shadow stack | `x20` |
 | guest state block (spilled flags, PF/AF source, `fs:` base, x87 stack, MXCSR) | `x21` |
-| translator temporaries | `x22` to `x28` |
+| translator temporaries | `x22` to `x28`, and `v16` to `v19` and `v31` |
 | `xmm0` to `xmm15` | `v0` to `v15` |
 | x87 `st(0)` to `st(7)` | the state block, as doubles, with the top index |
 
 `x29`, `x30` and `sp` stay the host's: `sp` is the native stack the bridges run on. The
 shadow stack is a 64 KiB ring aligned to 64 KiB, so a deep recursion overwrites old pairs and
 their returns go through the entries table. The state block holds the `fs:` base at offset 0,
-the `gs:` base at 8, PF's byte at 16 and AF's source byte at 17.
+the `gs:` base at 8, PF's byte at 16, AF's source byte at 17, the direction flag at 18, MXCSR at 20
+(its rounding control and FZ/DAZ mirrored in FPCR by `ldmxcsr`), the x87 control word at 24,
+its status word at 26, its top index at 28 and its eight registers as doubles from 32 (96
+bytes in all). A refused site's stub loads the site's guest address into `x16` and executes
+`brk #0xE002`; the layer's handler looks the site up and ends the program with the report.
 
 **Blocks and exits.** A block runs from an entry to its first branch, call, return, loop or
 trap. Each exit is a placeholder the image linker patches into a branch to the target's
@@ -107,8 +113,10 @@ state block only when a later `jp`, `setp`, `lahf` or `pushf` can read it.
 it on for translated threads when it switches to them, and plain `ldr`/`str` are correct. On
 every other CPU, guest loads are `ldapr` (FEAT_LRCPC) or `ldar`, and guest stores are `stlr`;
 locked instructions are LSE atomics (`casal`, `ldaddal`, `swpal`, ...) or exclusive pairs
-without LSE; `mfence` is `dmb ish`, `sfence` `dmb ishst`, `lfence` `dmb ishld`. A faster mode
-that keeps provably thread-private stack accesses plain needs escape analysis and is not the
+without LSE; `mfence` is `dmb ish`, `sfence` `dmb ishst`, `lfence` `dmb ishld`. SSE accesses
+of 4 or 8 bytes go through a general register with the same loads and stores; 16-byte accesses
+are a plain `ldr q` followed by `dmb ishld`, and `dmb ish` followed by a plain `str q`. A faster
+mode that keeps provably thread-private stack accesses plain needs escape analysis and is not the
 default (decided by research, D191).
 
 ## The translated image

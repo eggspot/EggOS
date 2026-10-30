@@ -68,6 +68,9 @@ pub mod registers {
     ];
     /// The vector register the translator uses as a temporary.
     pub const VECTOR_TEMPORARY: u8 = 31;
+    /// The vector temporaries of the SSE lowering, `v16` to `v19`; `v16`-`v31` are
+    /// caller-saved in AAPCS64, so the bridges never preserve them.
+    pub const VECTOR_TEMPORARIES: [u8; 4] = [16, 17, 18, 19];
 }
 
 /// Byte offsets of the guest state block that `x21` points to.
@@ -80,6 +83,21 @@ pub mod state {
     pub const PARITY: u32 = 16;
     /// `first ^ second ^ result` of the last instruction that defined AF (AF is bit 4).
     pub const ADJUST: u32 = 17;
+    /// The direction flag: 0 (clear, strings go up) or 1 (`std`, strings go down).
+    pub const DIRECTION: u32 = 18;
+    /// The guest's MXCSR as `ldmxcsr` last wrote it (`0x1F80` when a thread starts); its
+    /// rounding control and FZ/DAZ are mirrored in FPCR.
+    pub const MXCSR: u32 = 20;
+    /// The x87 control word (`0x037F` when a thread starts).
+    pub const X87_CONTROL: u32 = 24;
+    /// The x87 status word without its top field (condition codes and exception bits).
+    pub const X87_STATUS: u32 = 26;
+    /// The x87 stack's top index, 0 to 7.
+    pub const X87_TOP: u32 = 28;
+    /// The x87 registers as doubles: physical register `i` at `X87_STACK + 8 * i`.
+    pub const X87_STACK: u32 = 32;
+    /// The state block's size in bytes.
+    pub const SIZE: u32 = 96;
 }
 
 /// The `brk` immediates of translated code; the layers' exception handling maps each one to
@@ -89,7 +107,10 @@ pub mod trap {
     pub const BREAKPOINT: u16 = 0xE000;
     /// `ud2` or bytes that are not an x86-64 instruction: invalid opcode.
     pub const INVALID_OPCODE: u16 = 0xE001;
-    /// An instruction EggOS does not translate (the image's sites table says which).
+    /// An instruction EggOS does not translate. The stub of a refused site loads the site's
+    /// guest address into `x16` (a relocated literal) right before this `brk`, so the layer's
+    /// handler finds the site in the image's sites table without the instruction starts, and
+    /// ends the program with the report; no other register is changed, for the crash dump.
     pub const REFUSED: u16 = 0xE002;
     /// `div`/`idiv` by zero or with a quotient too large: divide error.
     pub const DIVIDE_ERROR: u16 = 0xE003;

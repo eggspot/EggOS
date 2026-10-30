@@ -3,9 +3,12 @@
 
 pub mod emit;
 pub mod encode;
+pub mod simd;
 
 #[cfg(test)]
 mod encode_tests;
+#[cfg(test)]
+mod simd_tests;
 
 /// A general-purpose register number, 0 to 30; 31 is the zero register or `sp`, depending on
 /// the instruction.

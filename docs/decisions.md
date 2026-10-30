@@ -14946,11 +14946,60 @@ the license, by an explicit instruction recorded here.
   `live_out`; `lock adc`, `lock sbb`, `lock neg` and 16-bit `shld`/`shrd` are reported as not
   lowered; `cmpxchg` on memory is always atomic; undefined flags (`mul`'s SF/ZF, `bsf`'s
   others) are whatever the code leaves.
-- **Not yet** (slices 39c to 39e): from 39b, `rcl`/`rcr`, `enter`, `lahf`/`sahf`/`pushf`/
-  `popf`, the string instructions, `cld`/`std`, `xlat`, `cmpxchg8b`/`16b`, `cpuid`, `rdtsc`,
-  `syscall` (all reported `Unhandled`), flag liveness across blocks (39d passes `live_out`;
-  until then `Flags::ALL`), a test-only AArch64 evaluator comparing lowered code with x86
-  semantics on random inputs; SSE, SSE2 and x87, the memory order and atomics (39c); code
+- **Slice 39c: SSE, SSE2 and the system leftovers.** `codegen/aarch64/simd.rs` encodes the
+  NEON and scalar floating-point forms (three-same integer and float, logic, permutes, `ext`,
+  shifts by immediate, element inserts and moves, narrowing and widening, conversions,
+  `fcmp`, vector loads and stores, FPCR and counter reads, `dc civac`, `caspal`, `ldaxp`,
+  `stlxp`), host-tested against hand-computed Arm ARM encodings. `lower/sse.rs` lowers every
+  SSE and SSE2 instruction the decoder produces except `maskmovdqu`: moves (whole, scalar,
+  halves, `movd`/`movq` both ways), packed and scalar arithmetic (scalar results computed in
+  `v17` and inserted into lane 0, so the upper lanes stay), `min`/`max` with x86's rule (the
+  second operand unless the first is strictly smaller or larger, so NaNs and signed zeros
+  pick the source), `sqrt`, `rcp`/`rsqrt` as exact divisions, `cmpps` ... `cmpsd` with all
+  eight predicates, `ucomis`/`comis` into NZCV with C in the inverted sense (the unordered
+  case `ZF = PF = CF = 1` by a branch on V, PF and AF to the state block only when live),
+  logic, unpacks, packs with saturation, the integer set (`paddb` ... `pmaddwd`, `psadbw`,
+  `pavg`, `pmulh`, `pmuludq`), shifts by immediate and by register (counts above 63 clamped
+  to 64, so the lanes empty or fill with the sign), `pslldq`/`psrldq` by `ext`, `pshufd`
+  (a `dup` when all four selects match), `pshuflw`/`pshufhw`, `shufps`/`shufpd`,
+  `movmskps`/`movmskpd`/`pmovmskb` (shift-right-and-accumulate folding), `pextrw`/`pinsrw`,
+  and the conversions with x86's integer indefinite (`0x80000000` or `0x8000...0`) for NaN
+  and out-of-range values, scalar and packed, the rounding forms through `frintx` in FPCR's
+  mode. `lower/system.rs` lowers `cpuid` (an inline compare chain over the leaves in
+  `CPUID_LEAVES`: vendor GenuineIntel, family 6, FPU, TSC, CX8, CMOV, CLFSH, SSE, SSE2, CX16,
+  POPCNT, LAHF/SAHF, LZCNT, SYSCALL, NX, long mode, the brand "EggOS x86-64 translated to
+  Arm"; no SSE3, BMI1, AVX, OSXSAVE; other leaves zero), `rdtsc`/`rdtscp` (`cntvct_el0` times
+  `1e9 / cntfrq_el0`, so a 1 GHz time stamp), `xgetbv` (x87 and SSE), `lahf`, `sahf`,
+  `pushf`, `popf` (CF, PF, AF, ZF, SF, OF and DF, IF reads as set), `cld`/`std` (the state
+  block's direction byte), `ldmxcsr` (rounding control, FZ and DAZ into FPCR; the value kept
+  at `state::MXCSR`), `stmxcsr`, `clflush` (`dc civac`), `movnti` and `cmpxchg8b`/`16b`
+  (`casal`/`caspal` with LSE, `ldaxr`/`ldaxp` loops without; `rax`/`rdx` written only on a
+  mismatch; ZF inserted without touching the other flags). The state block grew: the
+  direction byte at 18, MXCSR at 20, the x87 control and status words at 24 and 26, the top
+  at 28 and the stack at 32 (`state::SIZE` 96). A refused site's stub is `ldr x16, =site;
+  brk #0xE002`: the layers' handler (39d/39e) reads the guest address from `x16`. The
+  vector temporaries are `v16`-`v19` (`registers::VECTOR_TEMPORARIES`). Memory order: 4- and
+  8-byte SSE accesses use the integer path's `ldapr`/`ldar`/`stlr` through `x17`; 16-byte
+  accesses are a plain `ldr q` then `dmb ishld`, and `dmb ish` then a plain `str q`, unless
+  `hardware_tso`. Host tests: the encodings, three lowering shapes and 66 SSE and system
+  forms in three modes.
+- **Slice 39c's choices made without research.** `cpuid` reports GenuineIntel and family 6
+  (programs that branch on the vendor take their common paths); exception flags in MXCSR are
+  not tracked (`stmxcsr` returns what `ldmxcsr` wrote), and no SIMD floating-point exception
+  is ever raised; `rcpps`/`rsqrtps` return exact results, more precise than x86's 12-bit
+  approximations; the time stamp runs at 1 GHz and `rdtscp` reports processor 0; `xgetbv`
+  returns 3 for any `ecx`; `movaps` does not fault on a misaligned address and
+  `cmpxchg16b` does not check alignment; `maskmovdqu` stays `Unhandled`; a pushed flags word
+  has IF set and TF, AC and the rest clear, and `popf` ignores them; the FPCR that
+  `ldmxcsr` sets stays while the thread runs host code (39d's bridges restore the default
+  around native calls).
+- **Not yet** (slices 39c2 to 39e): the minimal x87 set (`fld` ... `fninit`, the stack as
+  doubles at `state::X87_STACK` with `state::X87_TOP`, 80-bit memory converted), the string
+  instructions with `rep`/`repe`/`repne` and the direction byte, `xlat`, `rdrand`/`rdseed`
+  (FEAT_RNG), `maskmovdqu`, then from 39b `rcl`/`rcr`, `enter`, `syscall` (all reported
+  `Unhandled`), flag liveness across blocks (39d passes `live_out`; until then
+  `Flags::ALL`), a test-only AArch64 evaluator comparing lowered code with x86 semantics on
+  random inputs (39c2 or later); code
   discovery, the image tables, the bridges, the cache and the Windows layer's loader (39d);
   the macOS layer, `app install` and launch, the refused-site report and the benchmarks
   (39e). Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87,
