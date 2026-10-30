@@ -310,6 +310,11 @@ enum Library {
     AppKit,
     Cocoa,
     SwiftCore,
+    SwiftCoreFoundation,
+    SwiftCoreGraphics,
+    SwiftDispatch,
+    SwiftFoundation,
+    SwiftObjectiveC,
 }
 
 impl Library {
@@ -322,6 +327,11 @@ impl Library {
             macho::APPKIT => Self::AppKit,
             macho::COCOA => Self::Cocoa,
             macho::LIBSWIFT_CORE => Self::SwiftCore,
+            macho::LIBSWIFT_CORE_FOUNDATION => Self::SwiftCoreFoundation,
+            macho::LIBSWIFT_CORE_GRAPHICS => Self::SwiftCoreGraphics,
+            macho::LIBSWIFT_DISPATCH => Self::SwiftDispatch,
+            macho::LIBSWIFT_FOUNDATION => Self::SwiftFoundation,
+            macho::LIBSWIFT_OBJECTIVE_C => Self::SwiftObjectiveC,
             _ => return None,
         })
     }
@@ -339,6 +349,11 @@ impl Library {
             Self::AppKit => b"AppKit",
             Self::Cocoa => b"Cocoa",
             Self::SwiftCore => b"libswiftCore",
+            Self::SwiftCoreFoundation => b"libswiftCoreFoundation",
+            Self::SwiftCoreGraphics => b"libswiftCoreGraphics",
+            Self::SwiftDispatch => b"libswiftDispatch",
+            Self::SwiftFoundation => b"libswiftFoundation",
+            Self::SwiftObjectiveC => b"libswiftObjectiveC",
         }
     }
 }

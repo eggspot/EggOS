@@ -45,7 +45,8 @@ fn allocate_words(count: usize) -> Option<usize> {
 const OPTIONAL_WITNESS_WORDS: usize = core::mem::size_of::<EnumValueWitnessTable>() / 8;
 const OPTIONAL_ARGUMENT: usize = 16;
 
-fn wrapped_of(optional: Metadata) -> Metadata {
+/// The wrapped type of the `Optional` metadata `optional`.
+pub fn wrapped_of(optional: Metadata) -> Metadata {
     word(optional + OPTIONAL_ARGUMENT)
 }
 

@@ -27,6 +27,11 @@ pub const CORE_FOUNDATION: &[u8] =
 pub const APPKIT: &[u8] = b"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
 pub const COCOA: &[u8] = b"/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa";
 pub const LIBSWIFT_CORE: &[u8] = b"/usr/lib/swift/libswiftCore.dylib";
+pub const LIBSWIFT_CORE_FOUNDATION: &[u8] = b"/usr/lib/swift/libswiftCoreFoundation.dylib";
+pub const LIBSWIFT_CORE_GRAPHICS: &[u8] = b"/usr/lib/swift/libswiftCoreGraphics.dylib";
+pub const LIBSWIFT_DISPATCH: &[u8] = b"/usr/lib/swift/libswiftDispatch.dylib";
+pub const LIBSWIFT_FOUNDATION: &[u8] = b"/usr/lib/swift/libswiftFoundation.dylib";
+pub const LIBSWIFT_OBJECTIVE_C: &[u8] = b"/usr/lib/swift/libswiftObjectiveC.dylib";
 
 const HEADER_SIZE: usize = 32;
 const FAT_ARCH_SIZE: usize = 20;

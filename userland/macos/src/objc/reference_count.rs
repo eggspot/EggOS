@@ -3,7 +3,8 @@
 //! that it is being deallocated, after which retains and releases do nothing, and in the next
 //! bit that a weak variable names it (D175), so freeing it clears those variables. Objects of
 //! immortal classes (metaclasses, constant strings and literals) are never counted; classes that
-//! define their own `retain` or `release` get the messages. ARC's functions build on these.
+//! define their own `retain` or `release` get the messages. Native Swift objects count in their
+//! own header, weak variables included (D180). ARC's functions build on these.
 
 use super::abi::{ClassObject, Id, Sel};
 use super::class::{self, CUSTOM_REFERENCE_COUNTING, HAS_CXX_DESTRUCT, IMMORTAL};
@@ -94,18 +95,30 @@ pub fn direct_retain_count(object: Id) -> usize {
     (count_of(object).load(Ordering::Relaxed) & COUNT_MASK) + 1
 }
 
-/// Whether the runtime allocated `object` and frees it (it has a count word).
+/// Whether the runtime frees `object` once uncounted: one it allocated (with a count word) or a
+/// mortal native Swift object.
 pub fn is_counted(object: Id) -> bool {
-    matches!(counting(object), Counting::Direct | Counting::Messages)
+    match counting(object) {
+        Counting::Direct | Counting::Messages => true,
+        Counting::Swift => !crate::swift::is_immortal(object.cast()),
+        Counting::Never => false,
+    }
 }
 
 /// Whether the counted `object` is being deallocated.
 pub fn is_deallocating(object: Id) -> bool {
+    if crate::swift::uses_swift_counting(object.cast()) {
+        return crate::swift::is_deinitializing(object.cast());
+    }
     count_of(object).load(Ordering::Acquire) & DEALLOCATING != 0
 }
 
 /// Marks the counted `object` as named by a weak variable.
 pub fn mark_weakly_referenced(object: Id) {
+    if crate::swift::uses_swift_counting(object.cast()) {
+        crate::swift::mark_weakly_referenced(object.cast());
+        return;
+    }
     count_of(object).fetch_or(WEAKLY_REFERENCED, Ordering::Relaxed);
 }
 
@@ -114,10 +127,7 @@ pub fn mark_weakly_referenced(object: Id) {
 pub fn try_retain(object: Id) -> Option<bool> {
     match counting(object) {
         Counting::Never => Some(true),
-        Counting::Swift => {
-            crate::swift::retain(object.cast());
-            Some(true)
-        }
+        Counting::Swift => crate::swift::try_retain(object.cast()).then_some(true),
         Counting::Messages => match is_deallocating(object) {
             true => None,
             false => Some(false),
@@ -390,7 +400,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
             objc_unsafe_claim_autoreleased_return_value as *const () as usize
         }
         b"_objc_storeStrong" => objc_store_strong as *const () as usize,
-        b"_objc_alloc" => objc_alloc as *const () as usize,
+        b"_objc_alloc" | b"_objc_allocWithZone" => objc_alloc as *const () as usize,
         b"_objc_alloc_init" => objc_alloc_init as *const () as usize,
         b"_objc_opt_new" => objc_opt_new as *const () as usize,
         b"_objc_opt_class" => objc_opt_class as *const () as usize,

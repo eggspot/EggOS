@@ -156,6 +156,21 @@ fn parameter_index(bytes: &[u8], at: &mut usize) -> Option<usize> {
     Some(value + 1)
 }
 
+/// The length of a mangled name that ends at its first NUL byte outside symbolic references,
+/// whose bytes `byte_at` reads: a reference of kind 1 to 0x17 carries four more bytes, one of
+/// kind 0x18 to 0x1f eight.
+pub fn name_length(byte_at: impl Fn(usize) -> u8) -> usize {
+    let mut at = 0;
+    loop {
+        match byte_at(at) {
+            0 => return at,
+            0x01..=0x17 => at += 5,
+            0x18..=0x1f => at += 9,
+            _ => at += 1,
+        }
+    }
+}
+
 /// The type `bytes` names, the mangled name at `base` in memory (symbolic references are
 /// relative to their own address); `None` if the name is malformed or uses grammar the parser
 /// lacks, or the resolver refuses a part.
@@ -436,5 +451,14 @@ mod tests {
         assert_eq!(named(b"G", 0, &[]), None);
         assert_eq!(named(b"Sz", 0, &[]), None);
         assert_eq!(named(b"s99X", 0, &[]), None);
+    }
+
+    #[test]
+    fn name_lengths_skip_symbolic_references() {
+        let name = [b'S', b'a', b'y', 1, 0, 0, 0, 0, b'G', 0, b'x'];
+        assert_eq!(name_length(|at| name[at]), 9);
+        let wide = [0x18, 0, 0, 0, 0, 0, 0, 0, 0, b'q', 0];
+        assert_eq!(name_length(|at| wide[at]), 10);
+        assert_eq!(name_length(|at| b"Si\0"[at]), 2);
     }
 }

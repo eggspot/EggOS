@@ -156,7 +156,7 @@ fn report(name: &[u8]) -> ! {
     super::unimplemented(&[b"the type named ", &printable[..length]])
 }
 
-extern "C" fn get_type_by_mangled_name(
+pub(super) extern "C" fn get_type_by_mangled_name(
     name: *const u8,
     length: usize,
     _context: usize,

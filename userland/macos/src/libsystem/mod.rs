@@ -461,7 +461,7 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_abort" => process::abort,
         b"_atexit" => process::atexit,
         b"___stack_chk_fail" => process::stack_chk_fail,
-        b"___chkstk_darwin" => process::eggos_macos_chkstk_darwin,
+        b"___chkstk_darwin" | b"____chkstk_darwin" => process::eggos_macos_chkstk_darwin,
         b"_raise" => process::raise,
         b"_kill" => process::kill,
         b"_getpid" => process::getpid,

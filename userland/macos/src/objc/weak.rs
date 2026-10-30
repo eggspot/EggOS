@@ -48,15 +48,27 @@ fn store(location: *mut Id, object: Id, known: bool) -> Id {
     })
 }
 
-unsafe extern "C" fn objc_init_weak(location: *mut Id, object: Id) -> Id {
+/// `objc_initWeak`: makes the new weak variable at `location` name `object`.
+///
+/// # Safety
+/// `location` must be the address of a weak variable not yet initialized.
+pub unsafe extern "C" fn objc_init_weak(location: *mut Id, object: Id) -> Id {
     store(location, object, false)
 }
 
-unsafe extern "C" fn objc_store_weak(location: *mut Id, object: Id) -> Id {
+/// `objc_storeWeak`: makes the weak variable at `location` name `object` instead.
+///
+/// # Safety
+/// `location` must be the address of a weak variable the runtime initialized.
+pub unsafe extern "C" fn objc_store_weak(location: *mut Id, object: Id) -> Id {
     store(location, object, true)
 }
 
-unsafe extern "C" fn objc_load_weak_retained(location: *mut Id) -> Id {
+/// `objc_loadWeakRetained`: the object the weak variable names, retained, or nil.
+///
+/// # Safety
+/// `location` must be the address of a weak variable the runtime initialized.
+pub unsafe extern "C" fn objc_load_weak_retained(location: *mut Id) -> Id {
     let (object, retained) = TABLE.with(|_| {
         // SAFETY: the program passes the address of its weak variable.
         let object = unsafe { location.read() };
@@ -79,7 +91,11 @@ unsafe extern "C" fn objc_load_weak(location: *mut Id) -> Id {
     objc_autorelease(unsafe { objc_load_weak_retained(location) })
 }
 
-unsafe extern "C" fn objc_destroy_weak(location: *mut Id) {
+/// `objc_destroyWeak`: forgets the weak variable at `location`.
+///
+/// # Safety
+/// `location` must be the address of a weak variable the runtime initialized.
+pub unsafe extern "C" fn objc_destroy_weak(location: *mut Id) {
     store(location, core::ptr::null_mut(), true);
 }
 

@@ -48,9 +48,12 @@ pub fn copy_bytes(destination: *mut u8, source: *const u8, length: usize) {
 pub mod kind {
     pub const CLASS: usize = 0;
     pub const STRUCT: usize = 0x200;
+    pub const ENUM: usize = 0x201;
     pub const OPTIONAL: usize = 0x202;
+    pub const FOREIGN_CLASS: usize = 0x203;
     pub const TUPLE: usize = 0x301;
     pub const EXISTENTIAL: usize = 0x303;
+    pub const OBJC_CLASS_WRAPPER: usize = 0x305;
     pub const LAST_ENUMERATED: usize = 0x7ff;
 }
 
@@ -62,6 +65,15 @@ pub fn kind_of(metadata: Metadata) -> usize {
     } else {
         first
     }
+}
+
+/// Whether values of `metadata` are object references: a class, an Objective-C class or a
+/// Core Foundation type.
+pub fn is_class_type(metadata: Metadata) -> bool {
+    matches!(
+        kind_of(metadata),
+        kind::CLASS | kind::OBJC_CLASS_WRAPPER | kind::FOREIGN_CLASS
+    )
 }
 
 /// Value witness table flags.
@@ -709,6 +721,14 @@ pub static ANY: ExistentialMetadata = ExistentialMetadata {
     protocol_count: 0,
 };
 
+/// `AnyObject` (`$syXlN`): one object word of any class.
+pub static ANY_OBJECT: ExistentialMetadata = ExistentialMetadata {
+    value_witnesses: &UNKNOWN_OBJECT_WITNESSES,
+    kind: kind::EXISTENTIAL,
+    flags: 0,
+    protocol_count: 0,
+};
+
 /// A struct's metadata with no field offsets: the standard library's own types.
 #[repr(C)]
 #[derive(Debug)]
@@ -785,7 +805,12 @@ impl TypeDescriptor {
 
     /// Names the descriptor `name` (NUL-terminated) in the Swift module.
     pub fn fill(&self, name: &'static [u8]) {
-        store_relative(&self.parent, &raw const SWIFT_MODULE as usize);
+        self.fill_in(&SWIFT_MODULE, name);
+    }
+
+    /// Names the descriptor `name` (NUL-terminated) in `module`.
+    pub fn fill_in(&self, module: &'static ModuleDescriptor, name: &'static [u8]) {
+        store_relative(&self.parent, module as *const ModuleDescriptor as usize);
         store_relative(&self.name, name.as_ptr() as usize);
         self.access_function.store(0, Ordering::Relaxed);
     }
@@ -805,12 +830,20 @@ pub struct ModuleDescriptor {
     name: AtomicI32,
 }
 
+impl ModuleDescriptor {
+    const fn new() -> Self {
+        Self {
+            flags: context::MODULE | UNIQUE,
+            parent: AtomicI32::new(0),
+            name: AtomicI32::new(0),
+        }
+    }
+}
+
 /// The `Swift` module.
-pub static SWIFT_MODULE: ModuleDescriptor = ModuleDescriptor {
-    flags: context::MODULE | UNIQUE,
-    parent: AtomicI32::new(0),
-    name: AtomicI32::new(0),
-};
+pub static SWIFT_MODULE: ModuleDescriptor = ModuleDescriptor::new();
+/// The `CoreGraphics` module, whose `CGFloat` the `libswiftCoreFoundation` overlay defines.
+pub static CORE_GRAPHICS_MODULE: ModuleDescriptor = ModuleDescriptor::new();
 
 macro_rules! standard_structs {
     ($($metadata:ident, $descriptor:ident, $witnesses:ident, $name:literal;)*) => {
@@ -856,11 +889,13 @@ standard_structs! {
     FLOAT, FLOAT_DESCRIPTOR, INT32_WITNESSES, "Float";
     BOOL, BOOL_DESCRIPTOR, BOOL_WITNESSES, "Bool";
     STRING, STRING_DESCRIPTOR, STRING_WITNESSES, "String";
+    CHARACTER, CHARACTER_DESCRIPTOR, STRING_WITNESSES, "Character";
     UNSAFE_RAW_POINTER, UNSAFE_RAW_POINTER_DESCRIPTOR, RAW_POINTER_WITNESSES, "UnsafeRawPointer";
     UNSAFE_MUTABLE_RAW_POINTER, UNSAFE_MUTABLE_RAW_POINTER_DESCRIPTOR, RAW_POINTER_WITNESSES,
         "UnsafeMutableRawPointer";
     DEFAULT_STRING_INTERPOLATION, DEFAULT_STRING_INTERPOLATION_DESCRIPTOR, STRING_WITNESSES,
         "DefaultStringInterpolation";
+    CGFLOAT, CGFLOAT_DESCRIPTOR, INT64_WITNESSES, "CGFloat";
 }
 
 /// The generic standard library types' descriptors: the runtime instantiates their metadata.
@@ -885,6 +920,7 @@ pub fn standard(standard: Standard) -> Option<Metadata> {
         Standard::Float => address_of(&FLOAT),
         Standard::Int => address_of(&INT),
         Standard::String => address_of(&STRING),
+        Standard::Character => address_of(&CHARACTER),
         Standard::UInt => address_of(&UINT),
         Standard::UnsafeRawPointer => address_of(&UNSAFE_RAW_POINTER),
         Standard::UnsafeMutableRawPointer => address_of(&UNSAFE_MUTABLE_RAW_POINTER),
@@ -938,6 +974,10 @@ pub struct ClassMetadata {
 
 /// Where a class's first generic argument is, from its address point.
 pub const CLASS_ARGUMENTS: usize = core::mem::size_of::<ClassMetadata>() - 16;
+/// Where a Swift class keeps its type descriptor, from its address point.
+pub const CLASS_DESCRIPTION: usize = core::mem::offset_of!(ClassMetadata, description) - 16;
+/// `data`'s bits that mark a Swift class, of the stable or the pre-stable ABI.
+pub const ANY_SWIFT_CLASS: usize = 3;
 /// `data`'s bit that marks a Swift class of the stable ABI.
 pub const SWIFT_CLASS: usize = 2;
 /// Class flags: instances count references the Swift way.
@@ -994,7 +1034,12 @@ impl ClassMetadata {
 /// Fills the descriptors' relative pointers; once, before the program runs.
 pub fn set_up() {
     store_relative(&SWIFT_MODULE.name, b"Swift\0".as_ptr() as usize);
+    store_relative(
+        &CORE_GRAPHICS_MODULE.name,
+        b"CoreGraphics\0".as_ptr() as usize,
+    );
     fill_standard_structs();
+    CGFLOAT_DESCRIPTOR.fill_in(&CORE_GRAPHICS_MODULE, b"CGFloat\0");
     OPTIONAL_DESCRIPTOR.fill(b"Optional\0");
     ARRAY_DESCRIPTOR.fill(b"Array\0");
     DICTIONARY_DESCRIPTOR.fill(b"Dictionary\0");
@@ -1021,6 +1066,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_$sBbWV" => &raw const BRIDGE_OBJECT_WITNESSES as usize,
         b"_$sytWV" => &raw const EMPTY_WITNESSES as usize,
         b"_$sypN" => address_of(&ANY),
+        b"_$syXlN" => address_of(&ANY_OBJECT),
+        b"_$s12CoreGraphics7CGFloatVN" => address_of(&CGFLOAT),
+        b"_$s12CoreGraphics7CGFloatVMn" => CGFLOAT_DESCRIPTOR.address(),
         b"_$sytN" => address_of(&EMPTY_TUPLE),
         b"_$sSiN" => address_of(&INT),
         b"_$ss4Int8VN" => address_of(&INT8),
@@ -1036,6 +1084,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_$sSfN" => address_of(&FLOAT),
         b"_$sSbN" => address_of(&BOOL),
         b"_$sSSN" => address_of(&STRING),
+        b"_$sSJN" => address_of(&CHARACTER),
+        b"_$sSJMn" => CHARACTER_DESCRIPTOR.address(),
         b"_$sSVN" => address_of(&UNSAFE_RAW_POINTER),
         b"_$sSvN" => address_of(&UNSAFE_MUTABLE_RAW_POINTER),
         b"_$ss26DefaultStringInterpolationVN" => address_of(&DEFAULT_STRING_INTERPOLATION),

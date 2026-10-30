@@ -4,10 +4,12 @@
 //! arm64 and rax on x86_64. Each entry here moves that register into the next C argument
 //! register and jumps to the Rust function; [`call_with_context`] is the other direction, for
 //! the runtime calling a program's destructor or witness. The protocol dispatch thunks jump
-//! through the witness table at the requirement's slot.
+//! through the witness table at the requirement's slot. A function that returns four words
+//! (a `Substring`) returns them in registers to Swift but through memory from Rust, so its entry
+//! passes a stack buffer and loads the words from it.
 
 use super::metadata::{self, Metadata};
-use super::{protocols, storage, string};
+use super::{cast, characters, protocols, standard_protocols, storage, string};
 
 macro_rules! thunk {
     ($name:literal, $arm:literal, $x86:literal, $target:path) => {
@@ -223,6 +225,120 @@ thunk!(
     protocols::string_description
 );
 
+thunk!(
+    "eggos_swift_string_hash_value",
+    "mov x0, x20",
+    "mov rdi, r13",
+    standard_protocols::string_hash_value
+);
+thunk!(
+    "eggos_swift_string_hash_into",
+    "mov x1, x20",
+    "mov rsi, r13",
+    standard_protocols::string_hash_into
+);
+thunk!(
+    "eggos_swift_string_raw_hash",
+    "mov x1, x20",
+    "mov rsi, r13",
+    standard_protocols::string_raw_hash
+);
+thunk!(
+    "eggos_swift_int_hash_value",
+    "mov x0, x20",
+    "mov rdi, r13",
+    standard_protocols::int_hash_value
+);
+thunk!(
+    "eggos_swift_int_hash_into",
+    "mov x1, x20",
+    "mov rsi, r13",
+    standard_protocols::int_hash_into
+);
+thunk!(
+    "eggos_swift_int_raw_hash",
+    "mov x1, x20",
+    "mov rsi, r13",
+    standard_protocols::int_raw_hash
+);
+thunk!(
+    "eggos_swift_default_hash_value",
+    "mov x2, x20",
+    "mov rdx, r13",
+    standard_protocols::default_hash_value
+);
+thunk!(
+    "eggos_swift_default_raw_hash_value",
+    "mov x3, x20",
+    "mov rcx, r13",
+    standard_protocols::default_raw_hash_value
+);
+thunk!(
+    "eggos_swift_iterator_next",
+    "mov x0, x20",
+    "mov rdi, r13",
+    characters::iterator_next
+);
+thunk!(
+    "eggos_swift_bridge_any_object",
+    "mov x1, x0\nmov x0, x8",
+    "mov rsi, rdi\nmov rdi, rax",
+    cast::bridge_any_object_to_any
+);
+
+macro_rules! four_words {
+    ($name:literal, $target:path) => {
+        #[cfg(target_arch = "aarch64")]
+        core::arch::global_asm!(
+            ".text",
+            ".p2align 2",
+            concat!(".globl ", $name),
+            concat!(".hidden ", $name),
+            concat!($name, ":"),
+            "stp x29, x30, [sp, #-48]!",
+            "mov x29, sp",
+            "mov x4, x3",
+            "mov x3, x2",
+            "mov x2, x1",
+            "mov x1, x0",
+            "add x0, sp, #16",
+            "bl {target}",
+            "ldp x0, x1, [sp, #16]",
+            "ldp x2, x3, [sp, #32]",
+            "ldp x29, x30, [sp], #48",
+            "ret",
+            target = sym $target,
+        );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::global_asm!(
+            ".text",
+            ".p2align 4",
+            concat!(".globl ", $name),
+            concat!(".hidden ", $name),
+            concat!($name, ":"),
+            "push rbp",
+            "mov rbp, rsp",
+            "sub rsp, 32",
+            "mov r8, rcx",
+            "mov rcx, rdx",
+            "mov rdx, rsi",
+            "mov rsi, rdi",
+            "mov rdi, rsp",
+            "call {target}",
+            "mov rax, qword ptr [rsp]",
+            "mov rdx, qword ptr [rsp + 8]",
+            "mov rcx, qword ptr [rsp + 16]",
+            "mov r8, qword ptr [rsp + 24]",
+            "mov rsp, rbp",
+            "pop rbp",
+            "ret",
+            target = sym $target,
+        );
+    };
+}
+
+four_words!("eggos_swift_substring", characters::substring);
+
 dispatch!(
     "eggos_swift_description_dispatch",
     "ldr x9, [x1, #8]",
@@ -247,6 +363,41 @@ dispatch!(
     "eggos_swift_write_ascii_dispatch",
     "ldr x9, [x3, #32]",
     "jmp qword ptr [rcx + 32]"
+);
+dispatch!(
+    "eggos_swift_equal_dispatch",
+    "ldr x9, [x3, #8]",
+    "jmp qword ptr [rcx + 8]"
+);
+dispatch!(
+    "eggos_swift_hash_value_dispatch",
+    "ldr x9, [x1, #16]",
+    "jmp qword ptr [rsi + 16]"
+);
+dispatch!(
+    "eggos_swift_hash_into_dispatch",
+    "ldr x9, [x2, #24]",
+    "jmp qword ptr [rdx + 24]"
+);
+dispatch!(
+    "eggos_swift_raw_hash_dispatch",
+    "ldr x9, [x2, #32]",
+    "jmp qword ptr [rdx + 32]"
+);
+dispatch!(
+    "eggos_swift_raw_value_init_dispatch",
+    "ldr x9, [x2, #16]",
+    "jmp qword ptr [rdx + 16]"
+);
+dispatch!(
+    "eggos_swift_raw_value_dispatch",
+    "ldr x9, [x1, #24]",
+    "jmp qword ptr [rsi + 24]"
+);
+dispatch!(
+    "eggos_swift_all_cases_dispatch",
+    "ldr x9, [x1, #24]",
+    "jmp qword ptr [rsi + 24]"
 );
 
 #[cfg(target_arch = "aarch64")]
@@ -328,6 +479,24 @@ unsafe extern "C" {
     pub fn eggos_swift_unlock_dispatch();
     pub fn eggos_swift_write_dispatch();
     pub fn eggos_swift_write_ascii_dispatch();
+    pub fn eggos_swift_string_hash_value();
+    pub fn eggos_swift_string_hash_into();
+    pub fn eggos_swift_string_raw_hash();
+    pub fn eggos_swift_int_hash_value();
+    pub fn eggos_swift_int_hash_into();
+    pub fn eggos_swift_int_raw_hash();
+    pub fn eggos_swift_default_hash_value();
+    pub fn eggos_swift_default_raw_hash_value();
+    pub fn eggos_swift_iterator_next();
+    pub fn eggos_swift_bridge_any_object();
+    pub fn eggos_swift_substring();
+    pub fn eggos_swift_equal_dispatch();
+    pub fn eggos_swift_hash_value_dispatch();
+    pub fn eggos_swift_hash_into_dispatch();
+    pub fn eggos_swift_raw_hash_dispatch();
+    pub fn eggos_swift_raw_value_init_dispatch();
+    pub fn eggos_swift_raw_value_dispatch();
+    pub fn eggos_swift_all_cases_dispatch();
     fn eggos_swift_call_context(
         function: usize,
         context: usize,
@@ -335,16 +504,17 @@ unsafe extern "C" {
         second: usize,
         third: usize,
         fourth: usize,
-    );
+    ) -> usize;
 }
 
 /// Calls the Swift function at `function` with `context` as its `self` register and up to four
-/// word arguments, ignoring what it returns.
+/// word arguments, returning its first result register (meaningless for a function that
+/// returns nothing).
 ///
 /// # Safety
 /// `function` must be a Swift function that takes a context and at most those four arguments
 /// (more are ignored).
-pub unsafe fn call_with_context(function: usize, context: usize, arguments: [usize; 4]) {
+pub unsafe fn call_with_context(function: usize, context: usize, arguments: [usize; 4]) -> usize {
     // SAFETY: the caller's promise; the entry saves and restores the context register.
     unsafe {
         eggos_swift_call_context(

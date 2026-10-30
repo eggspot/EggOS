@@ -16,6 +16,7 @@ use super::metadata::{
     ValueWitnessTable, copy_bytes, set_word, witnesses, word,
 };
 use super::refcount;
+use crate::libsystem::heap;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const COUNT: usize = 16;
@@ -242,6 +243,24 @@ pub(super) extern "C" fn dictionary_copy(original: usize, class: Metadata) -> us
     allocate_dictionary(class, scale, Some(age), Some(word(original + SEED)))
 }
 
+extern "C" fn allocate_uninitialized_buffer(minimum_capacity: isize, element: Metadata) -> usize {
+    if minimum_capacity <= 0 {
+        return &raw const EMPTY_ARRAY as usize;
+    }
+    let class = contiguous_array_storage(element)
+        .unwrap_or_else(|| super::fatal_error(&[b"out of memory for Swift metadata"]));
+    let table = witnesses(element);
+    let stride = table.stride.max(1);
+    let header = align_up(ARRAY_HEADER, table.alignment_mask());
+    let size = header + stride * minimum_capacity as usize;
+    let object = heap_object::swift_alloc_object(class, size, table.alignment_mask().max(7));
+    let room = (heap::size_of(object) - header) / stride;
+    let verbatim = usize::from(metadata::is_class_type(element));
+    set_word(object as usize + COUNT, 0);
+    set_word(object as usize + CAPACITY, (room << 1) | verbatim);
+    object as usize
+}
+
 extern "C" fn array_end_index(array: usize, _element: Metadata) -> isize {
     count(array_storage(array)) as isize
 }
@@ -407,6 +426,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"__swiftEmptyArrayStorage" => &raw const EMPTY_ARRAY as usize,
         b"__swiftEmptyDictionarySingleton" => &raw const EMPTY_DICTIONARY as usize,
         b"_$sSa8endIndexSivg" | b"_$sSa5countSivg" => array_end_index as *const () as usize,
+        b"_$sSa28_allocateBufferUninitialized15minimumCapacitys06_ArrayB0VyxGSi_tFZ" => {
+            allocate_uninitialized_buffer as *const () as usize
+        }
         b"_$sSayxSicig" => entry::address(entry::eggos_swift_array_subscript) as usize,
         b"_$ss18_DictionaryStorageC8allocate8capacityAByxq_GSi_tFZ" => {
             entry::address(entry::eggos_swift_dictionary_allocate) as usize

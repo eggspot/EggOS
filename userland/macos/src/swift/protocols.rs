@@ -6,6 +6,8 @@
 //! program never indexes their witness tables itself: the slot of each requirement is the
 //! runtime's, and the thunks know it. Also `Double.write(to:)`.
 
+use super::conformance_layout::REQUIREMENT_SIZE;
+use super::conformance_layout::requirement::{GETTER, INSTANCE, METHOD};
 use super::entry::{self, address};
 use super::metadata::{self, Metadata, TypeDescriptor, word};
 use super::number_text;
@@ -13,18 +15,25 @@ use super::string::{self, append_bytes};
 use super::string_object::RawString;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-/// A protocol requirement: its kind and its default implementation (none here).
+/// A protocol requirement: its kind and its default implementation, relative (zero for
+/// none).
 #[repr(C)]
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Requirement {
     flags: u32,
-    default_implementation: i32,
+    pub default_implementation: AtomicI32,
 }
 
-const INSTANCE: u32 = 0x10;
-const METHOD: u32 = 1;
-const GETTER: u32 = 3;
+/// A requirement of kind `flags` (`conformance_layout::requirement`) with no default
+/// implementation yet.
+pub const fn requirement(flags: u32) -> Requirement {
+    Requirement {
+        flags,
+        default_implementation: AtomicI32::new(0),
+    }
+}
+
 const PROTOCOL_FLAGS: u32 = metadata::context::PROTOCOL | 0x40 | (1 << 16) | (1 << 17);
 
 /// A protocol's context descriptor with its requirements.
@@ -38,11 +47,11 @@ pub struct ProtocolDescriptor<const N: usize> {
     requirements_in_signature: u32,
     requirement_count: u32,
     associated_type_names: i32,
-    requirements: [Requirement; N],
+    pub requirements: [Requirement; N],
 }
 
 impl<const N: usize> ProtocolDescriptor<N> {
-    const fn new(requirements: [Requirement; N]) -> Self {
+    pub const fn new(requirements: [Requirement; N]) -> Self {
         Self {
             flags: PROTOCOL_FLAGS,
             parent: AtomicI32::new(0),
@@ -54,29 +63,34 @@ impl<const N: usize> ProtocolDescriptor<N> {
         }
     }
 
-    fn fill(&self, name: &'static [u8]) {
+    pub fn fill(&self, name: &'static [u8]) {
         relative_to(&self.parent, &raw const metadata::SWIFT_MODULE as usize);
         relative_to(&self.name, name.as_ptr() as usize);
     }
+
+    /// The address of requirement `index`'s descriptor, which programs import by name.
+    pub fn requirement(&'static self, index: usize) -> u64 {
+        &raw const self.requirements[index] as u64
+    }
+
+    /// The protocol's requirements base descriptor: one requirement before the first.
+    pub fn requirements_base(&'static self) -> u64 {
+        (&raw const self.requirements as u64).wrapping_sub(REQUIREMENT_SIZE as u64)
+    }
 }
 
-fn relative_to(field: &AtomicI32, target: usize) {
+/// Points the relative field `field` at `target`.
+pub fn relative_to(field: &AtomicI32, target: usize) {
     let at = field as *const AtomicI32 as usize;
     field.store(target.wrapping_sub(at) as i32, Ordering::Relaxed);
 }
 
 /// `CustomStringConvertible`: `description`'s getter.
 pub static CUSTOM_STRING_CONVERTIBLE: ProtocolDescriptor<1> =
-    ProtocolDescriptor::new([Requirement {
-        flags: GETTER | INSTANCE,
-        default_implementation: 0,
-    }]);
+    ProtocolDescriptor::new([requirement(GETTER | INSTANCE)]);
 
 const fn method() -> Requirement {
-    Requirement {
-        flags: METHOD | INSTANCE,
-        default_implementation: 0,
-    }
+    requirement(METHOD | INSTANCE)
 }
 
 /// `TextOutputStream`: `_lock()`, `_unlock()`, `write(_:)` and `_writeASCII(_:)`, slots 1 to 4.
@@ -96,7 +110,7 @@ pub struct ConformanceDescriptor {
 }
 
 impl ConformanceDescriptor {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             protocol: AtomicI32::new(0),
             conforming_type: AtomicI32::new(0),
@@ -105,7 +119,7 @@ impl ConformanceDescriptor {
         }
     }
 
-    fn fill(&self, protocol: usize, conforming: &'static TypeDescriptor, table: usize) {
+    pub fn fill(&self, protocol: usize, conforming: &'static TypeDescriptor, table: usize) {
         relative_to(&self.protocol, protocol);
         relative_to(&self.conforming_type, conforming.address());
         relative_to(&self.witness_table, table);

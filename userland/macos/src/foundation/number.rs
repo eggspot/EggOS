@@ -84,6 +84,24 @@ fn value_of(object: Id) -> Value {
     }
 }
 
+/// An NSNumber's value as Swift's bridging casts read it: an integer when it holds one, else
+/// its floating-point value.
+#[derive(Debug, Clone, Copy)]
+pub enum Exact {
+    Integer(i128),
+    Real(f64),
+}
+
+/// The value of the number `object`.
+pub fn exact_value(object: Id) -> Exact {
+    match value_of(object) {
+        Value::Signed(value) => Exact::Integer(i128::from(value)),
+        Value::Unsigned(value) => Exact::Integer(i128::from(value)),
+        Value::Float(value) => Exact::Real(f64::from(value)),
+        Value::Double(value) => Exact::Real(value),
+    }
+}
+
 fn new_number(class: *mut ClassObject, encoding: &'static core::ffi::CStr, value: u64) -> Id {
     let object = new_instance(class);
     if object.is_null() {

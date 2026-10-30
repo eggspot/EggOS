@@ -4,8 +4,9 @@
 //! the last release runs the class's destructor, which frees the object through
 //! `swift_deallocClassInstance`. Bridge objects (a `String`'s or an `Array`'s storage word) and
 //! unknown objects tell native Swift objects from Objective-C ones by their pointer bits and
-//! their class's flags. Also static and stack objects, `swift_once`, and the exclusivity
-//! checks of `swift_beginAccess`.
+//! their class's flags. A weakly referenced object's last release clears the weak references
+//! naming it (`weak.rs`) before its destructor runs. Also static and stack objects,
+//! `swift_once`, and the exclusivity checks of `swift_beginAccess`.
 
 use super::metadata::{self, CLASS_ARGUMENTS, Metadata, SWIFT_CLASS, USES_SWIFT_REFCOUNTING, word};
 use super::refcount;
@@ -79,9 +80,33 @@ extern "C" fn swift_release_n(object: *mut u8, count: u32) {
     }
     let object_header = header(object);
     if refcount::release(&object_header.refcount, count) {
+        if refcount::is_weakly_referenced(object_header.refcount.load(Ordering::Acquire)) {
+            crate::objc::weak::clear(object.cast());
+        }
         let class = object_header.metadata.load(Ordering::Relaxed);
         super::entry::destroy(object as usize, class);
     }
+}
+
+/// Whether the native object `object` is never freed.
+pub fn is_immortal(object: *mut u8) -> bool {
+    refcount::is_immortal(header(object).refcount.load(Ordering::Relaxed))
+}
+
+/// Whether the native object `object` has started deinitializing.
+pub fn is_deinitializing(object: *mut u8) -> bool {
+    refcount::is_deinitializing(header(object).refcount.load(Ordering::Acquire))
+}
+
+/// Retains the native object `object` unless it has started deinitializing.
+pub fn try_retain(object: *mut u8) -> bool {
+    refcount::try_retain(&header(object).refcount)
+}
+
+/// Marks the native object `object` as named by a weak reference, so its last release clears
+/// the reference.
+pub fn mark_weakly_referenced(object: *mut u8) {
+    refcount::mark_weakly_referenced(&header(object).refcount);
 }
 
 extern "C" fn swift_dealloc_object(object: *mut u8, _: usize, _: usize) {
