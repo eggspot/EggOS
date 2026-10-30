@@ -39,6 +39,7 @@ mod environment;
 mod exception;
 mod file;
 mod file_information;
+mod file_mapping;
 mod file_picker;
 mod gdi;
 mod gdiplus;
@@ -53,6 +54,7 @@ mod message_box;
 mod messages;
 mod module;
 mod monitor;
+mod named;
 mod native_files;
 mod nls;
 mod overlapped;
@@ -225,6 +227,7 @@ const KERNEL32: &[&[Export]] = &[
     volume::EXPORTS,
     overlapped::EXPORTS,
     file_information::EXPORTS,
+    file_mapping::EXPORTS,
 ];
 
 const NTDLL: &[&[Export]] = &[

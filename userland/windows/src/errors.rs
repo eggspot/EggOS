@@ -77,6 +77,8 @@ pub mod code {
     pub const OPERATION_ABORTED: u32 = 995;
     pub const IO_INCOMPLETE: u32 = 996;
     pub const IO_PENDING: u32 = 997;
+    pub const FILE_INVALID: u32 = 1006;
+    pub const MAPPED_ALIGNMENT: u32 = 1132;
 }
 
 /// The Win32 error code for Linux error number `errno`.

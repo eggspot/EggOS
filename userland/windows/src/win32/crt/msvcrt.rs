@@ -49,15 +49,24 @@ unsafe fn give_main_arguments<T>(
     }
 }
 
+/// The UCRT's argument mode for `__getmainargs`' `_DoWildCard` (MinGW's `_dowildcard`):
+/// nonzero expands wildcards (D189).
+fn argument_mode(expand_wildcards: i32) -> i32 {
+    match expand_wildcards {
+        0 => 0,
+        _ => runtime::EXPANDED_ARGUMENTS,
+    }
+}
+
 unsafe extern "efiapi" fn get_main_arguments(
     count: *mut i32,
     arguments: *mut *mut *mut u8,
     environment: *mut *mut *mut u8,
-    _expand_wildcards: i32,
+    expand_wildcards: i32,
     startup: *const StartupInfo,
 ) -> i32 {
     let list = runtime::narrow_environment();
-    if runtime::configure_narrow_argv(0) != 0 || list.is_null() {
+    if runtime::configure_narrow_argv(argument_mode(expand_wildcards)) != 0 || list.is_null() {
         return -1;
     }
     INITIAL_ENVIRONMENT.store(list, Ordering::Release);
@@ -71,11 +80,11 @@ unsafe extern "efiapi" fn get_wide_main_arguments(
     count: *mut i32,
     arguments: *mut *mut *mut u16,
     environment: *mut *mut *mut u16,
-    _expand_wildcards: i32,
+    expand_wildcards: i32,
     startup: *const StartupInfo,
 ) -> i32 {
     let list = runtime::wide_environment();
-    if runtime::configure_wide_argv(0) != 0 || list.is_null() {
+    if runtime::configure_wide_argv(argument_mode(expand_wildcards)) != 0 || list.is_null() {
         return -1;
     }
     INITIAL_WIDE_ENVIRONMENT.store(list, Ordering::Release);

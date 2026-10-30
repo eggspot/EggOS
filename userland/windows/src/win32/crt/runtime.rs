@@ -4,11 +4,13 @@
 //! modes the startup sets, the `atexit` tables and `exit`; and `errno`, which lives in a slot of
 //! each thread's TEB past the documented part.
 
+use super::super::directory;
 use super::super::heap as process_heap;
 use super::super::process::process;
 use super::super::{SpinLock, call_program, thread_environment};
 use super::stdio;
 use crate::command_line;
+use crate::find;
 use crate::library::Export;
 use crate::linux;
 use crate::text;
@@ -271,13 +273,140 @@ fn configured<T>(list: *mut *mut T, count: usize, into: &AtomicPtr<*mut T>) -> i
     0
 }
 
-pub(super) extern "efiapi" fn configure_narrow_argv(_mode: i32) -> i32 {
+/// `_crt_argv_expanded_arguments`: the mode of `_configure_narrow_argv` and
+/// `_configure_wide_argv` that expands wildcards in the arguments (D189).
+pub(super) const EXPANDED_ARGUMENTS: i32 = 2;
+
+enum Expanded<'a> {
+    Argument { folder: &'a [u8], name: &'a [u8] },
+    End,
+}
+
+fn expand_pattern(argument: &[u8], start: usize, visit: &mut dyn FnMut(Expanded<'_>)) -> usize {
+    let (folder, pattern) = argument.split_at(start);
+    let Ok(folder_text) = core::str::from_utf8(folder) else {
+        return 0;
+    };
+    let mut path = [0u8; text::PATH_CAPACITY];
+    let length = match text::eggos_path(folder_text.chars(), &mut path) {
+        Some(length) if length > 1 => length,
+        _ => {
+            path[..2].copy_from_slice(b".\0");
+            2
+        }
+    };
+    let mut matched = 0;
+    directory::for_each_entry(&path[..length], &mut |name, _| {
+        if find::matches(pattern, name) {
+            visit(Expanded::Argument { folder, name });
+            matched += 1;
+        }
+    });
+    matched
+}
+
+/// Visits the program's arguments as the C runtime expands them: an argument after the
+/// program's name whose last component holds `*` or `?` is each name in its folder that the
+/// pattern matches (`.` and `..` never), behind the folder as written, or itself when none
+/// does; every argument is followed by [`Expanded::End`].
+fn expand_arguments(visit: &mut dyn FnMut(Expanded<'_>)) {
+    for (position, argument) in program_arguments().enumerate() {
+        let argument = argument.to_bytes();
+        let matched = match find::argument_pattern_start(argument) {
+            Some(start) if position > 0 => expand_pattern(argument, start, visit),
+            _ => 0,
+        };
+        if matched == 0 {
+            visit(Expanded::Argument {
+                folder: argument,
+                name: b"",
+            });
+        }
+        visit(Expanded::End);
+    }
+}
+
+/// The expanded arguments ([`expand_arguments`]) as a list of NUL-terminated strings in one
+/// heap block kept for the process's life, each argument's names sorted byte-wise; the list
+/// and its length, or `None` without memory.
+fn expanded_list() -> Option<(*mut *mut u8, usize)> {
+    let mut bytes = 0;
+    let mut count = 0;
+    expand_arguments(&mut |piece| {
+        if let Expanded::Argument { folder, name } = piece {
+            bytes += folder.len() + name.len() + 1;
+            count += 1;
+        }
+    });
+    let block = process_heap::allocate(bytes.max(1));
+    let list = new_list::<u8>(count);
+    if block.is_null() || list.is_null() {
+        return None;
+    }
+    let mut at = 0;
+    let mut index = 0;
+    let mut run = 0;
+    expand_arguments(&mut |piece| match piece {
+        Expanded::Argument { folder, name } => {
+            let size = folder.len() + name.len() + 1;
+            if index == count || at + size > bytes {
+                return;
+            }
+            // SAFETY: the block holds `bytes` bytes, and this string's `size` fit after `at`.
+            let out = unsafe { core::slice::from_raw_parts_mut(block.wrapping_add(at), size) };
+            out[..folder.len()].copy_from_slice(folder);
+            out[folder.len()..size - 1].copy_from_slice(name);
+            out[size - 1] = 0;
+            // SAFETY: the list holds `count + 1` pointers and `index` is below `count`.
+            unsafe { list.wrapping_add(index).write(block.wrapping_add(at)) };
+            at += size;
+            index += 1;
+        }
+        Expanded::End => {
+            // SAFETY: the list's entries `run..index` were written above.
+            let names =
+                unsafe { core::slice::from_raw_parts_mut(list.wrapping_add(run), index - run) };
+            names.sort_unstable_by(|a, b| {
+                // SAFETY: each entry is a NUL-terminated string in the block.
+                let (a, b) = unsafe {
+                    (
+                        CStr::from_ptr(a.cast_const().cast()),
+                        CStr::from_ptr(b.cast_const().cast()),
+                    )
+                };
+                a.cmp(b)
+            });
+            run = index;
+        }
+    });
+    Some((list, index))
+}
+
+pub(super) extern "efiapi" fn configure_narrow_argv(mode: i32) -> i32 {
+    if mode == EXPANDED_ARGUMENTS {
+        let (list, count) = expanded_list().unwrap_or((ptr::null_mut(), 0));
+        return configured(list, count, &NARROW_ARGUMENTS);
+    }
     let count = program_arguments().count();
     let list = narrow_list(program_arguments(), count);
     configured(list, count, &NARROW_ARGUMENTS)
 }
 
-pub(super) extern "efiapi" fn configure_wide_argv(_mode: i32) -> i32 {
+pub(super) extern "efiapi" fn configure_wide_argv(mode: i32) -> i32 {
+    if mode == EXPANDED_ARGUMENTS {
+        let (list, count) = match expanded_list() {
+            Some((narrow, count)) => {
+                // SAFETY: `expanded_list` wrote `count` NUL-terminated strings kept for the
+                // process's life.
+                let strings = (0..count).map(|index| unsafe {
+                    CStr::from_ptr(narrow.wrapping_add(index).read().cast_const().cast())
+                });
+                (wide_list(strings, count), count)
+            }
+            None => (ptr::null_mut(), 0),
+        };
+        return configured(list, count, &WIDE_ARGUMENTS);
+    }
     let count = program_arguments().count();
     let list = wide_list(program_arguments(), count);
     configured(list, count, &WIDE_ARGUMENTS)

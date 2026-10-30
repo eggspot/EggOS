@@ -19,6 +19,7 @@ pub mod number {
     pub const PWRITE64: usize = 18;
     pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
+    pub const MSYNC: usize = 26;
     pub const GETPID: usize = 39;
     pub const CLONE: usize = 56;
     pub const EXIT: usize = 60;
@@ -91,6 +92,7 @@ pub mod number {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
+    pub const MSYNC: usize = 227;
     pub const RENAMEAT2: usize = 276;
     pub const FCNTL: usize = 25;
     pub const STATFS: usize = 43;
@@ -132,6 +134,7 @@ pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 pub const MADV_DONTNEED: usize = 4;
+pub const MS_SYNC: usize = 4;
 #[cfg(target_arch = "x86_64")]
 pub const ARCH_SET_GS: usize = 0x1001;
 pub const CLOCK_REALTIME: usize = 0;
@@ -271,6 +274,35 @@ pub fn map_shared(fd: usize, length: usize, offset: usize) -> Result<usize, Errn
             [0, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset],
         )
     }
+}
+
+/// Maps `length` bytes of `fd` at `offset` with `protection` and `flags` (`MAP_SHARED` or
+/// `MAP_PRIVATE`, and `MAP_FIXED_NOREPLACE` to place it at `hint` or fail), at `hint` if free.
+pub fn map_file(
+    hint: usize,
+    length: usize,
+    protection: usize,
+    flags: usize,
+    fd: usize,
+    offset: u64,
+) -> Result<usize, Errno> {
+    if flags & !(MAP_SHARED | MAP_PRIVATE | MAP_FIXED_NOREPLACE) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: a file mapping that replaces nothing (no `MAP_FIXED`) changes no memory the
+    // program uses.
+    unsafe {
+        syscall(
+            number::MMAP,
+            [hint, length, protection, flags, fd, offset as usize],
+        )
+    }
+}
+
+/// Writes the pages of the shared file mapping at `address` (`length` bytes) back to its file.
+pub fn sync_mapping(address: usize, length: usize) -> Result<usize, Errno> {
+    // SAFETY: `msync` reads the mapping's pages and changes no memory.
+    unsafe { syscall(number::MSYNC, [address, length, MS_SYNC, 0, 0, 0]) }
 }
 
 /// A pipe whose ends do not block and close on `execve`: its read end, then its write end.

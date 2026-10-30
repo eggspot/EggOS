@@ -5,13 +5,18 @@
 //! process-wide futex word, the wake sequence, which every state change bumps, so a wake can
 //! never be lost between the check and the sleep; a process's end bumps nothing, so a wait for
 //! one looks again every 10 ms, as does a wait on the event of an overlapped read in progress
-//! (`overlapped.rs`). Critical sections, SRW locks, condition variables, one-time
+//! (`overlapped.rs`). A named event, mutex or semaphore (D189) is a handle to a slot of the
+//! table shared between processes (`named.rs`), whose state changes under that table's lock,
+//! taken after this one; a wait for one looks again every 10 ms too, since another process's
+//! change wakes nobody here. Critical sections, SRW locks, condition variables, one-time
 //! initialisation and `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
-use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
+use super::named::{self, Reference};
+use super::{Bool, FALSE, SpinLock, TRUE, ansi, error, fail, heap, thread_environment};
 use crate::handle_flags;
 use crate::library::Export;
 use crate::linux;
+use crate::named_objects::{self, Shared, State};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use eggos_runtime::futex::WakeCount;
 
@@ -61,6 +66,8 @@ pub enum Kind {
     Thread(Thread),
     Process(super::processes::ProcessObject),
     Token,
+    Named(Reference),
+    Section(super::file_mapping::Section),
 }
 
 #[derive(Debug)]
@@ -275,6 +282,28 @@ fn abandon_mutexes_of(table: &mut Table, thread: u32) {
             *abandoned = true;
         }
     }
+    let named_handles = || {
+        table.objects.iter().filter_map(|pointer| {
+            // SAFETY: as above.
+            match unsafe { (*pointer).as_ref() } {
+                Some(Object {
+                    kind: Kind::Named(reference),
+                    ..
+                }) => Some(reference),
+                _ => None,
+            }
+        })
+    };
+    if named_handles().next().is_some() {
+        let process = named::process();
+        named::locked(|shared| {
+            for reference in named_handles() {
+                reference
+                    .slot(shared)
+                    .abandon_if_owned_by(process, Some(thread));
+            }
+        });
+    }
 }
 
 fn free_thread_memory(thread: &Thread) {
@@ -331,18 +360,25 @@ pub fn reap_threads() {
     });
 }
 
-fn is_signaled(kind: &Kind, caller: u32) -> bool {
+fn is_signaled(kind: &Kind, caller: u32, shared: Option<&Shared>) -> bool {
     match kind {
         Kind::Event { signaled, .. } => *signaled,
         Kind::Mutex { owner, .. } => *owner == 0 || *owner == caller,
         Kind::Semaphore { count, .. } => *count > 0,
         Kind::Thread(thread) => thread.ended,
         Kind::Process(process) => process.ended(),
-        Kind::Token => false,
+        Kind::Named(reference) => shared.is_some_and(|shared| {
+            shared.slots[reference.index()].is_signaled(named::process(), caller)
+        }),
+        Kind::Token | Kind::Section(_) => false,
     }
 }
 
-fn acquire(kind: &mut Kind, caller: u32) -> bool {
+fn acquire(kind: &mut Kind, caller: u32, shared: Option<&mut Shared>) -> bool {
+    if let Kind::Named(reference) = kind {
+        return shared
+            .is_some_and(|shared| reference.slot(shared).acquire(named::process(), caller));
+    }
     match kind {
         Kind::Event {
             manual_reset: false,
@@ -358,7 +394,12 @@ fn acquire(kind: &mut Kind, caller: u32) -> bool {
             return core::mem::take(abandoned);
         }
         Kind::Semaphore { count, .. } => *count -= 1,
-        Kind::Event { .. } | Kind::Thread(_) | Kind::Process(_) | Kind::Token => {}
+        Kind::Event { .. }
+        | Kind::Thread(_)
+        | Kind::Process(_)
+        | Kind::Token
+        | Kind::Named(_)
+        | Kind::Section(_) => {}
     }
     false
 }
@@ -378,60 +419,93 @@ fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
                 return Err(error::INVALID_PARAMETER);
             }
         }
+        let mut any_named = false;
+        for handle in handles {
+            match object(table, *handle) {
+                Some(Object {
+                    kind: Kind::Process(process),
+                    ..
+                }) => process.refresh(),
+                Some(Object {
+                    kind: Kind::Named(_),
+                    ..
+                }) => any_named = true,
+                _ => {}
+            }
+        }
+        match any_named {
+            false => Ok(check_objects(table, handles, wait_all, caller, None)),
+            true => named::locked(|shared| {
+                check_objects(table, handles, wait_all, caller, Some(shared))
+            })
+            .ok_or(error::INVALID_HANDLE),
+        }
+    })
+}
+
+fn check_objects(
+    table: &mut Table,
+    handles: &[usize],
+    wait_all: bool,
+    caller: u32,
+    mut shared: Option<&mut Shared>,
+) -> Check {
+    if let Some(shared) = shared.as_deref_mut() {
         for handle in handles {
             if let Some(Object {
-                kind: Kind::Process(process),
+                kind: Kind::Named(reference),
                 ..
             }) = object(table, *handle)
             {
-                process.refresh();
+                named::abandon_if_owner_ended(reference.slot(shared));
             }
         }
-        let mut signaled = handles.iter().enumerate().filter(|(_, handle)| {
-            object(table, **handle).is_some_and(|object| is_signaled(&object.kind, caller))
-        });
-        let ready = match wait_all {
-            true => (signaled.count() == handles.len()).then_some(0),
-            false => signaled.next().map(|(index, _)| index),
-        };
-        match ready {
-            Some(first) => {
-                let taken = if wait_all {
-                    handles
-                } else {
-                    &handles[first..=first]
-                };
-                let mut abandoned = None;
-                for (index, handle) in taken.iter().enumerate() {
-                    if let Some(object) = object(table, *handle)
-                        && acquire(&mut object.kind, caller)
-                    {
-                        abandoned.get_or_insert(first + index);
-                    }
+    }
+    let seen = shared.as_deref();
+    let mut signaled = handles.iter().enumerate().filter(|(_, handle)| {
+        object(table, **handle).is_some_and(|object| is_signaled(&object.kind, caller, seen))
+    });
+    let ready = match wait_all {
+        true => (signaled.count() == handles.len()).then_some(0),
+        false => signaled.next().map(|(index, _)| index),
+    };
+    match ready {
+        Some(first) => {
+            let taken = if wait_all {
+                handles
+            } else {
+                &handles[first..=first]
+            };
+            let mut abandoned = None;
+            for (index, handle) in taken.iter().enumerate() {
+                if let Some(object) = object(table, *handle)
+                    && acquire(&mut object.kind, caller, shared.as_deref_mut())
+                {
+                    abandoned.get_or_insert(first + index);
                 }
-                Ok(Check::Done(match abandoned {
-                    Some(index) => WAIT_ABANDONED_0 + index as u32,
-                    None => WAIT_OBJECT_0 + first as u32,
-                }))
             }
-            None => {
-                let polling = handles.iter().any(|handle| {
-                    matches!(
-                        object(table, *handle),
-                        Some(Object {
-                            kind: Kind::Process(_),
-                            ..
-                        })
-                    )
-                });
-                SLEEPERS.fetch_add(1, Ordering::AcqRel);
-                Ok(Check::Sleep {
-                    sequence: WAKE_SEQUENCE.load(Ordering::Acquire),
-                    polling,
-                })
+            Check::Done(match abandoned {
+                Some(index) => WAIT_ABANDONED_0 + index as u32,
+                None => WAIT_OBJECT_0 + first as u32,
+            })
+        }
+        None => {
+            let polling = handles.iter().any(|handle| {
+                matches!(
+                    object(table, *handle),
+                    Some(Object {
+                        kind: Kind::Process(_) | Kind::Named(_),
+                        ..
+                    })
+                )
+            });
+            SLEEPERS.fetch_add(1, Ordering::AcqRel);
+            Check::Sleep {
+                sequence: WAKE_SEQUENCE.load(Ordering::Acquire),
+                polling,
             }
         }
-    })
+    }
 }
 
 /// Nanoseconds left until `deadline` (a monotonic time), `None` for no deadline.
@@ -628,22 +702,132 @@ fn new_object(kind: Kind) -> usize {
     handle
 }
 
-extern "efiapi" fn create_event_w(_: usize, manual_reset: Bool, initial: Bool, _: usize) -> usize {
-    new_object(Kind::Event {
-        manual_reset: manual_reset != FALSE,
-        signaled: initial != FALSE,
-    })
+/// The UTF-16 name at `name`; `None` for a null or empty one, which names nothing.
+///
+/// # Safety
+/// `name` is null or a readable NUL-terminated UTF-16 string.
+pub unsafe fn object_name<'a>(name: *const u16) -> Option<&'a [u16]> {
+    if name.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's duty.
+    let units = unsafe { super::file::wide_string(name) };
+    (!units.is_empty()).then_some(units)
+}
+
+/// Runs `work` with the ANSI name at `name` widened (`None` for a null or empty one); 0 with
+/// `ERROR_NOT_ENOUGH_MEMORY` without memory.
+///
+/// # Safety
+/// `name` is null or a readable NUL-terminated string.
+pub unsafe fn with_ansi_name(name: *const u8, work: impl FnOnce(Option<&[u16]>) -> usize) -> usize {
+    // SAFETY: the caller's duty.
+    match unsafe { ansi::widen_text(name) } {
+        Ok(wide) => work(
+            wide.as_ref()
+                .map(ansi::Wide::units)
+                .filter(|units| !units.is_empty()),
+        ),
+        Err(code) => fail(code, 0),
+    }
+}
+
+/// A handle for a new object: `local` without a name; with one, for the named object of
+/// `object_kind`, made with `state` unless the name exists already, which leaves
+/// `ERROR_ALREADY_EXISTS` as the last error.
+fn new_named_object(name: Option<&[u16]>, object_kind: u32, state: State, local: Kind) -> usize {
+    let Some(name) = name else {
+        return new_object(local);
+    };
+    let created =
+        named_objects::parse(name).and_then(|name| named::create(&name, object_kind, state));
+    match created {
+        Ok(created) => {
+            let existed = created.existed;
+            let handle = new_object(Kind::Named(created.reference));
+            if handle != 0 && existed {
+                thread_environment::set_last_error(error::ALREADY_EXISTS);
+            }
+            handle
+        }
+        Err(code) => fail(code, 0),
+    }
+}
+
+/// A handle for the existing named object `name` of `object_kind` (`OpenEventW` and the like).
+fn open_named_object(name: Option<&[u16]>, object_kind: u32) -> usize {
+    let Some(name) = name else {
+        return fail(error::INVALID_PARAMETER, 0);
+    };
+    let opened = named_objects::parse(name).and_then(|name| named::open(&name, object_kind));
+    match opened {
+        Ok(opened) => new_object(Kind::Named(opened.reference)),
+        Err(code) => fail(code, 0),
+    }
+}
+
+fn create_event(name: Option<&[u16]>, manual_reset: bool, signaled: bool) -> usize {
+    new_named_object(
+        name,
+        named_objects::kind::EVENT,
+        State::event(manual_reset, signaled),
+        Kind::Event {
+            manual_reset,
+            signaled,
+        },
+    )
+}
+
+unsafe extern "efiapi" fn create_event_w(
+    _: usize,
+    manual_reset: Bool,
+    initial: Bool,
+    name: *const u16,
+) -> usize {
+    // SAFETY: `CreateEventW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_event(name, manual_reset != FALSE, initial != FALSE)
+}
+
+unsafe extern "efiapi" fn create_event_a(
+    _: usize,
+    manual_reset: Bool,
+    initial: Bool,
+    name: *const u8,
+) -> usize {
+    let create = |name: Option<&[u16]>| create_event(name, manual_reset != FALSE, initial != FALSE);
+    // SAFETY: `CreateEventA`'s contract: `name` is null or a NUL-terminated string.
+    unsafe { with_ansi_name(name, create) }
 }
 
 const CREATE_EVENT_MANUAL_RESET: u32 = 1;
 const CREATE_EVENT_INITIAL_SET: u32 = 2;
 const CREATE_MUTEX_INITIAL_OWNER: u32 = 1;
 
-extern "efiapi" fn create_event_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
-    new_object(Kind::Event {
-        manual_reset: flags & CREATE_EVENT_MANUAL_RESET != 0,
-        signaled: flags & CREATE_EVENT_INITIAL_SET != 0,
-    })
+unsafe extern "efiapi" fn create_event_ex_w(
+    _: usize,
+    name: *const u16,
+    flags: u32,
+    _access: u32,
+) -> usize {
+    // SAFETY: `CreateEventExW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_event(
+        name,
+        flags & CREATE_EVENT_MANUAL_RESET != 0,
+        flags & CREATE_EVENT_INITIAL_SET != 0,
+    )
+}
+
+unsafe extern "efiapi" fn open_event_w(_access: u32, _inherit: Bool, name: *const u16) -> usize {
+    // SAFETY: `OpenEventW`'s contract: `name` is a NUL-terminated string.
+    open_named_object(unsafe { object_name(name) }, named_objects::kind::EVENT)
+}
+
+unsafe extern "efiapi" fn open_event_a(_access: u32, _inherit: Bool, name: *const u8) -> usize {
+    let open = |name: Option<&[u16]>| open_named_object(name, named_objects::kind::EVENT);
+    // SAFETY: `OpenEventA`'s contract: `name` is a NUL-terminated string.
+    unsafe { with_ansi_name(name, open) }
 }
 
 /// Sets or resets event `handle` without touching the last error; nothing when it is no event.
@@ -657,17 +841,33 @@ pub fn set_event_quietly(handle: usize, state: bool) {
     });
 }
 
-fn set_event_state(handle: usize, state: bool) -> Bool {
-    let done = change(handle, |kind| match kind {
+fn set_event_kind(kind: &mut Kind, state: bool) -> (Result<(), u32>, bool) {
+    match kind {
         Kind::Event { signaled, .. } => {
             *signaled = state;
-            (true, state)
+            (Ok(()), state)
         }
-        _ => (false, false),
-    });
-    match done {
-        Some(true) => TRUE,
-        _ => fail(error::INVALID_HANDLE, FALSE),
+        Kind::Named(reference) => {
+            let set = reference.with_slot(|slot| match slot.kind {
+                named_objects::kind::EVENT => {
+                    slot.state.signaled = u32::from(state);
+                    Ok(())
+                }
+                _ => Err(error::INVALID_HANDLE),
+            });
+            let result = set.unwrap_or(Err(error::INVALID_HANDLE));
+            let changed = result.is_ok() && state;
+            (result, changed)
+        }
+        _ => (Err(error::INVALID_HANDLE), false),
+    }
+}
+
+fn set_event_state(handle: usize, state: bool) -> Bool {
+    match change(handle, |kind| set_event_kind(kind, state)) {
+        Some(Ok(())) => TRUE,
+        Some(Err(code)) => fail(code, FALSE),
+        None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
@@ -679,30 +879,58 @@ extern "efiapi" fn reset_event(handle: usize) -> Bool {
     set_event_state(handle, false)
 }
 
-fn create_mutex(initial_owner: bool) -> usize {
-    let owner = if initial_owner {
-        thread_environment::thread_id()
-    } else {
-        0
-    };
-    new_object(Kind::Mutex {
-        owner,
-        recursion: u32::from(initial_owner),
-        abandoned: false,
-    })
+fn create_mutex(name: Option<&[u16]>, initial_owner: bool) -> usize {
+    let thread = thread_environment::thread_id();
+    let owner = if initial_owner { thread } else { 0 };
+    let named_owner = initial_owner.then(|| (named::process(), thread));
+    new_named_object(
+        name,
+        named_objects::kind::MUTEX,
+        State::mutex(named_owner),
+        Kind::Mutex {
+            owner,
+            recursion: u32::from(initial_owner),
+            abandoned: false,
+        },
+    )
 }
 
-extern "efiapi" fn create_mutex_w(_: usize, initial_owner: Bool, _: usize) -> usize {
-    create_mutex(initial_owner != FALSE)
+unsafe extern "efiapi" fn create_mutex_w(_: usize, initial_owner: Bool, name: *const u16) -> usize {
+    // SAFETY: `CreateMutexW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_mutex(name, initial_owner != FALSE)
 }
 
-extern "efiapi" fn create_mutex_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
-    create_mutex(flags & CREATE_MUTEX_INITIAL_OWNER != 0)
+unsafe extern "efiapi" fn create_mutex_a(_: usize, initial_owner: Bool, name: *const u8) -> usize {
+    let create = |name: Option<&[u16]>| create_mutex(name, initial_owner != FALSE);
+    // SAFETY: `CreateMutexA`'s contract: `name` is null or a NUL-terminated string.
+    unsafe { with_ansi_name(name, create) }
 }
 
-extern "efiapi" fn release_mutex(handle: usize) -> Bool {
-    let caller = thread_environment::thread_id();
-    let result = change(handle, |kind| match kind {
+unsafe extern "efiapi" fn create_mutex_ex_w(
+    _: usize,
+    name: *const u16,
+    flags: u32,
+    _access: u32,
+) -> usize {
+    // SAFETY: `CreateMutexExW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_mutex(name, flags & CREATE_MUTEX_INITIAL_OWNER != 0)
+}
+
+unsafe extern "efiapi" fn open_mutex_w(_access: u32, _inherit: Bool, name: *const u16) -> usize {
+    // SAFETY: `OpenMutexW`'s contract: `name` is a NUL-terminated string.
+    open_named_object(unsafe { object_name(name) }, named_objects::kind::MUTEX)
+}
+
+unsafe extern "efiapi" fn open_mutex_a(_access: u32, _inherit: Bool, name: *const u8) -> usize {
+    let open = |name: Option<&[u16]>| open_named_object(name, named_objects::kind::MUTEX);
+    // SAFETY: `OpenMutexA`'s contract: `name` is a NUL-terminated string.
+    unsafe { with_ansi_name(name, open) }
+}
+
+fn release_mutex_kind(kind: &mut Kind, caller: u32) -> (Result<(), u32>, bool) {
+    match kind {
         Kind::Mutex {
             owner, recursion, ..
         } if *owner == caller && *recursion > 0 => {
@@ -713,34 +941,111 @@ extern "efiapi" fn release_mutex(handle: usize) -> Bool {
             (Ok(()), *recursion == 0)
         }
         Kind::Mutex { .. } => (Err(error::NOT_OWNER), false),
+        Kind::Named(reference) => {
+            let released = reference.with_slot(|slot| match slot.kind {
+                named_objects::kind::MUTEX => slot.release_mutex(named::process(), caller),
+                _ => Err(error::INVALID_HANDLE),
+            });
+            match released.unwrap_or(Err(error::INVALID_HANDLE)) {
+                Ok(free) => (Ok(()), free),
+                Err(code) => (Err(code), false),
+            }
+        }
         _ => (Err(error::INVALID_HANDLE), false),
-    });
-    match result {
+    }
+}
+
+extern "efiapi" fn release_mutex(handle: usize) -> Bool {
+    let caller = thread_environment::thread_id();
+    match change(handle, |kind| release_mutex_kind(kind, caller)) {
         Some(Ok(())) => TRUE,
         Some(Err(code)) => fail(code, FALSE),
         None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
-extern "efiapi" fn create_semaphore_w(_: usize, initial: i32, maximum: i32, _: usize) -> usize {
+fn create_semaphore(name: Option<&[u16]>, initial: i32, maximum: i32) -> usize {
     if maximum <= 0 || initial < 0 || initial > maximum {
         return fail(error::INVALID_PARAMETER, 0);
     }
-    new_object(Kind::Semaphore {
-        count: initial,
-        maximum,
-    })
+    new_named_object(
+        name,
+        named_objects::kind::SEMAPHORE,
+        State::semaphore(initial, maximum),
+        Kind::Semaphore {
+            count: initial,
+            maximum,
+        },
+    )
 }
 
-extern "efiapi" fn create_semaphore_ex_w(
+unsafe extern "efiapi" fn create_semaphore_w(
     _: usize,
     initial: i32,
     maximum: i32,
+    name: *const u16,
+) -> usize {
+    // SAFETY: `CreateSemaphoreW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_semaphore(name, initial, maximum)
+}
+
+unsafe extern "efiapi" fn create_semaphore_a(
     _: usize,
+    initial: i32,
+    maximum: i32,
+    name: *const u8,
+) -> usize {
+    let create = |name: Option<&[u16]>| create_semaphore(name, initial, maximum);
+    // SAFETY: `CreateSemaphoreA`'s contract: `name` is null or a NUL-terminated string.
+    unsafe { with_ansi_name(name, create) }
+}
+
+unsafe extern "efiapi" fn create_semaphore_ex_w(
+    _: usize,
+    initial: i32,
+    maximum: i32,
+    name: *const u16,
     _flags: u32,
     _access: u32,
 ) -> usize {
-    create_semaphore_w(0, initial, maximum, 0)
+    // SAFETY: `CreateSemaphoreExW`'s contract: `name` is null or a NUL-terminated string.
+    let name = unsafe { object_name(name) };
+    create_semaphore(name, initial, maximum)
+}
+
+unsafe extern "efiapi" fn open_semaphore_w(
+    _access: u32,
+    _inherit: Bool,
+    name: *const u16,
+) -> usize {
+    // SAFETY: `OpenSemaphoreW`'s contract: `name` is a NUL-terminated string.
+    open_named_object(unsafe { object_name(name) }, named_objects::kind::SEMAPHORE)
+}
+
+unsafe extern "efiapi" fn open_semaphore_a(_access: u32, _inherit: Bool, name: *const u8) -> usize {
+    let open = |name: Option<&[u16]>| open_named_object(name, named_objects::kind::SEMAPHORE);
+    // SAFETY: `OpenSemaphoreA`'s contract: `name` is a NUL-terminated string.
+    unsafe { with_ansi_name(name, open) }
+}
+
+fn release_semaphore_kind(kind: &mut Kind, release: i32) -> (Result<i32, u32>, bool) {
+    match kind {
+        Kind::Semaphore { count, maximum } => match count.checked_add(release) {
+            Some(new) if new <= *maximum => (Ok(core::mem::replace(count, new)), true),
+            _ => (Err(error::TOO_MANY_POSTS), false),
+        },
+        Kind::Named(reference) => {
+            let released = reference.with_slot(|slot| match slot.kind {
+                named_objects::kind::SEMAPHORE => slot.release_semaphore(release),
+                _ => Err(error::INVALID_HANDLE),
+            });
+            let released = released.unwrap_or(Err(error::INVALID_HANDLE));
+            let changed = released.is_ok();
+            (released, changed)
+        }
+        _ => (Err(error::INVALID_HANDLE), false),
+    }
 }
 
 unsafe extern "efiapi" fn release_semaphore(
@@ -751,18 +1056,7 @@ unsafe extern "efiapi" fn release_semaphore(
     if release <= 0 {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    let result = change(handle, |kind| match kind {
-        Kind::Semaphore { count, maximum } => match count.checked_add(release) {
-            Some(new) if new <= *maximum => {
-                let old = *count;
-                *count = new;
-                (Ok(old), true)
-            }
-            _ => (Err(error::TOO_MANY_POSTS), false),
-        },
-        _ => (Err(error::INVALID_HANDLE), false),
-    });
-    match result {
+    match change(handle, |kind| release_semaphore_kind(kind, release)) {
         Some(Ok(old)) => {
             if !previous.is_null() {
                 // SAFETY: the caller passes a writable `LONG` for the previous count.
@@ -772,6 +1066,43 @@ unsafe extern "efiapi" fn release_semaphore(
         }
         Some(Err(code)) => fail(code, FALSE),
         None => fail(error::INVALID_HANDLE, FALSE),
+    }
+}
+
+fn signal_object(kind: &mut Kind, caller: u32) -> (Result<(), u32>, bool) {
+    let target = match kind {
+        Kind::Event { .. } => named_objects::kind::EVENT,
+        Kind::Mutex { .. } => named_objects::kind::MUTEX,
+        Kind::Semaphore { .. } => named_objects::kind::SEMAPHORE,
+        Kind::Named(reference) => reference
+            .with_slot(|slot| slot.kind)
+            .unwrap_or(named_objects::kind::FREE),
+        _ => named_objects::kind::FREE,
+    };
+    match target {
+        named_objects::kind::EVENT => set_event_kind(kind, true),
+        named_objects::kind::MUTEX => release_mutex_kind(kind, caller),
+        named_objects::kind::SEMAPHORE => {
+            let (result, changed) = release_semaphore_kind(kind, 1);
+            (result.map(|_| ()), changed)
+        }
+        _ => (Err(error::INVALID_HANDLE), false),
+    }
+}
+
+/// `SignalObjectAndWait`: sets the event, releases the mutex or adds one to the semaphore
+/// `signal`, then waits for `wait_for` as `WaitForSingleObjectEx` does.
+extern "efiapi" fn signal_object_and_wait(
+    signal: usize,
+    wait_for: usize,
+    milliseconds: u32,
+    alertable: Bool,
+) -> u32 {
+    let caller = thread_environment::thread_id();
+    match change(signal, |kind| signal_object(kind, caller)) {
+        Some(Ok(())) => wait(&[wait_for], false, milliseconds, alertable != FALSE),
+        Some(Err(code)) => fail(code, WAIT_FAILED),
+        None => fail(error::INVALID_HANDLE, WAIT_FAILED),
     }
 }
 
@@ -1321,18 +1652,25 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"WaitForSingleObjectEx" => wait_for_single_object_ex,
     b"WaitForMultipleObjects" => wait_for_multiple_objects,
     b"WaitForMultipleObjectsEx" => wait_for_multiple_objects_ex,
+    b"SignalObjectAndWait" => signal_object_and_wait,
     b"CreateEventW" => create_event_w,
-    b"CreateEventA" => create_event_w,
+    b"CreateEventA" => create_event_a,
     b"CreateEventExW" => create_event_ex_w,
+    b"OpenEventW" => open_event_w,
+    b"OpenEventA" => open_event_a,
     b"SetEvent" => set_event,
     b"ResetEvent" => reset_event,
     b"CreateMutexW" => create_mutex_w,
-    b"CreateMutexA" => create_mutex_w,
+    b"CreateMutexA" => create_mutex_a,
     b"CreateMutexExW" => create_mutex_ex_w,
+    b"OpenMutexW" => open_mutex_w,
+    b"OpenMutexA" => open_mutex_a,
     b"ReleaseMutex" => release_mutex,
     b"CreateSemaphoreW" => create_semaphore_w,
-    b"CreateSemaphoreA" => create_semaphore_w,
+    b"CreateSemaphoreA" => create_semaphore_a,
     b"CreateSemaphoreExW" => create_semaphore_ex_w,
+    b"OpenSemaphoreW" => open_semaphore_w,
+    b"OpenSemaphoreA" => open_semaphore_a,
     b"ReleaseSemaphore" => release_semaphore,
     b"InitializeCriticalSection" => initialize_critical_section,
     b"InitializeCriticalSectionAndSpinCount" => initialize_critical_section_and_spin_count,

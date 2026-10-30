@@ -236,6 +236,13 @@ pub enum Expect {
     /// `ERROR_NOT_OWNER`, `MsgWaitForMultipleObjects(Ex)` took an object, timed out and ran an
     /// APC, ws2_32's and wsock32's ordinals agree with their names, and `FindFirstFileW`
     /// matched DOS wildcards (`*.txt`, `*.`, `??.c`, `<.c`, `A?.TXT`); then its status 0.
+    /// Then `eggnamed.exe`, our own C program (D189): its lines say named objects keep their
+    /// rules (`ERROR_ALREADY_EXISTS`, another kind, a missing name, a bad path), a child it
+    /// started got `*.txt` expanded by the C runtime and shared a named mutex, event,
+    /// semaphore and mapping with it, `SignalObjectAndWait` handed the mutex over, the mutex
+    /// came back abandoned once the child ended, the mapping went with its last handle, views
+    /// of a page-file mapping share memory and refuse bad offsets and sizes, and a file's view
+    /// wrote, flushed and copied on write; then its status 0.
     /// Then `eggrust.exe`, our own Rust program on Rust's standard library (D189): its lines say
     /// `Command::output` ran a copy of itself with its arguments and took its output, error
     /// and exit code through pipes, a piped child's output was read as it came, a file was
@@ -584,7 +591,7 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 12] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 13] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
@@ -593,6 +600,7 @@ const WINDOWS_CRT_SESSION: [&[u8]; 12] = [
     b"eggcpp.exe uncaught; echo EGGCPP uncaught status $?\r",
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
     b"eggsync.exe; echo EGGSYNC status $?\r",
+    b"eggnamed.exe; echo EGGNAMED status $?\r",
     b"eggrust.exe; echo EGGRUST status $?\r",
     b"eggrust.exe panic; echo EGGRUST panic status $?\r",
     b"GREETING=hi eggmingw.exe one 'two words'; echo EGGMINGW status $?\r",
@@ -657,6 +665,20 @@ const EGGSYNC_LINES: [&str; 10] = [
     "EGGSYNC status 0",
 ];
 
+const EGGNAMED_LINES: [&str; 11] = [
+    "EGGNAMED names created 0, again 183 with a new handle 1, as an event 6, missing 2, bad path 3",
+    "EGGNAMED child signalled 0, released 1, ended 0 with 0",
+    "EGGNAMED child args 3: child C:\\tmp\\eggnamed\\a.txt C:\\tmp\\eggnamed\\b.txt",
+    "EGGNAMED child saw the parent, mutex 258, semaphore before 0",
+    "EGGNAMED child signal and wait 0",
+    "EGGNAMED semaphore 0 0 258, mutex after the child ended 128, released 1",
+    "EGGNAMED mapping gone after the last handle and view 2",
+    "EGGNAMED page file views share 1, empty 87, misaligned 1132, too long 5",
+    "EGGNAMED file view wrote jello, flushed 1, copy jullo, read-only write 5",
+    "EGGNAMED done",
+    "EGGNAMED status 0",
+];
+
 const EGGMINGW_LINES: [&str; 10] = [
     "EGGMINGW hello from msvcrt.dll, arguments 2: one|two words",
     "EGGMINGW greeting hi",
@@ -703,6 +725,7 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
         ]),
         whole(&EGGSPAWN_LINES),
         whole(&EGGSYNC_LINES),
+        whole(&EGGNAMED_LINES),
         whole(&EGGRUST_LINES),
         vec![
             Line::Around("thread 'main'", ":"),

@@ -6,7 +6,9 @@
 //! `counted_print.rs`) and handle flags and peeked pipe bytes (`handle_flags.rs`,
 //! `peeked_pipes.rs`, D189), the old C runtime's `FILE` layout, `errno` texts and
 //! `VirtualQuery`'s regions (`msvcrt_layout.rs`, `error_messages.rs`, `memory_regions.rs`,
-//! D189) are pure logic with host tests;
+//! D189), and the table of named objects shared between processes and the rules of file
+//! mappings' views (`named_objects.rs`, `mapping_views.rs`, D189) are pure logic with host
+//! tests;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
@@ -59,9 +61,13 @@ mod locale;
 #[cfg(any(test, runs_windows_programs))]
 mod low_level_io;
 #[cfg(any(test, runs_windows_programs))]
+mod mapping_views;
+#[cfg(any(test, runs_windows_programs))]
 mod memory_regions;
 #[cfg(any(test, runs_windows_programs))]
 mod msvcrt_layout;
+#[cfg(any(test, runs_windows_programs))]
+mod named_objects;
 #[cfg(any(test, runs_windows_programs))]
 mod nt_status;
 #[cfg(any(test, runs_windows_programs))]

@@ -69,6 +69,32 @@ pub fn split(path: &[u8]) -> (&[u8], &[u8]) {
     }
 }
 
+/// Where the pattern starts in the program argument `argument` that the C runtime expands
+/// (`_dowildcard`, D189): after its last `\` or `/`, or after the drive's `:`, when that last
+/// component holds `*` or `?`; `None` for an argument kept as it is (no wildcard there, or a
+/// `:` other than the drive's).
+pub fn argument_pattern_start(argument: &[u8]) -> Option<usize> {
+    let other_colon = argument
+        .iter()
+        .enumerate()
+        .any(|(at, byte)| *byte == b':' && at != 1);
+    if other_colon {
+        return None;
+    }
+    let start = match argument
+        .iter()
+        .rposition(|byte| matches!(byte, b'\\' | b'/'))
+    {
+        Some(at) => at + 1,
+        None if argument.get(1) == Some(&b':') => 2,
+        None => 0,
+    };
+    argument[start..]
+        .iter()
+        .any(|byte| matches!(byte, b'*' | b'?'))
+        .then_some(start)
+}
+
 /// Whether `name` matches the wildcard `pattern` (UTF-8 both) as `FindFirstFileW` matches
 /// names, ignoring ASCII case: `*` any run of characters, `?` one character or none before a
 /// dot or the end, a `.` before a wildcard or at the end a dot or the end (`*.*` everything,
@@ -448,5 +474,17 @@ mod tests {
         let mut tag = [0xffu8; ATTRIBUTE_TAG_INFORMATION_SIZE];
         fill_attribute_tag_information(&mut tag, &entry);
         assert_eq!(tag, [0x10, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn arguments_expand_only_a_wildcard_in_their_last_component() {
+        assert_eq!(argument_pattern_start(b"*.txt"), Some(0));
+        assert_eq!(argument_pattern_start(b"C:\\tmp\\x\\a?.c"), Some(9));
+        assert_eq!(argument_pattern_start(b"dir/*"), Some(4));
+        assert_eq!(argument_pattern_start(b"C:*.txt"), Some(2));
+        assert_eq!(argument_pattern_start(b"plain.txt"), None);
+        assert_eq!(argument_pattern_start(b"a*\\b.txt"), None);
+        assert_eq!(argument_pattern_start(b"x:y:*.c"), None);
+        assert_eq!(argument_pattern_start(b"http://*"), None);
     }
 }
