@@ -192,18 +192,36 @@ What works:
   empty information dictionary); `NSLog` and `NSLogv` (`YYYY-MM-DD HH:MM:SS.mmm name[pid:tid]
   message` on standard error, in UTC); `NSStringFromClass`, `NSClassFromString`,
   `NSStringFromSelector`, `NSSelectorFromString`; `%@` and `%C` in every format.
+- **Blocks** (D175): block literals on the stack and as constants, `Block_copy` and
+  `Block_release` (and ARC's `objc_retainBlock`), captured objects, blocks and `__block`
+  variables kept by the compiler's helpers, and `copy`, `retain`, `release` and `autorelease`
+  on blocks; `enumerateObjectsUsingBlock:` on arrays and sets and timer blocks call them.
+- **`__weak` references** (D175): `objc_initWeak`, `objc_storeWeak`, `objc_loadWeakRetained`,
+  `objc_loadWeak`, `objc_destroyWeak`, `objc_copyWeak` and `objc_moveWeak`; a weak variable
+  becomes nil when its object is freed and never yields one being deallocated.
+- **Exceptions** (D175): `@throw`, `-[NSException raise]`, `+raise:format:`, `@catch` by class
+  or `id`, `@finally`, `@throw;` to rethrow, through any number of the program's frames,
+  unwound with the image's compact unwind information; an uncaught exception runs the handler
+  `NSSetUncaughtExceptionHandler` set, then ends the program as on a Mac
+  (`*** Terminating app due to uncaught exception 'Name', reason: '...'`, status 134).
+- **More of Foundation** (D175): NSException; NSProcessInfo (`processName`, `arguments`,
+  `environment`, `processIdentifier`, `hostName`, processors, memory, uptime); NSDate; NSError
+  with the error domains and `userInfo` keys; NSData and NSMutableData; NSSet and NSMutableSet
+  (hashed); NSTimer and NSRunLoop (`runUntilDate:` sleeps until each timer is due);
+  `rangeOfString:` and `rangeOfString:options:`.
 - **Descriptions as a Mac prints them**: nested arrays and dictionaries with the same
   indentation, strings quoted unless they are only ASCII letters and digits (with `\"`, `\n`
   and `\Uxxxx` escapes), dictionaries with string keys in key order, doubles with 16
   significant digits and floats with 7.
 
 A Foundation class the layer lacks stops the program only when it is first used:
-`eggos-macos: unimplemented CoreFoundation class NSDate`, status 127; a missing function
-names its library the same way (`unimplemented libobjc function objc_storeWeak`).
+`eggos-macos: unimplemented Foundation class NSUUID`, status 127; a missing function
+names its library the same way (`unimplemented Foundation function NSHomeDirectory`).
 
 ## GUI apps
 
-A program that links AppKit (`-framework AppKit`) gets the layer's own AppKit (D147,
+A program that links AppKit (`-framework AppKit`, or the Cocoa umbrella, D175) gets the
+layer's own AppKit (D147,
 `userland/macos/src/appkit/`), drawn as `docs/ux/macos-gui-v0.3.md` designs it: a macOS app in
 Dark Mode on the EggOS desktop. Install an `.app` folder with `app install` (docs/apps.md) and
 open it from the launcher, the dock or the desktop; its windows are windows of the window
@@ -248,27 +266,39 @@ bar while one of its windows is focused.
   `keyEquivalentModifierMask`; the top level's submenus are the top bar's menus.
 - **NSBundle** in an `.app`: `bundlePath`, `resourcePath`, `infoDictionary`,
   `objectForInfoDictionaryKey:` and `bundleIdentifier` from `Contents/Info.plist`.
+- **Views moving between windows** (D175): `viewWillMoveToWindow:` and `viewDidMoveToWindow`,
+  to the view and its subviews, top down.
+- **The standard About panel** (D175, `docs/ux/macos-gui-v0.3.md` section 8):
+  `orderFrontStandardAboutPanel:` and `orderFrontStandardAboutPanelWithOptions:` show the app's
+  installed icon, name, `Version <CFBundleShortVersionString> (<CFBundleVersion>)` and
+  `NSHumanReadableCopyright` in a window of the layer's own; Esc closes it.
+- **Timers in the event loop** (D175): scheduled NSTimers fire while `run` waits for events.
+- **Agents** (D175): every window answers `wm show` with its views as an element tree (buttons,
+  text fields, labels, groups and the app's own views as graphics) and `wm act` presses
+  buttons, focuses views and sets text fields' text.
 
 `tests/macos-gui/main.m` (`mac-paint.app`) is a complete example. An AppKit class the layer
 lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit class NSImage`).
 
 ## What does not work yet
 
-- **Objective-C beyond the core**: blocks (`^{ }`, `_NSConcreteStackBlock`, `Block_copy`),
-  `__weak` references (`objc_storeWeak` and its kin), exceptions and `@try` (no unwinder:
-  `objc_exception_throw` ends the program), associated objects, key-value coding and observing,
+- **Objective-C beyond the core**: exceptions through frames only `__eh_frame` (DWARF)
+  describes or through the layer's own code (an exception thrown in an event handler or a block
+  Foundation called ends the program as uncaught), exceptions Foundation itself raises (they
+  still end the program at once), associated objects, key-value coding and observing,
   `NSInvocation` and message forwarding (`forwardInvocation:`, `forwardingTargetForSelector:`,
   `+resolveInstanceMethod:`), `method_setImplementation`, `class_replaceMethod`,
   `conformsToProtocol:` and protocol objects, `objc_msgSend_fpret`, and most of Foundation:
-  NSDate, NSData, NSSet, NSError, NSProcessInfo, NSFileManager, character sets, path
-  methods, `rangeOfString:`, locales and time zones. Dictionaries look keys up by comparing them
-  one by one (no hash index yet), and keep their keys in insertion order where macOS's order is
-  unspecified. Subclasses of Foundation's class clusters (a custom NSString subclass) are not
+  NSFileManager, NSNotification, NSUUID, character sets, path methods, string encodings
+  (`dataUsingEncoding:`), locales, time zones and run loop modes. Dictionaries look keys up by
+  comparing them one by one (no hash index yet), and keep their keys in insertion order where
+  macOS's order is unspecified, as sets keep their objects. Subclasses of Foundation's class clusters (a custom NSString subclass) are not
   supported. ARC's return-value handoff is not used yet, so returned objects always go
   through the autorelease pool: correct, a little slower than on a Mac. Manual
   retain/release programs use the same messages but are not covered by a test yet.
-- **Swift or C++'s runtime**, and **unwinding** (`_Unwind_*`): a Rust panic with
-  `panic = "unwind"` stops at the first unwinder call with status 127.
+- **Swift or C++'s runtime**, and **unwinding** beyond Objective-C's (`_Unwind_RaiseException`
+  and the rest of `_Unwind_*`): a Rust panic with `panic = "unwind"` stops at the first
+  unwinder call with status 127.
 - **Signal handlers**: `sigaction` and `signal` record handlers and pass ignoring or the default
   action on to the kernel, but do not deliver signals to a handler yet; a fault ends the
   program as Linux's default action does. Signal masks are accepted and stay empty.
@@ -277,14 +307,15 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   streams shared between threads (each stream assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
   does, so options after an operand stay operands; `getopt_long_only` is missing.
-- **AppKit beyond its core** (D147's "Not yet"): nibs and storyboards, flipped views, layers,
-  Auto Layout, scroll views, tables, images, cursors, timers, sheets and panels, checkboxes and
+- **AppKit beyond its core** (D147's and D175's "Not yet"): nibs and storyboards, flipped
+  views, layers, Auto Layout, scroll views, tables, images, cursors, sheets and panels (other
+  than the About panel), checkboxes and
   other button types, submenus below the top bar's, the menu in the Windows and Linux profiles,
   alpha and anti-aliasing, and fonts other than Egg Sans.
-- **Other libraries and frameworks**: no libc++, no Cocoa umbrella, only the core of
-  Foundation, CoreFoundation and AppKit (above), no `dlopen`, no dyld shared cache; a program
-  that links any library other than libSystem, libobjc, Foundation, CoreFoundation and AppKit
-  is refused. Weak libraries are allowed and their imports are missing. Imports a program makes
+- **Other libraries and frameworks**: no libc++, only the core of Foundation, CoreFoundation
+  and AppKit (above) and the Cocoa umbrella over them, no `dlopen`, no dyld shared cache; a
+  program that links any library other than libSystem, libobjc, Foundation, CoreFoundation,
+  AppKit and Cocoa is refused. Weak libraries are allowed and their imports are missing. Imports a program makes
   from itself (C++'s weak definitions, through its export trie) are missing too.
 - **Older programs**: files without chained fixups, which use `LC_DYLD_INFO` opcodes (arm64
   programs built for macOS 11, x86_64 ones built for macOS 12 or earlier), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e

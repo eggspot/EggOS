@@ -11,6 +11,7 @@ works.
 |-----|---------|---------|----------|---------------|------------|--------|
 | [Brogue: Community Edition](https://github.com/tmewett/BrogueCE), a roguelike game | 1.15.1 (Alpine `v3.24`'s `brogue-1.15.1-r0`), on `sdl2-compat` 2.32.68 and SDL `main` at `328edfc1` | AGPL-3.0-or-later (code), CC BY-SA 4.0 (tiles) | Linux, SDL 2 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader and libraries, opens from its icon or `app open` in its own window, plays turns from the keyboard, saves and quits | `sdl3`, `sdl-app` (D172) |
 | [Pegs](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/pegs.html) from Simon Tatham's Portable Puzzle Collection, a peg solitaire game | `20260923.616da16` (the collection's official `pegs.exe`) | MIT | Windows, classic Win32 (ANSI, MSVC's `/MD` C runtime) | x86_64 (the collection publishes x64 Windows builds only) | installs from its `.exe`, opens from its icon or `app open`, plays by dragging pegs, undoes and redoes, changes its board from its `Type` menu (the window resizes, the tick moves), opens its About box and its Custom dialog with a drop-down list, quits | `win32-app` (D174) |
+| [CocoaGame](https://github.com/reallukee/cocoagame), a small Objective-C board game | 1.0.0 (the author's release `CocoaGame.zip`) | MIT | macOS, Objective-C on AppKit (built in code, no nib), linking the Cocoa umbrella | aarch64, x86_64 (a universal binary) | installs from its `.zip`, opens from its icon or `app open` in its own window, moves its player with `w`, `a`, `s`, `d` and the arrow keys, eats the food, shows its About panel from its app menu, answers agents with its views as an element tree, quits with Cmd+Q | `cocoa-app` (D175) |
 
 ## Brogue CE (Linux, SDL)
 
@@ -88,3 +89,37 @@ works.
   every font is Egg Mono, so the dialogs are laid out from its metrics. What the layer still
   lacks for other puzzles of the collection (comctl32's status bar, more of the math library) is
   in D174's "Not yet".
+
+## CocoaGame (macOS, Objective-C on AppKit)
+
+- **Where it comes from.** `cargo xtask cocoa-app` downloads the author's release archive
+  <https://github.com/reallukee/cocoagame/releases/download/v1.0.0/CocoaGame.zip>, checked
+  against the SHA-256 pinned in `xtask/src/cocoa_app.rs` (a release asset can be replaced, so a
+  new one is pinned again by hand). It is test data: never shipped in an image, never committed.
+- **Why it.** Research chose it as the first real Mac app: an MIT-licensed Objective-C app
+  published as a `.zip` (not through the App Store), a universal binary (arm64 and x86_64)
+  built for a current macOS with chained fixups, its window, view and menu built in code with
+  no nib, linking only the Cocoa umbrella with 25 imports, and no updater, helper or
+  permission prompt. It seeds its random numbers with the time, so the check reads where the
+  player and the food are from the frame instead of expecting fixed cells.
+- **Installing it.** `app install /media/host/CocoaGame.zip` (or the MCP tool `app_install`, or
+  Files) extracts `CocoaGame.app` and installs it as the app `CocoaGame`, with its own icon made
+  from `CocoaGame.icns`.
+- **Opening it.** Its icon, `app open CocoaGame` or the MCP tool `app_open` runs
+  `CocoaGame.app/Contents/MacOS/CocoaGame` through the macOS layer. `w`, `a`, `s`, `d` and the
+  arrow keys move the navy player (wrapping at the edges); landing on the red food moves the
+  food elsewhere. Its app menu (in the macOS profile's top bar, or `wm menu`) has `About
+  CocoaGame`, which shows the standard About panel, and `Quit CocoaGame` (Cmd+Q). Agents read its
+  window as an element tree (`wm show`: the window and its `CanvasView` as a focused graphic)
+  and the About panel's too.
+- **What CI does** (`cocoa-app`, aarch64 and x86_64): installs it on a blank disk, lists it,
+  opens it from `/tmp`, finds its window where the screen changed and the board by its colours,
+  reads the player's and the food's cells, and compares every frame with the board the host
+  renders: the start, 21 presses of `d` (back where it started), `d`, `w` or `s`, an arrow key,
+  and steering onto the food (which must reappear off the player's row and column); `wm show`
+  lists the window and the game's view; `wm menu --choose` opens the About panel, found on the
+  screen exactly as the host renders it with the icon the installer makes, and `wm show` lists
+  its elements; Esc closes it, Cmd+Q quits the game, and `wm list` shows none of its windows.
+- **Known limits.** The game has no sound and no saved state, so nothing else is exercised. The
+  layer's AppKit is the core of AppKit (`docs/macos-programs.md`): apps with nibs, table and
+  scroll views or images, like the runner-up UDCalc, do not run yet (D175's "Not yet").

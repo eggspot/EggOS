@@ -12154,3 +12154,200 @@ the license, by an explicit instruction recorded here.
   `cos`, `floor`), printing, HTML Help, a clipboard shared between apps (part 45), hatched
   brushes; aarch64 (part 39, x64 programs on Arm); a client raising its own window
   (`SetForegroundWindow`); fonts other than Egg Mono.
+
+## D175 A real Objective-C Mac app installs and runs: CocoaGame from its `.zip` through the Cocoa umbrella, views told when they move into a window, the standard About panel, AppKit windows as element trees, NSTimer in the event loop, and the Objective-C runtime's blocks, `__weak` references and exceptions with an unwinder over the image's compact unwind information (the Real apps track's fifth step, its first Mac app; extends D18, D21, D22, D120, D142, D147, D148, D161, D162, D172, D174) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the About panel designed by Claude Fable, `docs/ux/macos-gui-v0.3.md` section 8)
+- **Why.** The Real apps track checks EggOS against applications people use. After a Linux SDL
+  app (D172) and a classic Win32 app (D174), its macOS step runs a real Objective-C Mac app
+  that someone else wrote and publishes, which no test app of ours (`mac-paint`, D147) stands
+  in for, and grows the Objective-C runtime and Foundation by what real programs use most:
+  blocks, `__weak` references, `@try`, dates, data, sets, errors, the process's information and
+  timers.
+- **The app** (decided by research, below): CocoaGame 1.0.0 by reallukee (MIT), a small
+  Objective-C game built in code (no nib): a 21 by 21 board of 25 pixel cells in a fixed-size
+  525 by 525 window, a navy player moved by `w`, `a`, `s`, `d` or the arrow keys (wrapping at
+  the edges) and red food the player eats, which reappears off the player's row and column; an
+  app menu with `About CocoaGame`, a separator and `Quit CocoaGame` (Cmd+Q). The author's release
+  archive `CocoaGame.zip` (16 148 bytes, SHA-256 `ac9a2d97...10b4cd`, pinned in
+  `xtask/src/cocoa_app.rs`) from
+  <https://github.com/reallukee/cocoagame/releases/download/v1.0.0/CocoaGame.zip> holds a
+  universal binary (arm64 and x86_64, built for macOS 26 with chained fixups), so it runs and
+  is checked on **aarch64 and x86_64**. It is test data: downloaded by CI on every run, never
+  shipped or committed. docs/compatibility.md lists it.
+- **What it needed.** It links `Cocoa.framework` (the umbrella; the linker adds AppKit,
+  Foundation and CoreFoundation itself), which the loader refused: Cocoa is now a library the
+  layer provides, with no symbols of its own, and a program that links it gets AppKit. It asks
+  `NSProcessInfo` for its name. It makes its view the first responder from
+  `viewDidMoveToWindow`, which the layer never sent: a view (and its subviews, top down) now
+  hears `viewWillMoveToWindow:` before and `viewDidMoveToWindow` after its window changes
+  (`setContentView:`, `addSubview:`, removal and freeing). Its `About` item's action,
+  `orderFrontStandardAboutPanel:`, did nothing: it shows the standard About panel now (below).
+  Everything else it uses, its drawing (`colorWithCalibratedRed:...`, `NSRectFill`), keys
+  (`charactersIgnoringModifiers` with Apple's arrow-key characters) and its menu, was in.
+- **The standard About panel** (`appkit/about.rs`, drawn by `eggos_macos_gui::about`; Claude
+  Fable's design, `docs/ux/macos-gui-v0.3.md` section 8): `orderFrontStandardAboutPanel:` and
+  `orderFrontStandardAboutPanelWithOptions:` (`ApplicationName`, `Version`,
+  `ApplicationVersion`, `Copyright`) show the layer's own `Normal`, fixed-size window, 288 wide
+  and `140 + 20n` tall, at the centre of the work area, titled `About <name>`, carrying the
+  app's main menu: the installed app's own 48 pixel icon (`app.icon` beside the bundle, D148) or
+  the generic tile with the macOS badge, the name at 2x, `Version <short> (<build>)` (one of
+  them when they are equal or alone) and the copyright's first line, centred and cut at 256
+  pixels. It is not one of the app's windows (it neither keeps the app running nor ends it);
+  Esc, its close control and Cmd+W destroy it; choosing About again makes it anew where it was
+  (a client cannot raise its window: `GET_PLACEMENT`, D174, keeps its place); its Cmd keys go to
+  the main menu's key equivalents. Agents read it as a tree: the window, the icon as a graphic
+  valued `own` or `generic`, and a label for each line; no element takes an action.
+- **AppKit windows as element trees** (D162's leftover, `appkit/elements.rs`): the event loop
+  answers the window server's `Query` records (`GET_TREE`, `ACT_ON_ELEMENT`), so Mac apps no
+  longer time out as pixels only. A window is the root, named by its title (the app's name
+  when it has none); its views follow in pre-order from the content view, numbered from 2
+  (hidden views and their subviews left out): an NSButton is a button named by its title (the
+  default one flagged), an editable NSTextField a text field whose value is its text, a label
+  NSTextField a label, a plain NSView a group, and a view of any other class (the app's own) a
+  graphic named by its class, focusable when it accepts the first responder; each with its
+  frame in content pixels (a control its drawn 28 pixel rectangle). `invoke` clicks a button as
+  `performClick:` does, `focus` makes a focusable view the first responder, `set-text` sets a
+  text field's string (`setStringValue:`, the text read with `READ_QUERY`); a disabled control
+  answers `disabled`. While an alert runs, trees are answered and actions refused (the app is
+  modal); the alert's own window answers pixels only.
+- **Timers** (`foundation/timer.rs`): NSTimer (`scheduledTimerWithTimeInterval:target:selector:
+  userInfo:repeats:`, its block form, the unscheduled forms, `invalidate`, `isValid`, `fire`,
+  `fireDate`, `setFireDate:`, `timeInterval`, `userInfo`) and NSRunLoop (`currentRunLoop`,
+  `mainRunLoop`, `addTimer:forMode:`, `run`, `runUntilDate:`, `runMode:beforeDate:`, the two mode
+  constants). Scheduled timers belong to the main run loop. AppKit's event loop now waits for
+  the window server's records only until the next timer is due (`ppoll` on `/dev/window`), then
+  fires the due ones in date order; a console program runs the loop, which sleeps until each
+  timer is due. A repeating timer that fell behind fires once and moves to its next date after
+  now, as macOS's does. Timers do not fire while an alert's modal loop runs (macOS's default
+  mode does not either).
+- **Blocks** (`objc/block.rs`), as clang lays them out and Apple's published block ABI
+  describes: `_NSConcreteStackBlock`, `_NSConcreteGlobalBlock` and `_NSConcreteMallocBlock` are
+  classes of the runtime (under `NSBlock`), so `copy`, `retain`, `release` and `autorelease`
+  work on blocks; `_Block_copy` (and ARC's `objc_retainBlock`) moves a stack block to the heap
+  with a reference count in its flags and runs the compiler's copy helper, `_Block_release`
+  drops one and runs its dispose helper with the last; `_Block_object_assign` and
+  `_Block_object_dispose` keep captured objects, blocks and `__block` variables, which move to
+  the heap with their `forwarding` pointer and their own count. Foundation calls blocks
+  (`-[NSArray enumerateObjectsUsingBlock:]`, `-[NSSet enumerateObjectsUsingBlock:]`, timer
+  blocks) through their invoke function.
+- **`__weak` references** (`objc/weak.rs`): `objc_initWeak`, `objc_storeWeak`,
+  `objc_loadWeakRetained`, `objc_loadWeak`, `objc_destroyWeak`, `objc_copyWeak` and
+  `objc_moveWeak` keep one table of weak variables behind one lock; a weakly referenced object
+  carries a mark in its reference-count word (the bit below "deallocating"), and freeing it
+  makes every variable naming it nil. A load retains only an object not being deallocated (a
+  compare-and-swap that fails once `release` has claimed it), so a weak variable never yields a
+  freed object; objects the runtime never frees (constants, classes, global blocks) are stored
+  without an entry.
+- **Exceptions** (`objc/exception.rs`, `objc/unwind_info.rs`, `objc/lsda.rs`): `@throw`
+  (`objc_exception_throw`), `-[NSException raise]`, `+[NSException raise:format:]` and
+  `raise:format:arguments:`, `@catch`, `@finally`, `@throw;` (`objc_exception_rethrow`),
+  `objc_begin_catch`, `objc_end_catch` and `_Unwind_Resume` work, unwound as Apple's runtime
+  does, in two phases: a short assembly entry saves its caller's callee-saved registers, stack
+  pointer and return address; the search phase steps from frame to frame with the image's
+  compact unwind information (`__TEXT,__unwind_info`: the frame-pointer and frameless
+  encodings on arm64, the RBP-frame and frameless immediate and indirect encodings with their
+  register permutation on x86_64) and asks each frame's LSDA (`__gcc_except_tab`: its call
+  sites, action chains and type table, through clang's pointer encodings) whether a `@catch`
+  takes the object (`@catch (id)` and catch-alls any object; a class's `OBJC_EHTYPE_$_`
+  record an instance of it or a subclass, `_objc_ehtype_vtable` marking Objective-C records;
+  `OBJC_EHTYPE_$_NSException` is the layer's); the cleanup phase walks the same frames again and
+  jumps to each cleanup's landing pad, then to the handler's with the selector of the catch that
+  matched, restoring the frame's registers. A caught exception is kept on its thread's list
+  until its catch ends; a rethrown one stays alive through the cleanups between. Nothing
+  catching it, the program ends as on macOS: the uncaught exception handler
+  (`NSSetUncaughtExceptionHandler`, `objc_setUncaughtExceptionHandler`) runs, then `*** Terminating
+  app due to uncaught exception '<name>', reason: '<reason>'` and abort. NSException has its
+  name, reason and user info, and Foundation exports `NSInvalidArgumentException`,
+  `NSRangeException`, `NSGenericException` and `NSInternalInconsistencyException`.
+- **Foundation** (`foundation/`): NSProcessInfo (`processInfo`, `processName`,
+  `processIdentifier`, `arguments`, `environment`, `hostName` from `/etc/hostname`,
+  `processorCount`, `activeProcessorCount`, `physicalMemory` from `/proc/meminfo`,
+  `systemUptime`, `operatingSystemVersionString`); NSDate (now, relative to now, to 1970 and to
+  the reference date; `distantFuture`, `distantPast`; intervals, `dateByAddingTimeInterval:`,
+  `compare:`, `isEqualToDate:`, `earlierDate:`, `laterDate:`; described as `2026-10-30
+  12:34:56 +0000`); NSError (domain, code, user info, `localizedDescription` from
+  `NSLocalizedDescriptionKey` or macOS's generic sentence, `localizedFailureReason`, its
+  description) with the error domains and keys; NSData and NSMutableData (bytes, files,
+  equality, `{length = 3, bytes = 0x616263}`, appending, `setLength:`); NSSet and NSMutableSet,
+  hashed (open addressing on the objects' `hash`, `isEqual:`, in the order added), with
+  membership, subsets, union, minus, intersection, fast enumeration and blocks; NSString's
+  `rangeOfString:` and `rangeOfString:options:` (case-insensitive and backwards searches).
+- **Front-ends (D22).** GUI: the app's icon and launcher row open it, the installer installs it,
+  its window and the About panel are what it shows. CLI: `app install`, `app open`, `app list`,
+  `wm list`, `wm show` and `wm act` on its windows (D162's NSView tree), `wm menu --choose`
+  for `About` and `Quit`. MCP: `app_install`, `app_open`, `wm_list`, `wm_show`, `wm_act`,
+  `wm_menu_list`, `wm_menu_choose`, `wm_click`, `wm_press`. Blocks, weak references, exceptions
+  and Foundation are the macOS programs' ABI, which needs no front-end of its own.
+- **The check** (`cargo xtask cocoa-app --arch <arch>`, `xtask/src/qemu/cocoa_app.rs`; CI's
+  `cocoa-app` job, aarch64 and x86_64, in `check`'s needs): boots the release image with a
+  blank disk and `CocoaGame.zip` in the host folder, installs and lists it, opens it from
+  `/tmp`, finds its window where the screen changed and the board by its colours, reads the
+  random player and food cells, and wants every frame equal to the board the host renders
+  with the colours the layer makes: the start; 21 presses of `d` (the player back where it
+  started); `d`; `w` or `s` and the Left or Right arrow (whichever does not land on the food);
+  then steering onto the food, which must reappear off the player's row and column. `wm show`
+  must list the window and the focused `CanvasView` graphic; `wm menu --choose <id> CocoaGame
+  'About CocoaGame'` must show the panel exactly as the host renders it with the icon the
+  installer's own code makes of the archive's `.icns`; `wm show` on the panel must list its
+  elements; Esc must close it leaving the board unchanged; Cmd+Q must quit, `wm list` then
+  showing none of its windows, and the power-off must be clean. The Objective-C console test
+  (`tests/macos-objc/main.m`) gains `language` (blocks, `__block`, a block enumerator, captured
+  objects, a weak variable cleared when its object goes, `@try`/`@catch`/`@finally` in one frame
+  and through another, `raise:format:`, a rethrow, a thrown string caught as `id`, NSSet,
+  NSDate, NSData, NSError, NSProcessInfo, `rangeOfString:` and timers in `runUntilDate:`) and
+  `uncaught` (the uncaught handler, then Apple's two lines and status 134), checked by the
+  macOS programs boot test on aarch64 and x86_64; its `unimplemented` case now uses NSUUID.
+- **Tests.** Host: the compact unwind section (regular and compressed pages, common and local
+  encodings, LSDA and personality lookups, out of range), stepping arm64 frame and frameless
+  frames and x86_64 RBP and frameless frames, the register permutation; the LSDA (call sites
+  without a pad, cleanups, catch-alls, typed catches chained to cleanups, truncated tables,
+  LEB128); the About panel's version rule, first line, initial, heights, worked examples A and
+  B, cutting, the icon file and its alpha clamp, and its pixels; xtask's pin, the archive entry
+  reader, the board render and read-back, moves and paths, finding the panel, the console's
+  listings and trees and the verdict.
+- **Decided by research** (a research subagent downloaded and read eleven candidates' archives,
+  load commands, imports, selectors, nibs and Info.plists, and compared them with the layer's
+  tables): CocoaGame, because it is a real, freely licensed (MIT) Objective-C app published as
+  a `.zip`, universal (arm64 and x86_64), built in code with no nib, linking only the Cocoa
+  umbrella with 25 imports, two of them missing (`NSProcessInfo`, the umbrella itself), and no
+  updater, helper or permission prompt. Its frames are not the same at every start (it seeds
+  `rand` with the time), so the check reads the cells from the frame and compares every frame
+  with the host's render of them. Runner-up: UDCalc 0.2.0 (BSD-2-Clause), a calculator that is
+  deterministic and closer to a typical app, but it links a bundled Sparkle framework, its
+  x86_64 slice uses `LC_DYLD_INFO`, and it needs four nibs with NSGridView, NSStackView,
+  NSTableView and Auto Layout, blocks, weak references, exceptions and 76 missing imports; it is
+  the natural next Mac app once nibs load. The research also found that modern compiled nibs
+  are in the `NIBArchive` format, not keyed archives, which shapes nib loading. Simon Tatham's
+  Puzzles' Mac build exists only as a `.dmg` (part 72); menu-bar-only apps were left out.
+- **Decided without research.** The About panel's design is Claude Fable's (D16). Blocks
+  follow Apple's published block ABI; weak references use one table under one lock (weak
+  variables are few and short-lived in typical apps); the unwinder reads compact unwind
+  information only, and treats a frame only DWARF describes, or one outside the program's
+  image, as the end of the search (uncaught); exceptions thrown by the layer's own methods
+  (`raise`, `raise:format:`) start from an assembly entry that saves the program's registers,
+  so no frame of the layer's needs unwinding; a caught exception is autoreleased when its catch
+  ends; NSSet keeps the order objects were added in; timers fire only in the main event loop,
+  not during an alert; the panel reads its icon from the installed `app.icon` rather than
+  decoding the `.icns` again. The owner can overrule any of these.
+- **Performance and size (D24).** A console program that uses none of it pays nothing new but
+  the Objective-C classes' set-up (four block classes and nine Foundation classes, defined once
+  at start). On the retain/release hot path, `release` masks the weak mark out of its count
+  (the same compare-and-swap) and freeing an object reads its count word once more for the mark;
+  `macos-objc bench` keeps measuring a send and a retain/release pair. Throwing walks frames
+  only when a program throws. The event loop calls `ppoll` before reading only while a timer is
+  scheduled. The layer's program grows by the new modules; the Mac app adds no kernel work.
+- **Not yet.** Nib and storyboard loading (`NSMainNibFile`, compiled nibs in the `NIBArchive`
+  format, `NSKeyedUnarchiver`, binary property lists), NSFileManager, a hash index for
+  NSDictionary (its lookups still compare keys one by one), `-[NSString dataUsingEncoding:]`,
+  NSUUID, NSNotification and NSNotificationCenter, `performSelector:withObject:afterDelay:`,
+  run loop modes (every timer is in the default mode), timers on other threads' run loops;
+  AppKit's scroll views, tables, images (`NSImage`, `NSImageView`), checkboxes and other button
+  types (each needing a Fable design extending `docs/ux/macos-gui-v0.3.md`); the About panel's
+  `ApplicationIcon` and `Credits`, raising it instead of making it anew, and the panel in
+  `NSApp.windows`; the alert's own element tree; the mac-paint GUI test choosing About (Fable's
+  example B: host tests only for now). Exceptions: frames only `__eh_frame` (DWARF) describes;
+  exceptions passing through the layer's own frames (thrown in an event handler to a `@try`
+  around `[NSApp run]`, or in a block Foundation called) end the app as uncaught, where AppKit
+  would catch and log them; exceptions Foundation itself raises (an array index out of range)
+  still end the program at once instead of being catchable; C++ exceptions and
+  `__gxx_personality_v0`. UDCalc and apps like it (Sparkle and other bundled frameworks,
+  `LC_DYLD_INFO` fixups on x86_64). riscv64 (the layer runs on aarch64 and x86_64 only).

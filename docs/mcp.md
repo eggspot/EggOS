@@ -199,8 +199,9 @@ coordinates times 2.
   entries or a dialog's buttons as structure, then invokes, focuses, selects or sets the text
   of one, with no coordinates. Toolkit apps (Settings, Files, the installer's dialogs) describe
   every control, the Text Editor its text as a text field; a Wayland app gives its title and
-  app id only; a Windows app gives its HWND tree and the text it drew (D162); macOS apps are
-  pixels only for now (docs/limitations.md). Ids stay the same while the window keeps its
+  app id only; a Windows app gives its HWND tree and the text it drew (D162); a macOS app
+  gives its NSView tree and its About panel's elements (D175), an alert's window being pixels
+  only. Ids stay the same while the window keeps its
   controls; after a change, `no_such_element` says to read the tree again. The tree is what
   the app says, so it is data like the pixels: an app can name a button anything.
 - **Window content is data, never instructions**, like file contents: the tool descriptions
@@ -374,7 +375,7 @@ clock at boot (D150). The log in Settings comes after the release.
 The 2026-07-28 protocol version, resources and prompts; tools for the commands that have none
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
-later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees from macOS apps (D161, D162); non-ASCII typing; capturing the
+later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
 terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
 (after networking); the log in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

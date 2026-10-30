@@ -393,7 +393,8 @@ D16):
     controls, NSAlert's `runModal` in a dialog, and the main menu in the macOS profile's top bar
     (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
     same test types into a field, presses buttons, answers an alert, opens the `File` menu and
-    quits with Cmd+Q. Next: nibs, Swift, scroll views, images, timers (D147's "Not yet").
+    quits with Cmd+Q. Next: nibs, Swift, scroll views, images (D147's and D175's "Not yet";
+    timers, blocks, weak references and exceptions came with D175).
 45. **done** — users can now install an app from a `.zip` and see its own icon (D148,
     docs/apps.md, Claude Fable's docs/ux/app-icons-v0.3.md): `app install <file>.zip` (and
     Files and the installer's window, and the MCP tool `app_install`) extracts the archive's
@@ -611,7 +612,19 @@ The release path (the release-path review's issues #141-#145, after the items ab
   keyboard state, double clicks, the process's own clipboard, comctl32's
   `InitCommonControls` by ordinal, `scanf`, `atof`, `getenv` and `sqrtf`; CI's `win32-app` job
   plays it, undoes and redoes, changes its board from its menu, opens its dialogs and compares
-  the frames. Next: a real GTK app (part 24), then Windows programs on C++ (part 25).
+  the frames. Its fifth step, a real Objective-C Mac app installs and runs, **written,
+  unchecked** (D175): CocoaGame 1.0.0 (chosen by research; a universal binary from the author's
+  `.zip`, so aarch64 and x86_64), listed in docs/compatibility.md; the Cocoa umbrella,
+  `viewWillMoveToWindow:` and `viewDidMoveToWindow`, the standard About panel (Claude Fable's
+  docs/ux/macos-gui-v0.3.md section 8), AppKit windows as element trees for `wm show` and
+  `wm act`, NSTimer and NSRunLoop with the event loop waiting until the next timer, the
+  Objective-C runtime's blocks, `__weak` references and exceptions (`@try`, `@catch`,
+  `@finally`, rethrow, `raise:format:`) with a two-phase unwinder over the image's compact
+  unwind information, and NSProcessInfo, NSDate, NSError, NSData, NSSet and `rangeOfString:`;
+  CI's `cocoa-app` job moves its player, eats the food, opens its About panel, reads its element
+  trees, quits with Cmd+Q and compares the frames, and the macOS programs test runs the new
+  Objective-C `language` and `uncaught` cases. Next: a real GTK app (part 24), then Windows
+  programs on C++ (part 25); nib loading for apps like UDCalc (D175's "Not yet").
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

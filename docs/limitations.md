@@ -44,9 +44,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   uninstalls apps. Grants hold for the whole machine and boot: no per-agent grants, no revoking
   them while EggOS runs; `run` is full control, the audit log included. Agents read toolkit and Wayland
   windows as element trees and act on their controls by id (D161), Windows programs too, with
-  the text they draw (D162); macOS programs are pixels only (D143) until their layer describes
-  its NSView tree, and a Windows list box's items and a check box's state are not in the tree
-  yet.
+  the text they draw (D162), and macOS apps' windows, their views and the About panel (D175;
+  a macOS alert is pixels only); a Windows list box's items and a check box's state are not in
+  the tree yet.
   Commands run as root (file permissions are not enforced yet). Reached only through the run
   scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB. The desktop shows
   an `Agent` chip while a client is connected and marks what it drives for a second (D156);
@@ -233,15 +233,18 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
-  programs on x86_64, from the host folder or installed as apps; the layer is in the base of
-  those images until the component manager makes it optional (D152)
-  ([macOS programs](macos-programs.md), D120, D123, D142, D147). AppKit
-  covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
-  alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
-  top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP tools list and choose
-  its items, except while the app shows an alert); scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
-  `__weak` and exceptions, most of Foundation, signal handlers, other frameworks and riscv64
-  do not run yet.
+  programs on x86_64, from the host folder or installed as apps (a real one, CocoaGame, is
+  checked in CI: [Real apps](compatibility.md)); the layer is in the base of those images until
+  the component manager makes it optional (D152)
+  ([macOS programs](macos-programs.md), D120, D123, D142, D147, D175). AppKit covers windows,
+  views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no alpha), push
+  buttons, text fields, labels, alerts, the standard About panel, timers and the main menu in
+  the macOS profile's top bar (at most 6 menus in 248 bytes of labels; `wm menu` and the MCP
+  tools list and choose its items, except while the app shows an alert); Objective-C has
+  blocks, `__weak` and exceptions (frames only DWARF describes, and exceptions passing through
+  the layer's own code, end the program as uncaught). Nibs and storyboards, scroll views,
+  tables, images, Auto Layout, Swift, most of Foundation beyond its core (no NSFileManager or
+  NSNotification), signal handlers, other frameworks and riscv64 do not run yet.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
   app window's content as a PNG and `wm click`, `drag`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input or sideways scrolling, and
