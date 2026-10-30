@@ -2,9 +2,9 @@
 
 Design by Claude Fable (D16) for the GUI front-end of the `disk` capability (D22, D192): the
 Settings `Storage` pane that lists the machine's disks and checks, repairs and formats an
-unmounted EggFS disk, with the same data and words as `disk list`, `disk check [--repair]
-<device>`, `disk format [--label NAME] [--dry-run] [--yes] <device>` and the MCP tools
-`disk_list`, `disk_check`, `disk_format`. Everything in `toolkit-v0.3.md` (section 11 for
+unmounted EggFS disk, with the same data and words as `disk list`, `disk check <device>`,
+`disk repair <device>`, `disk format [--label NAME] [--dry-run] [--yes] <device>` and the MCP tools
+`disk_list`, `disk_check`, `disk_repair`, `disk_format`. Everything in `toolkit-v0.3.md` (section 11 for
 Settings), `desktop-v0.3-gui.md` section 10 and `keyboard-v0.3.md` (the list-and-facts pane this
 one is shaped like) stands; numbers are px at 1x and double at 2x; the only motion is the
 caret's blink. The kernel attaches at most 4 disks, so the pane is built for 1 to 4 rows.
@@ -100,7 +100,7 @@ status line reads `No disk attached: nothing to check or format.`
 | unmounted, blank, FAT or unknown, writable | off | off | on | `No EggFS file system on the disk: nothing to check. Format... makes it one.` |
 | unmounted, blank, FAT or unknown, read-only | off | off | off | `Read-only disk with no EggFS file system: nothing can be done to it.` |
 
-**Repair without a dialog, after a check.** `disk check --repair` has effect `change`
+**Repair without a dialog, after a check.** `disk repair` has effect `change`
 (`command-model.md`: a change never asks), so the pane asks nothing either; but a repair writes
 to a disk that may be damaged, so the pane sequences it: `Repair` is enabled only after `Check`
 on the same disk has listed at least one `repairable` finding. The read-only check runs the

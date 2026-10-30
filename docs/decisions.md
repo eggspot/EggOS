@@ -15611,3 +15611,41 @@ the license, by an explicit instruction recorded here.
   Storage pane, and the QEMU test that formats a second disk, checks it and repairs a damaged
   image. Mounting a disk from userland (no `mount` system call yet); `S_IFBLK` nodes and
   `BLKGETSIZE64` for Linux tools; a mounted volume's label in `/proc/driver/disks`.
+- **Slice 40c, the capability, the CLI and MCP.** `eggos_files::storage` (feature `storage`,
+  which only `/bin/settings` turns on, so the core utilities stay without an allocator) is the
+  one capability: `list` (from `/proc/driver/disks`; an unmounted EggFS disk is mounted
+  read-only through a disk that refuses writes to read its label and space, a mounted one is
+  asked `statfs`, FAT is told by its boot sector), `find`, `check(device, CheckMode)` and
+  `format(device, label)` over a `WholeDisks` (the disks file, `openat`, `pread64`,
+  `pwrite64`, `fsync`, `statfs`, the clock), refusing a mounted disk (`InUse`), a write to a
+  read-only one, a missing one and a label over 64 bytes before anything is opened. The words
+  the pane, the CLI and MCP share are its functions: `contents_text`, `sizes_text`,
+  `place_text`, `erased_text`, `headline`, `finding_line`, `outcome_word`, `grouped`,
+  `StorageError::sentence`. `storage::memory::MemoryDisks` is the fake for every front-end's
+  host tests.
+  - **`disk`** (`/bin/disk`, a hard link to `/bin/settings`): `disk list [--json]`, `disk
+    check [--json] <device>` (status 0 whenever the check ran; `clean` says the rest),
+    `disk repair [--json] [--dry-run] <device>` (`not_repairable` when problems are left),
+    `disk format [--label NAME] [--yes] [--dry-run] <device>`: on a terminal it asks `Type vdb
+    to format /dev/vdb (erases Blank, 2.0 MB):`, without one it needs `--yes`
+    (`needs_confirmation`), a wrong answer is `declined_by_user`. A device is `/dev/vdX` or
+    `vdX`. New errors: `no_such_disk`, `disk_in_use`, `not_eggfs`, `label_too_long`,
+    `not_repairable`. `disk` is a kept name with the verbs `format` and `repair`
+    (`NOUN_VERBS`); every example runs as a test against two disks in memory.
+  - **MCP.** `disk_list` (no grant), `disk_check` (`view`, read-only), `disk_repair` (`write`,
+    `dry_run` run by the twin) and `disk_format` (`destroy`, `write` grant, `confirm`,
+    `dry_run` answered by the server). The device is the twin's path operand, inside the four
+    roots `/dev/vda` to `/dev/vdd` and checked to be exactly one of them; the label is kept
+    whole in the call (`LabelText`), so a question the user answers later formats with it.
+- **Choices made without research (slice 40c).**
+  - `disk_format` needs the `write` grant, as `disk_repair` does: both write to a disk, and
+    the confirmation guards the erase.
+  - A mounted disk's label is shown as unknown (`EggFS`, `label: null`): the kernel does not
+    report it yet.
+  - `disk check` ends with status 0 when it found problems, so an agent's call is not an error;
+    scripts read `clean`.
+- **Not yet (after slice 40c).** The Settings Storage pane (CAPACITY 96, Fable's
+  storage-v0.3.md), the QEMU test (a second blank virtio disk: `disk list`, `disk format --yes
+  --label scratch /dev/vdb`, `disk check` clean, a damaged image with a wrong link count
+  repaired then clean), docs/coreutils.md, docs/eggfs.md, limitations and roadmap item 25;
+  mounting from userland (no `mount` system call yet).
