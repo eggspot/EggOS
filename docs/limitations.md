@@ -15,10 +15,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   it will on hardware; boot to the prompt still takes about a quarter of a second (120 ms on
   aarch64, 161 ms on riscv64 and 261 ms on x86_64 from QEMU's start, on CI's machines on
   2026-10-29; the release notes give each image's own figure).
-- **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
-  virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
-  RISC-V Goldfish, D150), virtio-net (polled, the first adapter only, D157) and on test
-  kernels virtio-rng. Nothing else is driven: no Wi-Fi, no sound, no USB (D110-D113, D130).
+- **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse
+  (on interrupts, D184), virtio-blk (polled, one request at a time, for the host folder), the
+  real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (polled, the
+  first adapter only, D157) and on test kernels virtio-rng. Nothing else is driven: no Wi-Fi,
+  no sound, no USB (D110-D113, D130). `device list` and `device_list` show the devices as of
+  boot (no hot-plug); Settings' About does not list them yet; two virtio input devices read
+  alike; the console UART and the interrupt controller, set up before the driver model, read
+  `No driver`. A display mode change (QEMU's window resized) is not followed, virtio-console
+  input is not a console, and the kernel's random generator is not reseeded from virtio-rng.
 - **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
   adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
   `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://` and

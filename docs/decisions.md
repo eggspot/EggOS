@@ -13615,3 +13615,96 @@ the license, by an explicit instruction recorded here.
   pinned to their process (one opened before its process ended shows the id's next process);
   `/proc/sys/kernel/pid_max`; `ls -x`, `-w`, `COLUMNS`, wide characters as two columns and
   control characters shown as `?`; a reply to the agent whose `run` powered off.
+
+## D184 Drivers run on interrupts, first slice: device lines through GIC SPIs, PLIC sources and MSI-X, a handler per line that wakes its driver's thread, virtio-input with no polling thread; users list the machine's devices with `device list` and the MCP tool `device_list` from `/proc/driver/devices` (batch part 32; issue #97's slice 3; v0.3.0 items 12 and 33's follow-ups; M5, M8; extends D37, D98, D110, D111, D113, D136, D160, D163) — Decided by the build loop (the command's name, the tool's grant and the file's place decided by research; the About pane's list designed by Claude Fable, `docs/ux/devices-v0.3.md`)
+
+- **What users get.** The keyboard, tablet and mouse are heard on interrupts: nothing wakes
+  an idle machine for them (the input thread polled every 32 ms before, 8 ms after any event).
+  `device list` prints the devices a person recognises, `device list -a` every device, with
+  their kind, how their driver hears from them (`interrupts`, `polled`) and their driver or why
+  it refused them; `--json` and the MCP tool `device_list` (`all` for `-a`) give the same
+  records. Settings' About list is designed (Fable, docs/ux/devices-v0.3.md) but not built: it
+  needs the toolkit's `Table` widget, so the GUI front-end of D22 is this decision's gap.
+- **Device lines (HAL).** `Interrupt::Device(DeviceLine)`, 32 lines on every architecture,
+  routed to the boot CPU: `Platform::route_device_interrupt(specifier)` for a device-tree
+  interrupt (aarch64: a GIC SPI, its trigger from the binding's flags, priority 0xc0 below the
+  timer, the wake-up and the console; riscv64: a PLIC source in the boot hart's
+  supervisor-mode context, which the first routing, of the console or a device, sets up) and
+  `Platform::message_interrupt()` for an MSI-X message (x86_64: vectors 0x33 to 0x52 after the
+  console's, address `0xFEE00000 | boot APIC id << 12`, fixed delivery, edge). The defaults
+  refuse, so test platforms and machines without them change nothing. A source routed twice
+  keeps its line (`SourceLines`, a table of 32 ids searched in order up to the first free one).
+  The aarch64 IRQ path sends every shared interrupt (id 32 and up) to one out-of-line function,
+  so the inlined trap path gains one compare; x86_64 adds 32 stubs (512 bytes of `.text`).
+- **Handlers (kernel).** `devices::interrupts::connect(line, Handler)`: a leaked box per line
+  with `acknowledge(context)`, which quiets the device (virtio-mmio: read and acknowledge the
+  interrupt status until it reads 0, so an edge-triggered GIC line falls before it can rise
+  again; MSI-X: nothing), and the `DeviceEvents` it raises. `DeviceEvents` is a count of raises
+  and one waiter's `Parker`, published in an atomic pointer: `wait(seen, deadline)` parks
+  until the count moves or the deadline; `raise` takes the pointer and unparks it; a waiter
+  that finds the pointer taken waits for that unpark, so its parker on the stack is never
+  reached after it returns. Handlers run where the kernel takes interrupts (preemption points,
+  idle, user mode, D37), with no lock held on their CPU.
+- **virtio.** `devices::virtio::connect_interrupt` connects a virtio device on either
+  transport: on virtio-mmio the slot's first device-tree interrupt (the transport's child keeps
+  its parent's interrupts) with the slot's registers as the handler's context; on virtio-pci
+  the function's MSI-X table, found by `pci::msix::find` and mapped from its BAR, entry 0 set
+  (masked while written) to the line's message, MSI-X turned on, then the configuration and
+  every enabled queue routed to entry 0 (`PciTransport::route_interrupts_to`, read back: a
+  device answering `NO_VECTOR` is refused). The driver then clears the available ring's
+  no-interrupt flag (`SplitQueue::enable_used_notifications`) and looks at the ring once. The
+  device's node records `Delivery::Interrupts`.
+- **Input.** virtio-input connects its interrupt at probe and is installed with
+  `input::install_interrupting`; when every input device was, init's `input::start` runs the
+  input thread on `input::DEVICE_EVENTS` (the boot log says `input: on interrupts`): it takes
+  every device's events, then sleeps until one interrupts or the held key's next repeat. A
+  device whose interrupt cannot be connected is polled as before, and the thread polls them
+  all (`input: polled`); the desktop's clock then ticks from its own thread whenever the input
+  thread does not poll. A thread stays (it is where events become bytes and queue entries,
+  outside the interrupt): "no poller" means nothing runs while nothing happens.
+- **Listing.** `/proc/driver/devices` (`devices::devices_text`): a line per device, its ten
+  fields separated by tabs (id, parent, bus, class, name, description, driver, state,
+  delivery, reason; `-` for none, text that is not printable ASCII as `?`). The class comes
+  from the virtio type, the PCI class or the device-tree `compatible` strings. `device list`
+  (coreutils, `userland/coreutils/src/device.rs`) parses it (at most 256 devices; more fail
+  after the ones shown), keeps by default the classes a person recognises that are no device's
+  parent plus every refusal, sorts by kind then id, and writes the columns `ID`, `PARENT`,
+  `KIND`, `DELIVERY`, `DEVICE`, `DRIVER` with Fable's words (`Serial port`, `Random numbers`,
+  `virtio gpu`, `pl031@9010000 · arm,pl031`, `No driver`, `Refused: <reason>`); the registry
+  defines `device list` (noun `device` added to the kept names) and `device_list`.
+- **Checks.** Host tests: `SourceLines` (order, reuse, full, source 0), the GIC and PLIC
+  specifiers, MSI-X (finding the table, enabling, entry writes masked then unmasked),
+  virtio-mmio's acknowledge, virtio-pci's routing and a refused vector, virtio-input's
+  interrupt hint, the line table and `DeviceEvents` (`devices/interrupts.rs`), device classes
+  and lines (`devices/tests.rs`), `/proc/driver/devices`'s place, `device list` (parsing, the
+  default filter, order, words, table, records, errors) and its three registry examples. QEMU:
+  the boot-to-prompt test on all three now requires `input: on interrupts` (QMP still types
+  two lines on the virtio keyboard, so typing works on interrupts), and the MCP check calls
+  `device_list` with `all: true`.
+- **Cost (D24, D78).** Not measured yet (no builds in this batch). Expected: the GIC IRQ path
+  one compare; the x86_64 exception stubs 512 bytes more; `.bss` 32 words of handler pointers
+  and 32 source ids per architecture; the input thread's idle wake-ups gone (32 a second).
+  Benchmarks to report in the build phase: `device_tree_walk`, the interrupt and syscall paths,
+  boot to prompt, image size.
+- **Decided by research** (a research subagent, 2026-10-30, from the command model, the MCP
+  grants, D143 and the `/proc` precedents): (1) `device list` and `device_list`, not the plan's
+  `devices`/`devices_list`: the approved model wants a singular noun and a core verb, and no
+  familiar program is named `device`. (2) No grant, as `net_status`, `clock_get`, `ps` and
+  `df`: `view` exists for window contents (D143), a device list holds no user content, and
+  `net_status` already gives the MAC address with no grant; Fable's design said `view` and is
+  corrected. (3) `/proc/driver/devices`, EggOS's own format beside `driver/rtc`, like
+  `/proc/net/interfaces`; Linux's `/proc/devices` keeps its meaning, and a sysfs view can come
+  later from the same table.
+- **Decided without research.** 32 lines; the boot CPU for every line; one MSI-X entry per
+  function; priority 0xc0 and PLIC priority 1; acknowledging up to 4 rounds; the input thread
+  kept as an event thread instead of handling events in the interrupt (the terminal and the
+  line discipline take locks a handler should not wait on); the boot line `input: on
+  interrupts`; the class table of `compatible` substrings; the text columns and widths; 256
+  devices; `-a` as the only option besides `--json`.
+- **Not yet.** The block, console (agent channel), GPU, network and entropy drivers on
+  interrupts (they poll until an answer comes, or every 4 to 50 ms); several disk requests in
+  flight; display events (a mode change when QEMU's window is resized, relaying the desktop
+  out; a QMP resize check); virtio-console input as a console; the kernel's generator reseeded
+  from virtio-rng; Settings' About list (the toolkit's `Table`, docs/ux/devices-v0.3.md); device
+  lines through the I/O APIC (x86 INTx) and on other CPUs; a line per queue; lines given back
+  when a driver lets a device go; the measured costs above.
