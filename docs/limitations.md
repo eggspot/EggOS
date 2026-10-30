@@ -222,9 +222,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
   apps such as Pegs from Simon Tatham's Puzzles too, with their own dialogs, drop-down list
-  combo boxes, off-screen bitmaps and `BitBlt` (D174, [compatibility](compatibility.md)).
-  Programs on a C++ runtime, MinGW's or Rust's std, locales, most of the math library, other
-  processes, other DLLs, structured exception handling, controls beyond buttons, edits,
+  combo boxes, off-screen bitmaps and `BitBlt` (D174, [compatibility](compatibility.md)), and
+  structured exception handling and C++ exceptions work (D177): `__try`, `__except`,
+  `__finally`, vectored handlers, faults as Windows exceptions, `throw` and `catch`, `signal`.
+  An exception cannot yet pass through the layer's own frames (a fault inside a Windows
+  function, a throw out of a window procedure), a stack overflow is not an exception, and on
+  aarch64 a context resumed after a fault loses `x16`.
+  Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
+  `std::exception_ptr`, `dynamic_cast` and `typeid`, MinGW's or Rust's std, `setjmp`,
+  locales, most of the math library, wide streams, `_open`, other
+  processes, other DLLs, controls beyond buttons, edits,
   labels, lists and drop-down lists (D145, D174: no multi-line edits or selection, radio
   keys, scroll bars, editable combo boxes, submenus, context menus, accelerators or menu keys
   yet), dialogs from resources, common controls (comctl32's list views, toolbars, status

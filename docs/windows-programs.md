@@ -17,7 +17,8 @@ listing; part 2b (D124) brings all of it to ARM64 programs on aarch64; GUI progr
 gets the mouse and keyboard as Win32 messages and shows message boxes. Programs on MSVC's C
 runtime (D146) run too: C programs built with `/MD` import `vcruntime140.dll` and the
 Universal C Runtime (`ucrtbase.dll`, through the `api-ms-win-crt-*` API sets), which the layer
-provides as well. Programs that need C++ exceptions, MinGW's `msvcrt.dll` or Rust's standard
+provides as well, with structured exception handling and C++ exceptions (D177). Programs on
+the C++ standard library's DLL (`msvcp140.dll`), MinGW's `msvcrt.dll` or Rust's standard
 library import more than this and are refused with the name of the first missing function.
 
 ## Add a program to the image
@@ -113,6 +114,43 @@ the macOS layer's (`eggos-c-format`), with Windows' rules: `%ld` is 32-bit, `%I6
 `%ls` and `%S` for wide strings, and in the wide functions `%s` is wide. Streams are in text
 mode unless opened with `b`: a written `\n` becomes `\r\n` in the file, and reading turns it
 back.
+
+## Exceptions: `__try`, C++ and faults
+
+Programs that handle exceptions run as on Windows (D177), x64 on x86_64 and ARM64 on aarch64:
+
+```
+cl /O2 /MD /EHsc app.cpp                                   :: C++ with try, throw and catch
+cl /O2 /MD seh.c                                           :: C with __try and __except
+```
+
+- **C++ exceptions.** `throw` and `catch` work as the compiler arranged them, with
+  `__CxxFrameHandler4` (x64's default) or `__CxxFrameHandler3` (`/d2FH4-`, and older
+  compilers): catching by type, through a base class, by value (the copy constructor runs) or
+  by reference, `catch (...)`, `throw;`, a throw from inside a catch block, the destructors of
+  every frame left, `noexcept` functions ending the program, and `std::exception` and its
+  standard subclasses from the headers. An exception nothing catches ends the program
+  through `terminate`, with status 3.
+- **Structured exceptions.** `__try`/`__except` with filters (`GetExceptionCode()`,
+  `GetExceptionInformation()`, `EXCEPTION_CONTINUE_EXECUTION`), `__try`/`__finally`
+  (`AbnormalTermination()`), `__leave`, `RaiseException`, vectored exception and continue
+  handlers, `SetUnhandledExceptionFilter`, and `RtlCaptureContext`, `RtlLookupFunctionEntry`,
+  `RtlVirtualUnwind` and `RtlUnwindEx` for programs that walk their own stack.
+- **Faults are exceptions.** A fault in the program's code reaches its handlers as the
+  exception Windows raises: an access violation (`0xC0000005`, with read, write or execute and
+  the address), an integer division by zero (`0xC0000094`; on ARM64 MSVC's own check raises
+  it), other arithmetic errors, an illegal instruction (`0xC000001D`), a breakpoint
+  (`__debugbreak()`) and a misalignment. `__fastfail` ends the program at once with
+  `0xC0000409`. A fault nothing handles ends the program as before, after a line on standard
+  error naming it and its address as the program's module and offset (D151); an exception the
+  program raised and nothing handled ends it with the exception's code as its status, after a
+  line naming the code.
+- **C signals.** `signal` and `raise`, and MSVC's startup giving an unhandled access
+  violation, illegal instruction or arithmetic error to the `SIGSEGV`, `SIGILL` or `SIGFPE`
+  handler a program set.
+
+`tests/windows-crt/eggcpp.cpp` is our own example, which the Windows C runtime boot test runs
+in CI (`cargo xtask windows-crt`).
 
 ## GUI programs
 
@@ -228,10 +266,11 @@ size needed, as each function documents.
 
 ## What does not work yet
 
-- **Programs on a C++ runtime, on MinGW's `msvcrt.dll` or on Rust's std**: they import more
-  (C++ exception handling, `ProcessPrng`, more of the C library), which later parts add. The
-  layer names the first function it lacks. Of MSVC's C runtime, `setlocale`, `signal`,
-  `setjmp`, the math library beyond `sqrtf`, wide streams, low-level I/O (`_open`),
+- **Programs on the C++ standard library's DLL (`msvcp140.dll`), on MinGW's `msvcrt.dll` or
+  on Rust's std**: they import more (iostreams, `ProcessPrng`, more of the C library), which
+  later parts add. The layer names the first function it lacks. C++'s `std::exception_ptr`,
+  `dynamic_cast` and `typeid` are missing too (D177's "Not yet"). Of MSVC's C runtime,
+  `setlocale`, `setjmp`, the math library beyond `sqrtf`, wide streams, low-level I/O (`_open`),
   `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
   function given an invalid parameter returns its documented error instead of ending the
   program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
@@ -251,11 +290,12 @@ size needed, as each function documents.
   `CreateDirectoryW`, `DeleteFileW` and `RemoveDirectoryW` on a path that exists (or could)
   fail with `ERROR_ACCESS_DENIED`.
 - **Time zones**: local time is UTC.
-- **Structured exception handling**: a fault ends the program as a signal would end a Linux
-  one, after a line on standard error naming the fault and its address as the program's
-  module and offset (D151); no `__try`/`__except`, no vectored handlers, no unwinding. The one
-  exception: on ARM64, a read of `CurrentEL`, which MSVC's atomics helpers make once and step
-  over in their own handler, reads exception level 0 and the program goes on.
+- **Exceptions through the layer's own code** (D177's "Not yet"): a fault inside a Windows
+  function the program called ends the program, as does an exception thrown out of a window
+  procedure through `DispatchMessage`, or one raised inside a filter or `__finally` block and
+  caught outside its function. A stack overflow is not an exception yet, and on ARM64 a
+  context resumed after a fault loses `x16`. On ARM64 a read of `CurrentEL`, which MSVC's
+  atomics helpers make once, still reads exception level 0 without an exception (D151).
 - **`KUSER_SHARED_DATA`**: the page at `0x7ffe0000` holds only `ProcessorFeatures`; its clocks,
   version numbers and the rest read as zero.
 - **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32,

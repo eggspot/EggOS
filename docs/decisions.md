@@ -12524,3 +12524,153 @@ the license, by an explicit instruction recorded here.
   field in Files or the launcher for an app's environment; compiling an app's schemas when it
   is installed; riscv64 (Alpine `v3.24` has no riscv64 build pinned); whatever the first CI run
   finds missing for GTK, GLib and Mousepad (listed above), to be recorded in the roadmap.
+
+## D177 Windows programs with C++ and structured exception handling: an unwinder over the image's `.pdata` and `.xdata` for x64 and ARM64, exception dispatch with vectored handlers and the unhandled-exception filter, faults delivered as Windows exceptions, `__try`/`__except`/`__finally` through `__C_specific_handler`, C++ `throw` and `catch` through `__CxxFrameHandler3` and `__CxxFrameHandler4`, `signal` and `raise`, and `eggcpp.exe` built by MSVC in CI (batch part 25; D146's and D151's "Not yet"; extends D118, D121, D124, D146, D151) — Decided by the build loop (the points below marked so decided by research)
+- **What.** Windows programs that use structured exception handling or C++ exceptions run:
+  `RaiseException` and `RtlRaiseException`, vectored exception and continue handlers
+  (`AddVectoredExceptionHandler`, `RemoveVectoredExceptionHandler`, `AddVectoredContinueHandler`,
+  `RemoveVectoredContinueHandler`), `SetUnhandledExceptionFilter`, `RtlCaptureContext`,
+  `RtlRestoreContext`, `RtlLookupFunctionEntry`, `RtlVirtualUnwind`, `RtlUnwind`, `RtlUnwindEx`
+  and `RtlPcToFileHeader` (kernel32 and ntdll), `__C_specific_handler` and `_local_unwind`
+  (C's `__try`, `__except`, `__finally`, `__leave`), `_CxxThrowException`,
+  `__CxxFrameHandler3` (vcruntime140) and `__CxxFrameHandler4` (vcruntime140_1),
+  `__std_exception_copy`/`_destroy`, `__std_terminate`, `__std_type_info_compare`/`_hash`,
+  `type_info`'s virtual function table (imported as data), `__current_exception` and
+  `__current_exception_context` (now per thread), `terminate` and `_callnewh` (ucrt), and C's
+  `signal`, `raise` and `_seh_filter_exe`; `FlushInstructionCache` for code a program writes.
+- **The unwinder** (`userland/windows/src/unwind/`, pure, host tests). x64: a binary search of
+  the `RUNTIME_FUNCTION` table, the `UNWIND_INFO` codes undone in order (push, small and large
+  allocations, the frame register, saves near and far, 128-bit `xmm` saves, the machine frame;
+  version 2's epilog codes skipped), only the codes whose instructions ran when the program
+  stopped inside the prolog, chained records followed, the establisher frame the frame
+  register less its offset once set (else `rsp`), and a program stopped in an epilog
+  recognised by its instructions (`add rsp`/`lea rsp`, `pop`s, then `ret`, `rep ret` or a jump
+  out of the function) and carried through it. ARM64: `.pdata` entries with `.xdata` records
+  (epilog scopes or the single epilog at the end, extended counts, the exception data) or
+  packed unwind data (expanded into the canonical prolog its `RegI`, `RegF`, `H`, `CR` and
+  `FrameSize` describe, its epilog the same less `mov x29, sp` and the argument stores); every
+  unwind code but SVE's `alloc_z`, `save_any_reg` and the operating system's custom ones (an
+  unknown code ends the walk), `save_next` resolved against the pair it continues; inside the
+  prolog only the instructions that ran are undone, inside an epilog the rest of it is carried
+  out; the caller's `pc` is `lr`. Inside a prolog or an epilog no handler is called.
+- **Dispatch** (`win32/exception/`). An exception goes to the vectored handlers, then up the
+  frames: each frame's function is looked up in the program's exception directory (a function
+  without an entry is a leaf, its return address on top of the stack on x64, in `lr` on
+  ARM64; code outside the program's image but not the layer's, such as code the program
+  wrote, is treated so too), unwound, and its language handler called with the record, the
+  establisher, the exception's `CONTEXT` and a `DISPATCHER_CONTEXT`; one that continues
+  execution resumes the thread (after the continue handlers), unless the exception is
+  noncontinuable, which ends the process with `STATUS_NONCONTINUABLE_EXCEPTION`. With no
+  handler the program's unhandled-exception filter decides; then the process ends: for a
+  fault, with the line D151 writes and the signal's default action, as before; for a raised
+  exception, with a line that names its code and place and the code as its status, as on
+  Windows. An unwind walks from the exception to the target frame calling each termination
+  handler with `EXCEPTION_UNWINDING` (the target's with `EXCEPTION_TARGET_UNWIND`) and resumes
+  the target frame's registers at the target address with the return value (`rax`, `x0`) set.
+  A `CONTEXT` is Windows' (x64 1232 bytes, ARM64 912); the layer's entries that raise or unwind
+  capture the caller's registers into one, and resuming loads all of them (on ARM64 `x16`
+  carries the address resumed at, so its own value is lost, as a scratch register between
+  calls may be). Handlers, filters, funclets and callbacks are the program's code, called from
+  the layer's: each such call goes through a *bridge* that records where it returns, so a
+  walk that leaves the program code a bridge called continues in the program frame the bridge
+  names (the dispatched frame's caller), and a resumed context forgets the bridges and
+  dispatches below it. Per thread state (the bridges, the dispatches in progress, the unwind
+  target, the current C++ exception) lives in the TEB past `errno` (0x1e10 to 0x1e37).
+- **Faults are Windows exceptions** (`fault.rs`'s `delivery`, pure; `fault_handler.rs`). A
+  fault in the program's code (or in code outside the layer) becomes: `SIGSEGV` an access
+  violation (`0xC0000005`, with read, write or execute from x86_64's page-fault error code or
+  AArch64's `esr_context`, and the address; a general-protection fault reports all ones),
+  `SIGBUS` a misalignment or an in-page error, `SIGFPE` Windows' arithmetic codes by
+  `si_code` (`0xC0000094` for an integer division by zero), `SIGILL` an illegal instruction,
+  `int3` a breakpoint at the instruction, ARM64's `brk #0xF000` a breakpoint, `#0xF001` an
+  assertion, `#0xF004` a division by zero (MSVC's ARM64 code checks divisors itself, since
+  `sdiv` does not trap), any other `brk` an illegal instruction; `int 0x29` and `brk #0xF003`
+  are `__fastfail`, which ends the process at once with `0xC0000409` and a line. The signal
+  handler puts the record and `CONTEXT` on the thread's own stack below the faulting frame
+  (128 bytes below, as no red zone is used on Windows), rewrites its signal frame so that
+  `rt_sigreturn` enters the dispatch there with the normal signal mask, and returns: no
+  handler runs on the signal frame, and no kernel change is needed (the kernel already
+  reports `err`, `trapno` and `esr_context`, D65). A fault in the layer's own code (its
+  executable segments, from its program headers) ends the process as before. D151's
+  completion of `mrs CurrentEL` stays in the handler, so it costs one signal as before.
+- **`__C_specific_handler`.** Its data is the scope table; while dispatching, the filters of
+  the scopes around the frame's instruction (before the return address, for a frame that
+  called out) decide; `EXCEPTION_EXECUTE_HANDLER` unwinds to the frame and continues at the
+  `__except` block with the exception code; while unwinding, the `__finally` blocks of the
+  scopes left run with `AbnormalTermination()` true, up to the scope that holds the target.
+  `_local_unwind` unwinds the caller's own frame to the target.
+- **C++** (`cxx_data.rs`, pure, host tests; `win32/exception/cxx.rs`). `_CxxThrowException`
+  raises `0xE06D7363` with `0x19930520`, the object, its `ThrowInfo` and the image base
+  (`throw;` repeats the innermost running catch's). The frame handlers read
+  `__CxxFrameHandler3`'s `FuncInfo` (magic `0x19930520` to `0x19930522`, `/EHs` and
+  `noexcept` flags) or `__CxxFrameHandler4`'s compressed `FuncInfo4` (separated code segments,
+  catch funclets, compressed numbers, unwind maps linked by offsets back, delta-encoded
+  IP-to-state maps, handlers with their continuation addresses), find the state of the frame's
+  instruction, search the try blocks around it in order for a handler whose type the object
+  can be caught as (`catch (...)`, the same type descriptor or decorated name, reference-only
+  types by reference, no qualifier dropped), and catch: unwind the frames between (their
+  handlers run their destructors and unwind funclets) and the catching frame down to the try
+  block's first state, copy the object into the catch parameter (its address for a reference,
+  its bytes for a simple type with pointers adjusted to the base, else its copy constructor,
+  with the virtual-base flag), run the catch funclet through a bridge, destroy the object,
+  and resume the function at the address the funclet returns (or the continuation it names by
+  index, `__CxxFrameHandler4`). The bridge of a running catch remembers its function's frame,
+  registers, try state and data: an exception thrown inside the catch block is searched in
+  the funclet's frame with the function's try blocks (so the try blocks around it, in the
+  function or its callers, catch it), the function's own destructors run once, through the
+  funclet's frame, and the walk then continues in the function's caller; leaving the catch
+  block this way destroys its object unless it is the one rethrown. An exception leaving a
+  `noexcept` function, or `throw;` with nothing caught, calls `terminate`, which ends the
+  process with status 3 and a line, as an uncaught C++ exception does through MSVC's own
+  unhandled-exception filter. Under `/EHa` (a function without the `/EHs` flag) `catch (...)`
+  catches structured exceptions too.
+- **`signal`** keeps a handler per C signal; `raise` resets it to the default and calls it,
+  ends the program for the default (`0xC000013A` for `SIGINT`, 3 otherwise); MSVC's startup
+  filter `_seh_filter_exe` calls the handler of the signal an access violation, an illegal
+  instruction or an arithmetic exception stands for (`SIGFPE` with `_FPE_*`) and continues the
+  program, as Microsoft documents.
+- **Cost.** Nothing runs on any path until an exception: the tables are the program's own,
+  looked up by binary search; no allocation (the dispatch works on the thread's stack); the
+  whole of it is in the Windows layer (D18). No benchmark covers a throw yet (see "Not yet").
+- **Check.** `tests/windows-crt/eggcpp.cpp` is our own C++ program (test data, as D146's
+  eggpad): it catches by type, through a base class by reference, by value with a copy
+  constructor and with `catch (...)`, counts the destructors of the frames it leaves, rethrows,
+  throws from a catch block past a local of the same function, takes an access violation
+  (and reads it was a write), a division by zero and an illegal instruction (in code it
+  writes into executable memory) in `__try` blocks, runs a `__finally` block, continues from a
+  vectored handler and from a filter, raises `SIGINT` to its handler, and with `uncaught`
+  ends through `terminate`. `cargo xtask windows-programs` builds it with `/EHsc /MD` for x64
+  and ARM64, and again for x64 with `/d2FH4-` as `eggcpp-fh3` (`__CxxFrameHandler3`; FH4 is
+  x64's default); the Windows C runtime boot test (`cargo xtask windows-crt`, CI's x86_64 and
+  aarch64 QEMU jobs) runs all three and checks every line and status.
+- **Decided by research.** (1) ARM64's establisher frame is the stack pointer at the
+  function's entry, constant through the prolog and epilog, as Microsoft documents for
+  `RtlVirtualUnwind2`; x64's is the frame register less its offset, else `rsp` after the
+  prolog. (2) Funclets get the establisher in their second argument (`rdx`, `x1`); on ARM64
+  the layer also sets `x29` to the function's frame pointer before calling one, since LLVM's
+  catch funclets address the parent's locals through `x29` without setting it (MSVC's own
+  runtime is not public; this is what the evidence supports). (3) The `brk` immediates
+  (`#0xF000` to `#0xF004`) and their exception codes, and that other `brk`s are illegal
+  instructions. (4) FH4's header bits and field order are documented by Microsoft's blog;
+  the compressed number encoding, the unwind map's back offsets, the IP map's encoding and the
+  handler header are from public write-ups, with low to medium confidence, so CI's
+  `eggcpp.exe` (FH4 on x64) and `eggcpp-fh3.exe` check both; ARM64's default frame handler is
+  not documented, so both are supported on both CPUs, chosen by the handler the function's
+  unwind data names. (5) A catch funclet's return value is an index into the handler's
+  continuation addresses when it is below their count, else the address itself.
+- **Not yet.** The rest of the C runtime part 25 named: `setjmp`/`longjmp`, locales
+  (`setlocale` beyond "C"), the math library beyond `sqrtf`, wide streams (`fgetwc`, `fputwc`,
+  `_setmode`), low-level I/O (`_open`, `_read`, `_write`, `_close`); msvcp140 (the C++
+  standard library's DLL: iostreams, `std::string`'s out-of-line parts, `std::thread`);
+  `std::exception_ptr` (`__ExceptionPtrCreate` and its family), `std::uncaught_exceptions`,
+  `dynamic_cast` and `typeid` (`__RTDynamicCast`, `__RTtypeid`, `__std_type_info_name`,
+  which needs an undecorator); exceptions through the layer's own frames (a fault inside a
+  Windows function the program called, an exception thrown by a window procedure through
+  `DispatchMessage`, a nested exception raised inside a filter or a `__finally` block caught
+  outside its function: the walk ends at such a bridge); stack overflow
+  (`STATUS_STACK_OVERFLOW` needs an alternate signal stack and a guard page the layer
+  manages); collided unwinds and `EXCEPTION_NESTED_CALL`; ARM64's `x16` on resuming a
+  context; `RtlAddFunctionTable` and `RtlInstallFunctionTableCallback` for code a program
+  generates (it is unwound as a leaf); `RtlVirtualUnwind`'s context pointers; PAC-signed
+  return addresses (`pacibsp`) stripped from `lr`; a benchmark of a throw and catch
+  against Windows; 32-bit (`x86`) programs' frame-based SEH (part 71).

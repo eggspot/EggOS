@@ -635,8 +635,17 @@ The release path (the release-path review's issues #141-#145, after the items ab
   `environment`), `/etc/fonts/fonts.conf` in the base and the installer linking the fonts an
   app carries into `/Applications/.fonts`; `sysinfo` and `fadvise64`; CI's `gtk-app` job
   compiles its schemas inside EggOS, types, copies and pastes, saves and quits, and reads the
-  note back. Next: Windows programs on C++ (part 25); nib loading for apps like UDCalc (D175's
-  "Not yet"); a real Qt app (part 27).
+  note back. Windows programs with C++ and structured exception handling, **written,
+  unchecked** (D177, docs/windows-programs.md): an unwinder over the image's `.pdata` and
+  `.xdata` for x64 and ARM64, exception dispatch with vectored handlers and the
+  unhandled-exception filter, access violations, divisions by zero, illegal instructions and
+  breakpoints delivered to the program as Windows exceptions, `__try`/`__except`/`__finally`,
+  C++ `throw` and `catch` through `__CxxFrameHandler3` and `__CxxFrameHandler4` (destructors,
+  rethrow, throws from catch blocks), `signal` and `raise`; the Windows C runtime boot test runs
+  `eggcpp.exe`, our own C++ program built by MSVC in CI, on x86_64 and aarch64. Next: the rest
+  of the Windows C runtime (`setjmp`, locales, the math library, wide streams, `_open`) and
+  msvcp140 (D177's "Not yet"); nib loading for apps like UDCalc (D175's "Not yet"); a real Qt
+  app (part 27).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
