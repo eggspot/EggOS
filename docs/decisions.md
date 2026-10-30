@@ -15300,3 +15300,69 @@ the license, by an explicit instruction recorded here.
   session, `app install` translating at install with progress and the refused-site count,
   `app info` listing refused sites, the cache removed with its app, and the benchmarks
   `translated_loop_ratio` and `translate_install_bytes`.
+- **Slice 39e2b: x86_64 macOS programs run translated in the macOS layer on aarch64, and the
+  layers share their translation code.** The new crate `eggos-translation-loader`
+  (`userland/translation-loader`) holds what both layers use: the cache over a directory
+  (`cache_files`: `CacheFiles`, `load`, `store`, the paths and the `getdents64` names; `disk::Disk`
+  on aarch64), `trap::TrapCause` (without the Windows status, now the Windows layer's
+  `translated::trap_status`), `trap::guest_rva`, `trap::codegen_mode`, `executable_range` (the
+  layer's own code from its program headers), and on aarch64 `installed`: `install` maps the
+  code with a bridge per stub (`StubBridge`) and the Windows layer's procedure trampolines,
+  `new_guest_thread` makes a thread's state block, shadow ring and guest stack, and
+  `InstalledCode::call_guest` and `guest_fault` enter translated code and place its faults.
+  The Windows layer uses it instead of its own copies. The macOS layer no longer refuses an
+  x86_64 program (thin, or a fat file without an arm64 slice) on aarch64: it lays the program
+  out, lists its bound pointers and rebase targets (`translated::pointer_fixups`) before any
+  fixup, and `translation::prepare` loads the translation from the cache or translates it with
+  an import stub for every bound pointer without an addend (`translated::call_slots`). Binding
+  then runs as for a native program (imports the layer cannot honour for x86_64 code, the
+  unsuffixed 32-bit-inode `stat` family and `setjmp`/`longjmp`, bind to the missing-function
+  stub: `translated::binds_natively`), and `translation::install` gives each slot whose bound
+  address is in the layer's code a System V bridge (`sysv_variadic_bridge` when the function
+  is one of the layer's variadic entries, one integer argument for `__tlv_bootstrap` so a
+  thread-local access keeps every other register, else 14 integers) and points it at its own
+  guest address; data imports and class symbols keep their native addresses. Thread-local
+  variables work through that bridge to the layer's accessor. `main` is entered through the
+  entry trampoline (`translation::call_guest`, System V registers) on a guest stack made on
+  the thread's first call (its block in the thread's control block, `translated_thread`; the
+  GS base is the thread's `pthread_key_t` values, as Darwin keeps them at `gs:[8 * key]`). The
+  layer's variadic functions read a System V `va_list` whose pointer carries
+  `SYSV_VA_LIST_TAG` (`VaList` over `SystemVList` on both architectures; `vasprintf`'s copy
+  keeps the tag), and `long double` arguments from it as x87 values. The layer has a global
+  allocator over `libsystem::heap` on aarch64. A trap or fault in translated code ends the
+  program with a line naming the guest address (refused instructions and undiscovered code by
+  the stub's `x16`, the rest by the back-map) and status 128 plus the signal the cause stands
+  for (`SIGILL` for refused, invalid and undiscovered code, `SIGFPE`, `SIGTRAP`, else
+  `SIGSEGV`); a native call into the program's own code (a callback) ends it with a line
+  saying the layer called the program's function. Host tests: the shared cache's store, load,
+  damage, failed rename and eviction, its paths and directory records, traps, the back-map,
+  the mode and the layer's code range; the macOS call slots, bridge arguments, imports bound
+  natively, fault signals and the reports.
+- **Slice 39e2b decided by research.** Callbacks from the layer into translated code: a
+  generated native thunk per guest address, through one function that every site receiving a
+  guest function pointer uses (atexit and `__cxa_atexit` handlers, `qsort` and `bsearch`
+  comparators, signal handlers, `pthread_create` starts, Objective-C IMPs, blocks), with a
+  fault-based path (a native call into the non-executable guest image redirected to the entry
+  trampoline) only as a later safety net: one signal per call would make a comparator a few
+  microseconds, far from native speed, and a guest signal handler cannot be reached from the
+  layer's own handler. This slice ends such a call with the callback line instead.
+- **Slice 39e2b's choices made without research.** The shared code is a new crate rather than
+  a module of `eggos-translate`, which stays pure and free of `unsafe`; the installer takes the
+  bridges ready made, so each layer keeps its own conventions. A slot gets a bridge when the
+  address it was bound to lies in the layer's executable segments, read from its program
+  headers, rather than by a list of data symbols. An `LC_UNIXTHREAD` x86_64 program is refused
+  with a message (its `start` reads `argc` from the stack, which the entry call does not
+  build). The exit status of a translated fault is 128 plus the signal rather than death by
+  the signal, so the line is the last thing written.
+- **Not yet** (slice 39e2c and later): callbacks into translated code (above: atexit handlers,
+  comparators, signal handlers, threads, IMPs, blocks), so Objective-C programs whose own
+  methods are sent messages, C++ programs with static destructors and programs that start
+  threads do not run translated yet; the `objc_msgSend` family reaching a translated IMP (the
+  native `objc_msgSend` tail-calls the IMP, which must become a branch back into translated
+  code); exceptions and unwinding through translated frames; arguments past six integers or
+  eight vectors to the layer's functions by kind; the macos-programs QEMU session on aarch64
+  (its `macos-other` line still expects the refusal, `xtask/src/qemu.rs` ~1197: the x86_64
+  program now runs translated); `app install` translating at install with progress and the
+  refused-site count, `app info` listing refused sites, the cache removed with its app; the
+  benchmarks `translated_loop_ratio` and `translate_install_bytes`; `GetProcAddress` past 64
+  functions; freeing a thread's guest state when it ends.

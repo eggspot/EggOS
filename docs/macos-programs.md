@@ -34,8 +34,12 @@ or without added files, so a program in the host folder (`--apps`) runs too
 `hello` (or its path) and its arguments; the shell reports the exit status in `$?`, and an
 `abort()` as `Aborted` and `134`.
 
-A file without code for the machine's CPU (an x86_64-only program on aarch64, an arm64e
-program) is refused with a message naming the CPUs it has and status 126. On riscv64 (no macOS
+An x86_64-only program on aarch64 runs translated ahead of time ([translation](translation.md),
+D191): its code is translated on its first launch and cached under `/var/cache/eggos/translate`;
+C console programs run, while a program the layer must call back into (an `atexit` handler, a
+`qsort` comparator, a thread, its own Objective-C methods) ends with a line saying so. A file
+without code the machine can run (an arm64e program, an arm64-only program on x86_64) is
+refused with a message naming the CPUs it has and status 126. On riscv64 (no macOS
 program exists for it, and its image carries no macOS layer), a macOS program is refused with
 `Exec format error` and status 126. A Java class file, which starts with the same bytes as a fat
 file, is not taken for one.

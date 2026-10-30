@@ -23,9 +23,11 @@ Win64 bridges, the Windows loader on aarch64 and the cache on disk; slice 39e1 `
 bridges, `app install` accepting x64 Windows programs on aarch64, the translated QEMU run of
 an x64 Windows program, the System V AMD64 bridges and the `translate_block_16` benchmark;
 slice 39e2a the translator's input from an x86_64 Mach-O (instruction sections, function
-starts, exports, rebase targets, bound pointers) and the System V variadic bridge; the macOS
-loader on aarch64, translating at install and the translated-run benchmarks are later slices
-(D191's "Not yet").
+starts, exports, rebase targets, bound pointers) and the System V variadic bridge; slice 39e2b
+the macOS loader on aarch64 (C console programs; callbacks into translated code, Objective-C
+methods and threads are not yet) and the crate `eggos-translation-loader` the two layers share
+(the cache on disk, traps, installing the code, entering it); translating at install and the
+translated-run benchmarks are later slices (D191's "Not yet").
 
 ## What is translated
 
