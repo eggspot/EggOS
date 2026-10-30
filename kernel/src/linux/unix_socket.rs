@@ -1,6 +1,8 @@
 //! `AF_UNIX` stream sockets (D138): the objects behind `socket`, `socketpair`, `bind`,
 //! `listen`, `accept`, `connect` and the calls that move bytes and descriptors between
-//! processes; [`super::socket`] reads their arguments from the program.
+//! processes; [`super::socket`] reads their arguments from the program. A datagram socket
+//! (D188) is an open socket with a datagram side ([`Datagrams`],
+//! [`super::socket::unix_datagram`]), bound and found through the same registry.
 //!
 //! A [`UnixSocket`] is open, listening or connected. A connected pair shares one
 //! [`Connection`]: a queue of bytes towards each side, growing on demand up to
@@ -23,6 +25,7 @@
 use super::Errno;
 use super::descriptors::{FileKind, OpenFile};
 use super::poll::{WakeList, event};
+use super::socket::unix_datagram::Datagrams;
 use crate::sync::LeafSpinLock;
 use crate::vfs::Node;
 use alloc::boxed::Box;
@@ -691,6 +694,7 @@ pub struct UnixSocket {
     options: Options,
     inode: u64,
     wake_list: Arc<WakeList>,
+    datagrams: Option<Box<Datagrams>>,
 }
 
 impl core::fmt::Debug for UnixSocket {
@@ -721,6 +725,10 @@ pub enum NotConnected {
 
 impl UnixSocket {
     fn with(state: SocketState) -> Arc<Self> {
+        Self::built(state, None)
+    }
+
+    fn built(state: SocketState, datagrams: Option<Box<Datagrams>>) -> Arc<Self> {
         let wake_list = WakeList::shared();
         if let SocketState::Connected { connection, side } = &state {
             connection.attach(*side, &wake_list);
@@ -730,6 +738,7 @@ impl UnixSocket {
             options: Options::new(),
             inode: LAST_INODE.fetch_add(1, Ordering::Relaxed) + 1,
             wake_list,
+            datagrams,
         })
     }
 
@@ -738,6 +747,26 @@ impl UnixSocket {
         Self::with(SocketState::Open {
             address: Address::Unnamed,
         })
+    }
+
+    /// A new open datagram socket (`SOCK_DGRAM`, D188).
+    pub fn new_datagram() -> Arc<Self> {
+        Self::built(
+            SocketState::Open {
+                address: Address::Unnamed,
+            },
+            Some(Box::new(Datagrams::new())),
+        )
+    }
+
+    /// Its datagram side, if it is a datagram socket.
+    pub fn datagrams(&self) -> Option<&Datagrams> {
+        self.datagrams.as_deref()
+    }
+
+    /// Whether it is a datagram socket.
+    pub fn is_datagram(&self) -> bool {
+        self.datagrams.is_some()
     }
 
     /// The second side of `connection`, accepted.
@@ -1007,6 +1036,9 @@ impl UnixSocket {
     /// The `poll` events among `requested`: a listener is readable while connections wait; an
     /// open socket is writable and hung up, as on Linux.
     pub fn events(&self, requested: u16) -> u16 {
+        if let Some(datagrams) = &self.datagrams {
+            return datagrams.events(requested);
+        }
         match &*self.state.lock() {
             SocketState::Open { .. } | SocketState::Connecting { .. } => {
                 requested & (event::OUT | event::WRNORM) | event::HUP
@@ -1270,7 +1302,7 @@ pub fn proc_net_unix() -> Option<Vec<u8>> {
                 Arc::strong_count(socket),
                 0,
                 flags,
-                1,
+                if socket.is_datagram() { 2 } else { 1 },
                 state,
                 socket.inode()
             )?;

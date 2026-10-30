@@ -1,7 +1,8 @@
 //! The socket calls (D138): `socket`, `socketpair`, `bind`, `listen`, `accept`, `accept4`,
 //! `connect`, `sendto`, `sendmsg`, `recvfrom`, `recvmsg`, `getsockname`, `getpeername`,
 //! `shutdown`, `setsockopt` and `getsockopt`, and `read`, `write` and their vector forms on a
-//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]); `AF_INET` sockets have their
+//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]); `AF_UNIX` datagram sockets
+//! have their own module ([`unix_datagram`], D188), and `AF_INET` sockets have their
 //! own modules, datagrams [`inet`] (D157) and streams [`tcp`] (D158), which [`call`] hands
 //! their calls to.
 //!
@@ -39,6 +40,7 @@ use eggos_hal::user::UserContext;
 
 pub mod inet;
 pub mod tcp;
+pub mod unix_datagram;
 
 /// Local sockets (`AF_UNIX`, `PF_UNIX`).
 pub const AF_UNIX: u32 = 1;
@@ -159,6 +161,12 @@ pub fn call<P: Platform>(
     {
         return inet::call(process, thread, number, context, file, socket);
     }
+    if number != number::SOCKET
+        && number != number::SOCKETPAIR
+        && let Some((file, socket)) = unix_datagram::socket_at(thread, first)
+    {
+        return unix_datagram::call(process, thread, number, context, file, socket);
+    }
     let result = match number {
         number::SOCKET if first as u32 == inet::AF_INET => {
             inet::socket(process, thread, second, third)
@@ -229,7 +237,7 @@ fn deadline<P: Platform>(timeout: u64) -> u64 {
     }
 }
 
-fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<u32, Errno> {
+fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<(u32, u32), Errno> {
     let kind = kind as u32;
     let flags = kind & SOCKET_FLAGS;
     let base = kind & !SOCKET_FLAGS;
@@ -242,10 +250,10 @@ fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<u32, Errno> {
     if !matches!(protocol as u32, 0 | AF_UNIX) {
         return Err(Errno::EPROTONOSUPPORT);
     }
-    if base != SOCK_STREAM {
+    if base != SOCK_STREAM && base != unix_datagram::SOCK_DGRAM {
         return Err(Errno::ESOCKTNOSUPPORT);
     }
-    Ok(flags)
+    Ok((flags, base))
 }
 
 fn open_socket(socket: Arc<UnixSocket>, flags: u32) -> Arc<OpenFile> {
@@ -255,8 +263,8 @@ fn open_socket(socket: Arc<UnixSocket>, flags: u32) -> Arc<OpenFile> {
     ))
 }
 
-/// `socket(domain, type, protocol)`: a new open `AF_UNIX` stream socket's descriptor.
-/// `EINVAL` for unknown type bits, `EAFNOSUPPORT` for another family, `EPROTONOSUPPORT` for a
+/// `socket(domain, type, protocol)`: a new open `AF_UNIX` stream or datagram socket's
+/// descriptor. `EINVAL` for unknown type bits, `EAFNOSUPPORT` for another family, `EPROTONOSUPPORT` for a
 /// protocol, `ESOCKTNOSUPPORT` for another type, `EMFILE` without a free descriptor.
 pub fn socket<P: Platform>(
     process: &Process<P>,
@@ -265,8 +273,12 @@ pub fn socket<P: Platform>(
     kind: u64,
     protocol: u64,
 ) -> Result<u64, Errno> {
-    let flags = checked_type(domain, kind, protocol)?;
-    let file = open_socket(UnixSocket::new(), flags);
+    let (flags, base) = checked_type(domain, kind, protocol)?;
+    let socket = match base {
+        unix_datagram::SOCK_DGRAM => UnixSocket::new_datagram(),
+        _ => UnixSocket::new(),
+    };
+    let file = open_socket(socket, flags);
     let limit = open_file_limit(process);
     let opened =
         thread
@@ -287,8 +299,11 @@ pub fn socketpair<P: Platform>(
     protocol: u64,
     pair: u64,
 ) -> Result<u64, Errno> {
-    let flags = checked_type(domain, kind, protocol)?;
-    let (first, second) = UnixSocket::pair(credentials_of(process));
+    let (flags, base) = checked_type(domain, kind, protocol)?;
+    let (first, second) = match base {
+        unix_datagram::SOCK_DGRAM => unix_datagram::pair(),
+        _ => UnixSocket::pair(credentials_of(process)),
+    };
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let limit = open_file_limit(process);
     let files = thread.files();
@@ -673,7 +688,10 @@ pub fn getsockopt<P: Platform>(
         (bytes, 4)
     };
     let (bytes, size) = match name as u32 {
-        option::TYPE => int(SOCK_STREAM),
+        option::TYPE => int(match socket.is_datagram() {
+            true => unix_datagram::SOCK_DGRAM,
+            false => SOCK_STREAM,
+        }),
         option::DOMAIN => int(AF_UNIX),
         option::PROTOCOL => int(0),
         option::ERROR => {
@@ -731,11 +749,13 @@ pub fn ioctl<P: Platform>(
     if request != super::terminal::request::FIONREAD && request != TIOCOUTQ {
         return None;
     }
-    let count = match socket.connected() {
-        Ok((connection, side)) if request == TIOCOUTQ => connection.unread_sent(side),
-        Ok((connection, side)) => connection.available(side),
-        Err(NotConnected::Listening) => return Some(Err(Errno::EINVAL)),
-        Err(NotConnected::Open) => 0,
+    let count = match (socket.datagrams(), socket.connected()) {
+        (Some(_), _) if request == TIOCOUTQ => 0,
+        (Some(datagrams), _) => datagrams.next_length(),
+        (None, Ok((connection, side))) if request == TIOCOUTQ => connection.unread_sent(side),
+        (None, Ok((connection, side))) => connection.available(side),
+        (None, Err(NotConnected::Listening)) => return Some(Err(Errno::EINVAL)),
+        (None, Err(NotConnected::Open)) => 0,
     };
     let count = i32::try_from(count).unwrap_or(i32::MAX);
     Some(
@@ -848,7 +868,11 @@ fn find_target(
             BindingKey::Node(node)
         }
     };
-    unix_socket::find(&key).ok_or(Errno::ECONNREFUSED)
+    let socket = unix_socket::find(&key).ok_or(Errno::ECONNREFUSED)?;
+    match socket.is_datagram() {
+        true => Err(Errno::EPROTOTYPE),
+        false => Ok(socket),
+    }
 }
 
 fn connect<P: Platform>(
@@ -1127,6 +1151,9 @@ pub(super) fn write<P: Platform>(
     socket: &Arc<UnixSocket>,
     buffers: Iovecs,
 ) -> ControlFlow<()> {
+    if socket.is_datagram() {
+        return unix_datagram::write(process, thread, context, file, socket, buffers);
+    }
     let send = Send {
         file: Arc::clone(file),
         socket: Arc::clone(socket),
@@ -1298,6 +1325,9 @@ pub(super) fn read<P: Platform>(
     socket: &Arc<UnixSocket>,
     buffers: Iovecs,
 ) -> ControlFlow<()> {
+    if socket.is_datagram() {
+        return unix_datagram::read(process, thread, context, file, socket, buffers);
+    }
     let mut receive = Receive {
         file: Arc::clone(file),
         socket: Arc::clone(socket),

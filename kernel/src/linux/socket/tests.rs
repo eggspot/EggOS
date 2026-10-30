@@ -189,7 +189,7 @@ fn socket_s_errors_come_in_linux_s_order_and_its_flags_are_kept() {
         Errno::EPROTONOSUPPORT.result()
     );
     assert_eq!(
-        socket(&mut thread, UNIX, 2, 0),
+        socket(&mut thread, UNIX, 3, 0),
         Errno::ESOCKTNOSUPPORT.result()
     );
     assert_eq!(

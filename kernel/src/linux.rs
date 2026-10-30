@@ -55,6 +55,7 @@
 //! startup needs, then the file system's (M7).
 
 pub mod agent_channel;
+pub mod android_log;
 pub mod credentials;
 pub mod descriptors;
 pub mod epoll;
@@ -808,6 +809,9 @@ impl Errno {
     pub const EINPROGRESS: Self = Self(115);
     /// Too many buffers for one message (`sendmsg`, `recvmsg`).
     pub const EMSGSIZE: Self = Self(90);
+    /// A socket of the wrong type at the address: a stream socket's for a datagram, or the
+    /// other way round (`connect`, `sendto`, D188).
+    pub const EPROTOTYPE: Self = Self(91);
     /// A mapping that would end past the largest offset (`mmap` of a memfd), or a lock's range
     /// past it (`fcntl`, D171).
     pub const EOVERFLOW: Self = Self(75);
@@ -1796,6 +1800,9 @@ fn ioctl<P: Platform>(
         }
         FileKind::Regular(node) if crate::vfs::devfs::is_property_area(*node) => {
             properties::ioctl(process, request, argument)
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::is_android_log(*node) => {
+            android_log::ioctl(process, request, argument)
         }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);

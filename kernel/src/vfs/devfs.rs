@@ -11,13 +11,15 @@
 //! memory (`shm_open`, D169), and the pseudo-terminals (D187): `ptmx`, which makes one, and the
 //! directory `pts`, which lists the program side of each one whose controlling side is open
 //! ([`crate::linux::pseudo_terminal`]), and `__properties__`, Android's property area: a
-//! read-only regular file of the kernel's property service ([`crate::linux::properties`], D188).
+//! read-only regular file of the kernel's property service ([`crate::linux::properties`], D188),
+//! `android_log`, the Android log, a read-only regular file of records, and the directory
+//! `socket` with `logdw`, the socket Android programs log to ([`crate::linux::android_log`]).
 //! Each device has Linux's number and mode.
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, StorageError, Usage, magic,
 };
-use crate::linux::{properties, pseudo_terminal};
+use crate::linux::{android_log, properties, pseudo_terminal};
 use alloc::vec::Vec;
 use core::fmt::Write;
 
@@ -141,11 +143,18 @@ const SHM: u64 = 19;
 
 const PROPERTIES: u64 = 22;
 
+const SOCKETS: u64 = 23;
+
+const LOG_WRITER: u64 = 24;
+
+const ANDROID_LOG: u64 = 25;
+
 const DEVICE: (u32, u32) = (0, 5);
 
-const FILES: [(&[u8], u64); 17] = [
+const FILES: [(&[u8], u64); 19] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
+    (eggos_android_log::LOG_NAME, ANDROID_LOG),
     (b"console", CONSOLE),
     (b"fd", FD),
     (b"full", FULL),
@@ -154,6 +163,7 @@ const FILES: [(&[u8], u64); 17] = [
     (b"pts", PTS),
     (b"random", RANDOM),
     (b"shm", SHM),
+    (eggos_android_log::SOCKETS_NAME, SOCKETS),
     (b"stderr", STDERR),
     (b"stdin", STDIN),
     (b"stdout", STDOUT),
@@ -175,6 +185,17 @@ pub fn is_property_area(node: Node) -> bool {
     node.file_system().device() == DEVICE && node.id() == PROPERTIES
 }
 
+/// Whether `node` is `/dev/socket/logdw`, Android's log socket, which the kernel takes
+/// datagrams on itself.
+pub fn is_log_writer(node: Node) -> bool {
+    node.file_system().device() == DEVICE && node.id() == LOG_WRITER
+}
+
+/// Whether `node` is `/dev/android_log`, the Android log.
+pub fn is_android_log(node: Node) -> bool {
+    node.file_system().device() == DEVICE && node.id() == ANDROID_LOG
+}
+
 fn is_listed(node: u64) -> bool {
     node != AGENT || crate::agent_channel::is_present()
 }
@@ -192,8 +213,9 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 
 fn kind_of(node: u64) -> NodeKind {
     match node {
-        ROOT | SHM | PTS => NodeKind::Directory,
-        PROPERTIES => NodeKind::Regular,
+        ROOT | SHM | PTS | SOCKETS => NodeKind::Directory,
+        PROPERTIES | ANDROID_LOG => NodeKind::Regular,
+        LOG_WRITER => NodeKind::Socket,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
         _ => NodeKind::CharacterDevice,
     }
@@ -225,9 +247,10 @@ impl FileSystem for DeviceFiles {
         Attributes {
             kind: self.kind(node),
             permissions: match node {
-                ROOT | PTS => 0o755,
+                ROOT | PTS | SOCKETS => 0o755,
                 SHM => 0o1777,
-                PROPERTIES => 0o444,
+                PROPERTIES | ANDROID_LOG => 0o444,
+                LOG_WRITER => 0o222,
                 AGENT | CONSOLE => 0o600,
                 _ if link_of(node).is_some() => 0o777,
                 _ if pseudo_terminal_of(node).is_some() => 0o620,
@@ -239,6 +262,7 @@ impl FileSystem for DeviceFiles {
             group: 0,
             size: match node {
                 PROPERTIES => properties::size(),
+                ANDROID_LOG => android_log::size(),
                 _ => 0,
             },
             modified: 0,
@@ -253,20 +277,25 @@ impl FileSystem for DeviceFiles {
             PTS => parse_number(name)
                 .filter(|&number| pseudo_terminal::is_listed(number))
                 .map(pseudo_terminal_node),
+            SOCKETS if name == eggos_android_log::WRITER_NAME => Some(LOG_WRITER),
             _ => None,
         }
     }
 
     fn parent(&self, node: u64) -> u64 {
-        match pseudo_terminal_of(node) {
-            Some(_) => PTS,
-            None => ROOT,
+        match (node, pseudo_terminal_of(node)) {
+            (_, Some(_)) => PTS,
+            (LOG_WRITER, None) => SOCKETS,
+            (_, None) => ROOT,
         }
     }
 
     fn name(&self, node: u64) -> Name {
         if let Some(number) = pseudo_terminal_of(node) {
             return pseudo_terminal_name(number);
+        }
+        if node == LOG_WRITER {
+            return Name::new(eggos_android_log::WRITER_NAME);
         }
         Name::new(
             FILES
@@ -287,6 +316,7 @@ impl FileSystem for DeviceFiles {
     fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
         Ok(match node {
             PROPERTIES => properties::read_into(offset, buffer),
+            ANDROID_LOG => android_log::read_into(offset, buffer),
             _ => 0,
         })
     }
@@ -330,6 +360,11 @@ impl FileSystem for DeviceFiles {
                     kind: NodeKind::CharacterDevice,
                 })
             }
+            SOCKETS if position == 0 => Some(DirectoryEntry {
+                name: Name::new(eggos_android_log::WRITER_NAME),
+                node: LOG_WRITER,
+                kind: NodeKind::Socket,
+            }),
             _ => None,
         }
     }
@@ -361,6 +396,7 @@ mod tests {
             names(&files),
             [
                 &b"__properties__"[..],
+                b"android_log",
                 b"console",
                 b"fd",
                 b"full",
@@ -369,6 +405,7 @@ mod tests {
                 b"pts",
                 b"random",
                 b"shm",
+                b"socket",
                 b"stderr",
                 b"stdin",
                 b"stdout",
@@ -419,6 +456,25 @@ mod tests {
             &header[8..12],
             &eggos_android_properties::MAGIC.to_ne_bytes()
         );
+    }
+
+    #[test]
+    fn the_android_log_is_a_read_only_file_and_its_socket_is_in_the_socket_folder() {
+        let files = DeviceFiles;
+        let log = files.lookup(ROOT, b"android_log").unwrap();
+        assert_eq!(files.kind(log), NodeKind::Regular);
+        assert_eq!(files.attributes(log).permissions, 0o444);
+        let sockets = files.lookup(ROOT, b"socket").unwrap();
+        assert_eq!(files.kind(sockets), NodeKind::Directory);
+        let writer = files.lookup(sockets, b"logdw").unwrap();
+        assert_eq!(files.kind(writer), NodeKind::Socket);
+        assert_eq!(files.attributes(writer).permissions, 0o222);
+        assert_eq!(files.parent(writer), sockets);
+        assert_eq!(files.name(writer).as_bytes(), b"logdw");
+        assert_eq!(files.lookup(sockets, b"logdr"), None);
+        let entry = files.entry(sockets, 0).unwrap();
+        assert_eq!((entry.name.as_bytes(), entry.node), (&b"logdw"[..], writer));
+        assert!(files.entry(sockets, 1).is_none());
     }
 
     #[test]
