@@ -149,6 +149,23 @@ pub fn fail(message: &[u8]) -> ! {
     abort()
 }
 
+core::arch::global_asm!(
+    ".text",
+    ".p2align 2",
+    ".globl eggos_macos_chkstk_darwin",
+    ".hidden eggos_macos_chkstk_darwin",
+    "eggos_macos_chkstk_darwin:",
+    "ret",
+);
+
+unsafe extern "C" {
+    /// `___chkstk_darwin`, the stack probe Swift's large and dynamically sized frames call
+    /// first, which must keep every register: it touches nothing, since a stack's reserve is
+    /// mapped on demand below its top and only a frame larger than the guard gap below it could
+    /// pass the gap unnoticed (D180).
+    pub fn eggos_macos_chkstk_darwin();
+}
+
 pub extern "C" fn stack_chk_fail() -> ! {
     fail(b"stack buffer overflow detected")
 }

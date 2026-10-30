@@ -26,9 +26,13 @@ enum Counting {
     Never,
     Messages,
     Direct,
+    Swift,
 }
 
 fn counting(object: Id) -> Counting {
+    if crate::swift::uses_swift_counting(object.cast()) {
+        return Counting::Swift;
+    }
     match class::record_of(class::class_of(object)) {
         None => Counting::Never,
         Some(record) if record.has(IMMORTAL) => Counting::Never,
@@ -110,6 +114,10 @@ pub fn mark_weakly_referenced(object: Id) {
 pub fn try_retain(object: Id) -> Option<bool> {
     match counting(object) {
         Counting::Never => Some(true),
+        Counting::Swift => {
+            crate::swift::retain(object.cast());
+            Some(true)
+        }
         Counting::Messages => match is_deallocating(object) {
             true => None,
             false => Some(false),
@@ -164,6 +172,7 @@ pub extern "C" fn objc_retain(object: Id) -> Id {
     }
     match counting(object) {
         Counting::Never => object,
+        Counting::Swift => crate::swift::retain(object.cast()).cast(),
         Counting::Messages => send(object, sel!("retain")),
         Counting::Direct => direct_retain(object),
     }
@@ -175,6 +184,7 @@ pub extern "C" fn objc_release(object: Id) {
     }
     match counting(object) {
         Counting::Never => {}
+        Counting::Swift => crate::swift::release(object.cast()),
         Counting::Messages => {
             send(object, sel!("release"));
         }
@@ -189,7 +199,7 @@ pub extern "C" fn objc_autorelease(object: Id) -> Id {
     match counting(object) {
         Counting::Never => object,
         Counting::Messages => send(object, sel!("autorelease")),
-        Counting::Direct => autorelease::add(object),
+        Counting::Direct | Counting::Swift => autorelease::add(object),
     }
 }
 

@@ -26,6 +26,7 @@ pub const CORE_FOUNDATION: &[u8] =
     b"/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation";
 pub const APPKIT: &[u8] = b"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
 pub const COCOA: &[u8] = b"/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa";
+pub const LIBSWIFT_CORE: &[u8] = b"/usr/lib/swift/libswiftCore.dylib";
 
 const HEADER_SIZE: usize = 32;
 const FAT_ARCH_SIZE: usize = 20;

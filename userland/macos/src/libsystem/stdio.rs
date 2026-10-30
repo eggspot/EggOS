@@ -519,6 +519,17 @@ pub use self::{
     eggos_macos_sprintf_chk as sprintf_chk,
 };
 
+/// Writes `bytes` to the standard output stream, buffered as the C library's output is; false
+/// on an error.
+pub fn write_standard_output(bytes: &[u8]) -> bool {
+    // SAFETY: the standard output pointer is one of the layer's streams or one the program
+    // opened, used one call at a time.
+    match unsafe { stream(standard_output()) } {
+        Some(output) => write_bytes(output, bytes),
+        None => false,
+    }
+}
+
 /// # Safety
 /// `file` must be a stream and `text` a NUL-terminated string.
 pub unsafe extern "C" fn fputs(text: *const c_char, file: *mut Stream) -> c_int {

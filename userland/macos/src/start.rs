@@ -15,6 +15,7 @@ use crate::macho::{
     VM_PROT_WRITE,
 };
 use crate::objc;
+use crate::swift;
 use core::ffi::{c_char, c_int};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -140,6 +141,12 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             .libraries()
             .any(|library| Library::provided(library.path).is_some_and(Library::is_objc));
     if uses_objc && !(objc::set_up() && foundation::set_up()) {
+        return Err(Failure::Memory);
+    }
+    let uses_swift = program
+        .libraries()
+        .any(|library| Library::provided(library.path) == Some(Library::SwiftCore));
+    if uses_swift && !swift::set_up() {
         return Err(Failure::Memory);
     }
     let uses_appkit = program.libraries().any(|library| {
@@ -302,6 +309,7 @@ enum Library {
     CoreFoundation,
     AppKit,
     Cocoa,
+    SwiftCore,
 }
 
 impl Library {
@@ -313,6 +321,7 @@ impl Library {
             macho::CORE_FOUNDATION => Self::CoreFoundation,
             macho::APPKIT => Self::AppKit,
             macho::COCOA => Self::Cocoa,
+            macho::LIBSWIFT_CORE => Self::SwiftCore,
             _ => return None,
         })
     }
@@ -329,12 +338,14 @@ impl Library {
             Self::CoreFoundation => b"CoreFoundation",
             Self::AppKit => b"AppKit",
             Self::Cocoa => b"Cocoa",
+            Self::SwiftCore => b"libswiftCore",
         }
     }
 }
 
 fn resolve(name: &[u8]) -> Option<u64> {
-    objc::resolve(name)
+    swift::resolve(name)
+        .or_else(|| objc::resolve(name))
         .or_else(|| foundation::resolve(name))
         .or_else(|| appkit::resolve(name))
         .or_else(|| libsystem::resolve(name))

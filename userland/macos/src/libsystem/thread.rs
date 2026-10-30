@@ -57,6 +57,7 @@ pub struct Thread {
     pub alternate_stack: [usize; 3],
     pub autorelease_pools: usize,
     pub caught_exceptions: usize,
+    pub swift_accesses: usize,
     values: [usize; KEYS],
 }
 
@@ -82,6 +83,7 @@ impl Thread {
         alternate_stack: [0; 3],
         autorelease_pools: 0,
         caught_exceptions: 0,
+        swift_accesses: 0,
         values: [0; KEYS],
     };
 }

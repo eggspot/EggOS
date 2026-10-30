@@ -4,8 +4,9 @@
 //! layouts are pure logic with host tests, and `printf`'s formatting is the shared
 //! `eggos-c-format` crate's (D146); `start.rs` loads the
 //! program, standing in for dyld, `libsystem/` implements the libSystem functions it imports,
-//! `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142), and
-//! `appkit/` AppKit for GUI apps on the window server (D147), drawing through `eggos-macos-gui`.
+//! `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142),
+//! `appkit/` AppKit for GUI apps on the window server (D147), drawing through `eggos-macos-gui`,
+//! and `swift/` the Swift runtime of `libswiftCore` (D180).
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
@@ -107,6 +108,14 @@ mod start;
     )
 ))]
 mod stream_buffer;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
+mod swift;
 #[cfg(test)]
 mod tests;
 
