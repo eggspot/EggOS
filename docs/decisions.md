@@ -15249,3 +15249,54 @@ the license, by an explicit instruction recorded here.
   app; `GetProcAddress` past 64 functions; the translated compute-loop benchmark against the
   native loop and `translate_install_bytes`; `benchmarks/baseline.txt` lines for
   `translate_block_16` (added after the first measured run).
+- **Slice 39e2a: the translator's input from an x86_64 Mach-O and the System V variadic
+  bridge.** `userland/macos/src/translated.rs` (pure, host-tested; compiled in tests only until
+  the loader uses it) builds the translator's input from the laid-out, unrelocated program:
+  `sections` gives the sections that hold instructions (`S_ATTR_PURE_INSTRUCTIONS` or
+  `S_ATTR_SOME_INSTRUCTIONS` in an executable segment) as executable ones, or the executable
+  segments whole when there are none or one is outside the image, then every segment as a
+  readable one (jump tables in `__const`); `seeds` takes the entry point (`LC_MAIN`, or
+  `LC_UNIXTHREAD`'s `rip`, which `MachO::parse` already reads), every `LC_FUNCTION_STARTS`
+  start, the exports trie's regular symbols (`export_addresses`: re-exports, thread-local and
+  absolute symbols left out, malformed and cyclic tries refused) and the rebase targets that
+  land in code; `pointer_fixups` lists the rebase targets and the bound pointers
+  (`ImportSlot`: relative address, name, source, weak, addend) from the chained fixups, through
+  the new `ChainedFixups::walk` visitor that `apply` now uses too, or from the `LC_DYLD_INFO`
+  rebase, bind and lazy-bind opcodes, leaving the image as it is. `variadic_entry` reads the
+  layer's variadic entry (`mov x<named>, sp`, then `b` to the function that takes a
+  `va_list`) to give the named count and that function. The translator's
+  `bridge::sysv_variadic_bridge(named, native, dispatch)` stores `rdi`, `rsi`, `rdx`, `rcx`,
+  `r8`, `r9` and `xmm0`-`xmm7` in a 176-byte register save area on the native stack, builds a
+  System V `va_list` after it (`gp_offset` past the named integers, `fp_offset` 48, the
+  overflow area after the return address and any named stack arguments, the save area),
+  moves the named integers and passes the list's address with bit 0 set
+  (`SYSV_VA_LIST_TAG`) in `x<named>`. Host tests: the sections with and without instruction
+  sections, the bound pointers and rebase targets from chained fixups, the seeds, a whole
+  Mach-O input translating with its seeds as entries, the exports trie and its refusals, the
+  variadic entry, and the variadic bridge's saves, list, tag and order.
+- **Slice 39e2a's choices made without research.** A variadic import's bridge calls the
+  function its entry branches to, found by decoding the entry's two instructions, rather than
+  a table kept beside the `variadic!` macro (the entry is ours and its shape is checked, so a
+  changed macro fails the match and the import falls back to the plain bridge); the
+  `va_list` is told apart by a tag bit rather than a second set of `v` functions; every
+  non-variadic import gets the all-integer System V bridge, which also serves floating-point
+  arguments because `xmm0`-`xmm7` and `v0`-`v7` are the same registers in both conventions
+  (only functions with more than six integer or eight floating-point arguments would need
+  their kinds); a Mach-O with more instruction sections outside the image falls back to its
+  executable segments.
+- **Not yet** (slice 39e2b and later): everything of 39e1's "Not yet" for the macOS layer
+  except the input and the variadic bridge: the aarch64 loader in `start.rs` (lift
+  `Failure::OtherCpus` for x86_64 on aarch64, a global allocator for the layer on aarch64 over
+  `libsystem::heap`, the image laid out and the input built before fixups, function imports
+  (addend 0, resolving to the layer's code) bound to their slot's own guest address with a
+  stub and a bridge each, data imports and class symbols to native addresses, the cache, the
+  thread block, guest stack and shadow ring of the main thread, `main` or `start` entered
+  through the entry trampoline; the Windows layer's `CacheFiles`, `load`, `store`,
+  `guest_rva`, `TrapCause` and the install and instruction-cache code are to move into a
+  shared place rather than be copied); the aarch64 `VaList` reading a tagged System V list
+  (and `copy_va_list` copying its 24 bytes); reverse bridges for callbacks (blocks, IMPs,
+  `atexit`, signal handlers, `qsort`), `tlv_get_addr`, the `objc_msgSend` family (the native
+  `objc_msgSend` must not branch to a guest IMP), the macos-programs x86_64-on-aarch64 QEMU
+  session, `app install` translating at install with progress and the refused-site count,
+  `app info` listing refused sites, the cache removed with its app, and the benchmarks
+  `translated_loop_ratio` and `translate_install_bytes`.

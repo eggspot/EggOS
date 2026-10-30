@@ -21,8 +21,10 @@ veneers, the entries table, the back-map, the refused sites, the indirect dispat
 entry trampoline) and the `.tx` cache file format and directory policy; slice 39d2 the
 Win64 bridges, the Windows loader on aarch64 and the cache on disk; slice 39e1 `GetProcAddress`
 bridges, `app install` accepting x64 Windows programs on aarch64, the translated QEMU run of
-an x64 Windows program, the System V AMD64 bridges and the `translate_block_16` benchmark; the
-macOS loader, translating at install and the translated-run benchmarks are later slices
+an x64 Windows program, the System V AMD64 bridges and the `translate_block_16` benchmark;
+slice 39e2a the translator's input from an x86_64 Mach-O (instruction sections, function
+starts, exports, rebase targets, bound pointers) and the System V variadic bridge; the macOS
+loader on aarch64, translating at install and the translated-run benchmarks are later slices
 (D191's "Not yet").
 
 ## What is translated
@@ -164,8 +166,13 @@ export's signature:
   call, the result comes back in `rax`/`xmm0`, and `x18` is reloaded;
 - **SysV (macOS) to AAPCS64**: `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` and `xmm0`-`xmm7`;
   every XMM register is caller-saved there;
-- **variadic functions** get a pointer to the guest's argument registers and stack, which the
-  layers' variadic entries (`printf`, `execl`, ...) read in the guest's convention;
+- **variadic functions**: Win64 passes variadic values like other integers, so its bridge is the
+  plain one; System V passes them in the registers left after the named arguments (`al`
+  counting the vector ones), then on the stack, while Darwin arm64 puts them on the stack, so
+  the macOS bridge (`sysv_variadic_bridge`) stores the six integer argument registers and
+  `xmm0`-`xmm7` in a register save area on the native stack, builds a System V `va_list` next
+  to it and calls the layer's function that takes a `va_list` (the one its variadic entry
+  branches to) with the list's address, bit 0 set so the layer reads it as System V's;
 - **callbacks** (entry points, TLS callbacks, window procedures, thread starts, `atexit`,
   `qsort` comparators, exception handlers, signal handlers) go the other way: the layers call
   program code through one "call the program" function that, in a translated process, enters
