@@ -12,6 +12,7 @@ eggos-eggfs = { path = "../eggfs" }
 eggos-hal = { path = "../hal" }
 eggos-net = { path = "../net" }
 eggos-settings-file = { path = "../settings-file" }
+eggos-android-properties = { path = "../android-properties" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-wayland = { path = "../wayland" }
 

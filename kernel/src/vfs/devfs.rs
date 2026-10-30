@@ -10,10 +10,14 @@
 //! one, the directory `shm`, which the boot mounts a memory file system on for POSIX shared
 //! memory (`shm_open`, D169), and the pseudo-terminals (D187): `ptmx`, which makes one, and the
 //! directory `pts`, which lists the program side of each one whose controlling side is open
-//! ([`crate::linux::pseudo_terminal`]). Each device has Linux's number and mode.
+//! ([`crate::linux::pseudo_terminal`]), and `__properties__`, Android's property area: a
+//! read-only regular file of the kernel's property service ([`crate::linux::properties`], D188).
+//! Each device has Linux's number and mode.
 
-use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Usage, magic};
-use crate::linux::pseudo_terminal;
+use super::{
+    Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, StorageError, Usage, magic,
+};
+use crate::linux::{properties, pseudo_terminal};
 use alloc::vec::Vec;
 use core::fmt::Write;
 
@@ -135,9 +139,12 @@ const STDERR: u64 = 18;
 
 const SHM: u64 = 19;
 
+const PROPERTIES: u64 = 22;
+
 const DEVICE: (u32, u32) = (0, 5);
 
-const FILES: [(&[u8], u64); 16] = [
+const FILES: [(&[u8], u64); 17] = [
+    (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (b"console", CONSOLE),
     (b"fd", FD),
@@ -163,6 +170,11 @@ const LINKS: [(u64, &[u8]); 4] = [
     (STDERR, b"/proc/self/fd/2"),
 ];
 
+/// Whether `node` is `/dev/__properties__`, the property area.
+pub fn is_property_area(node: Node) -> bool {
+    node.file_system().device() == DEVICE && node.id() == PROPERTIES
+}
+
 fn is_listed(node: u64) -> bool {
     node != AGENT || crate::agent_channel::is_present()
 }
@@ -181,6 +193,7 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 fn kind_of(node: u64) -> NodeKind {
     match node {
         ROOT | SHM | PTS => NodeKind::Directory,
+        PROPERTIES => NodeKind::Regular,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
         _ => NodeKind::CharacterDevice,
     }
@@ -214,6 +227,7 @@ impl FileSystem for DeviceFiles {
             permissions: match node {
                 ROOT | PTS => 0o755,
                 SHM => 0o1777,
+                PROPERTIES => 0o444,
                 AGENT | CONSOLE => 0o600,
                 _ if link_of(node).is_some() => 0o777,
                 _ if pseudo_terminal_of(node).is_some() => 0o620,
@@ -223,7 +237,10 @@ impl FileSystem for DeviceFiles {
             links: if directory { 2 } else { 1 },
             owner: 0,
             group: 0,
-            size: 0,
+            size: match node {
+                PROPERTIES => properties::size(),
+                _ => 0,
+            },
             modified: 0,
         }
     }
@@ -261,6 +278,17 @@ impl FileSystem for DeviceFiles {
 
     fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
         &[]
+    }
+
+    fn copies_contents(&self) -> bool {
+        true
+    }
+
+    fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
+        Ok(match node {
+            PROPERTIES => properties::read_into(offset, buffer),
+            _ => 0,
+        })
     }
 
     fn character_device(&self, node: u64) -> Option<(u32, u32)> {
@@ -332,7 +360,8 @@ mod tests {
         assert_eq!(
             names(&files),
             [
-                &b"console"[..],
+                &b"__properties__"[..],
+                b"console",
                 b"fd",
                 b"full",
                 b"null",
@@ -370,6 +399,26 @@ mod tests {
             assert_eq!(files.attributes(node).permissions, permissions);
             assert_eq!(files.name(node).as_bytes(), name);
         }
+    }
+
+    #[test]
+    fn the_property_area_is_a_read_only_regular_file_of_root_s() {
+        let files = DeviceFiles;
+        let node = files.lookup(ROOT, b"__properties__").unwrap();
+        assert_eq!(files.kind(node), NodeKind::Regular);
+        assert_eq!(files.character_device(node), None);
+        let attributes = files.attributes(node);
+        assert_eq!(
+            (attributes.permissions, attributes.owner, attributes.group),
+            (0o444, 0, 0)
+        );
+        assert!(attributes.size >= eggos_android_properties::SMALLEST_AREA as u64);
+        let mut header = [0; 16];
+        assert_eq!(files.read_into(node, 0, &mut header).ok(), Some(16));
+        assert_eq!(
+            &header[8..12],
+            &eggos_android_properties::MAGIC.to_ne_bytes()
+        );
     }
 
     #[test]
@@ -420,7 +469,7 @@ mod tests {
         assert!(!names(&files).contains(&b"agent".to_vec()));
         crate::agent_channel::install_fake();
         assert_eq!(files.lookup(ROOT, b"agent"), Some(AGENT));
-        let entry = files.entry(ROOT, 0).unwrap();
+        let entry = files.entry(ROOT, 1).unwrap();
         assert_eq!((entry.name.as_bytes(), entry.node), (&b"agent"[..], AGENT));
         assert_eq!(files.character_device(AGENT), Some(AGENT_DEVICE));
         assert_eq!(files.attributes(AGENT).permissions, 0o600);

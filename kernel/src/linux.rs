@@ -78,6 +78,7 @@ pub mod poll;
 pub mod proc;
 pub mod process_ids;
 pub mod process_table;
+pub mod properties;
 pub mod pseudo_terminal;
 pub mod random;
 pub mod reboot;
@@ -1792,6 +1793,9 @@ fn ioctl<P: Platform>(
         }
         FileKind::InetSocket(socket) => {
             socket::inet::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::is_property_area(*node) => {
+            properties::ioctl(process, request, argument)
         }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);

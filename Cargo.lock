@@ -7,6 +7,10 @@ name = "eggos-android-console"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-android-properties"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-app"
 version = "0.2.0"
 dependencies = [
@@ -42,6 +46,7 @@ version = "0.2.0"
 name = "eggos-coreutils"
 version = "0.2.0"
 dependencies = [
+ "eggos-android-properties",
  "eggos-app",
  "eggos-calendar",
  "eggos-commands",
@@ -143,6 +148,7 @@ dependencies = [
 name = "eggos-kernel"
 version = "0.2.0"
 dependencies = [
+ "eggos-android-properties",
  "eggos-app-manifest",
  "eggos-calendar",
  "eggos-drivers",

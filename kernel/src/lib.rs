@@ -115,6 +115,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 }
                 mount_disks::<P>(console)?;
                 mount_system_file_systems::<P>();
+                linux::properties::load_build_properties();
                 if BOOT_MODE == BootMode::Init {
                     net::start::<P>(console)?;
                     init::run(console, &mut memory)?;
