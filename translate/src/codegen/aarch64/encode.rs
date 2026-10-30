@@ -421,6 +421,13 @@ pub fn load_literal(t: Reg, offset_words: i32) -> u32 {
     0x5800_0000 | (((offset_words as u32) & 0x7_FFFF) << 5) | rd(t)
 }
 
+/// `ldr` (`load`) or `str` of the given size at `[n]`, then `n += offset` (post-index, `offset`
+/// in -256 to 255).
+pub fn load_store_post_index(load: bool, access: Access, t: Reg, n: Reg, offset: i16) -> u32 {
+    let base = if load { 0x3840_0400 } else { 0x3800_0400 };
+    base | (access.size_field() << 30) | (((offset as u32) & 0x1FF) << 12) | rn(n) | rd(t)
+}
+
 /// The ordered and exclusive single-register accesses, all addressing `[n]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ordered {

@@ -225,8 +225,8 @@ fn every_integer_form_lowers() {
 
 #[test]
 fn an_instruction_left_to_a_later_slice_is_reported() {
-    let error = translate_block(&straight(&[0xA4]), ORDERED, Flags::NONE).unwrap_err();
-    assert_eq!(error.kind, LowerErrorKind::Unhandled(Mnemonic::Movs));
+    let error = translate_block(&straight(&[0x0F, 0x05]), ORDERED, Flags::NONE).unwrap_err();
+    assert_eq!(error.kind, LowerErrorKind::Unhandled(Mnemonic::Syscall));
     assert_eq!(error.address, BASE);
 }
 
@@ -400,6 +400,134 @@ fn every_sse_and_system_form_lowers() {
         &[0x0F, 0xC7, 0x08],
         &[0x48, 0x0F, 0xC7, 0x08],
         &[0x0F, 0xAE, 0x38],
+    ];
+    for mode in [ORDERED, TSO, CodegenMode::default()] {
+        for bytes in sequences {
+            let block = straight(bytes);
+            assert!(
+                translate_block(&block, mode, Flags::ALL).is_ok(),
+                "{bytes:02x?} in {mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rep_movsb_is_two_post_index_loops_chosen_by_the_direction_byte() {
+    let block = translate_block(&straight(&[0xF3, 0xA4]), TSO, Flags::NONE).unwrap();
+    assert_eq!(
+        block.code,
+        [
+            0xB400_0181,
+            0x3940_48BA,
+            0x3700_00DA,
+            0x3840_14D6,
+            0x3800_14F6,
+            0xD100_0421,
+            0xB5FF_FFA1,
+            0x1400_0005,
+            0x385F_F4D6,
+            0x381F_F4F6,
+            0xD100_0421,
+            0xB5FF_FFA1,
+            UNLINKED,
+        ]
+    );
+}
+
+#[test]
+fn fchs_negates_st0_in_the_state_block() {
+    let block = translate_block(&straight(&[0xD9, 0xE0]), ORDERED, Flags::NONE).unwrap();
+    assert_eq!(
+        block.code,
+        [
+            0x3940_72B9,
+            0x8B19_0EBA,
+            0xFD40_1351,
+            0x1E61_4231,
+            0xFD00_1351,
+            UNLINKED,
+        ]
+    );
+}
+
+#[test]
+fn every_x87_form_lowers() {
+    let sequences: [&[u8]; 42] = [
+        &[0xDD, 0x00],
+        &[0xD9, 0x00],
+        &[0xDB, 0x2C, 0x24],
+        &[0xD9, 0xC1],
+        &[0xDD, 0x18],
+        &[0xD9, 0x10],
+        &[0xDB, 0x3C, 0x24],
+        &[0xDD, 0xD9],
+        &[0xDF, 0x00],
+        &[0xDB, 0x00],
+        &[0xDF, 0x2C, 0x24],
+        &[0xDB, 0x10],
+        &[0xDF, 0x18],
+        &[0xDF, 0x3C, 0x24],
+        &[0xD8, 0xC1],
+        &[0xDC, 0x08],
+        &[0xDE, 0xC1],
+        &[0xDC, 0xE9],
+        &[0xDE, 0xF9],
+        &[0xD8, 0x70, 0x08],
+        &[0xD8, 0x38],
+        &[0xD9, 0xE0],
+        &[0xD9, 0xE1],
+        &[0xD9, 0xFA],
+        &[0xD9, 0xFC],
+        &[0xD9, 0xE8],
+        &[0xD9, 0xEE],
+        &[0xD9, 0xEB],
+        &[0xD9, 0xC9],
+        &[0xDB, 0xF1],
+        &[0xDF, 0xE9],
+        &[0xD8, 0xD1],
+        &[0xDD, 0xE9],
+        &[0xDC, 0x18],
+        &[0xDE, 0xD9],
+        &[0xDA, 0xE9],
+        &[0xD9, 0x28],
+        &[0xD9, 0x38],
+        &[0xDD, 0x38],
+        &[0xDF, 0xE0],
+        &[0xDB, 0xE3],
+        &[0x9B, 0xDB, 0xE2],
+    ];
+    for mode in [ORDERED, TSO, CodegenMode::default()] {
+        for bytes in sequences {
+            let block = straight(bytes);
+            assert!(
+                translate_block(&block, mode, Flags::ALL).is_ok(),
+                "{bytes:02x?} in {mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_string_and_legacy_integer_form_lowers() {
+    let sequences: [&[u8]; 17] = [
+        &[0xA4],
+        &[0xF3, 0xA4],
+        &[0xF3, 0x48, 0xA5],
+        &[0xF3, 0xAA],
+        &[0x66, 0xAB],
+        &[0xAC],
+        &[0xF3, 0xA6],
+        &[0xF2, 0xAE],
+        &[0x48, 0xA7],
+        &[0xF2, 0x48, 0xAF],
+        &[0xD7],
+        &[0xC8, 0x20, 0x00, 0x00],
+        &[0xC8, 0x10, 0x00, 0x02],
+        &[0xD0, 0xD0],
+        &[0x48, 0xD3, 0xD8],
+        &[0xC1, 0xD0, 0x05],
+        &[0xD2, 0x18],
     ];
     for mode in [ORDERED, TSO, CodegenMode::default()] {
         for bytes in sequences {

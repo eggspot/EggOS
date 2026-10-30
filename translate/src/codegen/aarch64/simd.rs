@@ -460,6 +460,11 @@ pub fn convert_to_float(size: Size, float: Float, d: u8, n: Reg) -> u32 {
     0x1E22_0000 | sf(size) | float.bit22() | gn(n) | vd(d)
 }
 
+/// `ucvtf s|d<d>, w|x<n>`: the register read as unsigned.
+pub fn convert_unsigned_to_float(size: Size, float: Float, d: u8, n: Reg) -> u32 {
+    0x1E23_0000 | sf(size) | float.bit22() | gn(n) | vd(d)
+}
+
 /// `fcvtzs w|x<d>, s|d<n>`: toward zero, saturating, NaN is 0.
 pub fn convert_to_integer(size: Size, float: Float, d: Reg, n: u8) -> u32 {
     0x1E38_0000 | sf(size) | float.bit22() | vn(n) | gd(d)

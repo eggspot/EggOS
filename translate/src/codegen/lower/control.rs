@@ -549,3 +549,53 @@ impl Lowerer {
         Ok(())
     }
 }
+
+const ENTER_NESTING_MASK: i64 = 31;
+
+impl Lowerer {
+    pub(super) fn enter(&mut self, instruction: &Instruction) -> Lowered {
+        if instruction.width != Width::Qword {
+            return Err(self.operands_error());
+        }
+        let (frame_bytes, level) = match *instruction.operands() {
+            [Operand::Immediate(frame_bytes), Operand::Immediate(level)] => {
+                (frame_bytes & 0xFFFF, (level & ENTER_NESTING_MASK) as u8)
+            }
+            _ => return Err(self.operands_error()),
+        };
+        let frame_pointer = super::guest(Gpr::RBP);
+        self.push_quadword(frame_pointer);
+        self.copy(Size::X, T0, GUEST_STACK);
+        if level > 0 {
+            self.copy(Size::X, T1, frame_pointer);
+            for _ in 1..level {
+                self.emit(encode::add_sub_immediate(
+                    AddSub::Sub,
+                    Size::X,
+                    T1,
+                    T1,
+                    8,
+                    false,
+                ));
+                self.load_memory(T1, Width::Qword, T2);
+                self.push_quadword(T2);
+            }
+            self.push_quadword(T0);
+        }
+        self.copy(Size::X, frame_pointer, T0);
+        self.add_constant(GUEST_STACK, GUEST_STACK, -frame_bytes);
+        Ok(())
+    }
+
+    fn push_quadword(&mut self, value: Reg) {
+        self.emit(encode::add_sub_immediate(
+            AddSub::Sub,
+            Size::X,
+            GUEST_STACK,
+            GUEST_STACK,
+            8,
+            false,
+        ));
+        self.store_memory(GUEST_STACK, Width::Qword, value);
+    }
+}

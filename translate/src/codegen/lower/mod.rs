@@ -18,7 +18,9 @@ mod arith;
 mod bits;
 mod control;
 mod sse;
+mod string;
 mod system;
+mod x87;
 
 #[cfg(test)]
 mod tests;
@@ -221,6 +223,7 @@ impl Lowerer {
             M::ExtendIntoRdx => self.extend_into_rdx(instruction.width),
             M::Shl | M::Shr | M::Sar => self.shift(instruction),
             M::Rol | M::Ror => self.rotate(instruction),
+            M::Rcl | M::Rcr => self.rotate_through_carry(instruction),
             M::Shld | M::Shrd => self.double_shift(instruction),
             M::Bt | M::Bts | M::Btr | M::Btc => self.bit_test(instruction),
             M::Bsf | M::Tzcnt | M::Bsr => self.bit_scan(instruction),
@@ -235,6 +238,9 @@ impl Lowerer {
             M::Push => self.push(instruction),
             M::Pop => self.pop(instruction),
             M::Leave => self.leave(instruction.width),
+            M::Enter => self.enter(instruction),
+            M::Movs | M::Stos | M::Lods | M::Cmps | M::Scas => self.string(instruction),
+            M::Xlat => self.translate_byte(),
             M::Jmp => self.jump(instruction),
             M::Jcc(condition) => self.conditional_jump(instruction, condition),
             M::Loop | M::Loope | M::Loopne | M::Jrcxz => self.count_jump(instruction),
@@ -264,7 +270,7 @@ impl Lowerer {
                 _ => self.trap(trap::GENERAL_PROTECTION),
             },
             other => {
-                if self.sse(instruction)? || self.system(instruction)? {
+                if self.sse(instruction)? || self.system(instruction)? || self.x87(instruction)? {
                     Ok(())
                 } else {
                     Err(LowerErrorKind::Unhandled(other))

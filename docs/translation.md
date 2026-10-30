@@ -14,9 +14,10 @@ other translators.
 Status: slice 39a built the x86-64 decoder and slice 39b the AArch64 encoder, the block
 former, the flag liveness pass and the lowering of the integer, stack and control-flow
 instructions; slice 39c lowered SSE and SSE2, MXCSR, `cpuid`, `rdtsc`, `xgetbv`, `lahf`, `sahf`,
-`pushf`, `popf`, `cld`, `std`, `cmpxchg8b`, `cmpxchg16b` and the refused-site stubs; x87 and
-strings (slice 39c2), the bridges, the cache and the install and launch integration are slices
-39c2 to 39e (D191's "Not yet").
+`pushf`, `popf`, `cld`, `std`, `cmpxchg8b`, `cmpxchg16b` and the refused-site stubs; slice 39c2
+lowered the minimal x87 set, the string instructions, `xlat`, `enter`, `rcl` and `rcr`; the
+bridges, the cache and the install and launch integration are slices 39d and 39e (D191's "Not
+yet").
 
 ## What is translated
 
@@ -28,13 +29,13 @@ strings (slice 39c2), the bridges, the cache and the install and launch integrat
 | Atomics and order | `lock` with `add` ... `xor`, `inc`, `dec`, `not`, `neg`, `xadd`, `xchg`, `cmpxchg`, `cmpxchg8b`, `cmpxchg16b`, `bts`/`btr`/`btc`; `mfence`, `lfence`, `sfence`, `pause` |
 | Strings | `movs`, `cmps`, `stos`, `lods`, `scas` with `rep`/`repe`/`repne`, `xlat` |
 | SSE, SSE2 | scalar and packed single and double arithmetic, compares, conversions, moves (aligned, unaligned, half, non-temporal), logic, shuffles and unpacks, the 128-bit integer set (`paddb` ... `pxor`, shifts, `pmovmskb`, `pinsrw`, `pextrw`, `pshufd`, ...), `movd`/`movq`, `ldmxcsr`, `stmxcsr` |
-| x87, minimal | `fld`/`fst`/`fstp` (32, 64, 80-bit memory and `st(i)`), `fild`/`fist`/`fistp` (16, 32, 64), `fadd`, `fsub`, `fsubr`, `fmul`, `fdiv`, `fdivr` and their `p` forms, `fxch`, `fchs`, `fabs`, `fld1`, `fldz`, `fcomi`, `fucomi` (and `p`), `fldcw`, `fnstcw`, `fnstsw`, `fnclex`, `fninit`, `fwait` |
+| x87, minimal | `fld`/`fst`/`fstp` (32, 64, 80-bit memory and `st(i)`), `fild`/`fist`/`fistp` (16, 32, 64), `fadd`, `fsub`, `fsubr`, `fmul`, `fdiv`, `fdivr` and their `p` forms, `fxch`, `fchs`, `fabs`, `fsqrt`, `frndint`, `fld1`, `fldz`, `fldpi`, `fldl2e`, `fldl2t`, `fldlg2`, `fldln2`, `fcom`, `fucom` (and `p`, `pp`), `fcomi`, `fucomi` (and `p`), `fldcw`, `fnstcw`, `fnstsw`, `fnclex`, `fninit`, `fwait` |
 | System | `syscall` (macOS programs that trap directly), `cpuid`, `rdtsc`, `rdtscp`, `xgetbv`, `rdrand`, `rdseed`, `endbr64`, `nop` forms, prefetches, `clflush` |
 
 Not translated, with the reason the decoder gives (`Refusal`): VEX (AVX, AVX2, FMA, BMI2,
 BMI1's `andn`/`bextr`/`blsi`...), EVEX (AVX-512), XOP, MMX and 3DNow!, SSE3, the `0F 38` and
 `0F 3A` maps (SSSE3, SSE4.1, SSE4.2, AES-NI, SHA, `movbe`, `crc32`), x87 beyond the subset
-(transcendentals, BCD, `fcom`, environment and state saves), `fxsave`/`xsave`, the
+(transcendentals, `fprem`, the integer-operand arithmetic `fiadd` ..., BCD, environment and state saves), `fxsave`/`xsave`, the
 address-size prefix on memory operands, the operand-size prefix on near branches (Intel and
 AMD disagree), and system, I/O, segment, far-transfer and transactional instructions. SSE3,
 SSSE3 and SSE4.1/4.2 come next, since programs built for `x86-64-v2` (Windows 11 24H2's

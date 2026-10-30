@@ -172,3 +172,15 @@ fn system_and_pair_forms() {
     assert_eq!(ldaxp(X0, X1, X2), 0xC87F_8440);
     assert_eq!(stlxp(X3, X0, X1, X2), 0xC823_8440);
 }
+
+#[test]
+fn unsigned_integer_to_float() {
+    assert_eq!(
+        convert_unsigned_to_float(Size::X, Float::Double, 0, X1),
+        0x9E63_0020
+    );
+    assert_eq!(
+        convert_unsigned_to_float(Size::W, Float::Single, 2, X3),
+        0x1E23_0062
+    );
+}

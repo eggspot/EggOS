@@ -641,6 +641,32 @@ pub enum Mnemonic {
     Fninit,
     /// `fwait`.
     Fwait,
+    /// `fcom`: compares `st(0)` into the status word's condition codes.
+    Fcom,
+    /// `fcomp`.
+    Fcomp,
+    /// `fcompp`: compares `st(0)` with `st(1)` and pops both.
+    Fcompp,
+    /// `fucom`.
+    Fucom,
+    /// `fucomp`.
+    Fucomp,
+    /// `fucompp`.
+    Fucompp,
+    /// `fsqrt`.
+    Fsqrt,
+    /// `frndint`.
+    Frndint,
+    /// `fldpi`.
+    Fldpi,
+    /// `fldl2e`.
+    Fldl2e,
+    /// `fldl2t`.
+    Fldl2t,
+    /// `fldlg2`.
+    Fldlg2,
+    /// `fldln2`.
+    Fldln2,
 }
 
 impl Mnemonic {

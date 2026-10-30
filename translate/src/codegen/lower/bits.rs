@@ -588,3 +588,82 @@ impl Lowerer {
         Ok(())
     }
 }
+
+impl Lowerer {
+    pub(super) fn rotate_through_carry(&mut self, instruction: &Instruction) -> Lowered {
+        let place = self.place(&self.operand(instruction, 0)?)?;
+        let width = place.width();
+        let left = instruction.mnemonic == Mnemonic::Rcl;
+        let count = Self::count(instruction);
+        if count == Count::Immediate(0) {
+            return Ok(());
+        }
+        let done = self.asm.label();
+        let repeat = self.asm.label();
+        self.ensure_carry(CarrySense::Direct);
+        let remaining = match count {
+            Count::Immediate(value) => {
+                self.move_immediate(Size::W, T1, u64::from(value));
+                T1
+            }
+            Count::Cl => {
+                let count = self.masked_cl(width);
+                self.asm.cbz(Size::W, count, done, false);
+                count
+            }
+        };
+        let value = self.load(place, T0);
+        if value != T0 {
+            self.copy(Size::X, T0, value);
+        }
+        self.emit(encode::cset(Size::W, T2, crate::codegen::aarch64::Cond::Cs));
+        let top = bits(width) - 1;
+        self.asm.bind(repeat);
+        if left {
+            self.ubfx(Size::X, T3, T0, top, 1);
+            self.emit(encode::add_sub_shifted(
+                AddSub::Add,
+                Size::X,
+                T0,
+                T2,
+                T0,
+                Shift::Lsl,
+                1,
+            ));
+        } else {
+            self.ubfx(Size::X, T3, T0, 0, 1);
+            self.ubfx(Size::X, T0, T0, 1, top);
+            self.emit(encode::logical_shifted(
+                Logic::Orr,
+                false,
+                Size::X,
+                T0,
+                T0,
+                T2,
+                Shift::Lsl,
+                top,
+            ));
+        }
+        self.copy(Size::X, T2, T3);
+        self.emit(encode::add_sub_immediate(
+            AddSub::Sub,
+            Size::W,
+            remaining,
+            remaining,
+            1,
+            false,
+        ));
+        self.asm.cbz(Size::W, remaining, repeat, true);
+        self.msb(T4, T0, width);
+        if left {
+            self.xor_bits(T4, T4, T2);
+        } else {
+            self.ubfx(Size::X, T5, T0, top - 1, 1);
+            self.xor_bits(T4, T4, T5);
+        }
+        self.insert_carry_overflow(Some(T2), Some(T4));
+        self.store(place, T0);
+        self.asm.bind(done);
+        Ok(())
+    }
+}

@@ -54,7 +54,6 @@ pub(super) const CPUID_LEAVES: [(u32, [u32; 4]); 8] = [
 const TIME_STAMP_HZ: u64 = 1_000_000_000;
 const MXCSR_DENORMALS_ARE_ZERO: u8 = 6;
 const MXCSR_ROUNDING_LOW: u8 = 13;
-const MXCSR_ROUNDING_HIGH: u8 = 14;
 const MXCSR_FLUSH_TO_ZERO: u8 = 15;
 const FPCR_ROUNDING_LOW: u8 = 22;
 const FPCR_ROUNDING_HIGH: u8 = 23;
@@ -246,10 +245,7 @@ impl Lowerer {
         let value = self.load(place, T0);
         self.emit(state_access(LoadStore::StrW, value, state::MXCSR));
         self.emit(simd::mrs_fpcr(SCRATCH));
-        self.ubfx(Size::W, T1, value, MXCSR_ROUNDING_HIGH, 1);
-        self.bfi(SCRATCH, T1, FPCR_ROUNDING_LOW, 1);
-        self.ubfx(Size::W, T1, value, MXCSR_ROUNDING_LOW, 1);
-        self.bfi(SCRATCH, T1, FPCR_ROUNDING_HIGH, 1);
+        self.rounding_into_fpcr(SCRATCH, value, MXCSR_ROUNDING_LOW);
         self.ubfx(Size::W, T1, value, MXCSR_FLUSH_TO_ZERO, 1);
         self.ubfx(Size::W, T2, value, MXCSR_DENORMALS_ARE_ZERO, 1);
         self.emit(encode::logical_shifted(
@@ -265,6 +261,13 @@ impl Lowerer {
         self.bfi(SCRATCH, T1, FPCR_FLUSH_TO_ZERO, 1);
         self.emit(simd::msr_fpcr(SCRATCH));
         Ok(())
+    }
+
+    pub(super) fn rounding_into_fpcr(&mut self, fpcr: Reg, value: Reg, rounding_low: u8) {
+        self.ubfx(Size::W, T1, value, rounding_low + 1, 1);
+        self.bfi(fpcr, T1, FPCR_ROUNDING_LOW, 1);
+        self.ubfx(Size::W, T1, value, rounding_low, 1);
+        self.bfi(fpcr, T1, FPCR_ROUNDING_HIGH, 1);
     }
 
     fn compare_exchange_wide(&mut self, instruction: &Instruction) -> Lowered {

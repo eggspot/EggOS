@@ -168,3 +168,23 @@ fn population_count_sequence() {
     assert_eq!(addv_8b(31, 31), 0x0E31_BBFF);
     assert_eq!(fmov_w_from_s(X16, 31), 0x1E26_03F0);
 }
+
+#[test]
+fn post_index_loads_and_stores() {
+    assert_eq!(
+        load_store_post_index(true, Access::B, X0, X1, 1),
+        0x3840_1420
+    );
+    assert_eq!(
+        load_store_post_index(false, Access::B, X0, X1, -1),
+        0x381F_F420
+    );
+    assert_eq!(
+        load_store_post_index(true, Access::X, X2, X3, 8),
+        0xF840_8462
+    );
+    assert_eq!(
+        load_store_post_index(false, Access::W, X0, X1, -4),
+        0xB81F_C420
+    );
+}

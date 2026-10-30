@@ -709,8 +709,13 @@ impl Lowerer {
         let d = self.xmm_destination(instruction)?;
         let s = self.vector_source(instruction, 1, V0)?;
         let live = self.defined_and_live(instruction);
+        self.float_compare_flags(live, float, d, s);
+        Ok(())
+    }
+
+    pub(super) fn float_compare_flags(&mut self, live: Flags, float: Float, d: u8, s: u8) {
         if live.is_empty() {
-            return Ok(());
+            return;
         }
         self.emit(simd::fcmp(float, d, s));
         if live.any(Flags::PF) {
@@ -736,7 +741,6 @@ impl Lowerer {
             self.asm.bind(done);
             self.carry = CarrySense::Inverted;
         }
-        Ok(())
     }
 
     fn pack(

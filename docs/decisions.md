@@ -14993,14 +14993,68 @@ the license, by an explicit instruction recorded here.
   has IF set and TF, AC and the rest clear, and `popf` ignores them; the FPCR that
   `ldmxcsr` sets stays while the thread runs host code (39d's bridges restore the default
   around native calls).
-- **Not yet** (slices 39c2 to 39e): the minimal x87 set (`fld` ... `fninit`, the stack as
-  doubles at `state::X87_STACK` with `state::X87_TOP`, 80-bit memory converted), the string
-  instructions with `rep`/`repe`/`repne` and the direction byte, `xlat`, `rdrand`/`rdseed`
-  (FEAT_RNG), `maskmovdqu`, then from 39b `rcl`/`rcr`, `enter`, `syscall` (all reported
-  `Unhandled`), flag liveness across blocks (39d passes `live_out`; until then
-  `Flags::ALL`), a test-only AArch64 evaluator comparing lowered code with x86 semantics on
-  random inputs (39c2 or later); code
-  discovery, the image tables, the bridges, the cache and the Windows layer's loader (39d);
-  the macOS layer, `app install` and launch, the refused-site report and the benchmarks
-  (39e). Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87,
-  arm64 programs on x86_64.
+- **Slice 39c2: x87, the string instructions and the integer leftovers.** `lower/x87.rs`
+  lowers the minimal x87 set on the state block: `st(i)` is the double at
+  `X87_STACK + 8 * ((top + i) & 7)` with the top byte at `X87_TOP`; a push decrements the top
+  and a pop increments it, both modulo 8, and the tag word is treated as always valid (no stack
+  overflow or underflow fault). `fld`/`fst`/`fstp` with 32-, 64- and 80-bit memory and
+  `st(i)`; `fild`/`fist`/`fistp` with 16-, 32- and 64-bit integers (`fist` rounds with
+  `frintx`, so in the control word's rounding mode, and stores x86's integer indefinite
+  `0x8000...` for NaN and out-of-range values); `fadd`, `fmul`, `fsub`, `fsubr`, `fdiv`, `fdivr`
+  in their memory, `st(0), st(i)`, `st(i), st(0)` and popping forms; `fchs`, `fabs`, `fsqrt`,
+  `frndint`; `fld1`, `fldz`, `fldpi`, `fldl2e`, `fldl2t`, `fldlg2`, `fldln2` (the nearest
+  doubles); `fxch`; `fcomi`/`fucomi`/`fcomip`/`fucomip` into NZCV through the same compare as
+  `ucomisd` (the unordered case `ZF = PF = CF = 1`); `fcom`/`fcomp`/`fcompp`/`fucom`/`fucomp`/
+  `fucompp` (decoder forms added: `D8 /2 /3`, `DC /2 /3`, `D8 D0+i`, `D8 D8+i`, `DD E0+i`,
+  `DD E8+i`, `DE D9`, `DA E9`, and `fsqrt`, `frndint` and the constants) into C0, C2 and C3 of
+  the status word (C1 cleared; the guest's NZCV is saved around the `fcmp` when live);
+  `fnstsw` to `ax` or memory with the top in bits 11-13; `fnstcw`; `fldcw` (kept at
+  `X87_CONTROL`, its rounding control mirrored into FPCR like `ldmxcsr`'s, precision control
+  ignored); `fnclex`; `fninit` (control `0x037F`, status and top 0, FPCR rounding to
+  nearest); `fwait` (nothing). 80-bit memory converts in integer code: a load turns the
+  64-bit significand into a double with `ucvtf` (rounded in FPCR's mode) and adds the
+  exponent, infinities and NaNs keep their sign and payload, values beyond double's range
+  become infinity and values below its normal range become zero; a store writes the explicit
+  integer bit and the rebiased exponent, normalising double denormals with `clz`. So an 80-bit
+  value loses its low 11 significand bits and its extra exponent range on a load (recorded
+  precision loss, design point 6). `lower/string.rs` lowers `movs`, `stos`, `lods`, `cmps`
+  and `scas` with sizes 1, 2, 4 and 8: without a prefix one step with ordered accesses and a
+  step of `size - 2 * size * DF` from the state block's direction byte; with `rep`/`repe`/
+  `repne` a `cbz rcx` then two loops (ascending and descending, chosen by a `tbnz` on the
+  direction byte) of post-index `ldr`/`str` (`codegen::aarch64::encode::load_store_post_index`),
+  with `dmb ish` before and after `rep movs`/`rep stos` and `dmb ishld` after the loading
+  forms unless `hardware_tso`; `cmps`/`scas` compare through the integer `sub` path and leave
+  the loop on `b.ne` (`repe`) or `b.eq` (`repne`), and the carry is put in the inverted sense
+  before the `cbz` so the zero-count path and the loop agree. `xlat` loads `[rbx + al]`.
+  `enter` (64-bit, nesting levels 0 to 31 unrolled) is in `lower/control.rs`; `rcl`/`rcr`
+  (`lower/bits.rs`) rotate one bit per iteration through a carry register for the masked count
+  (a count of 0 changes nothing), CF and OF inserted into NZCV. New encoders:
+  `load_store_post_index` and `simd::convert_unsigned_to_float` (`ucvtf`), host-tested;
+  lowering tests: a `rep movsb` shape, an `fchs` shape and every x87, string, `xlat`, `enter`
+  and `rcl`/`rcr` form in three modes.
+- **Slice 39c2's choices made without research.** x87 arithmetic and its rounding run in
+  double precision whatever the precision control says; `fldcw` changes FPCR's rounding,
+  which the SSE instructions then share until the next `ldmxcsr` or `fldcw` (programs that
+  set truncation around a `fistp` and restore it, the common pattern, behave exactly); no x87
+  exception (stack fault, invalid, denormal, precision) is recorded in the status word or
+  raised, so `fnclex` clears bits that are never set; a segment override on a string
+  instruction's source (`fs: movsb`) is dropped by the decoder and the plain address used;
+  `rep movsb`/`rep stosb` copy one element per iteration (a wide-copy fast path with 16-byte
+  `ldp`/`stp` for large counts is a later optimisation, measured against `memcpy`); `rcl`/
+  `rcr` loop instead of using a rotate-through-carry sequence (counts are at most 63);
+  `enter` with a 16-bit operand size is reported as `Operands`; the transcendental x87
+  instructions stay refused by the decoder, so no run-time hook is defined yet (`brk #0xE003`
+  is `trap::DIVIDE_ERROR`; a hook would take the next free immediate, `0xE006`, with the
+  operation in `x16`).
+- **Not yet** (slices 39d to 39e): `fiadd`/`fimul`/`fisub`/`fisubr`/`fidiv`/`fidivr`/
+  `ficom`, `fprem`/`fprem1`, `fscale`, `fxtract`, `ftst`, `fxam`, the transcendentals
+  (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`) and
+  `fnstenv`/`fldenv`/`fnsave`/`frstor` (all refused by the decoder, so refused-site stubs),
+  `rdrand`/`rdseed` (FEAT_RNG), `maskmovdqu`, `syscall` (all reported `Unhandled`), the wide
+  `rep movs`/`rep stos` fast path, flag liveness across blocks (39d passes `live_out`; until
+  then `Flags::ALL`), a test-only AArch64 evaluator comparing lowered code with x86 semantics
+  on random inputs; code discovery, the image tables, the bridges (which also restore the
+  default FPCR around native calls), the cache and the Windows layer's loader (39d); the
+  macOS layer, `app install` and launch, the refused-site report and the benchmarks (39e).
+  Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87, arm64
+  programs on x86_64.

@@ -976,6 +976,24 @@ fn x87_memory_and_register_forms_decode() {
     );
     check(&[0xD9, 0xE8], Mnemonic::Fld1, Width::Tbyte, &[]);
     check(&[0x9B], Mnemonic::Fwait, Width::Byte, &[]);
+    check(&[0xD8, 0xD1], Mnemonic::Fcom, Width::Tbyte, &[st(0), st(1)]);
+    check(
+        &[0xDD, 0xE9],
+        Mnemonic::Fucomp,
+        Width::Tbyte,
+        &[st(0), st(1)],
+    );
+    check(
+        &[0xDC, 0x18],
+        Mnemonic::Fcomp,
+        Width::Qword,
+        &[at(Gpr::RAX, 0, Width::Qword)],
+    );
+    check(&[0xDE, 0xD9], Mnemonic::Fcompp, Width::Tbyte, &[]);
+    check(&[0xDA, 0xE9], Mnemonic::Fucompp, Width::Tbyte, &[]);
+    check(&[0xD9, 0xFA], Mnemonic::Fsqrt, Width::Tbyte, &[]);
+    check(&[0xD9, 0xFC], Mnemonic::Frndint, Width::Tbyte, &[]);
+    check(&[0xD9, 0xEB], Mnemonic::Fldpi, Width::Tbyte, &[]);
     assert_eq!(refused(&[0xD9, 0xF0]), Refusal::X87);
     assert_eq!(refused(&[0xDD, 0x08]), Refusal::Sse3);
     assert_eq!(refused(&[0xD9, 0x30]), Refusal::X87);
