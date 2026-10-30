@@ -39,6 +39,14 @@ mod darwin;
         any(target_arch = "aarch64", target_arch = "x86_64")
     )
 ))]
+mod darwin_signals;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
 mod fixups;
 #[cfg(all(
     target_env = "musl",
@@ -95,6 +103,14 @@ mod macho;
     )
 ))]
 mod objc;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
+mod spawn_actions;
 #[cfg(all(
     target_env = "musl",
     any(target_arch = "aarch64", target_arch = "x86_64")

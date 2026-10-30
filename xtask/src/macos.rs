@@ -9,7 +9,8 @@
 //! `mac-paint.app` bundle `assemble_app` writes with the icon `test_icns` draws, archived by
 //! `archive_app`; `cargo xtask sample-apps` writes the same archive for people to try (D152).
 //! The Swift program, `tests/macos-swift/main.swift`, is test data too, built by Apple's `swiftc`
-//! the same way (D180).
+//! the same way (D180), and so are the C programs, `tests/<folder>/main.c`, built by Apple's
+//! clang (D190).
 
 use crate::qmp::Picture;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,22 @@ pub struct SwiftProgram {
 pub const SWIFT_PROGRAMS: [SwiftProgram; 1] = [SwiftProgram {
     name: "macos-swift",
     folder: "macos-swift",
+}];
+
+/// A program built from C source with Apple's clang: `tests/<folder>/main.c`, for macOS
+/// `deployment_target` and later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CProgram {
+    pub name: &'static str,
+    pub folder: &'static str,
+    pub deployment_target: &'static str,
+}
+
+/// The programs built from C sources with Apple's clang.
+pub const C_PROGRAMS: [CProgram; 1] = [CProgram {
+    name: "macos-process",
+    folder: "macos-process",
+    deployment_target: DEPLOYMENT_TARGET,
 }];
 
 const BUNDLE_SUFFIX: &str = ".app";
@@ -245,7 +262,9 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         crate::ci_artifact::fetch_when_built("macos-programs", &programs.directory)?;
         let objc_names = OBJC_PROGRAMS.into_iter().map(|program| program.name);
         let swift_names = SWIFT_PROGRAMS.into_iter().map(|program| program.name);
-        for program in PROGRAMS.into_iter().chain(objc_names).chain(swift_names) {
+        let c_names = C_PROGRAMS.into_iter().map(|program| program.name);
+        let names = objc_names.chain(swift_names).chain(c_names);
+        for program in PROGRAMS.into_iter().chain(names) {
             for cpu in ["arm64", "x86_64"] {
                 let path = programs.path(program, cpu);
                 if !path.is_file() {
@@ -282,6 +301,10 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         for program in SWIFT_PROGRAMS {
             let output = directory.join(format!("{}-{cpu}", program.name));
             build_swift_program(program, cpu, &output)?;
+        }
+        for program in C_PROGRAMS {
+            let output = directory.join(format!("{}-{cpu}", program.name));
+            build_c_program(program, cpu, &output)?;
         }
     }
     Ok(Some(Programs { directory }))
@@ -374,6 +397,39 @@ pub fn assemble_app(
 fn build_objc_program(program: ObjcProgram, cpu: &str, output: &Path) -> Result<(), String> {
     let source = source_folder(&program).join("main.m");
     let arguments = objc_arguments(&source, program.frameworks, cpu, output);
+    let status = std::process::Command::new("xcrun")
+        .args(&arguments)
+        .status()
+        .map_err(|e| format!("xcrun clang: {e}"))?;
+    if !status.success() {
+        return Err(format!("xcrun clang {}: {status}", source.display()));
+    }
+    Ok(())
+}
+
+/// The `clang` arguments that build `program`'s `source` for `cpu` into `output`: optimized,
+/// warnings as errors, for the program's macOS version and later.
+pub fn c_arguments(program: &CProgram, source: &Path, cpu: &str, output: &Path) -> Vec<String> {
+    let mut arguments = vec![
+        "clang".to_owned(),
+        format!("-mmacosx-version-min={}", program.deployment_target),
+    ];
+    arguments.extend(
+        ["-arch", cpu, "-O2", "-Wall", "-Werror", "-o"]
+            .iter()
+            .map(|argument| argument.to_string()),
+    );
+    arguments.push(output.to_string_lossy().into_owned());
+    arguments.push(source.to_string_lossy().into_owned());
+    arguments
+}
+
+fn build_c_program(program: CProgram, cpu: &str, output: &Path) -> Result<(), String> {
+    let source = crate::workspace_root()
+        .join("tests")
+        .join(program.folder)
+        .join("main.c");
+    let arguments = c_arguments(&program, &source, cpu, output);
     let status = std::process::Command::new("xcrun")
         .args(&arguments)
         .status()
@@ -529,6 +585,24 @@ mod tests {
         assert!(source_folder(&app).ends_with(Path::new("tests").join("macos-gui")));
         assert!(source_folder(&app).join("main.m").is_file());
         assert!(source_folder(&app).join(INFO_PLIST).is_file());
+    }
+
+    #[test]
+    fn c_programs_build_with_warnings_as_errors_for_their_macos_version() {
+        let program = C_PROGRAMS[0];
+        let arguments = c_arguments(&program, Path::new("main.c"), "x86_64", Path::new("out"));
+        assert_eq!(arguments[0], "clang");
+        assert!(arguments.contains(&"-mmacosx-version-min=13.0".to_owned()));
+        assert!(arguments.windows(2).any(|pair| pair == ["-arch", "x86_64"]));
+        assert!(arguments.contains(&"-Werror".to_owned()));
+        assert_eq!(&arguments[arguments.len() - 3..], ["-o", "out", "main.c"]);
+        let names: Vec<&str> = C_PROGRAMS.iter().map(|program| program.name).collect();
+        assert_eq!(names, ["macos-process"]);
+        let source = crate::workspace_root()
+            .join("tests")
+            .join(program.folder)
+            .join("main.c");
+        assert!(source.is_file());
     }
 
     #[test]

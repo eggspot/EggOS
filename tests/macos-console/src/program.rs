@@ -134,14 +134,7 @@ unsafe extern "C" {
     fn atexit(handler: extern "C" fn()) -> c_int;
     fn exit(status: c_int) -> !;
     fn abort() -> !;
-    fn posix_spawn(
-        pid: *mut c_int,
-        path: *const c_char,
-        actions: *const c_void,
-        attributes: *const c_void,
-        arguments: *const *const c_char,
-        environment: *const *const c_char,
-    ) -> c_int;
+    fn kqueue() -> c_int;
 }
 
 #[panic_handler]
@@ -234,19 +227,9 @@ extern "C" fn main(
         // SAFETY: `abort` takes no arguments and ends the process.
         Some("abort") => unsafe { abort() },
         Some("unimplemented") => {
-            let mut pid = 0;
-            // SAFETY: the layer ends the process before it reads any argument.
-            let status = unsafe {
-                posix_spawn(
-                    &mut pid,
-                    c"/bin/eggsh".as_ptr(),
-                    core::ptr::null(),
-                    core::ptr::null(),
-                    core::ptr::null(),
-                    core::ptr::null(),
-                )
-            };
-            say!("posix_spawn returned {status}");
+            // SAFETY: `kqueue` takes no arguments; the layer ends the process when it is called.
+            let queue = unsafe { kqueue() };
+            say!("kqueue returned {queue}");
             return 0;
         }
         _ => {}

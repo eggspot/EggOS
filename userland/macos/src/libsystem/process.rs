@@ -175,7 +175,23 @@ pub extern "C" fn raise(signal: c_int) -> c_int {
         set_errno(EINVAL);
         return -1;
     };
-    kill_self(linux_signal).map_or_else(|errno| errno_from(errno, -1), |_| 0)
+    let thread = super::thread::current_id() as usize;
+    // SAFETY: `tgkill` touches no memory; the signal arrives on this thread before it returns.
+    unsafe {
+        linux::syscall(
+            linux::number::TGKILL,
+            [linux::process_id(), thread, linux_signal, 0, 0, 0],
+        )
+    }
+    .map_or_else(|errno| errno_from(errno, -1), |_| 0)
+}
+
+pub extern "C" fn killpg(group: c_int, signal: c_int) -> c_int {
+    if group < 0 {
+        set_errno(EINVAL);
+        return -1;
+    }
+    kill(group.wrapping_neg(), signal)
 }
 
 pub extern "C" fn kill(pid: c_int, signal: c_int) -> c_int {

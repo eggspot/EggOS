@@ -59,6 +59,65 @@ pub extern "C" fn dup(fd: c_int) -> c_int {
     }
 }
 
+pub extern "C" fn dup2(fd: c_int, to: c_int) -> c_int {
+    let result = if fd == to {
+        // SAFETY: `fcntl`'s `F_GETFD` touches no memory; it checks that `fd` is open.
+        unsafe {
+            linux::syscall(
+                linux::number::FCNTL,
+                [fd as usize, F_GETFD as usize, 0, 0, 0, 0],
+            )
+        }
+        .map(|_| to as usize)
+    } else {
+        duplicate_to(fd, to)
+    };
+    result.map_or_else(|errno| errno_from(errno, -1), |new| new as c_int)
+}
+
+/// Makes `to` a copy of `fd`, closing what `to` was first: Linux's `dup3` without flags.
+pub fn duplicate_to(fd: c_int, to: c_int) -> Result<usize, eggos_runtime::errno::Errno> {
+    // SAFETY: `dup3` touches no memory.
+    unsafe { linux::syscall(linux::number::DUP3, [fd as usize, to as usize, 0, 0, 0, 0]) }
+}
+
+/// Opens a pipe with `flags` (Linux's), writing its read and write ends into `ends`.
+pub fn open_pipe(
+    ends: &mut [c_int; 2],
+    flags: usize,
+) -> Result<usize, eggos_runtime::errno::Errno> {
+    // SAFETY: `pipe2` writes two descriptors into the borrowed array.
+    unsafe {
+        linux::syscall(
+            linux::number::PIPE2,
+            [ends.as_mut_ptr() as usize, flags, 0, 0, 0, 0],
+        )
+    }
+}
+
+/// # Safety
+/// `ends` must be writable for two descriptors.
+pub unsafe extern "C" fn pipe(ends: *mut [c_int; 2]) -> c_int {
+    let mut opened = [0; 2];
+    if let Err(errno) = open_pipe(&mut opened, 0) {
+        return errno_from(errno, -1);
+    }
+    // SAFETY: the caller's promise.
+    unsafe { ends.write(opened) };
+    0
+}
+
+/// Clears `fd`'s close-on-exec flag.
+pub fn keep_across_exec(fd: c_int) -> Result<usize, eggos_runtime::errno::Errno> {
+    // SAFETY: `fcntl`'s `F_SETFD` touches no memory.
+    unsafe {
+        linux::syscall(
+            linux::number::FCNTL,
+            [fd as usize, F_SETFD as usize, 0, 0, 0, 0],
+        )
+    }
+}
+
 unsafe extern "C" fn fcntl_with(fd: c_int, command: c_int, arguments: RawVaList) -> c_int {
     let argument = || {
         // SAFETY: the commands that read it take one integer variadic argument.

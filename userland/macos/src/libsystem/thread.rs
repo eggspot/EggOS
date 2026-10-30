@@ -54,7 +54,6 @@ pub struct Thread {
     exit_handlers: usize,
     exit_handler_count: usize,
     exit_handler_capacity: usize,
-    pub alternate_stack: [usize; 3],
     pub autorelease_pools: usize,
     pub caught_exceptions: usize,
     pub swift_accesses: usize,
@@ -80,7 +79,6 @@ impl Thread {
         exit_handlers: 0,
         exit_handler_count: 0,
         exit_handler_capacity: 0,
-        alternate_stack: [0; 3],
         autorelease_pools: 0,
         caught_exceptions: 0,
         swift_accesses: 0,
@@ -124,6 +122,12 @@ pub fn current() -> *mut Thread {
 pub fn current_id() -> u32 {
     // SAFETY: the control block lives as long as its thread.
     unsafe { &(*current()).id }.load(Ordering::Relaxed)
+}
+
+/// Gives the calling thread, the only one in a child `fork` just made, the child's thread id.
+pub fn adopt_after_fork() {
+    // SAFETY: the control block lives as long as its thread.
+    unsafe { &(*current()).id }.store(linux::thread_id(), Ordering::Relaxed);
 }
 
 /// Where the calling thread's `errno` is.

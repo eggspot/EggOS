@@ -816,7 +816,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 21] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 22] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -838,6 +838,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 21] = [
     b"macos-swift; echo MACOS-CONSOLE status $?\r",
     b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
     b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
+    b"macos-process; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -958,6 +959,30 @@ const SWIFT_PROGRAM_LINES: [&str; 19] = [
     "MACOS-CONSOLE status 0",
 ];
 
+const PROCESS_PROGRAM_LINES: [&str; 21] = [
+    "MACOS-PROCESS main",
+    "MACOS-PROCESS siginfo 30 user self default-before 1",
+    "MACOS-PROCESS signal 31 count 1",
+    "MACOS-PROCESS mask held 1 pending 1 suspend -1 EINTR count 2",
+    "MACOS-PROCESS altstack 0 was-disabled refused -1 ENOMEM on 1",
+    "MACOS-PROCESS fork read 'hello from the child' same 1 exited 1 status 7",
+    "MACOS-PROCESS killed signaled 1 signal 15",
+    "MACOS-PROCESS sigchld same 1 code exited status 3 wait 3",
+    "MACOS-PROCESS exec-child by execv",
+    "MACOS-PROCESS execv status 5",
+    "MACOS-PROCESS exec-child by execlp",
+    "MACOS-PROCESS execlp status 5",
+    "MACOS-PROCESS exec missing -1 ENOENT",
+    "MACOS-PROCESS spawn 0 flags 1 read 'spawned hello' status 0",
+    "MACOS-PROCESS count-child read input",
+    "MACOS-PROCESS spawn open 0 status 0",
+    "MACOS-PROCESS spawnp missing ENOENT suspended ENOTSUP",
+    "MACOS-PROCESS popen 'popen works' status 0",
+    "MACOS-PROCESS system 4 available 1",
+    "MACOS-PROCESS done",
+    "MACOS-CONSOLE status 0",
+];
+
 fn swift_program_output() -> [Vec<Line>; 3] {
     let program = SWIFT_PROGRAM_LINES
         .iter()
@@ -1070,6 +1095,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-swift"),
             refused("macos-swift"),
             refused("macos-swift"),
+            refused("macos-process"),
             end,
         ];
     }
@@ -1107,7 +1133,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
         vec![status(3)],
         whole(&["Aborted", "MACOS-CONSOLE status 134"]),
         whole(&[
-            "eggos-macos: unimplemented libSystem function posix_spawn",
+            "eggos-macos: unimplemented libSystem function kqueue",
             "MACOS-CONSOLE status 127",
         ]),
         vec![
@@ -1159,6 +1185,10 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
         swift_program.next().unwrap_or_default(),
         swift_program.next().unwrap_or_default(),
         swift_program.next().unwrap_or_default(),
+        PROCESS_PROGRAM_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).to_owned()))
+            .collect(),
         end,
     ]
 }

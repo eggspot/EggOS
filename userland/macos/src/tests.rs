@@ -627,3 +627,193 @@ fn strftime_prints_a_question_mark_for_out_of_range_names_and_never_panics() {
     let length = format(b"%a %b", &invalid, &mut buffer).unwrap();
     assert_eq!(&buffer[..length], b"? ?");
 }
+
+#[test]
+fn darwin_and_linux_signal_numbers_map_both_ways() {
+    use crate::darwin::linux_signal;
+    use crate::darwin_signals::{LAST_SIGNAL, darwin_signal};
+    for darwin in 1..=LAST_SIGNAL {
+        if let Some(linux) = linux_signal(darwin) {
+            assert_eq!(darwin_signal(linux), Some(darwin), "{darwin}");
+        }
+    }
+    assert_eq!((linux_signal(7), linux_signal(29)), (None, None));
+    assert_eq!((darwin_signal(16), darwin_signal(30)), (None, None));
+    assert_eq!(darwin_signal(34), None);
+    assert_eq!((darwin_signal(10), darwin_signal(17)), (Some(30), Some(20)));
+    assert_eq!((darwin_signal(7), darwin_signal(31)), (Some(10), Some(12)));
+}
+
+#[test]
+fn signal_sets_masks_and_action_flags_translate_to_linux() {
+    use crate::darwin_signals::{self, action, linux_action};
+    let bit = |signal: u32| 1u32 << (signal - 1);
+    let darwin_set = bit(30) | bit(20) | bit(2) | bit(7);
+    let linux = darwin_signals::linux_signal_set(darwin_set);
+    assert_eq!(linux, (1 << 9) | (1 << 16) | (1 << 1));
+    assert_eq!(
+        darwin_signals::darwin_signal_set(linux),
+        darwin_set & !bit(7)
+    );
+    assert_eq!(darwin_signals::darwin_signal_set(1 << 33), 0);
+    let flags = action::SIGINFO | action::RESTART | action::ONSTACK | 0x100;
+    assert_eq!(
+        darwin_signals::linux_action_flags(flags),
+        linux_action::SIGINFO | linux_action::RESTART | linux_action::ONSTACK
+    );
+    assert_eq!(
+        darwin_signals::linux_action_flags(action::RESETHAND | action::NODEFER),
+        linux_action::RESETHAND | linux_action::NODEFER
+    );
+    let hows = [0, 1, 2, 3, 4].map(darwin_signals::linux_mask_how);
+    assert_eq!(hows, [None, Some(0), Some(1), Some(2), None]);
+}
+
+#[test]
+fn wait_statuses_and_options_use_darwin_signal_numbers() {
+    use crate::darwin_signals::{darwin_wait_status, linux_wait_options};
+    assert_eq!(darwin_wait_status(3 << 8), 3 << 8);
+    assert_eq!(darwin_wait_status(10), 30);
+    assert_eq!(darwin_wait_status(0x80 | 7), 0x80 | 10);
+    assert_eq!(darwin_wait_status((19 << 8) | 0x7f), (17 << 8) | 0x7f);
+    assert_eq!(darwin_wait_status(0xffff), (19 << 8) | 0x7f);
+    assert_eq!(linux_wait_options(1 | 2 | 0x10), Some(1 | 2 | 8));
+    assert_eq!(linux_wait_options(0), Some(0));
+    assert_eq!(linux_wait_options(0x20), None);
+}
+
+fn linux_signal_info(signal: i32, code: i32, first: u32, second: u32, value: u64) -> [u8; 32] {
+    let mut bytes = [0; 32];
+    bytes[..4].copy_from_slice(&signal.to_le_bytes());
+    bytes[8..12].copy_from_slice(&code.to_le_bytes());
+    bytes[16..20].copy_from_slice(&first.to_le_bytes());
+    bytes[20..24].copy_from_slice(&second.to_le_bytes());
+    bytes[24..].copy_from_slice(&value.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn signal_info_says_who_sent_it_what_faulted_or_how_a_child_ended() {
+    use crate::darwin_signals::{code, darwin_signal_info};
+    let sent = darwin_signal_info(&linux_signal_info(10, 0, 42, 7, 0));
+    assert_eq!(
+        (sent.signal, sent.code, sent.pid, sent.uid),
+        (30, code::USER, 42, 7)
+    );
+    let queued = darwin_signal_info(&linux_signal_info(12, -1, 42, 7, 99));
+    assert_eq!(
+        (queued.signal, queued.code, queued.value),
+        (31, code::QUEUE, 99)
+    );
+    let thread = darwin_signal_info(&linux_signal_info(10, -6, 42, 7, 0));
+    assert_eq!(thread.code, code::USER);
+    let fault = darwin_signal_info(&linux_signal_info(11, 1, 0x9abc_def0, 0x1234, 0));
+    assert_eq!((fault.signal, fault.code), (11, 1));
+    assert_eq!((fault.address, fault.pid), (0x1234_9abc_def0, 0));
+    let divide = darwin_signal_info(&linux_signal_info(8, 1, 0x1000, 0, 0));
+    assert_eq!((divide.code, divide.address), (7, 0x1000));
+    let illegal = darwin_signal_info(&linux_signal_info(4, 2, 0x2000, 0, 0));
+    assert_eq!(illegal.code, 4);
+    let killed = darwin_signal_info(&linux_signal_info(17, 2, 5, 0, 10));
+    assert_eq!((killed.signal, killed.code), (20, 2));
+    assert_eq!((killed.pid, killed.status), (5, 30));
+    let exited = darwin_signal_info(&linux_signal_info(17, 1, 5, 0, 3));
+    assert_eq!(exited.status, 3);
+    assert_eq!(size_of::<crate::darwin_signals::SignalInfo>(), 104);
+}
+
+#[test]
+fn posix_spawn_takes_its_attributes_then_its_file_actions_in_order() {
+    use crate::spawn_actions::{self, Attributes, FileAction, Step, flag};
+    let attributes = Attributes {
+        flags: flag::SETSID | flag::SETSIGMASK | flag::CLOEXEC_DEFAULT | flag::SETPGROUP,
+        process_group: 0,
+        default_signals: 0,
+        mask: 4,
+    };
+    let actions = [
+        FileAction::Open {
+            fd: 1,
+            path: "out",
+            flags: 0o1101,
+            mode: 0o644,
+        },
+        FileAction::Duplicate { from: 1, to: 2 },
+        FileAction::Duplicate { from: 3, to: 3 },
+        FileAction::Inherit { fd: 4 },
+        FileAction::Close { fd: 5 },
+        FileAction::ChangeDirectory { path: "/tmp" },
+        FileAction::ChangeDirectoryTo { fd: 6 },
+    ];
+    let steps: Vec<Step<&str>> = spawn_actions::steps(attributes, &actions).collect();
+    assert_eq!(
+        steps,
+        [
+            Step::CloseAllOnExec,
+            Step::NewSession,
+            Step::SetProcessGroup(0),
+            Step::SetMask(4),
+            Step::Open {
+                fd: 1,
+                path: "out",
+                flags: 0o1101,
+                mode: 0o644,
+            },
+            Step::Duplicate { from: 1, to: 2 },
+            Step::KeepAcrossExec(3),
+            Step::KeepAcrossExec(4),
+            Step::Close(5),
+            Step::ChangeDirectory("/tmp"),
+            Step::ChangeDirectoryTo(6),
+        ]
+    );
+    let resets = Attributes {
+        flags: flag::RESETIDS | flag::SETSIGDEF,
+        default_signals: 6,
+        ..Attributes::default()
+    };
+    let none: [FileAction<&str>; 0] = [];
+    let reset_steps: Vec<Step<&str>> = spawn_actions::steps(resets, &none).collect();
+    assert_eq!(reset_steps, [Step::ResetIds, Step::DefaultSignals(6)]);
+    assert_eq!(
+        spawn_actions::steps(Attributes::default(), &none).count(),
+        0
+    );
+}
+
+#[test]
+fn posix_spawn_refuses_only_a_suspended_start_and_checks_descriptors() {
+    use crate::spawn_actions::{self, Attributes, OPEN_MAX, flag};
+    let with = |flags| Attributes {
+        flags,
+        ..Attributes::default()
+    };
+    assert_eq!(Attributes::default().check(), Ok(()));
+    assert_eq!(with(flag::START_SUSPENDED).check(), Err(45));
+    assert_eq!(with(0x0100).check(), Ok(()));
+    assert!(with(flag::SETEXEC).replaces_caller());
+    assert!(!with(flag::SETSID).replaces_caller());
+    assert!(spawn_actions::valid_descriptor(0));
+    assert!(spawn_actions::valid_descriptor(OPEN_MAX - 1));
+    assert!(!spawn_actions::valid_descriptor(-1));
+    assert!(!spawn_actions::valid_descriptor(OPEN_MAX));
+}
+
+#[test]
+fn execvp_tries_each_directory_of_the_search_path() {
+    use crate::spawn_actions::{PATH_MAX, candidate, is_path};
+    let mut buffer = [0; PATH_MAX];
+    assert_eq!(
+        candidate(b"/bin", b"eggsh", &mut buffer),
+        Ok(&b"/bin/eggsh\0"[..])
+    );
+    assert_eq!(candidate(b"", b"tool", &mut buffer), Ok(&b"./tool\0"[..]));
+    let long = [b'a'; PATH_MAX];
+    assert_eq!(
+        candidate(&long[..PATH_MAX - 3], b"x", &mut buffer).map(<[u8]>::len),
+        Ok(PATH_MAX)
+    );
+    assert_eq!(candidate(&long[..PATH_MAX - 2], b"x", &mut buffer), Err(63));
+    assert!(is_path(b"./tool") && is_path(b"/bin/eggsh"));
+    assert!(!is_path(b"eggsh"));
+}
