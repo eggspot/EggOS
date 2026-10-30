@@ -312,7 +312,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--work <image>]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--work <image>] [--memory <size>]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -329,6 +329,7 @@ no_disk=''
 format_disk=''
 no_network=''
 work=''
+memory=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) mode=serial ;;
@@ -354,6 +355,10 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
       shift
       work="$1" ;;
+    --memory)
+      if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
+      shift
+      memory="$1" ;;
     {alternatives}) arch="$1" ;;
     -h | --help) echo "$usage"; exit 0 ;;
     *) echo "$usage" >&2; exit 2 ;;
@@ -363,6 +368,16 @@ done
 if [ -n "$no_window$mcp_allow_given" ] && [ -z "$mcp" ]; then
   echo "$usage" >&2
   exit 2
+fi
+if [ -n "$memory" ]; then
+  digits=${{memory%[MG]}}
+  case "$digits" in
+    '' | *[!0-9]* | 0*) digits='' ;;
+  esac
+  if [ -z "$digits" ] || [ "$digits" = "$memory" ] || {{ [ "$memory" = "${{digits}}M" ] && [ "$digits" -lt {minimum_memory} ]; }}; then
+    echo "run-eggos.sh: --memory takes a size such as 512M or 4G, at least {minimum_memory}M" >&2
+    exit 2
+  fi
 fi
 if [ -n "$mcp_allow_given" ]; then
   case ",$mcp_allow," in
@@ -501,6 +516,10 @@ fi
 if [ -n "$command_line" ]; then
   set -- "$@" {command_line_args}
 fi
+if [ -n "$memory" ]; then
+  set -- "$@" -m "$memory"
+  say "run-eggos.sh: EggOS has $memory of memory."
+fi
 case "$mode" in
   window)
     say "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
@@ -520,6 +539,7 @@ exec "$qemu" "$@" -kernel "$image"
         offscreen_word = qemu::OFFSCREEN_WORD,
         grant_word = qemu::grant_word(SHELL_GRANTS),
         command_line_args = double_quoted(&qemu::command_line_args(SHELL_COMMAND_LINE)),
+        minimum_memory = qemu::MINIMUM_MEMORY_MEBIBYTES,
     )
 }
 
@@ -574,7 +594,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         r#"$ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-Work <image>]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-Work <image>] [-Memory <size>]"
 $Arch = ''
 $Serial = $false
 $Mcp = $false
@@ -586,6 +606,7 @@ $NoDisk = $false
 $FormatDisk = $false
 $NoNetwork = $false
 $Work = ''
+$Memory = ''
 $UsageError = $false
 $Words = @($args)
 for ($i = 0; $i -lt $Words.Count; $i++) {{
@@ -616,6 +637,9 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
     }} elseif ($argument -in @('-Work', '--work') -and $null -ne $value) {{
         $Work = $value
         $i++
+    }} elseif ($argument -in @('-Memory', '--memory') -and $null -ne $value) {{
+        $Memory = $value
+        $i++
     }} elseif ($argument -in @('-Arch', '--arch') -and $null -ne $value -and -not $Arch) {{
         $Arch = $value
         $i++
@@ -631,6 +655,10 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
 $Arch = $Arch.ToLowerInvariant()
 if ($UsageError -or ($Arch -and $Arches -notcontains $Arch) -or ($NoDisk -and ($Disk -or $FormatDisk)) -or ($NoWindow -and -not $Mcp) -or ($Mcp -and $Serial) -or (($null -ne $McpAllow) -and -not $Mcp)) {{
     [Console]::Error.WriteLine("run-eggos.ps1: $Usage")
+    exit 2
+}}
+if ($Memory -and (($Memory -cnotmatch '^[1-9][0-9]*[MG]$') -or (($Memory -cmatch 'M$') -and [long]$Memory.TrimEnd('M') -lt {minimum_memory}))) {{
+    [Console]::Error.WriteLine("run-eggos.ps1: -Memory takes a size such as 512M or 4G, at least {minimum_memory}M")
     exit 2
 }}
 $McpAllowList = ''
@@ -758,6 +786,10 @@ if ($CommandLineWords.Count -gt 0) {{
     $CommandLine = $CommandLineWords -join ' '
     $QemuArgs += @({command_line_args})
 }}
+if ($Memory) {{
+    $QemuArgs += @('-m', $Memory)
+    Say "run-eggos.ps1: EggOS has $Memory of memory."
+}}
 if ($Mcp -and $NoWindow) {{
     Say "run-eggos.ps1: booting EggOS $Version ($Arch) with no screen for an MCP client on this script's standard input and output: EggOS draws its desktop in memory, where apps open for the agent; the console is in $(Join-Path $PSScriptRoot "eggos-$Arch-serial.log")."
 }} elseif ($Mcp) {{
@@ -781,6 +813,7 @@ exit $LASTEXITCODE
             .map(|arch| arch.name)
             .collect::<Vec<_>>()
             .join("|"),
+        minimum_memory = qemu::MINIMUM_MEMORY_MEBIBYTES,
     )
 }
 
@@ -1317,8 +1350,13 @@ mod tests {
         assert!(powershell.contains(
             "$WorkPath = (Resolve-Path -LiteralPath $Work).ProviderPath.Replace(',', ',,')\n"
         ));
-        assert!(powershell.contains("[-NoNetwork] [-Work <image>]\""));
-        assert!(shell.contains("[--no-network] [--work <image>]\""));
+        assert!(powershell.contains("[-NoNetwork] [-Work <image>] [-Memory <size>]\""));
+        assert!(shell.contains("[--no-network] [--work <image>] [--memory <size>]\""));
+        assert!(shell.contains("    --memory)\n"));
+        assert!(shell.contains("  set -- \"$@\" -m \"$memory\"\n"));
+        assert!(shell.contains("at least 128M\" >&2"));
+        assert!(powershell.contains("$QemuArgs += @('-m', $Memory)"));
+        assert!(powershell.contains("'^[1-9][0-9]*[MG]$'"));
     }
 
     #[test]

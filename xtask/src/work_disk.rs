@@ -367,7 +367,10 @@ pub fn pack(folder: &Path, image: &Path) -> Result<Packed, String> {
     pack_with_room(folder, image, HEADROOM_BYTES)
 }
 
-fn pack_with_room(folder: &Path, image: &Path, room: u64) -> Result<Packed, String> {
+/// As [`pack`], with `room` bytes to spare instead of [`HEADROOM_BYTES`] (`--room`, D171): a
+/// build that writes more than a gibibyte, such as a toolchain's, needs a larger image, which
+/// is sized once, here.
+pub fn pack_with_room(folder: &Path, image: &Path, room: u64) -> Result<Packed, String> {
     if !folder.is_dir() {
         return Err(format!("`{}` is not a folder", folder.display()));
     }

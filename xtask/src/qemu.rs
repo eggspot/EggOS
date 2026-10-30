@@ -4,6 +4,7 @@
 
 pub mod dynamic_linking;
 pub mod files;
+pub mod hello_crate;
 pub mod install;
 mod linux_gui;
 pub mod macos_gui;
@@ -1262,7 +1263,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
         whole(&[
-            "cmdline", "driver", "meminfo", "net", "ps", "uptime", "/proc", "/", "4",
+            "cmdline", "driver", "meminfo", "mounts", "net", "ps", "uptime", "/proc", "/", "4",
         ]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
@@ -1343,6 +1344,24 @@ const BENCHMARK_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 const BANNER_PREFIX: &str = "EggOS ";
 
 const COMMON_ARGS: &[&str] = &["-m", "128M"];
+
+/// The least memory `--memory` gives a machine, in mebibytes: what every boot has by default.
+pub const MINIMUM_MEMORY_MEBIBYTES: u64 = 128;
+
+/// QEMU's arguments that give the machine `size` of memory, a whole number of mebibytes or
+/// gibibytes (`512M`, `4G`) of at least [`MINIMUM_MEMORY_MEBIBYTES`] (`--memory`, D171). QEMU
+/// takes the last `-m` it is given, so they go after [`interactive_args`].
+pub fn memory_args(size: &str) -> Result<Vec<String>, String> {
+    match crate::size_in_mebibytes(size) {
+        Some(mebibytes) if mebibytes >= MINIMUM_MEMORY_MEBIBYTES => {
+            Ok(vec!["-m".to_owned(), format!("{mebibytes}M")])
+        }
+        _ => Err(format!(
+            "`--memory {size}`: give a size such as 512M or 4G, at least \
+             {MINIMUM_MEMORY_MEBIBYTES}M"
+        )),
+    }
+}
 
 /// Whether a boot gives the machine its display device ([`Arch::display_args`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3371,6 +3390,15 @@ mod tests {
         );
         assert_eq!(OFFSCREEN_WORD, "eggos.display=offscreen");
         assert_eq!(grant_word("view,run"), "eggos.mcp_allow=view,run");
+    }
+
+    #[test]
+    fn memory_args_come_in_mebibytes_and_refuse_less_than_the_default() {
+        assert_eq!(memory_args("4G").unwrap(), ["-m", "4096M"]);
+        assert_eq!(memory_args("128M").unwrap(), ["-m", "128M"]);
+        assert!(memory_args("64M").is_err());
+        assert!(memory_args("4").is_err());
+        assert_eq!(COMMON_ARGS[0], "-m", "memory_args goes after it to win");
     }
 
     #[test]

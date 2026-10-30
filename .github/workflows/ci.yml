@@ -251,6 +251,64 @@ jobs:
       - name: The official rustc runs rustc --version inside EggOS
         run: cargo xtask rustc-version --arch ${{ matrix.arch }}
 
+  hello-crate:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install xz, the aarch64 C library and Linux's user-mode QEMU (test data and tools only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu qemu-user
+
+      - name: Install the arm64 libraries the toolchain may load (test data only, never shipped)
+        if: matrix.arch == 'aarch64'
+        run: |
+          dpkg --add-architecture arm64
+          sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates\nComponents: main\nArchitectures: arm64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' > /etc/apt/sources.list.d/arm64.sources
+          apt-get update
+          apt-get install -y --no-install-recommends zlib1g:arm64 libgcc-s1:arm64
+
+      - uses: actions/cache@v6
+        with:
+          path: target/hello-crate/downloads
+          key: hello-crate-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'xtask/src/rustc_version.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: cargo builds and runs a hello-world crate inside EggOS, printing what it prints on Linux
+        run: cargo xtask hello-crate --arch ${{ matrix.arch }}
+
   bench:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -449,7 +507,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, dynamic-linking, rustc-version, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
+    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

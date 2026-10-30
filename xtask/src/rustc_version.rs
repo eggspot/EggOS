@@ -25,7 +25,7 @@ use std::process::Command;
 pub const RUST_VERSION: &str = "1.99.1";
 
 /// The day static.rust-lang.org published [`RUST_VERSION`], whose folder keeps it for good.
-const RELEASE_DATE: &str = "2026-10-15";
+pub const RELEASE_DATE: &str = "2026-10-15";
 
 /// What the line `rustc --version` writes starts with.
 pub const VERSION_LINE_PREFIX: &str = "rustc 1.99.1 (";
@@ -36,31 +36,75 @@ pub const LIBRARY_FOLDER: &str = "/work/glibc";
 /// Where `rustc` is inside EggOS.
 pub const RUSTC_PATH: &str = "/work/rustc/bin/rustc";
 
-/// The `rustc` component for one architecture: its target and the SHA-256 static.rust-lang.org
-/// lists for its `.tar.xz`.
+/// One component of the pinned release (`rustc`, `cargo`, `rust-std`) for one target: the
+/// SHA-256 static.rust-lang.org lists for its `.tar.xz`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Component {
-    target: &'static str,
-    sha256: &'static str,
+pub struct Component {
+    /// Which component: `rustc`, `cargo` or `rust-std`.
+    pub kind: &'static str,
+    /// The target it is for.
+    pub target: &'static str,
+    /// The pinned SHA-256 of its archive.
+    pub sha256: &'static str,
+}
+
+const PINNED: [Component; 6] = [
+    Component {
+        kind: "rustc",
+        target: "x86_64-unknown-linux-gnu",
+        sha256: "2ff05ff9c08a90861e7f6e4065b40a8b87463b4576186fd613871c3e37f2091f",
+    },
+    Component {
+        kind: "rustc",
+        target: "aarch64-unknown-linux-gnu",
+        sha256: "acdcdfe09ae1f103aa9a2b7f88903a9588bc2e99288af10e6fbf5514e2e49f25",
+    },
+    Component {
+        kind: "cargo",
+        target: "x86_64-unknown-linux-gnu",
+        sha256: "53f3521949404d595efb06a55c12c5658d4ed1c75566f33d3d514eaebe70bd8a",
+    },
+    Component {
+        kind: "cargo",
+        target: "aarch64-unknown-linux-gnu",
+        sha256: "5156832e0c1254e9b49a79edabdc6d4c35f32f8fc1cf3ca700f268ff96087ab0",
+    },
+    Component {
+        kind: "rust-std",
+        target: "x86_64-unknown-linux-musl",
+        sha256: "1dd241eaeb19ff3b5180461c77bdee93d6cafc669eda9de834e7c06b0ec3ca95",
+    },
+    Component {
+        kind: "rust-std",
+        target: "aarch64-unknown-linux-musl",
+        sha256: "2f3eb0d0610e2b7f6b2121d106e2490ac648decfa0c09b30873bdfc60de6c1ab",
+    },
+];
+
+/// The pinned component `kind` for `target`, if the CI track downloads it.
+pub fn pinned(kind: &str, target: &str) -> Option<Component> {
+    PINNED
+        .into_iter()
+        .find(|component| component.kind == kind && component.target == target)
+}
+
+/// The glibc target the official toolchain's programs for `arch` are built for.
+pub fn host_target(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
 }
 
 fn component(arch: &str) -> Option<Component> {
-    Some(match arch {
-        "x86_64" => Component {
-            target: "x86_64-unknown-linux-gnu",
-            sha256: "2ff05ff9c08a90861e7f6e4065b40a8b87463b4576186fd613871c3e37f2091f",
-        },
-        "aarch64" => Component {
-            target: "aarch64-unknown-linux-gnu",
-            sha256: "acdcdfe09ae1f103aa9a2b7f88903a9588bc2e99288af10e6fbf5514e2e49f25",
-        },
-        _ => return None,
-    })
+    pinned("rustc", host_target(arch)?)
 }
 
 impl Component {
-    fn name(self) -> String {
-        format!("rustc-{RUST_VERSION}-{}", self.target)
+    /// Its archive's name, without `.tar.xz`, which is also the folder the archive holds.
+    pub fn name(self) -> String {
+        format!("{}-{RUST_VERSION}-{}", self.kind, self.target)
     }
 
     fn url(self) -> String {
@@ -72,7 +116,7 @@ impl Component {
 }
 
 /// The host folders a library for `arch` is looked for in, in order.
-fn host_library_folders(arch: &str) -> &'static [&'static str] {
+pub fn host_library_folders(arch: &str) -> &'static [&'static str] {
     match arch {
         "x86_64" => &["/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu"],
         "aarch64" => &[
@@ -100,7 +144,7 @@ pub fn check(arch: &Arch) -> Result<(), String> {
     let archive = fetch(&root, component)?;
     let work = root.join(arch.name).join("work");
     unpack_into(&archive, &root.join(arch.name), component, &work)?;
-    let copied = copy_libraries(&work, host_library_folders(arch.name))?;
+    let copied = copy_libraries(&work, &[], host_library_folders(arch.name))?;
     eprintln!(
         "xtask: {}: {} libraries from the host for rustc: {}",
         arch.name,
@@ -147,7 +191,7 @@ pub fn check(arch: &Arch) -> Result<(), String> {
 
 /// Downloads `component`'s archive into `root/downloads` unless an earlier run did, checks its
 /// SHA-256 and returns its path.
-fn fetch(root: &Path, component: Component) -> Result<PathBuf, String> {
+pub fn fetch(root: &Path, component: Component) -> Result<PathBuf, String> {
     let downloads = root.join("downloads");
     std::fs::create_dir_all(&downloads).map_err(|e| format!("{}: {e}", downloads.display()))?;
     let archive = downloads.join(format!("{}.tar.xz", component.name()));
@@ -166,13 +210,11 @@ fn fetch(root: &Path, component: Component) -> Result<PathBuf, String> {
 }
 
 /// The SHA-256 of the file at `path`, in lowercase hexadecimal.
-fn sha256_of(path: &Path) -> Result<String, String> {
+pub fn sha256_of(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(crate::sha256::hex_digest(&bytes))
 }
 
-/// Unpacks `archive` into `scratch/unpacked` and moves its `rustc` folder to `work/rustc`, both
-/// folders made anew.
 fn unpack_into(
     archive: &Path,
     scratch: &Path,
@@ -180,25 +222,11 @@ fn unpack_into(
     work: &Path,
 ) -> Result<(), String> {
     let unpacked = scratch.join("unpacked");
-    for folder in [&unpacked, work] {
-        if folder.exists() {
-            std::fs::remove_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-        }
-        std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    if work.exists() {
+        std::fs::remove_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
     }
-    let status = Command::new("tar")
-        .arg("-xJf")
-        .arg(archive)
-        .arg("-C")
-        .arg(&unpacked)
-        .status()
-        .map_err(|e| format!("could not run tar: {e}"))?;
-    if !status.success() {
-        return Err(format!(
-            "tar -xJf {}: {status} (unpacking needs xz)",
-            archive.display()
-        ));
-    }
+    std::fs::create_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
+    unpack(archive, &unpacked)?;
     let rustc = unpacked.join(component.name()).join("rustc");
     if !rustc.join("bin").join("rustc").is_file() {
         return Err(format!(
@@ -210,15 +238,42 @@ fn unpack_into(
         .map_err(|e| format!("{} to {}: {e}", rustc.display(), work.display()))
 }
 
-/// Copies into `work/glibc` every library `rustc`'s programs and libraries need that the
-/// toolchain does not hold, and every library those need in turn, from the first of `folders`
-/// that has it (symbolic links followed). The dynamic loader is left out: it goes where
-/// `PT_INTERP` names it. Returns the names copied; an error lists those found nowhere.
-fn copy_libraries(work: &Path, folders: &[&str]) -> Result<Vec<String>, String> {
+/// Unpacks `archive`, a `.tar.xz`, into `folder`, made anew.
+pub fn unpack(archive: &Path, folder: &Path) -> Result<(), String> {
+    if folder.exists() {
+        std::fs::remove_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
+    std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let status = Command::new("tar")
+        .arg("-xJf")
+        .arg(archive)
+        .arg("-C")
+        .arg(folder)
+        .status()
+        .map_err(|e| format!("could not run tar: {e}"))?;
+    match status.success() {
+        true => Ok(()),
+        false => Err(format!(
+            "tar -xJf {}: {status} (unpacking needs xz)",
+            archive.display()
+        )),
+    }
+}
+
+/// Copies into `work/glibc` every library `rustc`, `programs` and the toolchain's libraries
+/// need that the toolchain does not hold, and every library those need in turn, from the first
+/// of `folders` that has it (symbolic links followed). The dynamic loader is left out: it goes
+/// where `PT_INTERP` names it. Returns the names copied; an error lists those found nowhere.
+pub fn copy_libraries(
+    work: &Path,
+    programs: &[PathBuf],
+    folders: &[&str],
+) -> Result<Vec<String>, String> {
     let toolchain_libraries = work.join("rustc").join("lib");
     let into = work.join("glibc");
     std::fs::create_dir_all(&into).map_err(|e| format!("{}: {e}", into.display()))?;
     let mut waiting = vec![work.join("rustc").join("bin").join("rustc")];
+    waiting.extend(programs.iter().cloned());
     for entry in std::fs::read_dir(&toolchain_libraries)
         .map_err(|e| format!("{}: {e}", toolchain_libraries.display()))?
     {
@@ -270,8 +325,6 @@ fn copy_libraries(work: &Path, folders: &[&str]) -> Result<Vec<String>, String> 
     Ok(copied)
 }
 
-/// The libraries a little-endian ELF-64 file needs (its `DT_NEEDED` entries), in order: none
-/// for a file without a dynamic section.
 fn needed_libraries(image: &[u8]) -> Result<Vec<String>, String> {
     const PT_LOAD: u32 = 1;
     const PT_DYNAMIC: u32 = 2;
@@ -420,6 +473,16 @@ mod tests {
             assert!(glibc(arch).is_some());
         }
         assert_eq!(component("riscv64"), None);
+        for kind in ["cargo", "rust-std"] {
+            assert_eq!(PINNED.iter().filter(|pin| pin.kind == kind).count(), 2);
+        }
+        assert_eq!(
+            pinned("rust-std", "aarch64-unknown-linux-musl").map(Component::name),
+            Some(format!(
+                "rust-std-{RUST_VERSION}-aarch64-unknown-linux-musl"
+            ))
+        );
+        assert!(PINNED.iter().all(|pin| pin.sha256.len() == 64));
         assert!(VERSION_LINE_PREFIX.starts_with(&format!("rustc {RUST_VERSION} ")));
         let toolchain =
             std::fs::read_to_string(crate::workspace_root().join("rust-toolchain.toml")).unwrap();

@@ -9,6 +9,7 @@ mod bench;
 mod ci_artifact;
 mod dynamic_linking;
 mod elf;
+mod hello_crate;
 mod image;
 mod initramfs;
 mod lint;
@@ -49,8 +50,8 @@ commands:
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
   run   --arch <arch> [--nographic] [--apps <folder>] [--disk <image> | --no-disk]
-        [--format-disk] [--no-network] [--work <folder> [--work-out <folder>]]
-        [--add <file> [--as <path>]]...
+        [--format-disk] [--no-network] [--work <folder> [--work-out <folder>]
+        [--room <size>]] [--memory <size>] [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
@@ -62,12 +63,14 @@ commands:
                          through QEMU's user networking (--no-network: no network adapter);
                          with --work, the folder (without its top-level .git and target) on
                          a work disk at /work, writable, unpacked after QEMU ends into
-                         --work-out's new folder (default: <folder>.out beside it);
-                         with --add, the release image with those files, as `image` builds it
-  work pack <folder> <image>
+                         --work-out's new folder (default: <folder>.out beside it), with
+                         --room to spare on it (default 1G); --memory gives the machine
+                         that much memory (such as 4G; default 128M); with --add, the
+                         release image with those files, as `image` builds it
+  work pack [--room <size>] <folder> <image>
                          write the folder (without its top-level .git and target) into a
                          new work disk image that EggOS mounts writable at /work, for the run
-                         scripts' --work
+                         scripts' --work, with --room to spare (default 1G)
   work unpack <image> <folder>
                          write what /work holds on a work disk image into a new folder
   bench --arch <arch> [--update-baseline | --report-only]
@@ -100,6 +103,12 @@ commands:
                          target/rustc-version, checked against its pinned SHA-256), hand
                          it to EggOS on a work disk with the C libraries it needs from this
                          Linux host and check `rustc --version` runs (x86_64 and aarch64)
+  hello-crate --arch <arch>
+                         download the official toolchain's rustc, cargo and the musl
+                         target's standard library (test data, pinned SHA-256s), build and
+                         run tests/hello-crate with them here on Linux, then inside EggOS
+                         from a work disk, and check both print the same (x86_64 and
+                         aarch64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -367,11 +376,11 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 37] = [
-    "agentlog", "cat", "chmod", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt",
-    "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff",
-    "ps", "readlink", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true",
-    "uname", "uptime", "wc", "wm",
+const COREUTILS: [&str; 38] = [
+    "agentlog", "cat", "chmod", "cp", "date", "df", "echo", "false", "fetch", "free", "grep",
+    "halt", "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv", "nslookup", "ping",
+    "poweroff", "ps", "readlink", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash",
+    "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -501,6 +510,12 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("hello-crate") => {
+            for arch in arch()? {
+                hello_crate::check(arch)?;
+            }
+            Ok(())
+        }
         Some("fuzz") => match &args[1..] {
             [target] if target == "mcp" => fuzz_mcp(60),
             [target, flag, seconds] if target == "mcp" && flag == "--seconds" => {
@@ -537,14 +552,18 @@ fn run(args: &[String]) -> Result<(), String> {
             let (options, no_network) = without_flag(&options, "--no-network");
             let (options, work) = with_value(&options, "--work")?;
             let (options, work_out) = with_value(&options, "--work-out")?;
+            let (options, room) = with_value(&options, "--room")?;
+            let (options, memory) = with_value(&options, "--memory")?;
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
-            let work = match (work, work_out) {
-                (None, Some(_)) => return Err("`--work-out` needs `--work <folder>`".into()),
-                (None, None) => None,
-                (Some(folder), out) => Some(WorkRun::prepare(arch, &folder, out)?),
+            let room = room.as_deref().map(room_bytes).transpose()?;
+            let work = match (work, work_out, room) {
+                (None, Some(_), _) => return Err("`--work-out` needs `--work <folder>`".into()),
+                (None, None, Some(_)) => return Err("`--room` needs `--work <folder>`".into()),
+                (None, None, None) => None,
+                (Some(folder), out, room) => Some(WorkRun::prepare(arch, &folder, out, room)?),
             };
             let mut extra_args = match folder {
                 Some(folder) => qemu::host_folder_args(arch, &host_folder(&folder)?),
@@ -571,6 +590,9 @@ fn run(args: &[String]) -> Result<(), String> {
             if let Some(work) = &work {
                 extra_args.extend(work.pack(arch)?);
             }
+            if let Some(memory) = memory {
+                extra_args.extend(qemu::memory_args(&memory)?);
+            }
             let ran = qemu::run_interactive(arch, &kernel, !nographic, &extra_args);
             match work {
                 Some(work) => {
@@ -581,9 +603,21 @@ fn run(args: &[String]) -> Result<(), String> {
             }
         }
         Some("work") => match &args[1..] {
-            [verb, folder, image] if verb == "pack" => {
-                let packed =
-                    work_disk::pack(std::path::Path::new(folder), std::path::Path::new(image))?;
+            [verb, rest @ ..] if verb == "pack" && matches!(rest.len(), 2 | 4) => {
+                let (rest, room) = with_value(rest, "--room")?;
+                let [folder, image] = rest.as_slice() else {
+                    return Err(USAGE.into());
+                };
+                let room = room
+                    .as_deref()
+                    .map(room_bytes)
+                    .transpose()?
+                    .unwrap_or(work_disk::HEADROOM_BYTES);
+                let packed = work_disk::pack_with_room(
+                    std::path::Path::new(folder),
+                    std::path::Path::new(image),
+                    room,
+                )?;
                 eprintln!(
                     "xtask: packed {} files ({} bytes) and {} folders into {} ({} MiB, sparse); \
                      {} left out",
@@ -611,15 +645,42 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// A size given as a whole number of mebibytes or gibibytes (`512M`, `4G`), in mebibytes:
+/// `--memory` and `--room` (D171). `None` for anything else, or 0.
+pub fn size_in_mebibytes(size: &str) -> Option<u64> {
+    let (digits, factor) = match size.as_bytes().last()? {
+        b'M' => (&size[..size.len() - 1], 1),
+        b'G' => (&size[..size.len() - 1], 1024),
+        _ => return None,
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let mebibytes = digits.parse::<u64>().ok()?.checked_mul(factor)?;
+    (mebibytes > 0).then_some(mebibytes)
+}
+
+fn room_bytes(size: &str) -> Result<u64, String> {
+    size_in_mebibytes(size)
+        .and_then(|mebibytes| mebibytes.checked_mul(1 << 20))
+        .ok_or_else(|| format!("`--room {size}`: give a size such as 512M or 8G"))
+}
+
 #[derive(Debug)]
 struct WorkRun {
     folder: std::path::PathBuf,
     image: std::path::PathBuf,
     out: std::path::PathBuf,
+    room: u64,
 }
 
 impl WorkRun {
-    fn prepare(arch: &Arch, folder: &str, out: Option<String>) -> Result<Self, String> {
+    fn prepare(
+        arch: &Arch,
+        folder: &str,
+        out: Option<String>,
+        room: Option<u64>,
+    ) -> Result<Self, String> {
         let folder = std::path::PathBuf::from(host_folder(folder)?);
         let out = match out {
             Some(out) => std::path::PathBuf::from(out),
@@ -638,11 +699,16 @@ impl WorkRun {
         let image = target_directory()
             .join("image")
             .join(format!("eggos-{}-work.img", arch.name));
-        Ok(Self { folder, image, out })
+        Ok(Self {
+            folder,
+            image,
+            out,
+            room: room.unwrap_or(work_disk::HEADROOM_BYTES),
+        })
     }
 
     fn pack(&self, arch: &Arch) -> Result<Vec<String>, String> {
-        let packed = work_disk::pack(&self.folder, &self.image)?;
+        let packed = work_disk::pack_with_room(&self.folder, &self.image, self.room)?;
         eprintln!(
             "xtask: {} is at /work in EggOS, writable ({} files, {} MiB disk); what EggOS \
              writes there is unpacked into {} when QEMU ends",
@@ -2145,8 +2211,20 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 mod tests {
     use super::{
         APP_PATH, COREUTILS, EDIT_PATH, arch_option, foreign_layers, host_folder,
-        json_string_field, with_value, without_flag,
+        json_string_field, room_bytes, size_in_mebibytes, with_value, without_flag,
     };
+
+    #[test]
+    fn sizes_are_whole_mebibytes_or_gibibytes() {
+        assert_eq!(size_in_mebibytes("512M"), Some(512));
+        assert_eq!(size_in_mebibytes("4G"), Some(4096));
+        let refused = ["", "M", "4", "4g", "4 G", "-4G", "0M", "4.5G", "G4"];
+        for refused in refused.into_iter().chain(["99999999999999999G"]) {
+            assert_eq!(size_in_mebibytes(refused), None, "{refused}");
+        }
+        assert_eq!(room_bytes("8G"), Ok(8 << 30));
+        assert!(room_bytes("8").is_err());
+    }
 
     #[test]
     fn the_release_image_carries_each_foreign_layer_where_it_runs() {
