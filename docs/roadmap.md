@@ -224,9 +224,14 @@ Must-have, in order:
     the layer and before every call into the program, per-thread TEBs in `tpidr_el0`, an
     aarch64 thread start and `__chkstk`. A QEMU test on all three runs part 1's program and
     `windows-tools.exe` built for `aarch64-pc-windows-msvc` on aarch64 with the same lines and
-    exit codes as on x86_64. Next, as user capabilities: other processes (`CreateProcessW`,
-    pipes), programs built on Rust's std or a C runtime (MSVC's, MinGW's), x64 programs on Arm
-    through ahead-of-time translation (D121's and D124's "Not yet").
+    exit codes as on x86_64. Users can now run Windows programs that start other programs and
+    read their output (D189): `CreateProcessW` and `CreateProcessA`, anonymous pipes with
+    `PeekNamedPipe`, inherited, duplicated and protected handles, and waits, exit codes and
+    `TerminateProcess` on children, checked by `eggspawn.exe` from our own C source in the
+    Windows C runtime boot test on x86_64 and aarch64. Next, as user capabilities: programs
+    built on Rust's std and MinGW's `msvcrt.dll`, then named objects, alertable waits and APCs,
+    abandoned mutexes, ordinal imports and DOS wildcards (D189's "Not yet"), and x64 programs on
+    Arm through ahead-of-time translation (D121's and D124's "Not yet").
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
     docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which

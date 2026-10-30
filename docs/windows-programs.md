@@ -152,6 +152,39 @@ cl /O2 /MD seh.c                                           :: C with __try and _
 `tests/windows-crt/eggcpp.cpp` is our own example, which the Windows C runtime boot test runs
 in CI (`cargo xtask windows-crt`).
 
+## Programs that start other programs
+
+A Windows program can start another program, Windows or Linux, and read its output (D178,
+D189):
+
+- **`CreateProcessW` and `CreateProcessA`** find the program from a path or a name (the
+  program's own folder, then the working folder, then `PATH`; `.exe` is added to a name
+  without an extension), and give it its command line (split and quoted back exactly as the C
+  runtime parses it), a working folder, and the caller's environment or the block it passes
+  (ANSI, or UTF-16 with `CREATE_UNICODE_ENVIRONMENT`). `PROCESS_INFORMATION`'s process handle
+  waits (`WaitForSingleObject`, `WaitForMultipleObjects`), gives the exit code
+  (`GetExitCodeProcess`, `STILL_ACTIVE` while it runs) and ends the child
+  (`TerminateProcess`); its thread handle waits for the same end.
+- **Pipes.** `CreatePipe` makes an anonymous pipe. `ReadFile` at its end (all writers closed)
+  fails with `ERROR_BROKEN_PIPE`, and `WriteFile` to a pipe nobody reads with
+  `ERROR_NO_DATA`. `PeekNamedPipe` tells how many bytes wait and copies the first ones without
+  taking them: `ReadFile` still gets them.
+- **Inherited handles.** As on Windows, a child gets the handles marked inheritable when it
+  is started with `bInheritHandles` TRUE, with the same values, and none but its standard
+  ones otherwise: `SECURITY_ATTRIBUTES.bInheritHandle` (`CreatePipe`, `CreateFileW`/`A`),
+  `SetHandleInformation` and `GetHandleInformation` (`HANDLE_FLAG_INHERIT`,
+  `HANDLE_FLAG_PROTECT_FROM_CLOSE`) and `DuplicateHandle` set and read it. With
+  `STARTF_USESTDHANDLES` the child's standard input, output and error are the handles
+  `STARTUPINFO` names. Events, mutexes, semaphores and process handles are never inherited.
+- **Creation flags.** `CREATE_SUSPENDED` starts the child at once; `ResumeThread` on its
+  thread handle answers 1, then 0, as if it had waited. `CREATE_NEW_CONSOLE`,
+  `CREATE_NO_WINDOW` and `DETACHED_PROCESS` change nothing: the child shares the terminal.
+  `CREATE_NEW_PROCESS_GROUP` gives it a process group of its own.
+
+`tests/windows-crt/eggspawn.c` is our own example: it starts a copy of itself with its output
+through a pipe, then others to terminate and to resume; the Windows C runtime boot test runs
+it in CI.
+
 ## GUI programs
 
 Run one from `eggsh` like any program; the shell waits for it to end. Its windows open on the
@@ -218,6 +251,7 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | Files | `CreateFileW`/`A`, `ReadFile`, `WriteFile`, `CloseHandle`, `GetFileSize`, `GetFileSizeEx`, `SetFilePointer`, `SetFilePointerEx`, `GetFileType`, `FlushFileBuffers` |
 | Memory | `GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapReAlloc`, `HeapSize`, `HeapCreate`, `HeapDestroy`, `VirtualAlloc`, `VirtualFree`, `VirtualProtect`; ntdll's `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `__chkstk` |
 | Process | `GetCommandLineW`/`A`, `ExitProcess`, `TerminateProcess` (itself), `GetCurrentProcess`, `GetCurrentProcessId`, `GetCurrentThread`, `GetCurrentThreadId` |
+| Other processes and pipes (D178, D189) | `CreateProcessW`/`A`, `OpenProcess`, `GetProcessId`, `GetExitCodeProcess`, `TerminateProcess`, `CreatePipe`, `PeekNamedPipe`, `SetHandleInformation`, `GetHandleInformation`, `DuplicateHandle` (files, pipes, objects, the caller's process), `ResumeThread` on a child's thread handle |
 | Environment | `GetEnvironmentVariableW`/`A`, `GetEnvironmentStrings`, `GetEnvironmentStringsW`/`A`, `FreeEnvironmentStringsW`/`A` |
 | Time | `GetTickCount`, `GetTickCount64`, `QueryPerformanceCounter`, `QueryPerformanceFrequency` (10 MHz), `GetSystemTimeAsFileTime`, `GetSystemTimePreciseAsFileTime`, `Sleep`, `SleepEx` |
 | Errors and TLS | `GetLastError`, `SetLastError`, `TlsAlloc`, `TlsFree`, `TlsGetValue`, `TlsSetValue`, and a program's static TLS (its TLS directory and callbacks) |
@@ -277,8 +311,11 @@ size needed, as each function documents.
   function given an invalid parameter returns its documented error instead of ending the
   program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
   the others' stdio calls).
-- **Pipes between processes** (`CreateProcessW` starts programs, D178) and **UTF-16 console polish** (line endings as
-  `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
+- **Named pipes and overlapped I/O** (`CreateNamedPipeW`, `ConnectNamedPipe`, `OVERLAPPED`
+  reads and writes), handles duplicated into another process, a child that really waits
+  suspended (`CREATE_SUSPENDED` starts it at once), job objects, and the C runtime's
+  `_spawn*`, `system` and `_popen` (D189's "Not yet"); **UTF-16 console polish** (line endings
+  as `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
 - **x64 programs on aarch64** (and ARM64 programs on x86_64): an x64 program on Arm needs its
   code translated ahead of time (D17), which EggOS does not do yet; ARM64EC and ARM64X hybrid
   images run only as plain ARM64 code (their x64 parts are not supported).

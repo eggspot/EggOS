@@ -243,6 +243,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   with `Scripting.Dictionary`, dialogs from resources, accelerators, subclassing), and
   structured exception handling and C++ exceptions work (D177): `__try`, `__except`,
   `__finally`, vectored handlers, faults as Windows exceptions, `throw` and `catch`, `signal`.
+  Programs start other programs and read their output (D189): `CreateProcessW` and
+  `CreateProcessA`, anonymous pipes, `PeekNamedPipe`, inherited, duplicated and protected
+  handles, waits, exit codes and `TerminateProcess` on children; named pipes, overlapped I/O,
+  objects inherited into a child, a really suspended child (`CREATE_SUSPENDED` starts it at
+  once) and job objects do not.
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.

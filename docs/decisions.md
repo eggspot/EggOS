@@ -14281,3 +14281,97 @@ the license, by an explicit instruction recorded here.
   then the riscv64 runtime module, the NDK's `riscv64-linux-android35` and a staticlib built
   for `riscv64gc-unknown-linux-musl`); `debuggerd`'s `crash_dump64`; `PR_SET_VMA` names in
   `/proc/<pid>/maps`; a vDSO; `rseq` and `clone3`.
+
+## D189 Windows console breadth: programs that start other programs through `CreateProcessW` and `CreateProcessA`, anonymous pipes, inherited, duplicated and protected handles, waits, exit codes and `TerminateProcess` on children (batch part 37, slice 37a; v0.3.0 items 18, 19 and 19b's "Next"; D121's, D124's and D178's "Not yet"; extends D118, D121, D146, D177, D178) — Decided by the build loop (pipe errors, protected handles, `CREATE_SUSPENDED` and object handles' flags decided by research)
+
+- **What.** A Windows program can start another program and talk to it: `CreateProcessW`
+  (D178) and now `CreateProcessA` find the program (a path, or a name searched for in the
+  program's folder, the working folder and `PATH`, `.exe` added), give it its command line,
+  working folder and environment block (inherited, or the caller's ANSI or UTF-16 block), and
+  its standard handles from `STARTUPINFO` (`STARTF_USESTDHANDLES`); the process handle waits
+  (`WaitForSingleObject`, `WaitForMultipleObjects`), gives the exit code
+  (`GetExitCodeProcess`, `STILL_ACTIVE` until then) and ends the child (`TerminateProcess`).
+  `CreatePipe` makes an anonymous pipe; `ReadFile`, `WriteFile` and `PeekNamedPipe` work on
+  it; `SetHandleInformation`, `GetHandleInformation` and `DuplicateHandle` work on files,
+  pipes and objects.
+- **Inheritance, as on Windows.** A file or pipe handle is its Linux descriptor (D118), and a
+  child inherits it when the descriptor does not close on `execve`: `HANDLE_FLAG_INHERIT` is
+  the absence of `FD_CLOEXEC` (`userland/windows/src/handle_flags.rs`, pure, host-tested).
+  `CreateFileW`/`A` and `CreatePipe` open with `O_CLOEXEC` unless their `SECURITY_ATTRIBUTES`
+  set `bInheritHandle` (before this, every file the layer opened leaked into children);
+  `DuplicateHandle` makes the copy with `F_DUPFD` or `F_DUPFD_CLOEXEC` as its `bInheritHandle`
+  says. With `bInheritHandles` FALSE the child keeps only its standard streams: the runtime's
+  `Spawn::inheriting_only_streams` closes every other descriptor (`close_range(3, ~0)`) between
+  the clone and the `execve` (also used by `ShellExecuteExW`, which inherits nothing on
+  Windows). A child gets the same handle values for what it inherited, because the descriptor
+  numbers are the same. Kernel objects (events, mutexes, processes, threads) live in the
+  layer's memory and are never inherited; their flags are kept per handle in the object table.
+- **Pipes.** `CreatePipe` is `pipe2` (blocking ends); `ReadFile` at a pipe's end, all writers
+  gone, fails with `ERROR_BROKEN_PIPE` (a file's end stays a read of no bytes), and
+  `WriteFile` to a pipe nobody reads fails with `ERROR_NO_DATA`: the layer now ignores
+  `SIGPIPE` at start-up, so the write fails instead of killing the program (a child gets the
+  default action back when `spawn` starts it). `PeekNamedPipe` reports the bytes waiting
+  (`FIONREAD`) and copies the first ones without taking them from the reader: Linux cannot
+  read a pipe without emptying it, so the layer reads what it was asked to copy and keeps it
+  (`peeked_pipes.rs`: up to 4 KiB for each of 8 pipes at once, in `.bss`), and `ReadFile` on
+  that handle takes the kept bytes first; at the end it fails with `ERROR_BROKEN_PIPE` too.
+- **Handle flags.** `HANDLE_FLAG_PROTECT_FROM_CLOSE` is kept by the layer (a bitmap of the
+  first 4096 descriptors; a byte per object handle): `CloseHandle` on a protected handle fails
+  with `ERROR_INVALID_HANDLE` and leaves it open. `DuplicateHandle` takes the caller's process
+  as its pseudo-handle or a real handle (and `GetCurrentProcess()` as its source gives a real
+  process handle); `DUPLICATE_CLOSE_SOURCE` closes files too.
+- **Creation flags.** `CREATE_SUSPENDED` starts the child at once (the kernel has no way to
+  start a process stopped before its first instruction), and `ResumeThread` on its thread
+  handle answers 1 the first time and 0 after, the suspend count it would have had, so
+  programs that create suspended to set a job, priority or affinity first and then resume
+  work; `CREATE_NEW_CONSOLE`, `CREATE_NO_WINDOW` and `DETACHED_PROCESS` are taken and change
+  nothing (the child shares the terminal); `CREATE_NEW_PROCESS_GROUP` gives it its own group
+  (D178). `PROCESS_INFORMATION.hThread` waits for the process's end.
+- **The check.** `tests/windows-crt/eggspawn.c`, our own C program, built by MSVC as a `/MD`
+  console program for x64 and ARM64 with the other C runtime programs (`cargo xtask
+  windows-programs`, CI's `windows-programs` job, D146) and added to the C runtime boot test
+  image as `/bin/eggspawn.exe` (`xtask/src/main.rs` `WINDOWS_CRT_PROGRAMS`): it makes an
+  inheritable pipe, keeps its read end from the child, starts a copy of itself with
+  `CreateProcessW` (quoted arguments with spaces, a backslash and a quote, a UTF-16
+  environment block with one more variable, `C:\tmp` as its folder, its standard output the
+  pipe, `CREATE_NEW_CONSOLE`), peeks, reads to the pipe's end and prints the child's lines,
+  checks its exit code 42 through the handle and a duplicate, a protected duplicate refusing to
+  close, `TerminateProcess` of a waiting child (259, a 50 ms wait timing out, then 9),
+  `CreateProcessA` of `eggspawn.exe exit 5` by name with `CREATE_SUSPENDED` and
+  `ResumeThread`, and `ERROR_FILE_NOT_FOUND` for a missing program. The boot test
+  (`Expect::WindowsCrt`, `EGGSPAWN_LINES` in `xtask/src/qemu.rs`) checks its 11 lines and
+  status 0 on x86_64 and aarch64.
+- **Front-ends (D22).** The Windows ABI only; no new capability: the programs run from
+  `eggsh`, MCP `run` and as installed apps as before.
+- **Cost (D24, D78).** Not measured (no builds in this batch). `ReadFile` gains one relaxed
+  atomic load (are bytes kept?) and, on a read of no bytes, one `fstat`; `CloseHandle` one
+  atomic load; `CreateFile` nothing. The layer's `.bss` grows by 32 KiB (peeked bytes), 512
+  bytes (protected descriptors) and 4 KiB (object handle flags): untouched pages cost no
+  memory. A child started without inherited handles makes one more system call.
+- **Decided by research** (a research subagent, 2026-10-30, from Microsoft's documentation of
+  anonymous pipes, `WriteFile`, `CloseHandle`, `SetHandleInformation`, `CreateProcess` and
+  `ResumeThread`, and the C runtime's error table): `WriteFile` to a pipe whose reader is gone
+  is `ERROR_NO_DATA` (232), `ReadFile` and `PeekNamedPipe` at the end of one with no writer
+  `ERROR_BROKEN_PIPE`; `CloseHandle` on a protected handle returns FALSE with
+  `ERROR_INVALID_HANDLE` and leaves it open; `CREATE_SUSPENDED` starts the child at once with
+  `ResumeThread` answering the suspend count, rather than refusing it, because programs mostly
+  create suspended to set a job, priority or affinity first; object handles keep their flags
+  for the handle (set, then read back), accepted rather than refused, since programs set
+  inheritance on handles before `CreateProcess`.
+- **Decided without research.** Pure logic outside `win32/` so its host tests run (the
+  lesson of D178); `PeekNamedPipe` reads under the kept bytes' lock (a read of at most the
+  bytes `FIONREAD` reported, which does not wait unless another thread empties the pipe
+  between the two); 4 KiB kept per pipe and 8 pipes; a `PeekNamedPipe` on a handle that is not
+  a pipe is `ERROR_INVALID_HANDLE`; `STARTF_USESTDHANDLES` handles that are not files (null,
+  `INVALID_HANDLE_VALUE`) leave the parent's stream in place; the pipe size `CreatePipe` is
+  given is a hint left unused (Linux's pipe holds 64 KiB).
+- **Not yet.** Slice 37b: programs built on Rust's std (`std::process::Command` needs
+  `CreateProcessW` with `STARTUPINFOEXW` and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
+  `GetCurrentThread()` duplicated into a real thread handle, `ProcessPrng`) and on MinGW's
+  `msvcrt.dll`. Slice 37c: named objects, alertable waits and APCs, abandoned mutexes,
+  ordinal imports, DOS wildcards. Then: named pipes (`CreateNamedPipeW`, `ConnectNamedPipe`)
+  and overlapped I/O on pipes; inheriting kernel objects (events, process handles) into a
+  child; duplicating handles into or out of another process; a really suspended child
+  (`CREATE_SUSPENDED` with `WriteProcessMemory` or `SetThreadContext` on it), `SuspendThread`
+  and debugging APIs; job objects; the C runtime's handle table passed to a child through
+  `lpReserved2` (`_spawn*`, `system`, `_popen`).
