@@ -669,7 +669,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 20] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 21] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -690,6 +690,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 20] = [
     b"macos-objc uncaught; echo MACOS-CONSOLE status $?\r",
     b"macos-swift; echo MACOS-CONSOLE status $?\r",
     b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
+    b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -788,7 +789,7 @@ const OBJC_LANGUAGE_LINES: [&str; 25] = [
     "MACOS-CONSOLE status 0",
 ];
 
-const SWIFT_PROGRAM_LINES: [&str; 13] = [
+const SWIFT_PROGRAM_LINES: [&str; 19] = [
     "MACOS-SWIFT main",
     "MACOS-SWIFT count 2 names 2 square 13.0 circle 3.0 largest 3.0",
     "MACOS-SWIFT shapes square,circle,square",
@@ -800,11 +801,17 @@ const SWIFT_PROGRAM_LINES: [&str; 13] = [
     "MACOS-SWIFT deinit first",
     "MACOS-SWIFT ints -42 9223372036854775807 200 doubles 0.1 1.5e+300 -2.0 0.3333333333333333",
     "MACOS-SWIFT|items|3",
+    "MACOS-SWIFT levels 3 true false true false raw 2",
+    "MACOS-SWIFT casts int 5 string egg node nest level 1 other",
+    "MACOS-SWIFT weak parent owner parent",
+    "MACOS-SWIFT weak after nil",
+    "MACOS-SWIFT characters 12 10 o true true true",
+    "MACOS-SWIFT type Node Level random true",
     "MACOS-SWIFT done",
     "MACOS-CONSOLE status 0",
 ];
 
-fn swift_program_output() -> [Vec<Line>; 2] {
+fn swift_program_output() -> [Vec<Line>; 3] {
     let program = SWIFT_PROGRAM_LINES
         .iter()
         .map(|line| Line::Whole((*line).to_owned()))
@@ -819,7 +826,13 @@ fn swift_program_output() -> [Vec<Line>; 2] {
         Line::Whole("Aborted".to_owned()),
         Line::Whole("MACOS-CONSOLE status 134".to_owned()),
     ];
-    [program, conflict]
+    let fatal = vec![
+        Line::Whole("MACOS-SWIFT fatal".to_owned()),
+        Line::Around("", "/main.swift:114: Fatal error: egg cracked"),
+        Line::Whole("Aborted".to_owned()),
+        Line::Whole("MACOS-CONSOLE status 134".to_owned()),
+    ];
+    [program, conflict, fatal]
 }
 
 const OBJC_UNCAUGHT_LINES: [&str; 5] = [
@@ -900,6 +913,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
+            refused("macos-swift"),
             refused("macos-swift"),
             refused("macos-swift"),
             end,
@@ -988,6 +1002,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
+        swift_program.next().unwrap_or_default(),
         swift_program.next().unwrap_or_default(),
         swift_program.next().unwrap_or_default(),
         end,

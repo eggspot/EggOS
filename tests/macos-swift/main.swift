@@ -35,6 +35,30 @@ final class Account {
     var balance = 0
 }
 
+enum Level: Int, CaseIterable {
+    case easy = 0
+    case hard = 1
+    case expert = 2
+}
+
+final class Node {
+    let name: String
+    weak var parent: Node?
+    init(name: String) { self.name = name }
+}
+
+protocol Named: AnyObject {
+    var name: String { get }
+}
+
+final class Owner: Named {
+    let name = "owner"
+}
+
+final class Holder {
+    weak var named: Named?
+}
+
 func largest<T: Shape>(_ shapes: [T]) -> T? {
     var best: T?
     for shape in shapes where best == nil || shape.area() > best!.area() {
@@ -58,13 +82,37 @@ func describe(_ shapes: [any Shape]) -> String {
     return text
 }
 
+@_semantics("optimize.sil.specialize.generic.never")
+@inline(never)
+func same<T: Hashable>(_ left: T, _ right: T) -> Bool {
+    left == right && left.hashValue == right.hashValue
+}
+
+@_semantics("optimize.sil.specialize.generic.never")
+@inline(never)
+func rawValue<T: RawRepresentable>(of value: T) -> T.RawValue {
+    value.rawValue
+}
+
+@inline(never)
+func classify(_ value: Any) -> String {
+    if let number = value as? Int { return "int \(number)" }
+    if let text = value as? String { return "string \(text)" }
+    if let node = value as? Node { return "node \(node.name)" }
+    if let level = value as? Level { return "level \(level.rawValue)" }
+    return "other"
+}
+
 @inline(never)
 func deposit(_ amount: Int, into balance: inout Int, while work: () -> Void) {
     work()
     balance += amount
 }
 
-if CommandLine.argc > 1 {
+if CommandLine.argc > 2 {
+    print("MACOS-SWIFT fatal")
+    fatalError("egg cracked")
+} else if CommandLine.argc > 1 {
     let account = Account()
     print("MACOS-SWIFT conflict")
     deposit(1, into: &account.balance) { account.balance += 1 }
@@ -101,5 +149,28 @@ if CommandLine.argc > 1 {
     }
     print("MACOS-SWIFT ints \(-42) \(Int.max) \(UInt8(200)) doubles \(0.1) \(1.5e300) \(-2.0) \(1.0 / 3.0)")
     print("MACOS-SWIFT", "items", 3, separator: "|")
+    print("MACOS-SWIFT levels \(Level.allCases.count) \(same(Level.hard, Level.hard)) \(same(Level.easy, Level.expert)) \(same("egg", "egg")) \(same(7, 8)) raw \(rawValue(of: Level.expert))")
+    print("MACOS-SWIFT casts \(classify(5)) \(classify("egg")) \(classify(Node(name: "nest"))) \(classify(Level.hard)) \(classify(2.5))")
+    let parent = Node(name: "parent")
+    let child = Node(name: "child")
+    child.parent = parent
+    let holder = Holder()
+    withExtendedLifetime(Owner()) { owner in
+        holder.named = owner
+        print("MACOS-SWIFT weak \(child.parent?.name ?? "nil") \(holder.named?.name ?? "nil") \(parent.name)")
+    }
+    print("MACOS-SWIFT weak after \(holder.named?.name ?? "nil")")
+    let text = "H\u{E9}llo, W\u{F6}rld"
+    var letters: [Character: Int] = [:]
+    for letter in text {
+        letters[letter, default: 0] += 1
+    }
+    let index = text.index(text.startIndex, offsetBy: 4, limitedBy: text.endIndex)!
+    let beyond = text.index(text.startIndex, offsetBy: 20, limitedBy: text.endIndex)
+    let start = String(text[text.startIndex..<index])
+    let lower = text.lowercased()
+    print("MACOS-SWIFT characters \(text.count) \(letters.count) \(text[index]) \(start == "H\u{E9}ll") \(lower == "h\u{E9}llo, w\u{F6}rld") \(beyond == nil)")
+    let roll = Int.random(in: 1...6)
+    print("MACOS-SWIFT type \(type(of: child)) \(type(of: Level.easy)) random \((1...6).contains(roll))")
     print("MACOS-SWIFT done")
 }
