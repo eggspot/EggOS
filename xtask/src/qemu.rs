@@ -5,6 +5,7 @@
 pub mod cocoa_app;
 pub mod dynamic_linking;
 pub mod files;
+pub mod gtk_app;
 pub mod hello_crate;
 pub mod install;
 mod linux_gui;

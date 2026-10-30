@@ -10,6 +10,7 @@ mod ci_artifact;
 mod cocoa_app;
 mod dynamic_linking;
 mod elf;
+mod gtk_app;
 mod hello_crate;
 mod image;
 mod initramfs;
@@ -139,6 +140,11 @@ commands:
                          open it, move its player and eat the food, read its element tree,
                          open its About panel, quit with Cmd+Q, and compare the frames
                          (aarch64 and x86_64)
+  gtk-app --arch <arch>  download Mousepad, a real GTK 3 app, and its libraries and fonts
+                         from Alpine (test data, pinned SHA-256s), pack them into
+                         mousepad.zip, and boot the release image: install it with its
+                         environment, compile its schemas, open it, type, copy and paste,
+                         save and quit, and check the note it saved (x86_64 and aarch64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -574,6 +580,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("cocoa-app") => {
             for arch in arch()? {
                 cocoa_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("gtk-app") => {
+            for arch in arch()? {
+                gtk_app::check(arch)?;
             }
             Ok(())
         }

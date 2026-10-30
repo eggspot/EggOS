@@ -209,18 +209,18 @@ fn root() -> PathBuf {
     crate::target_directory().join("sdl-app")
 }
 
-fn create(folder: &Path) -> Result<(), String> {
+pub(crate) fn create(folder: &Path) -> Result<(), String> {
     std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))
 }
 
-fn fresh(folder: &Path) -> Result<(), String> {
+pub(crate) fn fresh(folder: &Path) -> Result<(), String> {
     if folder.exists() {
         std::fs::remove_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     }
     create(folder)
 }
 
-fn fetch_pinned(url: &str, file: &Path, sha256: &str) -> Result<(), String> {
+pub(crate) fn fetch_pinned(url: &str, file: &Path, sha256: &str) -> Result<(), String> {
     if !file.is_file() || sha256_of(file)? != sha256 {
         download(url, file)?;
     }
@@ -229,13 +229,13 @@ fn fetch_pinned(url: &str, file: &Path, sha256: &str) -> Result<(), String> {
         true => Ok(()),
         false => Err(format!(
             "{}: SHA-256 {found}, not the pinned {sha256}: Alpine's mirror keeps only each \
-             package's latest build, so pin the new one in xtask/src/sdl_app.rs after checking it",
+             package's latest build, so pin the new one in its xtask module after checking it",
             file.display()
         )),
     }
 }
 
-fn untar(archive: &Path, into: &Path) -> Result<(), String> {
+pub(crate) fn untar(archive: &Path, into: &Path) -> Result<(), String> {
     let status = Command::new("tar")
         .arg("-xzf")
         .arg(archive)
@@ -389,7 +389,7 @@ fn fetch_packages(arch: &Arch) -> Result<PathBuf, String> {
     Ok(unpacked)
 }
 
-fn read(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| {
         format!(
             "{}: {e}: the pinned packages no longer hold what the app needs",
