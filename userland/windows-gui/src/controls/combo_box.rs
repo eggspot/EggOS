@@ -560,7 +560,7 @@ mod tests {
             ..look
         };
         paint_closed(&mut surface, rect, &combo, focused, &LIGHT);
-        assert_eq!(surface.get(116, 76), Some(LIGHT.highlight));
+        assert_eq!(surface.get(330, 80), Some(LIGHT.highlight));
         combo.open();
         let list = list_rect(closed_box(rect), combo.rows(), Rect::new(0, 0, 368, 148));
         paint_list(&mut surface, list, &combo, &LIGHT);
