@@ -302,9 +302,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 
 ## The shell and the core utilities
 - `eggsh` runs commands with arguments, quoting, variables, `cd`, `exit`, `.` and scripts,
-  pipelines and the `<`, `>` and `>>` redirections, with a history of recent lines on the
-  arrows, but refuses `&&`, `||`, background jobs, subshells and command substitution, and has
-  no wildcards, `if`, `while`, `for`, `case`, functions or `2>` ([shell](shell.md)).
+  pipelines, `&&`, `||`, background jobs with `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`, the
+  `<`, `>`, `>>`, `2>` and `2>&1` redirections, line editing and a history kept in
+  `~/.eggsh_history` (D181), but refuses subshells, command substitution and here-documents,
+  cannot run a list joined by `&&` or `||` in the background, redirects only descriptors 0 to
+  2, and has no wildcards, `if`, `while`, `for`, `case` or functions ([shell](shell.md)).
+- Job control follows Linux, but a background write to the terminal never stops a program
+  (`TOSTOP` is not acted on), `wait` cannot be interrupted with `^C`, and line editing redraws
+  a line longer than the terminal is wide wrongly once the cursor moves back across its end
+  (D181).
 - The core utilities are `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`,
   `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `sync`, `tail`, `touch`, `true`,
   `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));

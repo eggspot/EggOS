@@ -13237,3 +13237,161 @@ the license, by an explicit instruction recorded here.
   `Bool` and the numbers (reflection), `Float`'s description, class-bound existentials and
   metatypes by name, full Unicode tables for characters, case and normalization, Swift
   concurrency, the Swift benchmarks and riscv64 (no Swift for it on macOS).
+
+## D181 The shell runs `&&`, `||` and background jobs, with `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`; the kernel stops and continues processes (`WUNTRACED`, `WCONTINUED`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`, orphaned groups) and sends `SIGWINCH`; `2>` and `2>&1`, moving the cursor within a line and a history kept across sessions (batch part 29; v0.3.0 items 7, 9 and 22's follow-ups; D105's, D107's and D125's "Not yet"; extends D97, D100, D105, D107, D125, D165) — Decided by the build loop (the history file, the job reports and scripts' background jobs decided by research)
+
+- **What users get.** In `eggsh`: `a && b`, `a || b`, `a &` with `$!`, `jobs`, `fg`, `bg`,
+  `wait` and `kill`, `^Z` to stop the program in the foreground, `2> file`, `2>&1` (any of
+  descriptors 0 to 2, `>&2`, `<&0`), the cursor moved within the line (arrows, Home, End,
+  `^A` `^E` `^B` `^F`, Delete, `^K`), and the lines typed kept in `~/.eggsh_history` across
+  sessions and reboots (docs/shell.md). Programs are stopped and continued as on Linux and get
+  `SIGWINCH` when the terminal's size changes.
+- **Front-ends (D22).** The shell is the command line (CLI); terminals are its GUI (the
+  graphical terminal today, part 35's terminal windows later); an agent reaches the same
+  through the MCP tool `run` with `/bin/eggsh -c '...'` (`&&`, `||`, `&`, `2>`, `wait` and
+  `kill` work there; `fg`, `bg` and `^Z` need a terminal, as in every shell). No new tool: job
+  control is a property of a terminal session, which `run` does not hold open.
+- **Stopping a process (kernel).** A stop signal whose action is `SIG_DFL` now stops the
+  process (`SIGSTOP` always; `SIGTSTP`, `SIGTTIN` and `SIGTTOU` unless the process's group is
+  orphaned, which discards them, as POSIX says). The thread that delivers it records the stop
+  in the process table (`Table::stop`, a `JobState` per entry: running, stopped with its signal
+  and whether a wait reported it, continued), tells the parent (below), leaves each other
+  thread of the process a `SIGSTOP` tagged `code::GROUP_STOP` (`signals::stop_other_threads`,
+  which interrupts them as a signal sent to them does), and sleeps (`thread::sleep_while`)
+  until the table says the process runs again, `SIGKILL` is pending or the process ended. A
+  thread that delivers a `GROUP_STOP` (`Delivery::JoinStop`) only sleeps while the process is
+  stopped, so a stale one left from a stop that `SIGCONT` already undid is passed over. This
+  replaces D63's `SIGSTOP` that parked the thread for good (`thread::wait_for_end` is gone).
+  Signals sent to a stopped process are taken in and stay pending until it continues; `SIGKILL`
+  ends it.
+- **Continuing (kernel).** `SIGCONT` sent from another process (`kill`, a group's hang-up)
+  continues a stopped process before it is queued, whatever its action
+  (`job_control::continue_process`, from `signals::send_from_outside`): the table records the
+  continuation, the parent is told, and the signal's sending interrupts the stopped threads,
+  which find the process running and go on to its handler, if any. A process cannot send
+  itself `SIGCONT` while stopped, so the caller's own path needs no hook.
+- **The parent (kernel).** `wait4` with `WUNTRACED` and `waitid` with `WSTOPPED` report a
+  child that stopped (`signal << 8 | 0x7f`, `CLD_STOPPED` with the signal), `WCONTINUED` one
+  that continued (`0xffff`, `CLD_CONTINUED` with `SIGCONT`), each once, or again with
+  `WNOWAIT`; a stopped child counts as running for `ECHILD`. A stop or continuation wakes the
+  parent's waits (`wait::notify_job_change`; the count that keeps a wait from sleeping past a
+  change is now `CHILD_CHANGES`) and sends it `SIGCHLD` unless it set `SA_NOCLDSTOP`, which
+  `rt_sigaction` records in the table (`set_no_stop_notices`, inherited by `fork`, cleared by
+  `execve`), as D105 recorded `SA_NOCLDWAIT`.
+- **Orphaned groups (kernel).** When a process ends and leaves its own group, or a child's
+  group in its session, orphaned (no living member with a living parent in another group of
+  the same session) while a member is stopped, every member gets `SIGHUP` then `SIGCONT`
+  (POSIX's rule, D105's follow-up), through D105's `Ended::hung_up`. The scan runs only while
+  some process is stopped (`Table::stopped`, a count), so ends cost nothing more otherwise:
+  `linux_fork` and `linux_vfork_exec` leave 10,000 zombies, and a scan per end would be
+  quadratic.
+- **The terminal (kernel).** `^Z` (`VSUSP`, with `ISIG`) discards the line unless `NOFLSH`,
+  echoes `^Z` and sends `SIGTSTP` to the console's foreground group, as `^C` and `^\` do.
+  A process of the console's session in a background group that reads the console sends
+  `SIGTTIN` to its group and its `read` starts again once it continues
+  (`job_control::terminal_access` and `restart_after_signal`, Linux's `-ERESTARTSYS`: with a
+  handler, the call is restarted with `SA_RESTART` and fails with `EINTR` without); `EIO` if
+  it ignores or blocks `SIGTTIN` or its group is orphaned. The same with `SIGTTOU` for
+  `TCSETS*`, `TCSETS*2`, `TCFLSH` and `TIOCSPGRP` (ignoring or blocking it lets the call
+  through, as a shell taking the terminal back needs); `ioctl` therefore moved from the
+  out-of-line result table to its own arm of `out_of_line_call` (`ioctl_call`), which has the
+  registers a restart needs, and returns the internal `job_control::SIGNALLED` there. The check
+  runs once per console read and settings call (one look at the table), not on writes: a
+  background write is allowed (`TOSTOP` is not acted on). A `TIOCSWINSZ` that changes the
+  size sends `SIGWINCH` to the foreground group, and `terminal::resize_window` does the same
+  for a terminal whose grid changes (part 35's resizable terminals call it).
+- **Lists and background jobs (shell).** The lexer reads `&&`, `||` and `&` as terminators
+  (they were refused tokens, so no command that worked changes meaning) and refuses `&>` and
+  `|&`, whose bash meanings it does not have yet. `&&` and `||` run the next pipeline by the
+  last status and chain from the left with equal weight; a pipeline skipped is read without
+  expanding (`NoParameters`) and leaves `$?`. A pipeline ending in `&` (known before its first
+  program starts, `syntax::pipeline_end`) runs without waiting and becomes a job; interactive,
+  its first program leads a group that does not take the terminal (`Group::Background`) and
+  the shell writes `[n] pid`. `&` after a list joined by `&&` or `||` is refused
+  (`SyntaxError::BackgroundList`): running a list in the background needs a subshell, which
+  the shell (no `fork` of its own memory, D107) cannot make yet. `$!` is the last background
+  job's last process.
+- **Jobs (shell).** `jobs.rs`: up to 16 jobs (fixed room, no allocator), each with its group,
+  programs, which of them ended and how the last did, its state and its command line (96
+  bytes), the current (`+`) and previous (`-`) job as bash keeps them. A foreground pipeline
+  is waited for with `WUNTRACED` under job control: a program that stops makes the pipeline a
+  stopped job, reported at once (`\n[1]+  Stopped  ...`, `$?` 128 plus the signal). Before each
+  prompt the shell polls (`wait4(-1, WNOHANG | WUNTRACED | WCONTINUED)`) and reports jobs that
+  ended or stopped, then forgets the ended ones; in a script it reaps after each pipeline and
+  reports nothing. The builtins (`shell/job_control.rs`) follow bash: `jobs [-l | -p]`, `fg`
+  (writes the command line, gives the terminal and the shell's saved terminal settings, sends
+  `SIGCONT` to a stopped job's group, waits as for a typed command), `bg`, `wait [pid | %job]`
+  (127 for a process that is not a child), `kill [-s sig | -sig] pid | -group | %job` with
+  `kill -l` (a stopped job also gets `SIGCONT`, as bash does). Job specifications: `%n`, `n`,
+  `%%`, `%+`, `%`, `%-`, `%name`. With stopped jobs, the first `exit` or `^D` says
+  `There are stopped jobs.`; a second one right after leaves, and the kernel's orphaned-group
+  rule hangs the stopped jobs up. The built-ins are registered in `eggos_commands::shell`
+  (`SHELL_COMMANDS`, `SHELL_BUILTINS`: `bg`, `fg`, `jobs`, `kill`, `wait`), as D165 defined.
+- **Redirections (shell).** A digit right before `<` or `>` names the descriptor; `>&n` and
+  `<&n` copy one (`syntax::Redirect::Duplicate`), from left to right as POSIX orders them.
+  `Streams` gains `error`; a builtin's error messages follow its redirected standard error.
+  Only 0 to 2 can be redirected (others say so, status 1). The child moves a source that is
+  itself 0 to 2 out of the way first (`F_DUPFD_CLOEXEC`), so `cmd 2>&1 > file` keeps its
+  error on the old output, and the common case costs no extra call.
+- **Line editing and history (shell).** `editor.rs` now keeps a cursor: characters go in at
+  it, a several-byte UTF-8 character is drawn once whole, and every change redraws only from
+  the change to the end with backspaces, spaces and the line's own bytes (no escape sequences,
+  so the serial console and the graphical terminal show the same). Keys are bash's (above);
+  `ESC [ n ~` and `ESC O x` are read for Home, End and Delete. The history file
+  (`HistoryFile` in `system.rs`, `HistoryLoader` pure) is loaded once, by the first
+  `HISTFILE` an interactive shell names before a prompt, and each line kept is appended to it
+  as typed (`O_APPEND`, mode 0600), so several shells at once and a crash lose nothing.
+- **Decided by research.** The history file (a research subagent, 2026-10-30): bash's model,
+  `HISTFILE` defaulting to `$HOME/.eggsh_history` (a name of the shell's own, not bash's or
+  zsh's file, whose formats differ; no XDG tree in EggOS), empty for none; appended line by line
+  as zsh's `INC_APPEND_HISTORY` and fish do rather than written at exit as bash does (a crash
+  or several terminals would lose lines); loaded once, at start; rewritten with the kept lines
+  through a temporary file and `rename` when larger than 8 times the in-memory 8 KiB; never
+  read or written by scripts and `-c` (agents' `run` would flood it); lines starting with a
+  space left out (Debian's `ignoreboth`, fish), the one way to keep a secret typed on a command
+  line out of a plain file. The job reports: bash's exact formats (`[1] 1234`,
+  `[1]+  Stopped                 sleep 30`, the state padded to 24 columns, ` &` after a
+  running job, `[1]+ sleep 30 &` from `bg`, `Done`, `Exit n`, the signal's description),
+  printed before the next prompt rather than at once, as bash's default; zsh's forms are the
+  minority. Scripts: POSIX's rule, a background job without job control reads `/dev/null` and
+  stays in the shell's group; `jobs`, `wait` and `kill` work, `fg` and `bg` say
+  `no job control`, and no job notices are written.
+- **Decided without research.** The group stop's mechanism (a tagged `SIGSTOP` left for the
+  other threads, checked against the table, rather than a per-thread flag: no new field in
+  `Process` or `ThreadSignals`, D59's size budget); counting stopped processes to gate the
+  orphan scan; `EIO` for a background `read` in an orphaned group and `SIGTTOU` on exactly
+  Linux's `tty_check_change` requests; refusing `&` after `&&`/`||`, `&>` and `|&` rather than
+  guessing; single digits as descriptors; at most 16 jobs, evicting finished ones (reported
+  first) when full; the `exit` warning's "right after" as the same or the next line; `kill`'s
+  signal names; the editor's redraw with plain backspaces; the history file's 64 KiB limit.
+- **Tests.** Host: the process table's stops, continuations, reports with and without
+  `WNOWAIT`, `SA_NOCLDSTOP`, orphaned groups and their hang-up, the console's background
+  groups; `wait4`'s status words; `next_delivery` stopping on `SIGTSTP` and joining a group
+  stop; `^Z` in the line discipline; the lexer's `&&`, `||`, `&`, descriptors and copies,
+  `pipeline_end` and `$!`; the jobs table (numbers, marks, specifications, reports, eviction);
+  the editor against a model of a terminal (insertion, deletion, word and line kills, Home,
+  End, arrows, UTF-8, recall over a longer line) and the history loader; the shell against its
+  fake system (lists, background jobs and `$!`, `/dev/null` in scripts, groups, reports before
+  the prompt, `^Z`, `jobs`, `bg`, `fg`, `wait`, `kill`, the `exit` warning, `2>`, `2>&1`,
+  `>&2`, descriptors past 2, `HISTFILE`); the registry's built-ins. QEMU, on aarch64, riscv64
+  and x86_64, the serial shell session (now with `/tmp` and `/home` in its image) adds: `&&`
+  and `||`, `2>` and `2>&1` through `eggsh -c` and `.`, a line edited with the left arrow,
+  `^A` and `^E`, a background job and `wait $!`, `^Z` to a program in the foreground, `jobs`,
+  `bg`, `jobs`, `fg` (the program checks it was continued and is back in the foreground), a
+  background `read` stopped by `SIGTTIN` (`wait %1` is 149) then `fg` and a line typed to it,
+  `kill %1` (143), `SIGWINCH` on `TIOCSWINSZ`, and a nested `eggsh` that brings back a line
+  its parent typed from the history file. The session's quoting line now expects
+  `$HOME` as `/home/root` (D156 changed init's `HOME`; its expectation had not followed).
+- **Cost.** No hot path changes: a stop costs only on a stop; process ends pay one compare
+  (`Table::stopped`); console reads and settings calls pay one look at the process table;
+  `ioctl` takes a separate arm of `out_of_line_call` (the build phase checks the benchmarks,
+  where only `linux_syscall_round_trip`-style calls could notice the dispatch). `eggsh` grows
+  by the jobs, the builtins and the editor (the build phase measures it against D107's 46-52
+  KiB); the release image grows by that.
+- **Not yet.** `TOSTOP` (a background write stopping the writer); `SIGCONT` allowed across
+  users within a session (POSIX lets any process of the session send it); `&` after a list
+  joined by `&&` or `||`, and subshells; a command after `&&`, `||` or `|` on the next line;
+  descriptors past 2 and `>&-`; multi-digit descriptors; `^C` interrupting `wait` (the shell
+  keeps `SIGINT` blocked outside its prompt); `disown`, `suspend` and `set -b`; job reports
+  for a terminal whose window wraps the line; history search (`^R`) and `history` the builtin;
+  the graphical terminal calling `resize_window` when its grid changes (part 35).

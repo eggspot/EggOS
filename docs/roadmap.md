@@ -29,8 +29,12 @@ Must-have, in order:
 7. **done** — `wait4` and `waitid`, zombies kept in a process table until reaped, orphans
    reparented (nearest subreaper, then init, then the kernel), `SIGCHLD`, `setpgid`,
    `getpgid`, `setsid`, `getsid`, `TIOCSCTTY`/`TIOCGPGRP`/`TIOCSPGRP`/`TIOCGSID`, `^C` to the
-   console's foreground group (D105). Follow-ups: stop and continue (`WUNTRACED`, `SIGTTIN`,
-   `SIGTTOU`), `kill` to other processes and groups (init is named as pid 1 by item 8).
+   console's foreground group (D105). Since then: users can stop and continue programs (D181):
+   the stop signals stop a whole process until `SIGCONT`, `^Z` sends `SIGTSTP`, `WUNTRACED` and
+   `WCONTINUED` report it to the parent with `CLD_STOPPED` and `CLD_CONTINUED`, a background
+   group gets `SIGTTIN` and `SIGTTOU` at the console, an orphaned group with stopped members is
+   hung up, and programs get `SIGWINCH`; `kill` reaches other processes and groups. Next:
+   `TOSTOP`, `SIGCONT` across users within a session.
 8. **done** — init as pid 1: the release kernel starts every CPU and runs `/init` from the
    initramfs as process 1, the process orphans go to, instead of halting; `userland/init`
    starts the login program from `/etc/eggos/init.conf` (default `/bin/eggsh`, a banner and
@@ -48,8 +52,10 @@ Must-have, in order:
    process group of its own that has the console, so `^C` reaches only it, and `^C` at the
    prompt a fresh prompt; pipes, redirections, `&&`, `||`, `&` refused as not supported yet
    (item 16); a QEMU test per architecture drives a session on the serial console (D107,
-   docs/shell.md). Follow-ups: globbing, `$(...)`, functions and control flow, line editing
-   and history.
+   docs/shell.md). Since then: users can run `a && b`, `a || b` and background jobs `a &`, and
+   use `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`, `2>` and `2>&1`, move the cursor within a
+   line and keep their history across sessions (D181). Next: globbing, `$(...)`, functions
+   and control flow (batch part 30).
 10. **done** — the core utilities as one multi-call program (`userland/coreutils`, at
     `/bin/coreutils` with `cat`, `echo`, `false`, `halt`, `ls`, `poweroff`, `reboot`, `sleep`,
     `true` and `uname` as hard links to it, which the initramfs now supports: one copy of the
@@ -217,9 +223,9 @@ Must-have, in order:
     programs; the kernel's pipes (`pipe`, `pipe2`, blocking and non-blocking reads and writes,
     end of file, `EPIPE` and `SIGPIPE`, `poll`); a history of the last lines on the up and down
     arrows, on the serial and graphical terminals; `grep`, `wc`, `head` and `tail`; and `ps`,
-    `free` and `uptime` from a minimal `/proc` (`meminfo`, `uptime`, `ps`). Next, as user
-    capabilities: `2>` and `2>&1`; moving the cursor within a line; (`/proc/self` and
-    `/proc/<pid>`: done, D168); the utilities' GUI and MCP front-ends (M14).
+    `free` and `uptime` from a minimal `/proc` (`meminfo`, `uptime`, `ps`). Since then:
+    `2>` and `2>&1`, moving the cursor within a line and a history kept across sessions (D181),
+    `/proc/self` and `/proc/<pid>` (D168). Next: the utilities' GUI and MCP front-ends (M14).
 23. **done** — users can now create and change files from `eggsh` (D125, docs/coreutils.md):
     `/tmp` and `/home` are writable file systems in memory (files and directories, at most
     half of the memory together, `ENOSPC` past it), with `cp`, `mv`, `rm` (`-r`, `-f`), `mkdir`
