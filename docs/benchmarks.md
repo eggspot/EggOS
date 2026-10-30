@@ -148,7 +148,17 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   of fifteen register `add`, `sub` and `xor` instructions and a `jnz` back, with every flag
   live and atomics on (FEAT_LSE), per iteration: a sixteenth of it is the cost of translating
   one instruction. It measures the translator on every architecture, not translated code;
-  translated programs' own run-time benchmarks are reported apart from native ones (planned).
+  translated programs' own run-time benchmarks are reported apart from native ones.
+- `translate_install_bytes` (aarch64 only, the one architecture that translates; a size, gated
+  exactly like `release_image_bytes`: any growth fails): the bytes of the translation cache
+  file per byte of x86_64 code, for a fixed image of 256 small loop functions (`add`, `xor`,
+  `dec`, `jnz` back, `ret`) translated by `cargo xtask bench` on the host as `app install`
+  translates on aarch64 (D191, slice 39e2d). It shows what installing a translated program
+  costs on the disk; it appears as a "no baseline" line until the baseline is updated.
+- `translated_loop_ratio` (planned, D191's "Not yet"): a fixed x86_64 loop translated and run
+  on the CPU against the same loop as native aarch64 code, run by a user program on aarch64
+  through the shared translation loader; the ratio is the translated code's cost against
+  native, reported apart from native benchmarks.
 
 ## Release kernel
 

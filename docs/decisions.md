@@ -15418,3 +15418,65 @@ the license, by an explicit instruction recorded here.
   through translated frames; arguments past six integers or eight vectors to the layer's
   functions by kind; `GetProcAddress` past 64 functions; freeing a thread's guest state and its
   thunks when it ends.
+- **Slice 39e2d: translating at install, `app show` with the refused sites, the cache removed
+  with its app, and `translate_install_bytes`.** Each layer has a translate-only mode:
+  `/usr/lib/eggos/windows --translate <program>` (and the macOS layer's) reads the program,
+  lays it out as at launch (the Mach-O's pointer fixups included), finds its translation in
+  the cache or makes and stores it through the same function as the launch
+  (`translation::prepare` and the new `translation::install_record` share `translation`), and
+  prints the translation record on standard output: `eggos-translation 1`, `key=` (the cache
+  key), `code=` (bytes of x86_64 code translated), `cache=` (the cache file's bytes),
+  `stored=yes|no`, `refused=` and at most 8 `site=<guest address> <reason>` lines, the reasons
+  being the translator's own descriptions (the format is `eggos_app_manifest::translation`,
+  written by `eggos_translation_loader::install_record`). `app install` of an x64 Windows or
+  x86_64 macOS program on aarch64, after `Installed ...`, prints `Translating <name>'s x86_64
+  code for this aarch64 computer, once...`, starts the layer as a child with a pipe on its
+  standard output (`linux::run_translation`: `pipe2`, `clone`, `dup3`, `execve`, `wait4`),
+  and on success says `Translated <n> bytes of code into a <m>-byte cache;` with the refused
+  count, and keeps the record as `app.translation` in the app's folder (a reserved name no
+  program or `.zip` entry may take); otherwise the install still succeeds with `Not translated
+  yet: it is translated when the app first opens.`, and the first launch finds or makes the
+  cache as before. `app show [--json] <name>` (new; the registry's verb `show`, with the MCP
+  tool `app_show`, a reading tool needing no grant) prints the app's fields and its
+  translation: sizes, cache path, refused count and the listed sites, or `translation: -`.
+  `installer::uninstall` (the CLI, the MCP tool and the installer's and Files' windows) reads
+  the record before removing the folder and then removes the cache file it names, by its exact
+  path (`<directory>/<64 hex digits>.tx`); `app uninstall --dry-run` names it. `cargo xtask
+  bench` adds `translate_install_bytes` on aarch64: the cache file's bytes per byte of x86_64
+  code for a fixed image of 256 loop functions translated on the host, a size gated exactly.
+  Host tests: the record's format, limits and strict reading; the record a layer builds (key,
+  sizes, a VEX instruction's site and reason; the cache path the layers write); keeping,
+  reading and removing in the installer, uninstalling with the cache file; the install lines;
+  `app show`'s parsing, JSON and text; the benchmark's ratio.
+- **Slice 39e2d decided by research.** How the installer translates without depending on the
+  translator: a translate-only mode of each layer binary that the installer starts as a child
+  and reads a result line from, rather than linking the translator and copies of the layers'
+  PE and Mach-O input code into `app`: `app` is in the base, so linking the translator would
+  grow every install, including those with no layer (notes 3 and 8); the layers already make
+  the translation, so the input, the key, the image base and the macOS fixups are the launch's
+  by construction, with no duplicated code to drift; the layers are optional components, and
+  a missing layer simply leaves the translation to the first launch; the only new installer
+  code is the child process and the parsing.
+- **Slice 39e2d's choices made without research.** The command is `app show`, not `app info`:
+  the command model's core verbs have `show` and no `info` (D160), so the CLI and the MCP tool
+  (`app_show`) follow it. The record lives in the app's folder rather than in `app.manifest`:
+  the manifest's 1024 bytes cannot hold 8 sites, and the record goes with the folder. The
+  record lists 8 sites (enough to identify the extension a program needs; `refused=` counts
+  them all). The installer keeps the record only when the layer exits with 0 and prints a
+  valid record; the layer's own error lines reach the user on standard error. A translation
+  made at the first launch instead of at install writes no record, so its cache file is left
+  to the cap's least-recently-launched eviction when the app is removed. The layer maps the
+  translate-only image anywhere: the translation depends only on the preferred base.
+  `translate_install_bytes` is measured on the host for aarch64 only, as a size gated exactly,
+  with a synthetic image because the real programs' translator input is the layers'.
+- **Not yet** (later work on part 39): `translated_loop_ratio` (a fixed x86_64 loop translated
+  and run on the CPU against the same loop as native aarch64 code: it needs a user program on
+  aarch64 that maps a translation through `installed` and a ratio result the benchmark
+  framework does not have yet); the installer's window and Files' install translating at
+  install with a progress stage (a Fable design first; they leave it to the first launch); a
+  GUI showing an app's translation and refused sites (`app show` and `app_show` exist); a
+  record for a translation made at the first launch, so its cache file goes with the app too;
+  re-translating installed apps when the translator version changes (their records then name
+  stale keys); and the 39e2c "Not yet" above (floating-point and long callbacks, Swift,
+  exceptions through translated frames, `GetProcAddress` past 64 functions, freeing a thread's
+  guest state).

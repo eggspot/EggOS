@@ -29,8 +29,11 @@ two layers share (the cache on disk, traps, installing the code, entering it); s
 callback thunks through which the macOS layer calls the program's functions (handlers,
 comparators, thread starts, signal handlers, blocks, Objective-C methods), `app install`
 accepting x86_64 macOS programs on aarch64 and the macOS QEMU run of the x86_64 program on
-aarch64; translating at install, `app info` listing refused sites, the cache removed with its
-app and the translated-run benchmarks are later work (D191's "Not yet").
+aarch64; slice 39e2d translating at install (each layer's translate-only mode, `<layer>
+--translate <program>`, which the installer starts and whose printed record it keeps as
+`app.translation`), `app show` listing the refused sites, the cache file removed with its app
+and the size benchmark `translate_install_bytes`. The translated-loop benchmark against native
+code is later work (D191's "Not yet").
 
 ## Callbacks into translated code
 

@@ -233,7 +233,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, and x64
   programs on aarch64 run translated ahead of time (D191; a fault in translated code ends the
   program instead of reaching its exception handlers, and at most 64 functions found
-  with `GetProcAddress` can be called from it), from the host folder or installed as apps;
+  with `GetProcAddress` can be called from it; `app install` translates them right away,
+  the installer's window leaves it to the first launch), from the host folder or installed as apps;
   the layer is in the base of those images until the component manager makes it optional
   (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
@@ -298,8 +299,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
   programs on x86_64 (and x86_64 programs on aarch64 translated ahead of time, callbacks
   included; callbacks with floating-point arguments or results or more than six arguments,
-  Swift programs, exceptions through translated frames and translating at install not yet,
-  D191), from the
+  Swift programs and exceptions through translated frames not yet; `app install` translates
+  them right away, except from the installer's window, where the first launch does, D191),
+  from the
   host folder or installed as apps (a real one, CocoaGame, is
   checked in CI: [Real apps](compatibility.md)); the layer is in the base of those images until
   the component manager makes it optional (D152)

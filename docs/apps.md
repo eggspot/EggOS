@@ -41,6 +41,7 @@ app install [--name <name>] [--entry <path>] [--arguments <words>] [--environmen
 app uninstall [--window] [--dry-run] [--] <name>   (app remove is the same)
 app open [--] <name>
 app list [--json] [--limit <count>] [--after <cursor>]
+app show [--json] [--] <name>
 ```
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
@@ -183,6 +184,27 @@ is built on a Mac (Apple's linker builds it).
   `null` for no architecture or icon; D160, docs/ux/command-model.md). `--limit` and `--after`
   page them (D164): the next apps by name after the cursor, at most 100, each page in
   `/Applications`' order, then `more: --after <cursor>` on standard error when more follow.
+- **`app show <name>`** prints one installed app's fields, a line each (`name:`, `source:`,
+  `architecture:`, `program:`, `icon:`), then its translation (D191): for an x64 Windows or
+  x86_64 macOS program installed on aarch64, `translation:` with the bytes of code translated,
+  the cache file's size and path under `/var/cache/eggos/translate` (`(not stored)` when it
+  could not be written), `refused:` with how many instructions were refused, and one line per
+  refused site (the first 8: its guest address and why, such as `an AVX (VEX-encoded)
+  instruction`); `translation: -` for an app with no translation record. `--json` writes one
+  object: `app list --json`'s fields and `translation` (`null`, or `key`, `code_bytes`,
+  `cache_bytes`, `stored`, `refused` and `refused_sites`, each with `address` and `reason`).
+  The MCP tool `app_show` answers the same text. `app: <name> is not installed` and status 1
+  for a name with no app.
+- **Translating at install** (D191): `app install` of an x64 Windows or x86_64 macOS program
+  on aarch64 copies it, prints `Installed ...`, then `Translating <name>'s x86_64 code for
+  this aarch64 computer, once...` and runs its layer as `<layer> --translate <program>`,
+  which translates it into the cache (or finds it there) and prints its translation record;
+  the installer keeps that record as `app.translation` in the app's folder and says `Translated
+  <n> bytes of code into a <m>-byte cache;` with the refused count (`app show <name>` lists
+  them). When the layer cannot translate it, the install still succeeds and says `Not
+  translated yet: it is translated when the app first opens.`; the first launch translates a
+  missing or stale cache either way. Uninstalling removes the cache file the record names
+  (`--dry-run` names it), so nothing is left behind (D18).
 - Status: 0 done, 1 refused or failed, 2 a usage error. With a desktop running, `install`
   and `uninstall` tell it (`APPS_CHANGED`, [Windows](windows.md)), so its launcher and icons
   follow at once.
