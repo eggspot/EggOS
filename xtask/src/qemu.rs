@@ -19,6 +19,7 @@ pub mod sdl_app;
 pub mod settings;
 pub mod shell;
 pub mod text_editor;
+pub mod win32_app;
 mod win_controls;
 mod windows_crt;
 mod windows_gui;

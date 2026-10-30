@@ -20,6 +20,7 @@ mod release;
 mod rustc_version;
 mod sdl_app;
 mod sha256;
+mod win32_app;
 mod windows;
 mod work_disk;
 mod workspace_build;
@@ -125,6 +126,12 @@ commands:
                          pinned SHA-256s), pack them with libSDL3.so.0 into brogue.zip, and
                          boot the release image: install it, open it, play and save, and
                          check it closed and saved (x86_64 and aarch64)
+  win32-app --arch <arch>
+                         download Simon Tatham's Puzzles' Pegs, a classic Win32 app (test
+                         data, pinned SHA-256), and boot the release image: install it,
+                         open it, play, undo and redo a move, change the board from its
+                         menu, open its About box, quit, and compare the frames (x86_64:
+                         the app ships no ARM64 build)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -548,6 +555,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("sdl-app") => {
             for arch in arch()? {
                 sdl_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("win32-app") => {
+            for arch in arch()? {
+                win32_app::check(arch)?;
             }
             Ok(())
         }
