@@ -5,14 +5,15 @@
 //! choice that reached the app as the alert opened, is carried out once the alert is answered.
 
 use super::{
-    NSALERT, NSALERT_META, NSBUTTON, application, menu, server, store_copy, string, view, window,
-    with_text,
+    NSALERT, NSALERT_META, NSBUTTON, application, elements, menu, server, store_copy, string, view,
+    window, with_text,
 };
 use crate::foundation::{NSARRAY, class_pointer};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, autorelease, methods, sel, send, send1, send2};
+use eggos_element_tree::{Query, tree_answer};
 use eggos_macos_gui::alert::{Alert, FIRST_BUTTON_RETURN, MAX_BUTTONS};
 use eggos_macos_gui::geometry::Frame;
 use eggos_macos_gui::menu::Chosen;
@@ -132,6 +133,13 @@ struct Modal {
 impl Modal {
     fn handle(&mut self, record: &[u8; RECORD_SIZE]) {
         if self.chosen.is_some() {
+            return;
+        }
+        if let Some(query) = Query::from_record(record) {
+            match query.window == self.buffer.window {
+                true => server::answer_query(query.serial, tree_answer::PIXELS_ONLY, &[]),
+                false => elements::answer_while_modal(&query),
+            }
             return;
         }
         if let Some(choice) = Chosen::from_record(record) {

@@ -150,6 +150,21 @@ fn inside(object: Id, event: Id) -> bool {
         .contains(location_in(object, event))
 }
 
+/// Whether the control `object` takes clicks and typing (it is not disabled).
+pub fn is_enabled_control(object: Id) -> bool {
+    !control(object).disabled
+}
+
+/// Runs `work` with the title of the button `object`.
+pub fn with_title<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
+    with_text(button(object).title, work)
+}
+
+/// Runs `work` with the text of the text field `object`.
+pub fn with_field_text<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
+    work(text_field(object).text.as_str())
+}
+
 /// Whether `object` is a button whose key equivalent is Return: its window's default button.
 pub fn is_default_button(object: Id) -> bool {
     is(object, &NSBUTTON) && with_text(button(object).key_equivalent, |key| key == RETURN)

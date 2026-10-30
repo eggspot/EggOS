@@ -56,6 +56,7 @@ pub struct Thread {
     exit_handler_capacity: usize,
     pub alternate_stack: [usize; 3],
     pub autorelease_pools: usize,
+    pub caught_exceptions: usize,
     values: [usize; KEYS],
 }
 
@@ -80,6 +81,7 @@ impl Thread {
         exit_handler_capacity: 0,
         alternate_stack: [0; 3],
         autorelease_pools: 0,
+        caught_exceptions: 0,
         values: [0; KEYS],
     };
 }

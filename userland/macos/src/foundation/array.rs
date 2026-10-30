@@ -459,6 +459,22 @@ unsafe extern "C" fn count_by_enumerating(
     count_of(this)
 }
 
+extern "C" fn enumerate_with_block(this: Id, _: Sel, block: Id) {
+    if block.is_null() {
+        return;
+    }
+    // SAFETY: the program's block takes the block, an object, its index and a `BOOL *` to
+    // stop.
+    let function: extern "C" fn(Id, Id, usize, *mut u8) =
+        unsafe { core::mem::transmute(crate::objc::block::invoke_address(block)) };
+    let mut stop = 0u8;
+    let mut index = 0;
+    while index < count_of(this) && stop == 0 {
+        function(block, item(this, index), index, &mut stop);
+        index += 1;
+    }
+}
+
 extern "C" fn copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
     if is_mutable(this) {
         let mut items = snapshot(this);
@@ -667,6 +683,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "componentsJoinedByString:" => components_joined_by_string,
         "arrayByAddingObject:" => array_by_adding_object,
         "sortedArrayUsingSelector:" => sorted_array_using_selector,
+        "enumerateObjectsUsingBlock:" => enumerate_with_block,
         "countByEnumeratingWithState:objects:count:" => count_by_enumerating,
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,

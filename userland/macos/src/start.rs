@@ -142,9 +142,12 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     if uses_objc && !(objc::set_up() && foundation::set_up()) {
         return Err(Failure::Memory);
     }
-    let uses_appkit = program
-        .libraries()
-        .any(|library| Library::provided(library.path) == Some(Library::AppKit));
+    let uses_appkit = program.libraries().any(|library| {
+        matches!(
+            Library::provided(library.path),
+            Some(Library::AppKit | Library::Cocoa)
+        )
+    });
     if uses_appkit && !appkit::set_up() {
         return Err(Failure::Memory);
     }
@@ -188,6 +191,15 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         unsafe { objc::register_image(slide, &program.objc) }.map_err(Failure::Invalid)?;
     }
     protect(&program, base)?;
+    if uses_objc {
+        let unwind_info = program.unwind_info.map(|section| {
+            (
+                base + (section.address - program.base_address()) as usize,
+                section.size as usize,
+            )
+        });
+        objc::exception::set_image(base, size, unwind_info);
+    }
     if let Some(template) = program.thread_locals {
         let address = base + (template.address - program.base_address()) as usize;
         // SAFETY: the template lies inside a readable segment of the image, which stays
@@ -289,6 +301,7 @@ enum Library {
     Foundation,
     CoreFoundation,
     AppKit,
+    Cocoa,
 }
 
 impl Library {
@@ -299,6 +312,7 @@ impl Library {
             macho::FOUNDATION => Self::Foundation,
             macho::CORE_FOUNDATION => Self::CoreFoundation,
             macho::APPKIT => Self::AppKit,
+            macho::COCOA => Self::Cocoa,
             _ => return None,
         })
     }
@@ -314,6 +328,7 @@ impl Library {
             Self::Foundation => b"Foundation",
             Self::CoreFoundation => b"CoreFoundation",
             Self::AppKit => b"AppKit",
+            Self::Cocoa => b"Cocoa",
         }
     }
 }

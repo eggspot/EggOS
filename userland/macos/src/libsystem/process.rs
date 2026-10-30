@@ -23,6 +23,18 @@ static ENVIRONMENT_CAPACITY: Exclusive<usize> = Exclusive::new(0);
 /// The stack protector's guard, `__stack_chk_guard`, set once before the program starts.
 pub static mut STACK_GUARD: usize = 0;
 
+/// The program's argument count and vector, as `main` got them.
+pub fn arguments() -> (usize, *mut *mut c_char) {
+    // SAFETY: set once before the program runs and only read since; these read copies.
+    unsafe { (ARGUMENT_COUNT.max(0) as usize, ARGUMENTS) }
+}
+
+/// The program's name, the last part of `argv[0]`, NUL-terminated; null before it is set.
+pub fn program_name() -> *const c_char {
+    // SAFETY: as above.
+    unsafe { PROGRAM_NAME }
+}
+
 /// Records what `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron` and `_NSGetProgname` return.
 ///
 /// # Safety

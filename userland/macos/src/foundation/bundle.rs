@@ -20,9 +20,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 const INFO_PLIST: &[u8] = b"/Contents/Info.plist";
 const RESOURCES: &[u8] = b"/Contents/Resources";
+const OWN_ICON: &[u8] = b"/app.icon";
 const LARGEST_INFO: usize = 64 * 1024;
 const LONGEST_VALUE: usize = 1024;
-const LONGEST_PATH: usize = 4096;
+/// The longest path the bundle's functions build.
+pub const LONGEST_PATH: usize = 4096;
 
 #[repr(C)]
 struct BundleObject {
@@ -145,6 +147,19 @@ pub fn info_string(key: &[u8]) -> Option<&'static [u8]> {
         }
     });
     found
+}
+
+/// The NUL-terminated path of the installed app's own icon file (`app.icon`, D148) in `out`:
+/// beside the `.app` bundle the program is in, else beside the program; `None` when it is too
+/// long.
+pub fn own_icon_path(out: &mut [u8; LONGEST_PATH]) -> Option<&[u8]> {
+    let program = executable_path();
+    let folder = match info_plist::bundle_path(program) {
+        Some(bundle) => directory_of(bundle),
+        None => directory_of(program),
+    };
+    let length = joined(folder, OWN_ICON, out)?;
+    Some(&out[..=length])
 }
 
 /// The app's name: its bundle's `CFBundleName`, else the executable's file name.

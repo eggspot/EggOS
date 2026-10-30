@@ -4,12 +4,15 @@
 //! `NSApplication` runs the event loop over `/dev/window`'s records, `NSWindow` owns a server
 //! window and its pixels, `NSView` and its subclasses draw into them through `eggos-macos-gui`
 //! (`NSButton`, `NSTextField` as the toolkit's controls), `NSAlert` runs a dialog of its own,
-//! and `NSMenu` is shown by the server in the top bar.
+//! `NSMenu` is shown by the server in the top bar, the standard About panel is the layer's own
+//! window, and every window answers agents with its views as an element tree (D175).
 
+mod about;
 mod alert;
 mod application;
 mod control;
 mod drawing;
+mod elements;
 mod event;
 mod menu;
 mod server;

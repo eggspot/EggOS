@@ -1,7 +1,8 @@
 //! NSResponder and NSView: a view's frame in its superview, its subviews drawn back to front
 //! after it, its window, and the walks the window makes over the tree: drawing each view's
 //! `drawRect:` clipped to its frame, finding the view under a point, and the text fields in the
-//! order Tab visits them.
+//! order Tab visits them. A view moving into or out of a window hears of it before and after
+//! (D175).
 
 use super::{
     NSCONTROL, NSRESPONDER, NSRESPONDER_META, NSTEXTFIELD, NSVIEW, NSVIEW_META, ask, control,
@@ -12,7 +13,7 @@ use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, message, methods, sel, send, send2};
+use crate::objc::{Runtime, message, methods, sel, send, send1, send2};
 use eggos_macos_gui::geometry::{Frame, Point, Size, pixel_rect};
 use eggos_macos_gui::paint;
 use eggos_toolkit::geometry::Rect;
@@ -64,12 +65,36 @@ pub fn origin_in_window(view: Id) -> Point {
     origin
 }
 
-fn set_window(view: Id, window: Id) {
+fn assign_window(view: Id, window: Id) {
     fields(view).window = window;
     let mut index = 0;
     while let Some(&child) = fields(view).subviews.as_slice().get(index) {
-        set_window(child, window);
+        assign_window(child, window);
         index += 1;
+    }
+}
+
+fn each_in_tree(view: Id, work: &mut dyn FnMut(Id)) {
+    work(view);
+    let mut index = 0;
+    while let Some(&child) = fields(view).subviews.as_slice().get(index) {
+        each_in_tree(child, work);
+        index += 1;
+    }
+}
+
+fn set_window(view: Id, window: Id) {
+    let moving = fields(view).window != window;
+    if moving {
+        each_in_tree(view, &mut |each| {
+            send1(each, sel!("viewWillMoveToWindow:"), window as usize);
+        });
+    }
+    assign_window(view, window);
+    if moving {
+        each_in_tree(view, &mut |each| {
+            send(each, sel!("viewDidMoveToWindow"));
+        });
     }
 }
 

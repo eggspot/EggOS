@@ -639,6 +639,65 @@ extern "C" fn replacing_occurrences(this: Id, _: Sel, target: Id, replacement: I
     autoreleased(object)
 }
 
+/// `NSRange`, which a method returns in two registers.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Range {
+    pub location: usize,
+    pub length: usize,
+}
+
+const NOT_FOUND: usize = isize::MAX as usize;
+const CASE_INSENSITIVE_SEARCH: usize = 1;
+const BACKWARDS_SEARCH: usize = 4;
+
+fn range_of(this: Id, needle: Id, options: usize) -> Range {
+    let mut haystack = units_of(&text_of(this));
+    let mut wanted = units_of(&text_of(needle));
+    let fold = |unit: u16| match options & CASE_INSENSITIVE_SEARCH {
+        0 => unit,
+        _ => string_text::ascii_case(unit, false),
+    };
+    let (hay, pattern) = (haystack.as_slice(), wanted.as_slice());
+    let matches_at = |start: usize| {
+        hay[start..start + pattern.len()]
+            .iter()
+            .zip(pattern)
+            .all(|(&left, &right)| fold(left) == fold(right))
+    };
+    let found = match pattern.is_empty() || pattern.len() > hay.len() {
+        true => None,
+        false => {
+            let last = hay.len() - pattern.len();
+            match options & BACKWARDS_SEARCH {
+                0 => (0..=last).find(|&start| matches_at(start)),
+                _ => (0..=last).rev().find(|&start| matches_at(start)),
+            }
+        }
+    };
+    let range = match found {
+        Some(location) => Range {
+            location,
+            length: pattern.len(),
+        },
+        None => Range {
+            location: NOT_FOUND,
+            length: 0,
+        },
+    };
+    haystack.free();
+    wanted.free();
+    range
+}
+
+extern "C" fn range_of_string(this: Id, _: Sel, needle: Id) -> Range {
+    range_of(this, needle, 0)
+}
+
+extern "C" fn range_of_string_with_options(this: Id, _: Sel, needle: Id, options: usize) -> Range {
+    range_of(this, needle, options)
+}
+
 extern "C" fn int_value(this: Id, _: Sel) -> i32 {
     text_of(this)
         .integer_value()
@@ -808,6 +867,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "hasPrefix:" => has_prefix,
         "hasSuffix:" => has_suffix,
         "containsString:" => contains_string,
+        "rangeOfString:" => range_of_string,
+        "rangeOfString:options:" => range_of_string_with_options,
         "stringByAppendingString:" => string_by_appending_string,
         "stringByAppendingFormat:" => eggos_string_by_appending_format,
         "substringFromIndex:" => substring_from_index,

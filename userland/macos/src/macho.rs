@@ -25,6 +25,7 @@ pub const FOUNDATION: &[u8] =
 pub const CORE_FOUNDATION: &[u8] =
     b"/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation";
 pub const APPKIT: &[u8] = b"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
+pub const COCOA: &[u8] = b"/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa";
 
 const HEADER_SIZE: usize = 32;
 const FAT_ARCH_SIZE: usize = 20;
@@ -354,6 +355,7 @@ pub struct MachO<'a> {
     pub dyld_info: bool,
     pub thread_locals: Option<ThreadLocalTemplate>,
     pub objc: ObjcSections,
+    pub unwind_info: Option<SectionRange>,
 }
 
 impl<'a> MachO<'a> {
@@ -390,6 +392,7 @@ impl<'a> MachO<'a> {
             dyld_info: false,
             thread_locals: None,
             objc: ObjcSections::default(),
+            unwind_info: None,
         };
         let mut entry = None;
         let mut at = HEADER_SIZE;
@@ -494,6 +497,18 @@ impl<'a> MachO<'a> {
             let section_name =
                 &section_name[..section_name.iter().position(|&b| b == 0).unwrap_or(16)];
             let pointer_list = section_name != b"__objc_imageinfo";
+            if section_name == b"__unwind_info" {
+                let address = u64_at(command, at + 32).unwrap_or(0);
+                let size = u64_at(command, at + 40).unwrap_or(0);
+                let inside = address >= segment.vmaddr
+                    && address
+                        .checked_add(size)
+                        .zip(segment.vmaddr.checked_add(segment.filesize))
+                        .is_some_and(|(end, segment_end)| end <= segment_end);
+                if inside {
+                    self.unwind_info = Some(SectionRange { address, size });
+                }
+            }
             if let Some(slot) = self.objc.slot(section_name) {
                 let address = u64_at(command, at + 32).unwrap_or(0);
                 let size = u64_at(command, at + 40).unwrap_or(0);

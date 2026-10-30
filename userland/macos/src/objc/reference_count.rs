@@ -1,6 +1,7 @@
 //! Objects and their reference counts. An object the runtime allocates sits 16 bytes into its
-//! heap block; the word before it holds its extra retains (0 means one owner) and, in its top
-//! bit, that it is being deallocated, after which retains and releases do nothing. Objects of
+//! heap block; the word before it holds its extra retains (0 means one owner), in its top bit
+//! that it is being deallocated, after which retains and releases do nothing, and in the next
+//! bit that a weak variable names it (D175), so freeing it clears those variables. Objects of
 //! immortal classes (metaclasses, constant strings and literals) are never counted; classes that
 //! define their own `retain` or `release` get the messages. ARC's functions build on these.
 
@@ -12,6 +13,8 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 const HEADER: usize = 16;
 const DEALLOCATING: usize = 1 << (usize::BITS - 1);
+const WEAKLY_REFERENCED: usize = 1 << (usize::BITS - 2);
+const COUNT_MASK: usize = !(DEALLOCATING | WEAKLY_REFERENCED);
 
 fn count_of(object: Id) -> &'static AtomicUsize {
     // SAFETY: only objects the runtime allocated are counted, and their count word is the
@@ -68,20 +71,68 @@ pub fn direct_release(object: Id) {
         if value & DEALLOCATING != 0 {
             return;
         }
-        let next = if value == 0 { DEALLOCATING } else { value - 1 };
+        let next = match value & COUNT_MASK {
+            0 => value | DEALLOCATING,
+            _ => value - 1,
+        };
         match count.compare_exchange_weak(value, next, Ordering::Release, Ordering::Relaxed) {
             Ok(_) => break,
             Err(now) => value = now,
         }
     }
-    if value == 0 {
+    if value & COUNT_MASK == 0 {
         core::sync::atomic::fence(Ordering::Acquire);
         send(object, sel!("dealloc"));
     }
 }
 
 pub fn direct_retain_count(object: Id) -> usize {
-    (count_of(object).load(Ordering::Relaxed) & !DEALLOCATING) + 1
+    (count_of(object).load(Ordering::Relaxed) & COUNT_MASK) + 1
+}
+
+/// Whether the runtime allocated `object` and frees it (it has a count word).
+pub fn is_counted(object: Id) -> bool {
+    matches!(counting(object), Counting::Direct | Counting::Messages)
+}
+
+/// Whether the counted `object` is being deallocated.
+pub fn is_deallocating(object: Id) -> bool {
+    count_of(object).load(Ordering::Acquire) & DEALLOCATING != 0
+}
+
+/// Marks the counted `object` as named by a weak variable.
+pub fn mark_weakly_referenced(object: Id) {
+    count_of(object).fetch_or(WEAKLY_REFERENCED, Ordering::Relaxed);
+}
+
+/// Retains `object` unless it is being deallocated (`None`); `Some(false)` when its class
+/// counts by messages, which the caller sends once it holds no lock.
+pub fn try_retain(object: Id) -> Option<bool> {
+    match counting(object) {
+        Counting::Never => Some(true),
+        Counting::Messages => match is_deallocating(object) {
+            true => None,
+            false => Some(false),
+        },
+        Counting::Direct => {
+            let count = count_of(object);
+            let mut value = count.load(Ordering::Relaxed);
+            loop {
+                if value & DEALLOCATING != 0 {
+                    return None;
+                }
+                match count.compare_exchange_weak(
+                    value,
+                    value + 1,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return Some(true),
+                    Err(now) => value = now,
+                }
+            }
+        }
+    }
 }
 
 /// Runs every `.cxx_destruct` of the object's classes, the most derived first, then frees it.
@@ -100,6 +151,9 @@ pub fn dispose(object: Id) {
             }
         }
         record = current.superclass();
+    }
+    if count_of(object).load(Ordering::Acquire) & WEAKLY_REFERENCED != 0 {
+        super::weak::clear(object);
     }
     heap::release(object.cast::<u8>().wrapping_sub(HEADER));
 }
