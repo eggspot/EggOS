@@ -255,6 +255,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   own and the old runtime's variadic one), streams, the heap, strings, `qsort`, `getenv`,
   `signal`, `atexit`; MinGW DLLs (`__dllonexit`), DOS wildcards in `__getmainargs`, wide
   `swprintf`, `_putenv`, `setlocale` and line-ending translation do not yet.
+  APCs (`QueueUserAPC`, alertable `SleepEx` and waits, `MsgWaitForMultipleObjectsEx`),
+  abandoned mutexes (`WAIT_ABANDONED`), ws2_32's ordinal imports and DOS wildcards in
+  `FindFirstFileW` work (D189, slice 37c); named objects (mutexes, events, semaphores and file
+  mappings shared by name between processes; a name is still ignored), file mappings
+  themselves, `_dowildcard` in `__getmainargs` and `SignalObjectAndWait` do not yet.
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.

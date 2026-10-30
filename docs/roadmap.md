@@ -236,8 +236,10 @@ Must-have, in order:
     streams, the heap, `qsort`, `getenv`, `signal` and `atexit`, checked by `eggmingw.exe`
     from our own C source, built by llvm-mingw in CI, in the same boot test. Next, as user
     capabilities: the rest of std (`fs::copy`, links, `File::lock`, networking) and MinGW
-    DLLs, then named objects, alertable waits and APCs, abandoned mutexes, ordinal imports and
-    DOS wildcards (D189's "Not yet"), and x64 programs on Arm through ahead-of-time
+    DLLs; users can now run programs that queue APCs and wait alertably, see abandoned mutexes,
+    import ws2_32 by ordinal and search with DOS wildcards (D189, slice 37c, checked by
+    `eggsync.exe`); then named objects shared between processes, file mappings and
+    `_dowildcard` (D189's "Not yet"), and x64 programs on Arm through ahead-of-time
     translation (D121's and D124's "Not yet").
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,

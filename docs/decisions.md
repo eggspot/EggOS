@@ -14459,8 +14459,71 @@ the license, by an explicit instruction recorded here.
   runtimes, 88 bytes per open stream); `VirtualQuery` reads `/proc/self/maps` each call (only
   startup code calls it) into a heap block of 64 KiB, doubled up to 4 MiB; region kinds are
   private or mapped, never image.
-- **Not yet.** MinGW: DLLs built by MinGW (`__dllonexit`), DOS wildcards in `__getmainargs`
-  (`_dowildcard`, slice 37c), `_putenv`, `setlocale`, the old runtime's `swprintf` (no count),
+- **Slice 37c: APCs, abandoned mutexes, ordinal imports and DOS wildcards.** `QueueUserAPC`
+  (kernel32) queues a call with its one argument for a thread (its handle, or
+  `GetCurrentThread()`) in 37b's queue (`queued_calls.rs`), and wakes every wait so that a
+  thread already in an alertable wait runs it; `SleepEx` with `bAlertable` now really sleeps
+  on the wait sequence (`sync::sleep_alertably`) instead of only looking at the queue first,
+  and `WaitForSingleObjectEx`, `WaitForMultipleObjectsEx` and the new
+  `MsgWaitForMultipleObjectsEx` with `MWMO_ALERTABLE` look at it each time they would sleep,
+  after the objects: a signalled object wins and the call stays queued. Calls still queued for
+  a thread that ends are dropped. `MsgWaitForMultipleObjects` and `...Ex` (user32) wait for the
+  objects (`MWMO_WAITALL`), a message in the thread's queue (`WAIT_OBJECT_0 + nCount`,
+  `gui::has_message`, which never starts the GUI's state in a console program) or, when
+  alertable, a queued call, looking every 10 ms while nothing is ready. A layer thread that
+  ends while it owns mutexes abandons them (`sync::abandon_mutexes_of`, from `thread_ended`):
+  each is released with an `abandoned` mark, and the wait that takes it next returns
+  `WAIT_ABANDONED_0` plus its index (the lowest abandoned one for wait-all) and owns it once;
+  `ReleaseMutex` by a thread that does not own it was already `ERROR_NOT_OWNER`. Ordinal
+  imports: programs linked with the Windows SDK's `ws2_32.lib` import Winsock's functions by
+  ordinal, so `ws2_32` is now a library (`Library::Ws2_32`, the last of `ALL`, 25; the same
+  functions as `wsock32`), and the pure `ordinals.rs` numbers Winsock 1.1 for both (they differ
+  only in `inet_addr`, `inet_ntoa` and `ioctlsocket`, 10 to 12, which `ws2_32` orders
+  alphabetically); `GetProcAddress(MAKEINTRESOURCE(n))` resolves through the same table, and
+  an ordinal the library lacks is `ERROR_PROC_NOT_FOUND`. kernel32, user32, ntdll and the C
+  runtimes get no ordinal tables: their ordinals change between Windows versions and every
+  linker imports them by name. DOS wildcards (`find.rs`, pure): `matches` translates the
+  pattern as Windows does before its file systems see it (`?` is `>`, a `.` before a wildcard
+  or at the end is `"`, the `*` of a final `*.` is `<`) and runs it over the name as a set of
+  reachable positions (a bitset of 1 KiB of name, one pass per pattern character, no
+  backtracking): `*` any run, `<` any run up to the last dot, `>` one character or none at a
+  dot or the end, `"` a dot or the end; `*` and `*.*` are everything and a pattern without
+  wildcards is the name with its trailing dots dropped. `FindFirstFileW`, `SHFileOperationW`'s
+  patterns and the file picker's filters all use it. Check: `tests/windows-crt/eggsync.c`, our
+  own C program built by MSVC with the other C runtime programs (`windows::PROGRAMS`, linked
+  with `user32.lib`), added to the C runtime boot test at `/bin/eggsync.exe`
+  (`EGGSYNC_LINES`, x86_64 and aarch64): an APC on itself in `SleepEx(0, TRUE)`, one waking
+  another thread's infinite alertable sleep, an alertable `WaitForSingleObjectEx` returning
+  `WAIT_IO_COMPLETION` before its event, two mutexes abandoned by ended threads
+  (`WAIT_ABANDONED`, then `WAIT_ABANDONED_0 + 1` among two), `ERROR_NOT_OWNER`, the message
+  waits (an object, a timeout, an APC), ws2_32's and wsock32's ordinals against their names and
+  a missing one, and `*.txt`, `*.`, `??.c`, `<.c` and `A?.TXT` over four files, a pattern with
+  no match (`ERROR_FILE_NOT_FOUND`) and the search's end (`ERROR_NO_MORE_FILES`); status 0.
+  Decided by research (sonnet, from Microsoft's documentation of the wait functions,
+  `QueueUserAPC`, mutex objects, kernel object namespaces and `FsRtlIsNameInExpression`, and
+  the SDK's import libraries): APCs run FIFO only in alertable waits, return
+  `WAIT_IO_COMPLETION` after all of them, an already queued one ends the wait at once, a
+  signalled object wins over a queued call, and calls die with their thread; the abandoned
+  mutex rules above; which libraries programs import by ordinal and Winsock 1.1's numbers in
+  both; DOS wildcard semantics (`?` matches no dot, `a??` matches `a`, `*.` names without an
+  extension). Decided without research: `QueueUserAPC` to an ended thread or a handle that is
+  no thread is `ERROR_INVALID_HANDLE`, a full queue `ERROR_NOT_ENOUGH_MEMORY`; message waits
+  poll every 10 ms (the process waits' interval) rather than joining the GUI's own wake-up;
+  `MWMO_INPUTAVAILABLE` is not told apart (any queued message ends the wait); abandoning scans
+  the object table (4096 slots) once per ending layer thread; names of 1 KiB or more match
+  nothing. Named objects were left for the next slice: the kernel (read, not researched) keys
+  a futex by its process's futex space, not by the frame, so a wake never crosses processes;
+  the planned design keeps named objects in a table in a `/dev/shm` file every Windows process
+  maps (`Global\` and `Local\` namespaces, `Local\` per user), under a lock word in that
+  memory, with waits on them polling every 10 ms like process waits.
+- **Not yet.** Named objects shared between processes: `CreateMutexW`, `CreateEventW`,
+  `CreateSemaphoreW` and their `Open` forms with a name (`ERROR_ALREADY_EXISTS`,
+  `ERROR_INVALID_HANDLE` for another kind, `ERROR_FILE_NOT_FOUND` from `Open`, abandonment by
+  an ended process), and file mappings (`CreateFileMappingW`, `OpenFileMappingW`,
+  `MapViewOfFile`, `UnmapViewOfFile`; none exist yet); `SignalObjectAndWait`; `_dowildcard`
+  (MinGW's `__getmainargs` and the UCRT's `_configure_narrow_argv` with expanded arguments,
+  over `find::matches`; arguments arrive already split, so quoting is not seen).
+  MinGW: DLLs built by MinGW (`__dllonexit`), `_putenv`, `setlocale`, the old runtime's `swprintf` (no count),
   `_sys_errlist` and `_sys_nerr`, and `_file` in the `FILE` array's entries (MinGW reads it
   through `_fileno`). Rust
   std functions only some programs reach, which still fail to load naming the import:
@@ -14470,8 +14533,7 @@ the license, by an explicit instruction recorded here.
   (`NtCreateFile`, `NtSetInformationFile`), networking (`ws2_32`), and the attribute-list API
   (`InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`,
   `DeleteProcThreadAttributeList`, `STARTUPINFOEXW` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`);
-  waitable timers; opening a folder with `FILE_FLAG_BACKUP_SEMANTICS`. Slice 37c: named objects, alertable waits and APCs, abandoned mutexes,
-  ordinal imports, DOS wildcards. Then: named pipes (`CreateNamedPipeW`, `ConnectNamedPipe`)
+  waitable timers; opening a folder with `FILE_FLAG_BACKUP_SEMANTICS`. Then: named pipes (`CreateNamedPipeW`, `ConnectNamedPipe`)
   and overlapped I/O on pipes; inheriting kernel objects (events, process handles) into a
   child; duplicating handles into or out of another process; a really suspended child
   (`CREATE_SUSPENDED` with `WriteProcessMemory` or `SetThreadContext` on it), `SuspendThread`

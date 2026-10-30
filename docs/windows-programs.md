@@ -185,6 +185,22 @@ DOS wildcards in the arguments (`_dowildcard`), `_putenv`, `setlocale`, the old 
 `tests/windows-mingw/eggmingw.c` is our own example: CI builds it with llvm-mingw for x64 and
 ARM64, and the Windows C runtime boot test runs it (`cargo xtask windows-crt`).
 
+## APCs, abandoned mutexes, ordinals and wildcards
+
+`QueueUserAPC` queues a call for a thread, which runs it in its next alertable wait:
+`SleepEx`, `WaitForSingleObjectEx`, `WaitForMultipleObjectsEx` and
+`MsgWaitForMultipleObjectsEx` with `MWMO_ALERTABLE` run every queued call and return
+`WAIT_IO_COMPLETION`, and a call queued while the thread already waits wakes it. A thread that
+ends while it owns a mutex abandons it: the next wait takes it with `WAIT_ABANDONED` (D189).
+`MsgWaitForMultipleObjects` also wakes for a message in the thread's queue. Programs linked
+with the SDK's `ws2_32.lib` import Winsock by ordinal from `ws2_32.dll`, whose numbers differ
+from `wsock32.dll`'s in three places; both work, and `GetProcAddress` with an ordinal agrees.
+`FindFirstFileW` matches names with DOS's rules: `*.*` is everything, `*.` names without an
+extension, `?` one character or none before a dot or the end, and `<`, `>` and `"` as Windows'
+file systems match them. `tests/windows-crt/eggsync.c` is our own example, in the same boot
+test. Named objects shared between processes are not there yet: a name given to
+`CreateMutexW`, `CreateEventW` or `CreateSemaphoreW` is ignored.
+
 ## Programs that start other programs
 
 A Windows program can start another program, Windows or Linux, and read its output (D178,
