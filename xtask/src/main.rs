@@ -439,11 +439,11 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 39] = [
+const COREUTILS: [&str; 41] = [
     "agentlog", "cat", "chmod", "cp", "date", "device", "df", "echo", "false", "fetch", "free",
-    "grep", "halt", "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv", "nslookup", "ping",
-    "poweroff", "ps", "readlink", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash",
-    "true", "uname", "uptime", "wc", "wm",
+    "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv",
+    "nslookup", "ping", "poweroff", "ps", "readlink", "reboot", "rm", "setprop", "sleep", "sync",
+    "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -1266,7 +1266,7 @@ pub fn build_release_image(
     let mut members = image::members(added);
     if added.iter().any(|file| android::is_program(&file.host)) {
         members.extend(
-            android::system_members(SHELL_PATH)
+            android::system_members(SHELL_PATH, arch.name)
                 .into_iter()
                 .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
         );
@@ -2179,7 +2179,7 @@ fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::P
         initramfs::Content::Text(SHELL_TEST_CONFIG),
     )];
     extra.extend(image::members(&added));
-    extra.extend(android::system_members(SHELL_PATH));
+    extra.extend(android::system_members(SHELL_PATH, arch.name));
     let initramfs = release_initramfs(
         arch,
         &extra,

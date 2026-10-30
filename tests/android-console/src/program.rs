@@ -173,7 +173,8 @@ extern "C" fn main(count: c_int, arguments: *const *const c_char) -> c_int {
     say!("malloc {}", heap());
     say!("time {}", clocks());
     say!("threads {}", threads());
-    say!("property {}", sdk_property());
+    say_property(c"ro.build.version.sdk");
+    say_property(c"eggos.test.greeting");
     // SAFETY: `getauxval` takes a number.
     let page_size = unsafe { getauxval(AT_PAGESZ) };
     // SAFETY: the format takes one string and one unsigned long, which follow it.
@@ -357,15 +358,15 @@ fn threads() -> &'static str {
     }
 }
 
-fn sdk_property() -> &'static str {
+fn say_property(name: &CStr) {
     let mut value = [0 as c_char; PROPERTY_VALUE_MAX];
     // SAFETY: the name is NUL-terminated, and `value` holds `PROP_VALUE_MAX` bytes.
-    let length =
-        unsafe { __system_property_get(c"ro.build.version.sdk".as_ptr(), value.as_mut_ptr()) };
-    match (length, value[0]) {
-        (0, 0) => "ro.build.version.sdk unset",
-        _ => "ro.build.version.sdk set",
-    }
+    let length = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+    let value = match length {
+        0 => "unset",
+        _ => text(value.as_ptr()),
+    };
+    say!("property {}={value}", text(name.as_ptr()));
 }
 
 fn random() -> &'static str {

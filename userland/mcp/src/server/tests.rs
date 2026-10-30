@@ -211,7 +211,9 @@ fn the_tools_are_listed_once_initialized() {
             "settings_set",
             "ln",
             "df",
-            "device_list"
+            "device_list",
+            "getprop",
+            "setprop"
         ]
     );
 }
@@ -2493,6 +2495,55 @@ fn the_settings_tools_run_settings_with_the_key_after_a_double_dash() {
     assert!(error_message(&answer).contains("value is required"));
     let answer = granted.call(7, "settings_set", "{\"key\":\"a\",\"value\":\"x\\ny\"}");
     assert_eq!(error_code(&answer), INVALID_PARAMS);
+}
+
+#[test]
+fn the_property_tools_run_getprop_and_setprop_with_the_name_after_a_double_dash() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "getprop", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.last().unwrap(), &["/bin/getprop"]);
+    let answer = harness.call(2, "getprop", r#"{"name":"ro.build.version.sdk"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/getprop", "--", "ro.build.version.sdk"]
+    );
+    let answer = harness.call(3, "setprop", r#"{"name":"debug.level","value":"1"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the write grant"),
+        "{answer}"
+    );
+    let runs = harness.system.runs.len();
+    for (tool, arguments, words) in [
+        ("getprop", r#"{"name":"a..b"}"#, "name must be"),
+        ("getprop", r#"{"name":".a"}"#, "name must be"),
+        ("getprop", r#"{"name":"a b"}"#, "name must be"),
+    ] {
+        let answer = harness.call(4, tool, arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{tool} {arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{tool} {arguments}: {message}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+    let mut granted = granted_only(&[crate::grants::Grant::Write]);
+    let answer = granted.call(
+        5,
+        "setprop",
+        r#"{"name":"persist.sys.locale","value":"en-US"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        granted.system.runs.last().unwrap(),
+        &["/bin/setprop", "--", "persist.sys.locale", "en-US"]
+    );
+    let answer = granted.call(6, "setprop", r#"{"name":"a"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("value is required"));
+    let answer = granted.call(7, "setprop", r#"{"value":"1"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("name is required"));
 }
 
 fn page_of(answer: &str) -> Option<Value<'_>> {

@@ -129,6 +129,10 @@ pub enum Kind {
     Df,
     /// `device_list`: the machine's devices (D184).
     DeviceList,
+    /// `getprop`: Android system properties (D188).
+    Getprop,
+    /// `setprop`: sets an Android system property (D188).
+    Setprop,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -320,7 +324,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 41] = [
+pub const TOOLS: [Tool; 43] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -512,6 +516,16 @@ pub const TOOLS: [Tool; 41] = [
         &registry::DEVICE_LIST,
         Kind::DeviceList,
         twin("/bin/device", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::GETPROP,
+        Kind::Getprop,
+        twin("/bin/getprop", &[], Operand::None),
+    ),
+    tool(
+        &registry::SETPROP,
+        Kind::Setprop,
+        twin("/bin/setprop", &[], Operand::None),
     ),
 ];
 

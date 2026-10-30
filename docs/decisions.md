@@ -14089,6 +14089,61 @@ the license, by an explicit instruction recorded here.
   `dynamic-linking` (a public repository: parallel jobs shorten the run); the musl builds on
   aarch64 and riscv64 stay fixed-address executables (Rust's musl targets there have no static
   PIE), the glibc PIE covering the static PIE path.
-- **Not yet.** Android system properties, `getprop`, `setprop` and `logcat` (slice 36b);
-  dynamically linked Android programs through `linker64` and Android programs on riscv64
-  (slice 36c); a vDSO; `rseq`, `clone3` and `riscv_hwprobe`.
+- **Slice 36b: Android system properties.** Android programs read system properties: the
+  kernel keeps them in one property area in the format bionic maps when `/dev/__properties__`
+  is a file (its single "pre-split" area: a 128-byte header with `PROP_AREA_MAGIC` and
+  `PROP_AREA_VERSION`, then a trie of the names' dot-separated parts, each level a binary tree
+  ordered by length, then bytes, each property's record its serial, a 92-byte value and its
+  name), so `__system_property_get`, `__system_property_foreach` and
+  `android_get_device_api_level()` work with no change to bionic. The format is the new
+  no_std crate `android-properties` (`eggos-android-properties`: `initialize`, `set`, `get`,
+  `for_each`, `assignment` for `build.prop` lines, `encode_request`/`decode_request`,
+  `SET_REQUEST`), shared by the kernel and `getprop`, and written from bionic's public
+  behaviour, not copied. The kernel's property service (`kernel/src/linux/properties.rs`)
+  makes the area on first use (4 KiB, growing by pages to 64 KiB), sets the properties
+  `/system/build.prop` lists at boot, and takes changes through `ioctl(SET_REQUEST)` on the
+  file from a privileged process only; a read-only property (`ro.`) keeps its first value.
+  `/dev/__properties__` is a read-only regular file of root's (mode 0444, as bionic's
+  checks require: owner and group 0, no write bit for group or others), whose bytes devfs
+  copies from the area (`copies_contents`, `read_into`), so `mmap(PROT_READ, MAP_SHARED)`
+  faults its pages in from it. No record or node crosses a 4 KiB page, so a page read
+  later never pairs with an older one inside a record. `cargo xtask image --add` writes
+  `/system/build.prop` into an image with an Android program (Android 10, API 29, EggOS as
+  brand, model, device and hardware, and the CPU's ABI).
+  - **Front-ends (D22).** CLI: `getprop [name [default]]` and `setprop name value` in the
+    core utilities, in the registry as kept names (Android's own); MCP: the tools `getprop`
+    (no grant) and `setprop` (the `write` grant, effect `change`), run as their twins with the
+    name after `--`. GUI: none yet, see "Not yet".
+  - **The check.** Host tests of the crate (header, records, sibling order, read-only
+    properties, a full area growing, pages, damaged areas, `build.prop` lines, requests), the
+    kernel's service and devfs node, `getprop`/`setprop` against the fake (whose
+    `device_control` now sets properties in a fake area), the MCP tools' arguments, the MCP
+    check calling both tools, and the Android programs boot test (aarch64, x86_64): `setprop`
+    then `getprop` of `eggos.test.greeting`, `setprop ro.build.version.sdk 30` refused with
+    status 1, and the NDK program printing `ro.build.version.sdk=29` and
+    `eggos.test.greeting=hello` as bionic read them.
+  - **Cost (D24, D78).** Nothing until an Android program's image has `/system/build.prop`
+    or something reads or sets a property: then 4 KiB of kernel heap, at most 64 KiB. `stat`
+    of the file does not make the area. Not a hot path; no benchmark.
+  - **Decided by research** (a research subagent, 2026-10-30, from AOSP bionic's
+    `system_properties` sources and headers, read for facts only, and NDK reports): with
+    `/dev/__properties__` a regular file bionic uses its pre-split contexts and maps that
+    one file (`O_NOFOLLOW`, so not a symbolic link; owner and group 0, no group or other write
+    bit, at least the header's size; `PROT_READ`, `MAP_SHARED`), the layouts above, 112 bytes
+    used at first (the root node and the dirty backup area), and values read from the record
+    unless the serial's dirty bit is set; the NDK ships `liblog` only as a shared library, so
+    a static NDK program cannot call `__android_log_print`: `logd` and `logcat` move to slice
+    36c, with the dynamically linked programs that load `liblog.so`.
+  - **Decided without research.** The area lives in the kernel rather than in a userland
+    service writing a file (devfs is read-only, and bionic refuses a symbolic link); changes
+    come through an `ioctl` on the area rather than Android's `property_service` socket,
+    which needs an `init` to answer it; the area is at most 64 KiB (one stack buffer in
+    `getprop`); `getprop` and `setprop` are kept names, Android's, rather than `property get`
+    and `property set`; the MCP tools take names of at most 64 bytes, in the settings tools'
+    buffers; the build properties are Android 10's, the NDK API level the tests link for.
+- **Not yet.** A Settings page for Android properties (the GUI front-end, D22, designed by
+  Fable first); `__system_property_set` from programs (the `property_service` socket);
+  `persist.` properties kept across boots, values over 91 bytes (bionic's long values) and
+  property contexts; `logd` (`/dev/socket/logdw`, `AF_UNIX` datagram sockets, which the
+  kernel lacks) and `logcat`, dynamically linked Android programs through `linker64` and
+  Android programs on riscv64 (slice 36c); a vDSO; `rseq`, `clone3` and `riscv_hwprobe`.

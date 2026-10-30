@@ -69,9 +69,9 @@ run-eggos.sh` the script's own path works too.
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home`, `/media/host` and `/work` (D166), see how full their file systems are (D171), list processes, windows and installed apps, list the machine's devices (D184), read the clock and the network's state, ping a host and look a name up | `ls`, `cat`, `df`, `ps`, `wm_list`, `app_list`, `device_list`, `clock_get`, `net_status`, `net_ping`, `net_lookup` |
+| none (the default) | list and read files in `/home`, `/media/host` and `/work` (D166), see how full their file systems are (D171), list processes, windows and installed apps, list the machine's devices (D184), read Android system properties (D188), read the clock and the network's state, ping a host and look a name up | `ls`, `cat`, `df`, `ps`, `wm_list`, `app_list`, `device_list`, `getprop`, `clock_get`, `net_status`, `net_ping`, `net_lookup` |
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu and read its controls as an element tree (D161) | `wm_capture`, `wm_menu_list`, `wm_show` |
-| `write` | write files below `/home/root`, download files there, and move them to the Trash | `tee`, `fetch`, `trash` |
+| `write` | write files below `/home/root`, download files there, and move them to the Trash; set Android system properties (D188) | `tee`, `fetch`, `trash`, `setprop` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
 | `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `wm_drag`, `clock_set`, `clock_sync` |
 
@@ -99,6 +99,8 @@ run-eggos.sh` the script's own path works too.
 | `ps` | Lists the processes; `limit` (1 to 100) and `after` page them by id (D164) | `ps [--limit <n>] [--after <cursor>]` | |
 | `df` | How full the file system holding a path (`path`, default `/home`) in `/home`, `/media/host` or `/work` is (D171): one JSON record with `file_system`, `type`, `mounted_on`, `size_bytes`, `used_bytes`, `available_bytes` and `read_only` | `df --json -- <path>` | |
 | `device_list` | The machine's devices (D184), as `device list` sorts and filters them (`all`: true for every device, as `-a`): one JSON record a line with `id`, `parent`, `bus`, `class`, `name`, `description`, `driver`, `state`, `delivery` (`interrupts` or `polled`) and `reason`, `null` for none | `device list --json [-a]` | |
+| `getprop` | Android system properties (D188): one property's value (`name`), an empty line when it has none, or every property as `[name]: [value]` lines without `name` | `getprop [-- <name>]` | |
+| `setprop` | Sets an Android system property (`name`, `value`); a read-only one (`ro.`) keeps its first value and fails with `read_only` | `setprop -- <name> <value>` | `write` |
 | `wm_list` | Lists the windows on the desktop; `limit` and `after` page them by id (D164) | `wm list [--limit <n>] [--after <cursor>]` | |
 | `app_list` | Lists the installed apps; `limit` and `after` page them by name (D164) | `app list [--limit <n>] [--after <cursor>]` | |
 | `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |

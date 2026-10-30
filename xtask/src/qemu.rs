@@ -686,7 +686,10 @@ const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"exit 7\r",
 ];
 
-const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
+const ANDROID_PROGRAM_SESSION: [&[u8]; 6] = [
+    b"setprop eggos.test.greeting hello; getprop eggos.test.greeting; \
+      echo ANDROID-PROPERTIES status $?\r",
+    b"setprop ro.build.version.sdk 30; echo ANDROID-PROPERTIES status $?\r",
     b"GREETING=hi android-console a 'b c'; echo ANDROID-CONSOLE status $?\r",
     b"/bin/android-console exit 42; echo ANDROID-CONSOLE status $?\r",
     b"android-console abort; echo ANDROID-CONSOLE status $?\r",
@@ -1048,6 +1051,11 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             .collect()
     };
     [
+        whole(&["hello", "ANDROID-PROPERTIES status 0"]),
+        whole(&[
+            "setprop: ro.build.version.sdk: a read-only property keeps its first value",
+            "ANDROID-PROPERTIES status 1",
+        ]),
         whole(&[
             "ANDROID-CONSOLE android-console args a|b c",
             "ANDROID-CONSOLE env GREETING=hi",
@@ -1056,7 +1064,8 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             "ANDROID-CONSOLE malloc small large realloc",
             "ANDROID-CONSOLE time monotonic realtime",
             "ANDROID-CONSOLE threads 4 joined sum 30",
-            "ANDROID-CONSOLE property ro.build.version.sdk unset",
+            "ANDROID-CONSOLE property ro.build.version.sdk=29",
+            "ANDROID-CONSOLE property eggos.test.greeting=hello",
             "ANDROID-CONSOLE pagesize 4096",
             "ANDROID-CONSOLE random differs",
             "ANDROID-CONSOLE shell",
@@ -3910,8 +3919,10 @@ mod tests {
                 "{missing}"
             );
         }
-        let set = ok.replace("ro.build.version.sdk unset", "ro.build.version.sdk set");
-        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &set).is_err());
+        let unset = ok.replace("ro.build.version.sdk=29", "ro.build.version.sdk=unset");
+        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &unset).is_err());
+        let refused = ok.replace("ANDROID-PROPERTIES status 1", "ANDROID-PROPERTIES status 0");
+        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &refused).is_err());
     }
 
     fn windows_programs_console(arch: &str) -> String {

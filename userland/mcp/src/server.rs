@@ -2880,7 +2880,7 @@ fn done_text(answer: &Answered<'_>, out: &mut JsonWriter<'_>) {
             out.string_piece(answer.link.map_or("", |(text, _)| text));
             out.string_piece(".");
         }
-        Kind::SettingsSet => {
+        Kind::SettingsSet | Kind::Setprop => {
             let (key, value) = answer.setting.unwrap_or(("", ""));
             out.string_piece("Set ");
             out.string_piece(key);
@@ -2922,6 +2922,7 @@ fn has_done_text(kind: Kind) -> bool {
             | Kind::Trash
             | Kind::Ln
             | Kind::SettingsSet
+            | Kind::Setprop
             | Kind::WmFocus
             | Kind::WmMove
             | Kind::WmSize

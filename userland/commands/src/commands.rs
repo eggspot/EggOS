@@ -1674,6 +1674,57 @@ pub const HWCLOCK: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Settings: Date & time"),
 };
 
+/// `getprop`, Android's (D188).
+pub const GETPROP: CommandDefinition = CommandDefinition {
+    words: &["getprop"],
+    summary: "Prints Android system properties.",
+    description: "Prints the value of the system property name, the Android programs' settings \
+                  that bionic's __system_property_get reads (an empty line, or default, when it \
+                  has none); without a name, every property as [name]: [value] lines.",
+    options: &[],
+    operands: &[
+        operand("name", ValueType::Text, Count::ZeroOrOne),
+        operand("default", ValueType::Text, Count::ZeroOrOne),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&DAMAGED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[],
+    surface: Surface::NoGui("a Settings page for Android properties is not built yet (D188)"),
+};
+
+/// `setprop`, Android's (D188).
+pub const SETPROP: CommandDefinition = CommandDefinition {
+    words: &["setprop"],
+    summary: "Sets an Android system property.",
+    description: "Sets the system property name to value, for the Android programs that read \
+                  it: a name is parts of letters, digits, _ - : and @ between dots, a value at \
+                  most 91 bytes. A read-only property (ro.) keeps its first value. Needs the \
+                  root user.",
+    options: &[],
+    operands: &[
+        operand("name", ValueType::Text, Count::One),
+        operand("value", ValueType::Text, Count::One),
+    ],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&INVALID_VALUE, 1),
+        exits(&READ_ONLY, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&NO_SPACE, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[],
+    surface: Surface::NoGui("a Settings page for Android properties is not built yet (D188)"),
+};
+
 /// `edit`, the Text Editor's command (D149).
 pub const EDIT: CommandDefinition = CommandDefinition {
     words: &["edit"],
@@ -2210,7 +2261,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 65] = [
+pub const COMMANDS: [CommandDefinition; 67] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
@@ -2227,6 +2278,7 @@ pub const COMMANDS: [CommandDefinition; 65] = [
     FALSE,
     FETCH,
     FREE,
+    GETPROP,
     GREP,
     HALT,
     HEAD,
@@ -2244,6 +2296,7 @@ pub const COMMANDS: [CommandDefinition; 65] = [
     READLINK,
     REBOOT,
     RM,
+    SETPROP,
     SETTINGS,
     SETTINGS_GET,
     SETTINGS_LIST,

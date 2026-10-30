@@ -426,6 +426,24 @@ impl Fake {
             .and_then(Option::as_mut)
             .ok_or(Errno(9))
     }
+
+    fn set_property(&mut self, path: &[u8], request: u32, argument: &[u8]) -> Result<(), Errno> {
+        use eggos_android_properties::{self as format, PropertyError};
+        if request != format::SET_REQUEST {
+            return Err(Errno::ENOTTY);
+        }
+        let request =
+            <&[u8; format::REQUEST_SIZE]>::try_from(argument).map_err(|_| Errno::EINVAL)?;
+        let (name, value) = format::decode_request(request).ok_or(Errno::EINVAL)?;
+        let Some((Node::File(area), _)) = self.nodes.get_mut(path) else {
+            return Err(Errno::ENOENT);
+        };
+        format::set(area, name, value).map_err(|error| match error {
+            PropertyError::ReadOnly => Errno::EROFS,
+            PropertyError::Full { .. } => Errno::ENOSPC,
+            _ => Errno::EINVAL,
+        })
+    }
 }
 
 fn split_last_component(path: &[u8]) -> (&[u8], &[u8]) {
@@ -817,7 +835,11 @@ impl System for Fake {
         request: u32,
         argument: &mut [u8],
     ) -> Result<(), Errno> {
-        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+        let path = self.file(descriptor)?.path.clone();
+        if path == eggos_android_properties::AREA_PATH.to_bytes() {
+            return self.set_property(&path, request, argument);
+        }
+        if path != crate::wm::DEVICE.to_bytes() {
             return Err(Errno::ENOTTY);
         }
         let word = |bytes: &[u8], at: usize| {

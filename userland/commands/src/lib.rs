@@ -570,11 +570,12 @@ pub const NOUN_VERBS: [(&str, &[&str]); 1] = [(
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full
 /// definition all the same (the spec's list, checked against the code).
-pub const KEPT_NAMES: [&str; 43] = [
+pub const KEPT_NAMES: [&str; 45] = [
     "agentlog", "app", "cat", "chmod", "cp", "date", "device", "df", "echo", "edit", "false",
-    "fetch", "free", "grep", "halt", "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv",
-    "nslookup", "ping", "poweroff", "ps", "readlink", "reboot", "rm", "settings", "sleep", "sync",
-    "tail", "tee", "terminal", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
+    "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "ln", "ls",
+    "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink", "reboot", "rm", "setprop",
+    "settings", "sleep", "sync", "tail", "tee", "terminal", "touch", "trash", "true", "uname",
+    "uptime", "wc", "wm",
 ];
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the

@@ -179,9 +179,12 @@ Must-have, in order:
     System properties all read as unset (no property area). A QEMU test on aarch64 and x86_64,
     run in CI with the runner's NDK, links a program from our own source against bionic and
     checks stdio, files, directories, the heap, clocks, threads, properties, `getauxval`,
-    `arc4random`, `system()`, exit statuses and `abort`. Next, as user capabilities: users'
-    programs can read system properties (a property service); users can run Android programs
-    on riscv64 and dynamically linked ones; then apps (`.apk`).
+    `arc4random`, `system()`, exit statuses and `abort`. Users' programs now read system
+    properties (D188): the kernel's property service keeps them in bionic's property area at
+    `/dev/__properties__`, sets `/system/build.prop`'s at boot, and `getprop` and `setprop`
+    (CLI and MCP tools) read and set them. Next, as user capabilities: users can read their
+    programs' logs (`logd`, `logcat`) and run Android programs on riscv64 and dynamically linked
+    ones; then apps (`.apk`).
 18. **done** — Windows, part 1: users can now run Windows console programs from `eggsh` on
     x86_64 (D118, docs/windows-programs.md): an unmodified PE32+ console program runs
     natively through the Windows layer, an optional component at `/usr/lib/eggos/windows` that

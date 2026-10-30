@@ -197,8 +197,8 @@ it (the core utilities' fake system with a home folder holding `notes.txt`; Sett
 facts).
 
 **Kept names:** `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `df` (D171), `echo`, `edit`, `false`, `fetch`,
-`free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `ls`, `mkdir`, `mv`, `nslookup`,
-`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
+`free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `ls`, `mkdir`, `mv`, `nslookup`,
+`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
 `break`, `cd`, `continue`, `echo`, `eval`, `exit`, `export`, `false`, `fg`, `help`, `jobs`,
 `kill`, `local`, `pwd`, `read`, `return`, `set`, `shift`, `test`, `true`, `type`, `unset`,
@@ -209,9 +209,9 @@ tests, D165, D181, D182).
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
 item 48; `show` is a core verb), `drag` (D162).
 
-**Commands in the registry** (63, D163, D170, D171: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
-`fetch`, `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `ls`, `mkdir`, `mv`,
-`nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `settings` (the window), `settings
+**Commands in the registry** (67, D163, D170, D171, D188: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
+`fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `ls`, `mkdir`, `mv`,
+`nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
 get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
 `wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type`.
 `echo`, `true` and `false` take any words and declare no usage error.

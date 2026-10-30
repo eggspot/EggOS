@@ -1505,9 +1505,66 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+const PROPERTY_NAME: Argument = described(
+    lengths(
+        Argument {
+            pattern: Some("^[A-Za-z0-9_:@-]+(\\.[A-Za-z0-9_:@-]+)*$"),
+            ..optional("name", JsonType::String, Mapping::Operand)
+        },
+        Some(1),
+        64,
+    ),
+    "The property's name, such as ro.build.version.sdk: parts of letters, digits, _ - : and @ \
+     between dots.",
+);
+
+const GETPROP_ARGUMENTS: [Argument; 1] = [PROPERTY_NAME];
+
+const SETPROP_ARGUMENTS: [Argument; 2] = [
+    required(PROPERTY_NAME),
+    required(described(
+        lengths(
+            optional("value", JsonType::String, Mapping::Operand),
+            Some(1),
+            91,
+        ),
+        "The new value: 1 to 91 bytes without control characters.",
+    )),
+];
+
+/// `getprop` (D188).
+pub const GETPROP: ToolDefinition = reading(
+    "getprop",
+    "Read Android system properties",
+    "Reads the Android system property name, as `getprop` prints it: its value, or an empty \
+     line when it has none; without name, every property as [name]: [value] lines. These are \
+     the settings Android programs read through bionic's __system_property_get.",
+    &["getprop"],
+    &[],
+    &GETPROP_ARGUMENTS,
+);
+
+/// `setprop` (D188).
+pub const SETPROP: ToolDefinition = ToolDefinition {
+    name: "setprop",
+    title: "Set an Android system property",
+    description: "Sets the Android system property name to value, as `setprop` does, for the \
+                  Android programs that read it. A read-only property (its name starts with \
+                  ro.) keeps its first value and fails with read_only. Needs the write grant.",
+    command: &["setprop"],
+    fixed: &[],
+    arguments: &SETPROP_ARGUMENTS,
+    max_effect: Effect::Change,
+    grant: Some(Grant::Write),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
-/// D162's, D163's and D170's.
-pub const TOOLS: [ToolDefinition; 42] = [
+/// D162's, D163's, D170's, D184's and D188's.
+pub const TOOLS: [ToolDefinition; 44] = [
     LS,
     CAT,
     PS,
@@ -1550,6 +1607,8 @@ pub const TOOLS: [ToolDefinition; 42] = [
     LN,
     DF,
     DEVICE_LIST,
+    GETPROP,
+    SETPROP,
 ];
 
 impl ToolDefinition {

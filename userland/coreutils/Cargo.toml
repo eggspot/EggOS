@@ -10,6 +10,7 @@ name = "coreutils"
 path = "src/main.rs"
 
 [dependencies]
+eggos-android-properties = { path = "../../android-properties" }
 eggos-app = { path = "../app" }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }

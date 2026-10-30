@@ -262,7 +262,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
-  system properties (all read as unset), no `logd` or binder, no riscv64.
+  system properties set by programs themselves (`setprop` sets them, D188), no `logd`
+  (`logcat`) or binder, no riscv64.
 - **macOS: console programs and programmatic AppKit apps, on aarch64 and x86_64 only.**
   Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
   Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code

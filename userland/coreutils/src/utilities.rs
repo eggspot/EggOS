@@ -19,6 +19,7 @@ use crate::output::{FAILURE, Output};
 use crate::ping::ping;
 use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
 use crate::processes::{free, ps, uptime};
+use crate::properties::{getprop, setprop};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use crate::tee::tee;
@@ -47,6 +48,7 @@ pub enum Utility {
     False,
     Fetch,
     Free,
+    Getprop,
     Grep,
     Halt,
     Head,
@@ -64,6 +66,7 @@ pub enum Utility {
     Readlink,
     Reboot,
     Rm,
+    Setprop,
     Sleep,
     Sync,
     Tail,
@@ -78,7 +81,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 41] = [
         Self::Agentlog,
         Self::Cat,
         Self::Chmod,
@@ -90,6 +93,7 @@ impl Utility {
         Self::False,
         Self::Fetch,
         Self::Free,
+        Self::Getprop,
         Self::Grep,
         Self::Halt,
         Self::Head,
@@ -107,6 +111,7 @@ impl Utility {
         Self::Readlink,
         Self::Reboot,
         Self::Rm,
+        Self::Setprop,
         Self::Sleep,
         Self::Sync,
         Self::Tail,
@@ -133,6 +138,7 @@ impl Utility {
             Self::False => b"false",
             Self::Fetch => b"fetch",
             Self::Free => b"free",
+            Self::Getprop => b"getprop",
             Self::Grep => b"grep",
             Self::Halt => b"halt",
             Self::Head => b"head",
@@ -150,6 +156,7 @@ impl Utility {
             Self::Readlink => b"readlink",
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
+            Self::Setprop => b"setprop",
             Self::Sleep => b"sleep",
             Self::Sync => b"sync",
             Self::Tail => b"tail",
@@ -181,6 +188,7 @@ impl Utility {
             Self::False => FAILURE,
             Self::Fetch => fetch(output, arguments),
             Self::Free => free(output, arguments),
+            Self::Getprop => getprop(output, arguments),
             Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
@@ -198,6 +206,7 @@ impl Utility {
             Self::Readlink => readlink(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
+            Self::Setprop => setprop(output, arguments),
             Self::Sleep => sleep(output, arguments),
             Self::Sync => sync(output, arguments),
             Self::Tail => tail(output, arguments),

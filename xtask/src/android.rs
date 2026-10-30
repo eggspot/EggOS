@@ -12,6 +12,7 @@ use std::process::Command;
 pub const API_LEVEL: u32 = 29;
 
 const SYSTEM_SHELL_PATH: &str = "system/bin/sh";
+const BUILD_PROPERTIES_PATH: &str = "system/build.prop";
 const NOTE_SEGMENT: u32 = 4;
 const NOTE_OWNER: &[u8] = b"Android\0";
 const NOTE_TYPE_IDENT: u32 = 1;
@@ -89,10 +90,56 @@ pub fn is_program(path: &str) -> bool {
     std::fs::read(path).is_ok_and(|elf| api_level(&elf).is_some())
 }
 
-/// What an image with an Android program gets: `/system/bin/sh`, another name for `eggsh`
-/// (at `shell`, an earlier member).
-pub fn system_members(shell: &str) -> [(&'static str, Content<'_>); 1] {
-    [(SYSTEM_SHELL_PATH, Content::HardLink(shell))]
+macro_rules! build_properties {
+    ($($line:literal),*) => {
+        concat!(
+            "ro.build.version.release=10\n",
+            "ro.build.version.sdk=29\n",
+            "ro.build.type=user\n",
+            "ro.debuggable=0\n",
+            "ro.product.brand=EggOS\n",
+            "ro.product.manufacturer=EggOS\n",
+            "ro.product.model=EggOS\n",
+            "ro.product.name=eggos\n",
+            "ro.product.device=eggos\n",
+            "ro.hardware=eggos\n",
+            $($line, "\n",)*
+        )
+    };
+}
+
+/// The `/system/build.prop` of an image for the architecture named `arch`: the system
+/// properties the kernel's property service sets at boot (D188), Android 10's ([`API_LEVEL`])
+/// with EggOS as the product, and the CPU's Android ABI.
+pub fn build_properties(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => build_properties!(
+            "ro.product.cpu.abi=arm64-v8a",
+            "ro.product.cpu.abilist=arm64-v8a",
+            "ro.product.cpu.abilist64=arm64-v8a"
+        ),
+        "x86_64" => build_properties!(
+            "ro.product.cpu.abi=x86_64",
+            "ro.product.cpu.abilist=x86_64",
+            "ro.product.cpu.abilist64=x86_64"
+        ),
+        "riscv64" => build_properties!(
+            "ro.product.cpu.abi=riscv64",
+            "ro.product.cpu.abilist=riscv64",
+            "ro.product.cpu.abilist64=riscv64"
+        ),
+        _ => build_properties!(),
+    }
+}
+
+/// What an image with an Android program for `arch` gets: `/system/bin/sh`, another name
+/// for `eggsh` (at `shell`, an earlier member), and `/system/build.prop`
+/// ([`build_properties`]).
+pub fn system_members<'a>(shell: &'a str, arch: &str) -> [(&'static str, Content<'a>); 2] {
+    [
+        (SYSTEM_SHELL_PATH, Content::HardLink(shell)),
+        (BUILD_PROPERTIES_PATH, Content::Text(build_properties(arch))),
+    ]
 }
 
 /// An Android NDK on this host: its clang, which links for every Android target.
@@ -321,5 +368,25 @@ mod tests {
         assert_eq!(target("aarch64"), Some("aarch64-linux-android"));
         assert_eq!(target("x86_64"), Some("x86_64-linux-android"));
         assert_eq!(target("riscv64"), None);
+    }
+
+    #[test]
+    fn an_android_image_gets_the_system_shell_and_build_properties_for_its_cpu() {
+        let [shell, properties] = system_members("bin/eggsh", "aarch64");
+        assert_eq!(shell.0, "system/bin/sh");
+        assert!(matches!(shell.1, Content::HardLink("bin/eggsh")));
+        assert_eq!(properties.0, "system/build.prop");
+        let Content::Text(text) = properties.1 else {
+            panic!("build.prop is not text");
+        };
+        assert!(text.contains(&format!("\nro.build.version.sdk={API_LEVEL}\n")));
+        assert!(text.contains("\nro.product.cpu.abi=arm64-v8a\n"));
+        assert!(text.ends_with("ro.product.cpu.abilist64=arm64-v8a\n"));
+        assert!(build_properties("x86_64").contains("\nro.product.cpu.abi=x86_64\n"));
+        assert!(!build_properties("s390x").contains("cpu.abi"));
+        for line in build_properties("riscv64").lines() {
+            let (name, value) = line.split_once('=').unwrap();
+            assert!(!name.is_empty() && value.len() < 92, "{line}");
+        }
     }
 }

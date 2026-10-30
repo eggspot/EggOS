@@ -53,7 +53,7 @@ it from `eggsh` (`cargo xtask qemu`): its arguments, the environment (`getenv`),
 through bionic's stdio (`fputs`, `printf`) and standard error, reading a file (`fopen`,
 `fgets`), listing a directory (`opendir`, `readdir`), `malloc`, `calloc` and `realloc` of small
 and 1 MiB blocks, the monotonic and realtime clocks and `usleep`, four `pthread_create` threads
-joined, `__system_property_get` (unset, see below), `getauxval(AT_PAGESZ)`, `arc4random_buf`,
+joined, `__system_property_get` (see below), `getauxval(AT_PAGESZ)`, `arc4random_buf`,
 `system()` running a command through `/system/bin/sh`, `exit(42)` and `abort()`.
 
 A machine without the NDK skips this test with a message (`cargo xtask qemu` says how to point
@@ -66,16 +66,46 @@ On x86_64 the NDK's ABI requires SSSE3, SSE4.1, SSE4.2 and POPCNT (x86-64-v2: In
 AArch64, programs may keep a tag in a pointer's top byte, as Linux's arm64 ABI allows (bionic's
 allocator does).
 
+## System properties
+
+The kernel keeps Android's system properties in one property area in bionic's own format,
+which `/dev/__properties__` shows as a read-only file of root's (D188): bionic maps it at
+start-up, so `__system_property_get`, `__system_property_find`, `__system_property_foreach`
+and `android_get_device_api_level()` work as on Android. At boot the kernel sets the properties
+Android's `/system/build.prop` lists; `cargo xtask image --add` writes one into an image with an
+Android program: Android 10 (`ro.build.version.sdk=29`), EggOS as brand, model and hardware, and
+the CPU's ABI (`ro.product.cpu.abi`). Then:
+
+```
+# getprop ro.build.version.sdk
+29
+# setprop debug.level 1
+# getprop
+[debug.level]: [1]
+[ro.hardware]: [eggos]
+...
+```
+
+`getprop name [default]` prints a value (or the default, or an empty line), `getprop` alone
+every property; `setprop name value` sets one (root only; a name is parts of letters, digits,
+`_ - : @` between dots, a value at most 91 bytes), and a read-only property (`ro.`) keeps its
+first value. Agents use the MCP tools `getprop` and `setprop` (the second needs the `write`
+grant). A running program sees each page of the area as it was when it first read that page:
+set a property before starting the program that reads it. The area holds up to 64 KiB.
+
+The boot test sets a property with `setprop`, reads it with `getprop`, is refused a change to
+`ro.build.version.sdk`, and the program prints both properties as bionic reads them.
+
 ## What does not work yet
 
-- **System properties.** EggOS has no property service and no `/dev/__properties__`, so every
-  property reads as unset: `__system_property_get` returns 0 and an empty value, and
-  `android_get_device_api_level()` cannot tell the API level. Bionic starts normally without
-  them, as it does when the property area is missing.
+- **Programs' own property changes.** `__system_property_set` (Android's socket to `init`'s
+  property service) fails: set properties with `setprop`. Values longer than 91 bytes, property
+  contexts (SELinux) and `persist.` properties kept across boots are not there.
 - **Android apps and dynamically linked programs.** No `.apk`, no ART, no `linker64`: link
   statically.
-- **Android's system services and logging.** No `logd` (`__android_log_print` has nowhere to
-  write), no binder, no `/dev`, `/proc` or `/sys` (`sysconf(_SC_NPROCESSORS_ONLN)` and anything
+- **Android's system services and logging.** No `logd` (`__android_log_print` is in
+  `liblog.so`, which the NDK ships only as a shared library, so it comes with dynamically linked
+  programs), no binder, no `/dev`, `/proc` or `/sys` (`sysconf(_SC_NPROCESSORS_ONLN)` and anything
   else that reads them falls back or fails).
 - **Pipes.** `popen()` and anything else that needs a pipe fails; `system()` works.
 - **What [Linux programs](linux-programs.md) lack** applies too: a read-only file system, no

@@ -71,6 +71,8 @@ pub const MAX_URL_BYTES: usize = 2048;
 pub const MAX_SETTING_KEY_BYTES: usize = 64;
 /// The longest value `settings_set` takes, kept in the words buffer after the key (D163).
 pub const MAX_SETTING_VALUE_BYTES: usize = 64;
+/// The longest value `setprop` takes, kept where a setting's value is (D188).
+pub const MAX_PROPERTY_VALUE_BYTES: usize = 91;
 /// The longest `after` a list tool takes: a cursor (D164).
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 /// The longest `target` `ln` takes (D170).
@@ -160,6 +162,11 @@ pub enum ArgumentProblem {
     BadSettingKey,
     /// `value` is not 1 to [`MAX_SETTING_VALUE_BYTES`] bytes without control characters (D163).
     BadSettingValue,
+    /// `name` is not 1 to [`MAX_SETTING_KEY_BYTES`] bytes of parts of letters, digits, `_`, `-`,
+    /// `:` and `@` between dots (D188).
+    BadPropertyName,
+    /// `value` is not 1 to [`MAX_PROPERTY_VALUE_BYTES`] bytes without control characters (D188).
+    BadPropertyValue,
     /// `limit` is not a whole number from 1 to the tool's page size (D164).
     BadLimit,
     /// `after` is not a cursor a page ended with (D164).
@@ -283,6 +290,13 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadSettingValue => {
                 "value must be 1 to 64 bytes without control characters"
+            }
+            ArgumentProblem::BadPropertyName => {
+                "name must be a property's name, such as ro.build.version.sdk: 1 to 64 bytes of \
+                 letters, digits, _ - : and @ in parts between dots"
+            }
+            ArgumentProblem::BadPropertyValue => {
+                "value must be 1 to 91 bytes without control characters"
             }
             ArgumentProblem::BadLimit => {
                 "limit must be a whole number from 1 to the most a page holds: 500 for ls, 100 \
@@ -681,6 +695,37 @@ pub fn check(
         }
         checked.setting_key = Some(length);
     }
+    if matches!(tool.kind, Kind::Getprop | Kind::Setprop)
+        && (tool.kind == Kind::Setprop || get("name").is_some())
+    {
+        let length = short_text(
+            get("name"),
+            "name",
+            decoded.words,
+            MAX_SETTING_KEY_BYTES,
+            is_property_name_byte,
+            ArgumentProblem::BadPropertyName,
+        )?;
+        let name = decoded.words.get(..length).unwrap_or_default();
+        if name.split(|&byte| byte == b'.').any(<[u8]>::is_empty) {
+            return Err(ArgumentProblem::BadPropertyName);
+        }
+        checked.setting_key = Some(length);
+    }
+    if tool.kind == Kind::Setprop {
+        let room = decoded
+            .words
+            .get_mut(MAX_SETTING_KEY_BYTES..)
+            .ok_or(ArgumentProblem::BadPropertyValue)?;
+        checked.setting_value = Some(short_text(
+            get("value"),
+            "value",
+            room,
+            MAX_PROPERTY_VALUE_BYTES,
+            |byte| !byte.is_ascii_control(),
+            ArgumentProblem::BadPropertyValue,
+        )?);
+    }
     if tool.kind == Kind::SettingsSet {
         let room = decoded
             .words
@@ -738,6 +783,10 @@ pub fn check(
 
 fn is_setting_key_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+}
+
+fn is_property_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'@')
 }
 
 /// `settings_get`'s and `settings_set`'s key in `buffer`, the words buffer, that
