@@ -14,6 +14,7 @@ pub mod macos_gui;
 pub mod mcp;
 pub mod network;
 pub mod persistent;
+pub mod qt_app;
 pub mod real_time;
 pub mod reboot;
 pub mod run_scripts;

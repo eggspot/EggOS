@@ -11,6 +11,7 @@ mod ci_artifact;
 mod cocoa_app;
 mod dynamic_linking;
 mod elf;
+mod gl_libraries;
 mod gtk_app;
 mod hello_crate;
 mod image;
@@ -19,6 +20,7 @@ mod lint;
 mod macos;
 mod qemu;
 mod qmp;
+mod qt_app;
 mod release;
 mod rustc_version;
 mod sdl_app;
@@ -152,6 +154,12 @@ commands:
                          mousepad.zip, and boot the release image: install it with its
                          environment, compile its schemas, open it, type, copy and paste,
                          save and quit, and check the note it saved (x86_64 and aarch64)
+  qt-app --arch <arch>   download CorePad, a real Qt 6 app, and its libraries, plugins and
+                         fonts from Alpine (test data, pinned SHA-256s), pack them with
+                         EggOS's own EGL and GL libraries into corepad.zip, and boot the
+                         release image: install it with its environment, open it, type, copy
+                         and paste, save as through its file dialog and quit, and check the
+                         file it saved (x86_64 and aarch64)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -599,6 +607,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("gtk-app") => {
             for arch in arch()? {
                 gtk_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("qt-app") => {
+            for arch in arch()? {
+                qt_app::check(arch)?;
             }
             Ok(())
         }

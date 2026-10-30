@@ -625,6 +625,50 @@ jobs:
       - name: A real GTK app, Mousepad, installs from its .zip with its environment and fonts, opens, edits, copies and pastes, saves and quits inside EggOS
         run: cargo xtask gtk-app --arch ${{ matrix.arch }}
 
+  qt-app:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 75
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/qt-app/downloads-${{ matrix.arch }}
+          key: qt-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/qt_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real Qt app, CorePad, installs from its .zip with its environment, plugins and fonts, opens, edits, copies and pastes, saves as through its file dialog and quits inside EggOS
+        run: cargo xtask qt-app --arch ${{ matrix.arch }}
+
   bench:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -823,7 +867,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, autohotkey, cocoa-app, gtk-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
+    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, autohotkey, cocoa-app, gtk-app, qt-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
