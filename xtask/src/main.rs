@@ -5,6 +5,7 @@
 //! docs/build.md, "Developer commands".
 
 mod android;
+mod autohotkey;
 mod bench;
 mod ci_artifact;
 mod cocoa_app;
@@ -134,6 +135,12 @@ commands:
                          open it, play, undo and redo a move, change the board from its
                          menu, open its About box, quit, and compare the frames (x86_64:
                          the app ships no ARM64 build)
+  autohotkey --arch <arch>
+                         download AutoHotkey v2's release archive (test data, pinned
+                         SHA-256) and boot the release image: install it, open our script's
+                         window of common controls, GDI+ and COM, drive its list, toolbar,
+                         tabs and tree, read its element tree, close it, and compare the
+                         frames (x86_64: the app ships no ARM64 build)
   cocoa-app --arch <arch>
                          download CocoaGame, a real Objective-C Mac app (test data, pinned
                          SHA-256), and boot the release image: install it from its .zip,
@@ -574,6 +581,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("win32-app") => {
             for arch in arch()? {
                 win32_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("autohotkey") => {
+            for arch in arch()? {
+                autohotkey::check(arch)?;
             }
             Ok(())
         }

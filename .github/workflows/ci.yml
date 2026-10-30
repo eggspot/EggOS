@@ -497,6 +497,46 @@ jobs:
       - name: A real classic Win32 app, Pegs from Simon Tatham's Puzzles, installs, opens, plays, undoes, changes its board, opens its dialogs and quits inside EggOS (x64 only, the app ships no ARM64 build)
         run: cargo xtask win32-app --arch x86_64
 
+  autohotkey:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/autohotkey
+          key: autohotkey-${{ hashFiles('xtask/src/autohotkey.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-x86_64-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-x86_64-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: A real Win32 app on common controls, GDI+ and COM, AutoHotkey v2, installs, runs our script's window, drives its list, toolbar, tabs and tree, shows its element tree and closes inside EggOS (x64 only, the app ships no ARM64 build)
+        run: cargo xtask autohotkey --arch x86_64
+
   cocoa-app:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -783,7 +823,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, cocoa-app, gtk-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
+    needs: [changes, fast, qemu, dynamic-linking, rustc-version, hello-crate, workspace-build, sdl3, sdl-app, win32-app, autohotkey, cocoa-app, gtk-app, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
