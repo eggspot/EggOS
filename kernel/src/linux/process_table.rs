@@ -12,6 +12,11 @@
 //! nothing it gives out is a strong reference to a process, so no process is freed under it.
 //! A running process's entry holds a weak reference to its current program's process and
 //! its first thread's wait slot, through which a signal sent to it from outside reaches it.
+//!
+//! A running process may be stopped by a stop signal and continued by `SIGCONT` (D181): its
+//! entry says so until its parent's wait reports it (`WUNTRACED`, `WCONTINUED`), and the end
+//! of a process that leaves a process group orphaned with stopped members hangs that group up
+//! (`SIGHUP`, then `SIGCONT`), as POSIX requires.
 
 use super::Errno;
 use super::descriptors::WeakDescriptors;
@@ -70,9 +75,61 @@ struct Entry {
     children: u32,
     child_subreaper: bool,
     no_zombie_children: bool,
+    no_stop_notices: bool,
     executed: bool,
+    job: JobState,
     running: Option<Running>,
     name: Name,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Running,
+    Stopped { signal: u8, reported: bool },
+    Continued,
+}
+
+/// What a wait reports of children that stopped or continued, besides their ends (D181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct JobReports {
+    /// Children stopped since a wait last reported it (`WUNTRACED`, `WSTOPPED`).
+    pub stopped: bool,
+    /// Children continued since a wait last reported it (`WCONTINUED`).
+    pub continued: bool,
+    /// Leaves what it reports to be reported again (`WNOWAIT`).
+    pub keep: bool,
+}
+
+/// A child's stop or continuation, as its parent learns of it (D181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobChange {
+    /// This signal stopped it.
+    Stopped(u8),
+    /// `SIGCONT` continued it.
+    Continued,
+}
+
+/// Whom a process's stop or continuation tells (D181): its parent, which wakes from a wait for
+/// its children, and is sent `SIGCHLD` unless it set `SA_NOCLDSTOP` (`signal` false).
+#[derive(Debug, Clone)]
+pub struct JobNotice {
+    pub parent: u32,
+    pub running: Option<Running>,
+    pub child: u32,
+    pub uid: u32,
+    pub change: JobChange,
+    pub signal: bool,
+}
+
+/// What a stop signal's delivery did to a process (D181).
+#[derive(Debug, Clone)]
+pub enum Stopping {
+    /// It is stopped now, and its parent is to be told, if it has one.
+    Stopped(Option<JobNotice>),
+    /// It was stopped already: the delivering thread stops with it.
+    Already,
+    /// It is not in the table, or has ended.
+    Gone,
 }
 
 /// The length of a process's name, its NUL included (Linux's `TASK_COMM_LEN`).
@@ -160,6 +217,10 @@ pub enum Found {
         uid: u32,
         exit: ProcessExit,
     },
+    /// A child that a stop signal stopped (D181); reported once unless the wait only looked.
+    Stopped { id: u32, uid: u32, signal: u8 },
+    /// A child that `SIGCONT` continued (D181); reported once unless the wait only looked.
+    Continued { id: u32, uid: u32 },
     /// Children that may be waited for, none of them ended yet.
     Running,
     /// No child the wait may wait for (`ECHILD`).
@@ -202,6 +263,7 @@ pub struct Table {
     entries: Vec<Entry>,
     init: u32,
     console: Console,
+    stopped: u32,
 }
 
 impl Table {
@@ -214,6 +276,7 @@ impl Table {
                 session: 0,
                 foreground: 0,
             },
+            stopped: 0,
         }
     }
 
@@ -264,7 +327,9 @@ impl Table {
             children: 0,
             child_subreaper: false,
             no_zombie_children: inherited.is_some_and(|parent| parent.no_zombie_children),
+            no_stop_notices: inherited.is_some_and(|parent| parent.no_stop_notices),
             executed: false,
+            job: JobState::Running,
             running: None,
             name: inherited.map_or([0; NAME_LENGTH], |parent| parent.name),
         };
@@ -332,6 +397,14 @@ impl Table {
     pub fn set_no_zombie_children(&mut self, id: u32, no_zombies: bool) {
         if let Some(entry) = self.entry_mut(id) {
             entry.no_zombie_children = no_zombies;
+        }
+    }
+
+    /// Records whether process `id` is sent `SIGCHLD` when a child stops or continues: not if
+    /// it set `SA_NOCLDSTOP` for it (D181).
+    pub fn set_no_stop_notices(&mut self, id: u32, no_notices: bool) {
+        if let Some(entry) = self.entry_mut(id) {
+            entry.no_stop_notices = no_notices;
         }
     }
 
@@ -405,6 +478,11 @@ impl Table {
         if self.entries[index].exit.is_some() {
             return ended;
         }
+        self.forget_stop(index);
+        let around = match self.stopped {
+            0 => Vec::new(),
+            _ => self.groups_around(index),
+        };
         self.entries[index].exit = Some(exit);
         self.entries[index].uid = uid;
         self.entries[index].running = None;
@@ -435,11 +513,147 @@ impl Table {
         if Self::reaped_by(parent_entry, exit_signal) {
             self.remove_at(index);
         }
+        let mut hung_up_group = 0;
         if session == id && self.console.session == id {
+            hung_up_group = self.console.foreground;
             ended.hung_up = self.members(self.console.foreground);
             self.release_console();
         }
+        for group in around {
+            if group != hung_up_group && self.has_stopped_member(group) && self.is_orphaned(group) {
+                let mut members = self.members(group);
+                if ended.hung_up.try_reserve(members.len()).is_ok() {
+                    ended.hung_up.append(&mut members);
+                }
+            }
+        }
         ended
+    }
+
+    fn forget_stop(&mut self, index: usize) {
+        if let JobState::Stopped { .. } = self.entries[index].job {
+            self.stopped = self.stopped.saturating_sub(1);
+        }
+        self.entries[index].job = JobState::Running;
+    }
+
+    fn groups_around(&self, index: usize) -> Vec<u32> {
+        let ending = &self.entries[index];
+        let mut groups = Vec::new();
+        if groups.try_reserve(1).is_ok() {
+            groups.push(ending.group);
+        }
+        if ending.children == 0 {
+            return groups;
+        }
+        for entry in &self.entries {
+            if entry.parent == ending.id
+                && entry.session == ending.session
+                && !groups.contains(&entry.group)
+                && groups.try_reserve(1).is_ok()
+            {
+                groups.push(entry.group);
+            }
+        }
+        groups
+    }
+
+    fn is_orphaned(&self, group: u32) -> bool {
+        !self.entries.iter().any(|member| {
+            member.group == group
+                && member.exit.is_none()
+                && self.entry(member.parent).is_some_and(|parent| {
+                    parent.exit.is_none()
+                        && parent.group != group
+                        && parent.session == member.session
+                })
+        })
+    }
+
+    fn has_stopped_member(&self, group: u32) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.group == group
+                && entry.exit.is_none()
+                && matches!(entry.job, JobState::Stopped { .. })
+        })
+    }
+
+    /// For a stop signal delivered to process `id`, whose real user id is `uid` (D181): stops
+    /// it, unless it is stopped already, and says whom to tell.
+    pub fn stop(&mut self, id: u32, signal: u8, uid: u32) -> Stopping {
+        let Some(index) = self.index(id) else {
+            return Stopping::Gone;
+        };
+        let entry = &mut self.entries[index];
+        if entry.exit.is_some() {
+            return Stopping::Gone;
+        }
+        if let JobState::Stopped { .. } = entry.job {
+            return Stopping::Already;
+        }
+        entry.job = JobState::Stopped {
+            signal,
+            reported: false,
+        };
+        entry.uid = uid;
+        let parent = entry.parent;
+        self.stopped += 1;
+        Stopping::Stopped(self.job_notice(parent, id, uid, JobChange::Stopped(signal)))
+    }
+
+    /// For `SIGCONT` sent to process `id` (D181): continues it if it is stopped, and says whom
+    /// to tell; `None` if it was not stopped.
+    pub fn resume(&mut self, id: u32) -> Option<JobNotice> {
+        let index = self.index(id)?;
+        let entry = &mut self.entries[index];
+        if entry.exit.is_some() || !matches!(entry.job, JobState::Stopped { .. }) {
+            return None;
+        }
+        entry.job = JobState::Continued;
+        let (parent, uid) = (entry.parent, entry.uid);
+        self.stopped = self.stopped.saturating_sub(1);
+        self.job_notice(parent, id, uid, JobChange::Continued)
+    }
+
+    fn job_notice(
+        &self,
+        parent: u32,
+        child: u32,
+        uid: u32,
+        change: JobChange,
+    ) -> Option<JobNotice> {
+        let entry = self.entry(parent).filter(|entry| entry.exit.is_none())?;
+        Some(JobNotice {
+            parent,
+            running: entry.running.clone(),
+            child,
+            uid,
+            change,
+            signal: !entry.no_stop_notices,
+        })
+    }
+
+    /// Whether process `id` is stopped (D181).
+    pub fn is_stopped(&self, id: u32) -> bool {
+        self.entry(id)
+            .is_some_and(|entry| matches!(entry.job, JobState::Stopped { .. }))
+    }
+
+    /// Whether process `id`'s group is orphaned, so the terminal's stop signals do not stop it
+    /// (D181).
+    pub fn is_in_orphaned_group(&self, id: u32) -> bool {
+        self.entry(id)
+            .is_some_and(|entry| self.is_orphaned(entry.group))
+    }
+
+    /// For process `caller` reading the console or changing its settings (D181): its process
+    /// group, and whether that group is orphaned, if the console is its controlling terminal
+    /// and its group is not the console's foreground; `None` otherwise (it may go on).
+    pub fn background_on_console(&self, caller: u32) -> Option<(u32, bool)> {
+        let entry = self.entry(caller)?;
+        let in_session = self.console.session != 0 && self.console.session == entry.session;
+        (in_session && entry.group != self.console.foreground)
+            .then(|| (entry.group, self.is_orphaned(entry.group)))
     }
 
     /// Removes process `id`, which never ended as a Linux process does (it never ran, or its
@@ -453,6 +667,7 @@ impl Table {
         if self.entries[index].exit.is_some() {
             return ended;
         }
+        self.forget_stop(index);
         ended.to_new_parent = self.hand_over_children(id);
         if let Some(index) = self.index(id) {
             let parent = self.entries[index].parent;
@@ -513,10 +728,24 @@ impl Table {
         })
     }
 
-    /// The wait of process `parent` for one of its children that `selector` and `kind` name:
-    /// the first of them that has ended, reaped or not as `ends` says; otherwise whether any of
-    /// them is running.
+    /// [`Self::wait_for_change`] for ends alone.
+    #[cfg(test)]
     pub fn wait(&mut self, parent: u32, selector: Selector, kind: ChildKind, ends: Ends) -> Found {
+        self.wait_for_change(parent, selector, kind, ends, JobReports::default())
+    }
+
+    /// The wait of process `parent` for one of its children that `selector` and `kind` name:
+    /// the first of them that has ended, reaped or not as `ends` says, or that stopped or
+    /// continued since a wait last said so, if `reports` asks for those (D181); otherwise
+    /// whether any of them is running.
+    pub fn wait_for_change(
+        &mut self,
+        parent: u32,
+        selector: Selector,
+        kind: ChildKind,
+        ends: Ends,
+        reports: JobReports,
+    ) -> Found {
         let matches = |entry: &Entry| {
             entry.parent == parent
                 && match selector {
@@ -534,26 +763,51 @@ impl Table {
             return Found::NoChild;
         }
         let mut running = false;
-        let mut ended = None;
+        let mut found = None;
         for (index, entry) in self.entries.iter().enumerate() {
             if !matches(entry) {
                 continue;
             }
-            match entry.exit {
-                Some(_) if ends == Ends::Ignore => {}
-                Some(exit) => {
-                    ended = Some((index, entry.id, entry.uid, exit));
+            let (id, uid) = (entry.id, entry.uid);
+            match (entry.exit, entry.job) {
+                (Some(_), _) if ends == Ends::Ignore => {}
+                (Some(exit), _) => {
+                    found = Some((index, Found::Ended { id, uid, exit }));
                     break;
                 }
-                None => running = true,
+                (
+                    None,
+                    JobState::Stopped {
+                        signal,
+                        reported: false,
+                    },
+                ) if reports.stopped => {
+                    found = Some((index, Found::Stopped { id, uid, signal }));
+                    break;
+                }
+                (None, JobState::Continued) if reports.continued => {
+                    found = Some((index, Found::Continued { id, uid }));
+                    break;
+                }
+                (None, _) => running = true,
             }
         }
-        match ended {
-            Some((index, id, uid, exit)) => {
-                if ends == Ends::Reap {
-                    self.remove_at(index);
+        match found {
+            Some((index, found)) => {
+                match found {
+                    Found::Ended { .. } if ends == Ends::Reap => self.remove_at(index),
+                    Found::Stopped { signal, .. } if !reports.keep => {
+                        self.entries[index].job = JobState::Stopped {
+                            signal,
+                            reported: true,
+                        };
+                    }
+                    Found::Continued { .. } if !reports.keep => {
+                        self.entries[index].job = JobState::Running;
+                    }
+                    _ => {}
                 }
-                Found::Ended { id, uid, exit }
+                found
             }
             None if running => Found::Running,
             None => Found::NoChild,
@@ -1012,6 +1266,148 @@ mod tests {
         assert_eq!(table.controlling_terminal(101), Err(Errno::ENOTTY));
         assert_eq!(table.take_console(110, false), Ok(()));
         assert_eq!(table.controlling_terminal(110), Ok((110, 110)));
+    }
+
+    fn running() -> Running {
+        Running {
+            process: Weak::<()>::new(),
+            first_thread: Arc::new(WaitSlot::new()),
+            files: WeakDescriptors::default(),
+        }
+    }
+
+    const STOPPED_AND_CONTINUED: JobReports = JobReports {
+        stopped: true,
+        continued: true,
+        keep: false,
+    };
+
+    #[test]
+    fn a_stopped_child_is_reported_once_to_a_wait_that_asks_then_its_continuation() {
+        let mut table = table_with(&[(140, None), (141, Some(140))]);
+        let Stopping::Stopped(Some(notice)) = table.stop(141, 20, 5) else {
+            panic!("the child did not stop");
+        };
+        assert_eq!(
+            (notice.parent, notice.child, notice.uid, notice.change),
+            (140, 141, 5, JobChange::Stopped(20))
+        );
+        assert!(notice.signal);
+        assert!(table.is_stopped(141));
+        assert!(matches!(table.stop(141, 19, 5), Stopping::Already));
+        assert!(matches!(table.stop(999, 19, 5), Stopping::Gone));
+        assert_eq!(
+            table.wait(140, Selector::Any, ChildKind::Sigchld, Ends::Reap),
+            Found::Running,
+            "a wait without WUNTRACED does not see the stop"
+        );
+        let looked = JobReports {
+            keep: true,
+            ..STOPPED_AND_CONTINUED
+        };
+        for reports in [looked, STOPPED_AND_CONTINUED] {
+            assert_eq!(
+                table.wait_for_change(140, Selector::Any, ChildKind::Sigchld, Ends::Reap, reports),
+                Found::Stopped {
+                    id: 141,
+                    uid: 5,
+                    signal: 20
+                }
+            );
+        }
+        assert_eq!(
+            table.wait_for_change(
+                140,
+                Selector::Any,
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED
+            ),
+            Found::Running,
+            "a stop is reported once"
+        );
+        let notice = table.resume(141).unwrap();
+        assert_eq!(notice.change, JobChange::Continued);
+        assert!(!table.is_stopped(141));
+        assert!(table.resume(141).is_none());
+        assert_eq!(
+            table.wait_for_change(
+                140,
+                Selector::Process(141),
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED
+            ),
+            Found::Continued { id: 141, uid: 5 }
+        );
+        table.set_no_stop_notices(140, true);
+        let Stopping::Stopped(Some(quiet)) = table.stop(141, 19, 5) else {
+            panic!("the child did not stop again");
+        };
+        assert!(!quiet.signal, "SA_NOCLDSTOP: woken, but no SIGCHLD");
+        table.end(141, ProcessExit::Killed { signal: 9 }, 5);
+        assert_eq!(table.stopped, 0);
+        assert!(matches!(
+            table.wait_for_change(
+                140,
+                Selector::Any,
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED
+            ),
+            Found::Ended { id: 141, .. }
+        ));
+    }
+
+    #[test]
+    fn a_group_is_orphaned_when_no_member_has_a_parent_elsewhere_in_its_session() {
+        let mut table = table_with(&[(150, None), (151, Some(150))]);
+        table.set_group(150, 151, 0).unwrap();
+        assert!(
+            !table.is_in_orphaned_group(151),
+            "151's parent is in another group of the session"
+        );
+        assert!(
+            table.is_in_orphaned_group(150),
+            "the session leader's group has no parent in the session"
+        );
+        table.end(150, EXITED, 0);
+        assert!(table.is_in_orphaned_group(151), "its parent ended");
+        assert!(!table.is_in_orphaned_group(999));
+    }
+
+    #[test]
+    fn the_end_of_a_process_hangs_up_a_group_it_leaves_orphaned_with_stopped_members() {
+        let mut table = table_with(&[(160, None), (161, Some(160)), (162, Some(160))]);
+        table.set_group(160, 161, 0).unwrap();
+        table.set_group(160, 162, 0).unwrap();
+        table.set_running(161, running());
+        table.set_running(162, running());
+        assert!(matches!(table.stop(161, 20, 0), Stopping::Stopped(_)));
+        let ended = table.end(160, EXITED, 0);
+        assert_eq!(
+            ended.hung_up.len(),
+            1,
+            "only the group with a stopped member: 161's, not 162's"
+        );
+        let mut quiet = table_with(&[(170, None), (171, Some(170))]);
+        quiet.set_group(170, 171, 0).unwrap();
+        quiet.set_running(171, running());
+        assert!(quiet.end(170, EXITED, 0).hung_up.is_empty());
+    }
+
+    #[test]
+    fn a_background_group_of_the_console_s_session_is_told_apart() {
+        let mut table = table_with(&[(180, None), (181, Some(180)), (190, None)]);
+        table.give_console_if_free(180);
+        assert_eq!(table.background_on_console(180), None);
+        table.set_group(180, 181, 0).unwrap();
+        assert_eq!(table.background_on_console(181), Some((181, false)));
+        assert_eq!(table.background_on_console(190), None, "another session");
+        table.set_console_foreground(180, 181).unwrap();
+        assert_eq!(table.background_on_console(181), None);
+        assert_eq!(table.background_on_console(180), Some((180, true)));
+        table.release_console();
     }
 
     #[test]

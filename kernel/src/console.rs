@@ -93,7 +93,10 @@ fn receive<P: Platform>(mut typed: Option<&[u8]>) {
     if received.quit {
         crate::linux::job_control::signal_console_foreground::<P>(TerminalSignal::Quit);
     }
-    if received.readable || received.interrupt || received.quit {
+    if received.suspend {
+        crate::linux::job_control::signal_console_foreground::<P>(TerminalSignal::Suspend);
+    }
+    if received.readable || received.interrupt || received.quit || received.suspend {
         wake_input_waiters::<P>();
     }
 }
@@ -212,6 +215,8 @@ pub enum TerminalSignal {
     Interrupt,
     /// `VQUIT`, `^\`: `SIGQUIT`.
     Quit,
+    /// `VSUSP`, `^Z`: `SIGTSTP` (D181).
+    Suspend,
 }
 
 /// A [`fmt::Write`] sink that forwards to the platform's early boot console.

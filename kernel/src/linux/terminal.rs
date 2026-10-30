@@ -14,7 +14,8 @@
 //!   flags say, and the line's speed and format do not change.
 //! - `TCFLSH`: discards the unread input (`TCIFLUSH`, `TCIOFLUSH`); output is never queued.
 //! - `TIOCGWINSZ` and `TIOCSWINSZ`: the window size, zero until a program sets one, as on a
-//!   serial line, whose size the kernel cannot know. Nobody is told of a change (`SIGWINCH`).
+//!   serial line, whose size the kernel cannot know. A change sends `SIGWINCH` to the
+//!   console's foreground group (D181).
 //! - `FIONREAD`: the bytes a read would take without waiting.
 //! - `TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP` and `TIOCGSID`: the console as a session's
 //!   controlling terminal and its foreground process group ([`super::job_control`], D105),
@@ -23,6 +24,10 @@
 //! Every other request is `ENOTTY`, as Linux answers a request a terminal does not know. The
 //! requests every descriptor answers (`FIONBIO`, `FIOCLEX`, `FIONCLEX`) come first
 //! ([`super::descriptors`]).
+//!
+//! A process in a background group of the console's session that reads the console is sent
+//! `SIGTTIN`, and one that changes its settings, discards its input or sets its foreground
+//! group `SIGTTOU` ([`job_control::terminal_access`], D181).
 
 use super::descriptors::OpenFile;
 use super::futex;
@@ -99,8 +104,22 @@ const TENTH_OF_A_SECOND_NS: u64 = 100_000_000;
 static WINDOW_SIZE: SpinLock<[u8; WINSIZE_SIZE]> = SpinLock::new([0; WINSIZE_SIZE]);
 
 /// Sets the console's window size to the graphical terminal's grid, `rows` by `columns` cells
-/// of `cell_width` by `cell_height` pixels, as `TIOCGWINSZ` reports it.
+/// of `cell_width` by `cell_height` pixels, as `TIOCGWINSZ` reports it. Nobody is told: for the
+/// terminal's first size; [`resize_window`] tells the foreground programs of a change.
 pub fn set_window_size(rows: u16, columns: u16, cell_width: u16, cell_height: u16) {
+    let _ = replace_window_size(window_size(rows, columns, cell_width, cell_height));
+}
+
+/// [`set_window_size`] for a terminal whose grid changed while programs run: the console's
+/// foreground group is sent `SIGWINCH` if the size is not what it was (D181).
+pub fn resize_window<P: Platform>(rows: u16, columns: u16, cell_width: u16, cell_height: u16) {
+    let size = window_size(rows, columns, cell_width, cell_height);
+    if replace_window_size(size) != size {
+        job_control::send_to_console_foreground::<P>(super::signal::SIGWINCH);
+    }
+}
+
+fn window_size(rows: u16, columns: u16, cell_width: u16, cell_height: u16) -> [u8; WINSIZE_SIZE] {
     let mut size = [0; WINSIZE_SIZE];
     let fields = [
         rows,
@@ -111,7 +130,27 @@ pub fn set_window_size(rows: u16, columns: u16, cell_width: u16, cell_height: u1
     for (bytes, field) in size.as_chunks_mut::<2>().0.iter_mut().zip(fields) {
         *bytes = field.to_ne_bytes();
     }
-    *WINDOW_SIZE.lock() = size;
+    size
+}
+
+fn replace_window_size(size: [u8; WINSIZE_SIZE]) -> [u8; WINSIZE_SIZE] {
+    core::mem::replace(&mut *WINDOW_SIZE.lock(), size)
+}
+
+/// Whether `request` changes the console, so a process in a background group of its session
+/// gets `SIGTTOU` for it (D181): the settings, discarding input, the foreground group.
+pub fn changes_the_terminal(request: u64) -> bool {
+    matches!(
+        request as u32,
+        request::TCSETS
+            | request::TCSETSW
+            | request::TCSETSF
+            | request::TCSETS2
+            | request::TCSETSW2
+            | request::TCSETSF2
+            | request::TCFLSH
+            | job_control::request::TIOCSPGRP
+    )
 }
 
 /// `ioctl(fd, request, argument)` on a descriptor that names the console, which the caller
@@ -165,7 +204,9 @@ pub fn ioctl<P: Platform>(process: &Process<P>, request: u64, argument: u64) -> 
             process
                 .read_user_memory(argument, &mut size)
                 .map_err(|_| Errno::EFAULT)?;
-            *WINDOW_SIZE.lock() = size;
+            if replace_window_size(size) != size {
+                job_control::send_to_console_foreground::<P>(super::signal::SIGWINCH);
+            }
             Ok(0)
         }
         request::FIONREAD => {
@@ -203,6 +244,13 @@ pub(super) fn read<P: Platform>(
         first_argument: context.syscall_arguments()[0],
     };
     let result = loop {
+        match job_control::terminal_access(process, thread, super::signal::SIGTTIN) {
+            job_control::Access::Allowed => {}
+            job_control::Access::Refused => break Err(Errno::EIO),
+            job_control::Access::Signalled => {
+                return job_control::restart_after_signal(process, thread, context);
+            }
+        }
         match read_or_wait(process, thread, file, buffers)? {
             Some(result) => break result,
             None => {

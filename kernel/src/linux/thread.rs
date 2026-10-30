@@ -75,17 +75,36 @@ pub fn unless_signalled_or_ended<P: Platform>(
     }
 }
 
-/// Waits until `process`, of which `thread` is the calling thread, ends, taking in nothing,
-/// as a stopped thread does: signals sent to the process stay for its other threads.
-pub fn wait_for_end<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
+/// Sleeps `thread`, the calling thread of `process`, while `stopped` says its process is
+/// stopped (D181), taking in the signals sent to it meanwhile, which stay pending: until
+/// `stopped` says otherwise once a signal sent to the process woke it (`SIGCONT` continues the
+/// process before it is sent), `SIGKILL` is due to it, or the process ends (`Break`). Call it
+/// as a blocking system call runs: with interrupts masked and no lock held.
+pub fn sleep_while<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    stopped: impl Fn() -> bool,
+) -> ControlFlow<()> {
+    const SIGKILL_BIT: u64 = 1 << (super::signal::SIGKILL - 1);
     let key = sleep_key(process, thread.id);
-    while !process.has_ended() {
-        let _ = futex::wait_interruptibly::<P>(key, u32::MAX, u64::MAX, &thread.wait_slot, || {
-            match process.has_ended() {
-                true => Err(Errno::EINTR),
-                false => Ok(()),
-            }
-        });
+    loop {
+        if process.has_ended() {
+            return ControlFlow::Break(());
+        }
+        signals::take_in_sent(process, thread);
+        if thread.signals.pending & SIGKILL_BIT != 0 || !stopped() {
+            return ControlFlow::Continue(());
+        }
+        let slept = futex::wait_interruptibly::<P>(
+            key,
+            u32::MAX,
+            u64::MAX,
+            &thread.wait_slot,
+            unless_signalled_or_ended(process, thread),
+        );
+        if slept == Err(Errno::EINTR) {
+            signals::take_in_sent_now(process, thread);
+        }
     }
 }
 

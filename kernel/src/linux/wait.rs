@@ -2,15 +2,17 @@
 //! `SIGCHLD` or the exit signal `clone` named, through the process table
 //! ([`super::process_table`]), which keeps an ended child as a zombie until it is reaped.
 //!
-//! A thread waiting for a child sleeps on its process's child-wait key until a child's end
-//! wakes it, a signal is due to it or its process ends. A signal that interrupts the wait runs
-//! its handler and the call fails with `EINTR`, or is restarted if the handler has
-//! `SA_RESTART`, as on Linux (`ERESTARTSYS`). Children never stop yet, so `WUNTRACED`,
-//! `WSTOPPED` and `WCONTINUED` are accepted and never report anything; resource usage is
-//! reported as zeros.
+//! A thread waiting for a child sleeps on its process's child-wait key until a child's end, stop
+//! or continuation wakes it, a signal is due to it or its process ends. A signal that
+//! interrupts the wait runs its handler and the call fails with `EINTR`, or is restarted if
+//! the handler has `SA_RESTART`, as on Linux (`ERESTARTSYS`). `WUNTRACED` (`WSTOPPED`) reports
+//! a child a stop signal stopped and `WCONTINUED` one `SIGCONT` continued, each once (D181);
+//! resource usage is reported as zeros.
 
 use super::futex::{self, Key};
-use super::process_table::{self, ChildKind, Ends, Found, Notice, Selector, TABLE};
+use super::process_table::{
+    self, ChildKind, Ends, Found, JobChange, JobNotice, JobReports, Notice, Selector, TABLE,
+};
 use super::signals::{self, Info, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
 use super::{Errno, credentials};
@@ -62,7 +64,7 @@ const SIGINFO_SIZE: usize = 128;
 
 const CHILD_WAIT_WORDS: u64 = 1 << 63;
 
-static CHILD_ENDS: AtomicU32 = AtomicU32::new(0);
+static CHILD_CHANGES: AtomicU32 = AtomicU32::new(0);
 
 fn child_wait_key(parent: u32) -> Key {
     Key::new(0, CHILD_WAIT_WORDS | u64::from(parent), false)
@@ -99,7 +101,7 @@ pub fn wake_child_waiters<P: Platform>(id: u32) {
 /// Wakes `notice`'s parent from its waits for its children and sends it the notice's signal,
 /// if any.
 pub fn notify<P: Platform>(notice: Notice) {
-    CHILD_ENDS.fetch_add(1, Ordering::Release);
+    CHILD_CHANGES.fetch_add(1, Ordering::Release);
     futex::wake::<P>(child_wait_key(notice.parent), u32::MAX, u32::MAX);
     if notice.signal != 0
         && let Some(running) = &notice.running
@@ -110,6 +112,22 @@ pub fn notify<P: Platform>(notice: Notice) {
             notice.uid,
             notice.exit,
         );
+        send_to_running::<P>(running, info);
+    }
+}
+
+/// Wakes `notice`'s parent from its waits for its children, which look again, for a child's
+/// stop or continuation (D181), and sends it `SIGCHLD` with `CLD_STOPPED` or `CLD_CONTINUED`
+/// unless it set `SA_NOCLDSTOP`.
+#[cold]
+#[inline(never)]
+pub fn notify_job_change<P: Platform>(notice: JobNotice) {
+    CHILD_CHANGES.fetch_add(1, Ordering::Release);
+    futex::wake::<P>(child_wait_key(notice.parent), u32::MAX, u32::MAX);
+    if notice.signal
+        && let Some(running) = &notice.running
+    {
+        let info = Info::child_job_change(notice.child, notice.uid, notice.change);
         send_to_running::<P>(running, info);
     }
 }
@@ -159,6 +177,13 @@ struct Request {
     kind: ChildKind,
     no_hang: bool,
     ends: Ends,
+    reports: JobReports,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reported {
+    Ended(ProcessExit),
+    Job(JobChange),
 }
 
 fn selector_for_wait4(caller: u32, pid: i32) -> Result<Selector, Errno> {
@@ -191,10 +216,12 @@ fn kind(options: u32) -> ChildKind {
 /// `wait4(pid, status, options, rusage)`: waits for a child `pid` names to end (a child by id
 /// for `pid > 0`, any child in the caller's group for 0, any child for -1, any in group `-pid`
 /// below that) and reaps it: returns its id, with its status at `status` (`exit << 8`, or the
-/// signal that ended it) and zeros at `rusage`, unless they are null. With `WNOHANG`, returns
-/// 0 at once if none has ended. As Linux: `EINVAL` for an unknown option; `ESRCH` for
-/// `INT_MIN`; `ECHILD` with no such child; `EFAULT` if `status` or `rusage` is not the
-/// program's writable memory (the child is reaped all the same).
+/// signal that ended it) and zeros at `rusage`, unless they are null. With `WUNTRACED`, a child
+/// that stopped is reported too (`signal << 8 | 0x7f`), and with `WCONTINUED` one that
+/// continued (`0xffff`), each once (D181). With `WNOHANG`, returns 0 at once if none has ended.
+/// As Linux: `EINVAL` for an unknown option; `ESRCH` for `INT_MIN`; `ECHILD` with no such
+/// child; `EFAULT` if `status` or `rusage` is not the program's writable memory (the child is
+/// reaped all the same).
 #[inline(never)]
 pub fn wait4<P: Platform>(
     process: &Arc<Process<P>>,
@@ -213,6 +240,11 @@ pub fn wait4<P: Platform>(
             kind: kind(options),
             no_hang: options & option::WNOHANG != 0,
             ends: Ends::Reap,
+            reports: JobReports {
+                stopped: options & option::WUNTRACED != 0,
+                continued: options & option::WCONTINUED != 0,
+                keep: false,
+            },
         }),
         (0, Err(error)) => Err(error),
         _ => Err(Errno::EINVAL),
@@ -225,8 +257,8 @@ pub fn wait4<P: Platform>(
         Err(error) => Err(error),
     };
     let result = found.and_then(|found| match found {
-        Some((id, _, exit)) => {
-            let written = write_wait_status(process, status, exit)
+        Some((id, _, reported)) => {
+            let written = write_wait_status(process, status, reported)
                 .and_then(|()| write_zeros::<P, RUSAGE_SIZE>(process, rusage));
             written.map(|()| u64::from(id))
         }
@@ -236,12 +268,14 @@ pub fn wait4<P: Platform>(
 }
 
 /// `waitid(idtype, id, infop, options, rusage)`: as [`wait4`], with the children named by
-/// `idtype` (`P_ALL`, `P_PID`, `P_PGID`, 0 for the caller's own group) and the child's end
-/// written to the `siginfo_t` at `infop` (`SIGCHLD`, `CLD_EXITED` or `CLD_KILLED`, its id, real
-/// user id and status); the child stays a zombie with `WNOWAIT`. Returns 0; with `WNOHANG`
-/// and no child ended, the `siginfo_t` is zeros. As Linux: `EINVAL` for an unknown option,
-/// none of `WEXITED`, `WSTOPPED` and `WCONTINUED`, an unknown `idtype` (`P_PIDFD` among them)
-/// or an id below 1 for `P_PID`, or below 0 for `P_PGID`; `ECHILD` with no such child.
+/// `idtype` (`P_ALL`, `P_PID`, `P_PGID`, 0 for the caller's own group) and the child's end,
+/// stop or continuation written to the `siginfo_t` at `infop` (`SIGCHLD`, `CLD_EXITED`,
+/// `CLD_KILLED`, `CLD_STOPPED` or `CLD_CONTINUED`, its id, real user id and status); the child
+/// stays a zombie, or its stop or continuation to be reported, with `WNOWAIT`. Returns 0; with
+/// `WNOHANG` and no child ended, the `siginfo_t` is zeros. As Linux: `EINVAL` for an unknown
+/// option, none of `WEXITED`, `WSTOPPED` and `WCONTINUED`, an unknown `idtype` (`P_PIDFD`
+/// among them) or an id below 1 for `P_PID`, or below 0 for `P_PGID`; `ECHILD` with no such
+/// child.
 #[inline(never)]
 pub fn waitid<P: Platform>(
     process: &Arc<Process<P>>,
@@ -272,6 +306,11 @@ pub fn waitid<P: Platform>(
                     (_, 0) => Ends::Reap,
                     _ => Ends::Report,
                 },
+                reports: JobReports {
+                    stopped: options & option::WSTOPPED != 0,
+                    continued: options & option::WCONTINUED != 0,
+                    keep: options & option::WNOWAIT != 0,
+                },
             };
             match wait_interruptibly(process, thread, context, &request)? {
                 Some(found) => found,
@@ -299,7 +338,7 @@ fn finish<P: Platform>(
     signals::deliver(process, thread, context)
 }
 
-type Reaped = Option<(u32, u32, ProcessExit)>;
+type Reaped = Option<(u32, u32, Reported)>;
 
 fn wait_interruptibly<P: Platform>(
     process: &Arc<Process<P>>,
@@ -328,17 +367,27 @@ fn wait_or_sleep<P: Platform>(
 ) -> ControlFlow<(), Option<Result<Reaped, Errno>>> {
     let caller = process.id().get();
     loop {
-        let seen = CHILD_ENDS.load(Ordering::Acquire);
-        let found = TABLE
-            .lock()
-            .wait(caller, request.selector, request.kind, request.ends);
-        match found {
-            Found::Ended { id, uid, exit } => {
-                return ControlFlow::Continue(Some(Ok(Some((id, uid, exit)))));
+        let seen = CHILD_CHANGES.load(Ordering::Acquire);
+        let found = TABLE.lock().wait_for_change(
+            caller,
+            request.selector,
+            request.kind,
+            request.ends,
+            request.reports,
+        );
+        let reported = match found {
+            Found::Ended { id, uid, exit } => Some((id, uid, Reported::Ended(exit))),
+            Found::Stopped { id, uid, signal } => {
+                Some((id, uid, Reported::Job(JobChange::Stopped(signal))))
             }
+            Found::Continued { id, uid } => Some((id, uid, Reported::Job(JobChange::Continued))),
             Found::NoChild => return ControlFlow::Continue(Some(Err(Errno::ECHILD))),
-            _ if request.no_hang => return ControlFlow::Continue(Some(Ok(None))),
-            _ => {}
+            Found::Running => None,
+        };
+        match reported {
+            Some(reported) => return ControlFlow::Continue(Some(Ok(Some(reported)))),
+            None if request.no_hang => return ControlFlow::Continue(Some(Ok(None))),
+            None => {}
         }
         if process.has_ended() {
             return ControlFlow::Break(());
@@ -355,7 +404,7 @@ fn wait_or_sleep<P: Platform>(
             thread.wait_slot(),
             || {
                 unless_signalled_or_ended()?;
-                match CHILD_ENDS.load(Ordering::Acquire) == seen {
+                match CHILD_CHANGES.load(Ordering::Acquire) == seen {
                     true => Ok(()),
                     false => Err(Errno::EAGAIN),
                 }
@@ -376,16 +425,30 @@ pub fn wait_status(exit: ProcessExit) -> u32 {
     }
 }
 
+/// The status `wait4` reports for a child that stopped or continued as `change` (D181): the
+/// stop signal in bits 8 to 15 above `0x7f`, or `0xffff` for a continuation, as Linux's
+/// `WIFSTOPPED` and `WIFCONTINUED` read them.
+pub fn job_status(change: JobChange) -> u32 {
+    match change {
+        JobChange::Stopped(signal) => (u32::from(signal) << 8) | 0x7f,
+        JobChange::Continued => 0xffff,
+    }
+}
+
 fn write_wait_status<P: Platform>(
     process: &Process<P>,
     address: u64,
-    exit: ProcessExit,
+    reported: Reported,
 ) -> Result<(), Errno> {
     if address == 0 {
         return Ok(());
     }
+    let status = match reported {
+        Reported::Ended(exit) => wait_status(exit),
+        Reported::Job(change) => job_status(change),
+    };
     process
-        .write_user_memory(address, &wait_status(exit).to_ne_bytes())
+        .write_user_memory(address, &status.to_ne_bytes())
         .map_err(|_| Errno::EFAULT)
 }
 
@@ -410,9 +473,12 @@ fn write_child_info<P: Platform>(
         return Ok(());
     }
     let mut bytes = [0; SIGINFO_SIZE];
-    if let Some((id, uid, exit)) = found {
-        let info = Info::child_ended(super::signal::SIGCHLD, id, uid, exit).to_bytes();
-        bytes.copy_from_slice(&info[..SIGINFO_SIZE]);
+    if let Some((id, uid, reported)) = found {
+        let info = match reported {
+            Reported::Ended(exit) => Info::child_ended(super::signal::SIGCHLD, id, uid, exit),
+            Reported::Job(change) => Info::child_job_change(id, uid, change),
+        };
+        bytes.copy_from_slice(&info.to_bytes()[..SIGINFO_SIZE]);
     }
     process
         .write_user_memory(address, &bytes)
@@ -430,6 +496,9 @@ mod tests {
         assert_eq!(wait_status(ProcessExit::Exited(0x1ff)), 0xff00);
         assert_eq!(wait_status(ProcessExit::Killed { signal: 9 }), 9);
         assert_eq!(wait_status(ProcessExit::Killed { signal: 15 }), 15);
+        assert_eq!(job_status(JobChange::Stopped(20)), 0x147f);
+        assert_eq!(job_status(JobChange::Stopped(19)), 0x137f);
+        assert_eq!(job_status(JobChange::Continued), 0xffff);
     }
 
     #[test]

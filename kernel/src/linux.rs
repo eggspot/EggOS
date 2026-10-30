@@ -1117,6 +1117,7 @@ fn out_of_line_call<P: Platform>(
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
         number::FUTEX => futex::futex::<P>(process, thread, context),
         number::EXECVE => exec::execve(process, thread, context),
+        number::IOCTL => ioctl_call::<P>(process, thread, context),
         number::WAIT4 => wait::wait4(process, thread, context),
         number::WAITID => wait::waitid(process, thread, context),
         number::EXECVEAT => exec::execveat(process, thread, context),
@@ -1337,7 +1338,6 @@ fn out_of_line_result<P: Platform>(
         number::TIME => time::time(process, first),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
-        number::IOCTL => ioctl::<P>(process, thread, first, second, third),
         number::LSEEK => lseek(thread.files(), first, second, third),
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
         number::STATFS => statfs::statfs(process, thread, first, second),
@@ -1729,6 +1729,20 @@ fn read<P: Platform>(
     }
 }
 
+fn ioctl_call<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [fd, request, argument, ..] = context.syscall_arguments();
+    let result = ioctl::<P>(process, thread, fd, request, argument);
+    if result == Err(job_control::SIGNALLED) {
+        return job_control::restart_after_signal(process, thread, context);
+    }
+    context.set_syscall_result(result.unwrap_or_else(Errno::result));
+    ControlFlow::Continue(())
+}
+
 fn ioctl<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1746,6 +1760,13 @@ fn ioctl<P: Platform>(
         return result;
     }
     match file.kind() {
+        FileKind::Console if terminal::changes_the_terminal(request) => {
+            match job_control::terminal_access(process, thread, signal::SIGTTOU) {
+                job_control::Access::Allowed => terminal::ioctl(process, request, argument),
+                job_control::Access::Refused => Err(Errno::EIO),
+                job_control::Access::Signalled => Err(job_control::SIGNALLED),
+            }
+        }
         FileKind::Console => terminal::ioctl(process, request, argument),
         FileKind::Window(connection) => {
             window::ioctl(process, thread, connection, request, argument)

@@ -1270,6 +1270,7 @@ fn start<P: Platform>(
         table.mark_executed(id);
         table.set_name(id, name);
         table.set_no_zombie_children(id, sigchld_ignored);
+        table.set_no_stop_notices(id, false);
     });
     *context = started;
     image

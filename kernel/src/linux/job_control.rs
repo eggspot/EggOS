@@ -1,23 +1,176 @@
-//! Minimal job control (D105): process groups and sessions (`setpgid`, `getpgid`, `getpgrp`,
+//! Job control (D105, D181): process groups and sessions (`setpgid`, `getpgid`, `getpgrp`,
 //! `setsid`, `getsid`), the console as a session's controlling terminal and its foreground
 //! process group (`TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP`, `TIOCGSID`), which the console's
-//! signal characters reach, and `prctl`'s `PR_SET_CHILD_SUBREAPER`, which takes in a
-//! descendant's orphans. All of it is kept in the process table ([`super::process_table`]).
+//! signal characters reach, `prctl`'s `PR_SET_CHILD_SUBREAPER`, which takes in a descendant's
+//! orphans, and stopping and continuing processes. All of it is kept in the process table
+//! ([`super::process_table`]).
 //!
 //! A process the kernel starts leads a new session and group, and the console becomes that
 //! session's controlling terminal if it is no session's yet, as a session leader's `open` of a
-//! terminal makes it (its descriptors 0 to 2 are the console already). A process in a
-//! background group that reads the console is not stopped (`SIGTTIN`), nor one that changes
-//! its settings (`SIGTTOU`): processes do not stop yet.
+//! terminal makes it (its descriptors 0 to 2 are the console already).
+//!
+//! A stop signal's default action stops the whole process, every thread, until `SIGCONT` or
+//! `SIGKILL`; its parent is woken from its waits and sent `SIGCHLD` (`CLD_STOPPED`, and
+//! `CLD_CONTINUED` when it continues) unless it set `SA_NOCLDSTOP`. `SIGTSTP`, `SIGTTIN` and
+//! `SIGTTOU` do not stop a process whose group is orphaned. A process in a background group of
+//! the console's session that reads the console gets `SIGTTIN` (sent to its whole group), and
+//! one that changes the console's settings or foreground group gets `SIGTTOU`, unless it
+//! ignores or blocks it; the call then starts again once the process continues, or fails with
+//! `EIO` for a group that is orphaned (and for `SIGTTIN` ignored or blocked), as on Linux.
 
-use super::process_table::TABLE;
-use super::signals::Info;
-use super::thread::LinuxThread;
+use super::process_table::{Stopping, TABLE};
+use super::signals::{self, Info, Interrupted};
+use super::thread::{self, LinuxThread};
 use super::{Errno, credentials, signal, wait};
 use crate::console::TerminalSignal;
 use crate::process::Process;
 use alloc::sync::Arc;
+use core::ops::ControlFlow;
 use eggos_hal::Platform;
+use eggos_hal::user::UserContext;
+
+/// What a call that would read the console or change it from a background group gets instead
+/// of its result: its group was sent `SIGTTIN` or `SIGTTOU`, and it starts again once the
+/// process continues ([`restart_after_signal`]). Never returned to a program.
+pub const SIGNALLED: Errno = Errno(u16::MAX - 1);
+
+/// Whether a process may read the console or change it ([`terminal_access`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// It may: the console is not its controlling terminal, or its group is the foreground.
+    Allowed,
+    /// It may not, and the call fails with `EIO`.
+    Refused,
+    /// Its group was sent the signal: the call starts again once the process continues.
+    Signalled,
+}
+
+/// Whether `process`, of which `thread` is the calling thread, may read the console (`number`
+/// `SIGTTIN`) or change its settings or foreground group (`SIGTTOU`), as Linux's
+/// `tty_check_change` decides: see the module documentation.
+pub fn terminal_access<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    number: u32,
+) -> Access {
+    let background = TABLE.lock().background_on_console(process.id().get());
+    let Some((group, orphaned)) = background else {
+        return Access::Allowed;
+    };
+    let blocked = thread.signal_state().blocked & (1u64 << (number - 1)) != 0;
+    let ignored = process
+        .signals()
+        .lock()
+        .action(number)
+        .is_some_and(|action| action.handler == signals::IGNORE);
+    if blocked || ignored {
+        return match number == signal::SIGTTIN {
+            true => Access::Refused,
+            false => Access::Allowed,
+        };
+    }
+    if orphaned {
+        return Access::Refused;
+    }
+    signal_group::<P>(group, number);
+    Access::Signalled
+}
+
+/// Ends a call that got [`SIGNALLED`] as Linux's `-ERESTARTSYS` does: the signal sent to the
+/// caller's group is delivered, which stops the process until `SIGCONT`; if a handler runs,
+/// the call starts again after it with `SA_RESTART` and fails with `EINTR` without; otherwise
+/// it starts again at once, so it looks at the console anew.
+pub fn restart_after_signal<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let number = context.syscall_number();
+    let first_argument = context.syscall_arguments()[0];
+    let interrupted = Interrupted::RestartsIfAsked {
+        number,
+        first_argument,
+    };
+    signals::take_in_sent_now(process, thread);
+    if !signals::deliver_interrupting(process, thread, context, interrupted)? {
+        context.restart_syscall(number, first_argument);
+    }
+    ControlFlow::Continue(())
+}
+
+/// Stops `process`, of which `thread` is the calling thread, for the stop signal `number`
+/// whose default action its delivery found (D181): unless it is a terminal's stop signal
+/// (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`) and the process's group is orphaned, which discards it.
+/// Its parent is told, its other threads stop too, and the thread sleeps until the process
+/// continues or ends: `Break` once it has ended.
+#[cold]
+#[inline(never)]
+pub fn stop<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    number: u32,
+) -> ControlFlow<()> {
+    let id = process.id().get();
+    let uid = credentials::get_real(process, credentials::Kind::User) as u32;
+    let stopping = {
+        let mut table = TABLE.lock();
+        if number != signal::SIGSTOP && table.is_in_orphaned_group(id) {
+            return ControlFlow::Continue(());
+        }
+        table.stop(id, number as u8, uid)
+    };
+    match stopping {
+        Stopping::Gone => return ControlFlow::Continue(()),
+        Stopping::Already => {}
+        Stopping::Stopped(notice) => {
+            if let Some(notice) = notice {
+                wait::notify_job_change::<P>(notice);
+            }
+            signals::stop_other_threads(process, thread);
+        }
+    }
+    stay_stopped(process, thread)
+}
+
+/// Sleeps `thread`, the calling thread of `process`, while the process is stopped (D181),
+/// taking in what is sent to it meanwhile: until `SIGCONT` continues it, `SIGKILL` is due to
+/// the thread or the process ends (`Break`).
+#[cold]
+#[inline(never)]
+pub fn stay_stopped<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+) -> ControlFlow<()> {
+    let id = process.id().get();
+    thread::sleep_while(process, thread, || TABLE.lock().is_stopped(id))
+}
+
+/// For `SIGCONT` sent to `process` (D181): continues it if it is stopped, telling its parent;
+/// its stopped threads, which the signal's sending interrupts, find it continued and go on.
+#[cold]
+#[inline(never)]
+pub fn continue_process<P: Platform>(process: &Process<P>) {
+    let notice = TABLE.lock().resume(process.id().get());
+    if let Some(notice) = notice {
+        wait::notify_job_change::<P>(notice);
+    }
+}
+
+fn signal_group<P: Platform>(group: u32, number: u32) {
+    let members = TABLE.lock().members(group);
+    for running in &members {
+        wait::send_to_running::<P>(running, Info::from_kernel(number));
+    }
+}
+
+/// Sends signal `number` from the kernel to every process of the console's foreground group,
+/// as a change of the console's window size sends `SIGWINCH` (D181).
+pub fn send_to_console_foreground<P: Platform>(number: u32) {
+    let members = TABLE.lock().console_foreground_members();
+    for running in &members {
+        wait::send_to_running::<P>(running, Info::from_kernel(number));
+    }
+}
 
 /// The terminal `ioctl` requests of job control, the generic numbers, which AArch64, RISC-V
 /// and x86_64 share.
@@ -161,11 +314,9 @@ pub fn signal_console_foreground<P: Platform>(sent: TerminalSignal) {
     let number = match sent {
         TerminalSignal::Interrupt => signal::SIGINT,
         TerminalSignal::Quit => signal::SIGQUIT,
+        TerminalSignal::Suspend => signal::SIGTSTP,
     };
-    let members = TABLE.lock().console_foreground_members();
-    for running in &members {
-        wait::send_to_running::<P>(running, Info::from_kernel(number));
-    }
+    send_to_console_foreground::<P>(number);
 }
 
 /// Gives the console back to no session, for a test that needs it.
