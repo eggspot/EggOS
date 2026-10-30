@@ -297,6 +297,33 @@ fn is_fat(head: &[u8]) -> Option<usize> {
         .then_some(entry_size)
 }
 
+/// The dynamic loader a 64-bit little-endian ELF program whose first bytes are `head` names
+/// (its `PT_INTERP`, D172), without its terminating NUL; `None` when it names none or the name
+/// is not within `head`.
+pub fn interpreter(head: &[u8]) -> Option<&[u8]> {
+    if !head.starts_with(elf::MAGIC)
+        || head.get(elf::CLASS) != Some(&elf::CLASS_64)
+        || head.get(elf::DATA) != Some(&elf::LITTLE_ENDIAN)
+    {
+        return None;
+    }
+    let first = u64_le(head, elf::PROGRAM_HEADERS)?;
+    let size = u64::from(u16_le(head, elf::PROGRAM_HEADER_SIZE)?);
+    let count = u64::from(u16_le(head, elf::PROGRAM_HEADER_COUNT)?);
+    for index in 0..count {
+        let at = usize::try_from(first.checked_add(index.checked_mul(size)?)?).ok()?;
+        if u32_le(head, at)? != elf::INTERPRETER {
+            continue;
+        }
+        let offset = usize::try_from(u64_le(head, at.checked_add(8)?)?).ok()?;
+        let length = usize::try_from(u64_le(head, at.checked_add(32)?)?).ok()?;
+        let name = head.get(offset..offset.checked_add(length)?)?;
+        let name = name.split(|&byte| byte == 0).next().unwrap_or(name);
+        return (!name.is_empty()).then_some(name);
+    }
+    None
+}
+
 /// What the file whose first bytes are `head` (at most [`HEAD_BYTES`]) is, as a program for
 /// a `machine` whose layers are all installed; the layer's presence is the caller's to check.
 pub fn recognise(head: &[u8], machine: Architecture) -> Result<Program, NotRunnable> {
@@ -357,6 +384,18 @@ pub(crate) mod samples {
 
     pub fn linux_program(machine: u16) -> Vec<u8> {
         elf(2, machine, 2, &[1, 1])
+    }
+
+    pub fn dynamic_program(machine: u16, interpreter: &[u8]) -> Vec<u8> {
+        let mut file = elf(2, machine, 3, &[6, 3, 1]);
+        let offset = file.len();
+        file.extend_from_slice(interpreter);
+        file.push(0);
+        let header = 64 + 56;
+        file[header + 8..header + 16].copy_from_slice(&(offset as u64).to_le_bytes());
+        let length = interpreter.len() as u64 + 1;
+        file[header + 32..header + 40].copy_from_slice(&length.to_le_bytes());
+        file
     }
 
     pub fn mach_o(cpu: u32, file_type: u32) -> Vec<u8> {
@@ -463,6 +502,24 @@ mod tests {
             recognise(&elf(2, 62, 2, &[]), X86_64),
             Err(NotRunnable::NotAProgram)
         );
+    }
+
+    #[test]
+    fn a_dynamic_program_names_its_loader() {
+        let program = dynamic_program(62, b"/lib/ld-musl-x86_64.so.1");
+        assert_eq!(
+            interpreter(&program),
+            Some(&b"/lib/ld-musl-x86_64.so.1"[..])
+        );
+        assert_eq!(
+            recognise(&program, X86_64),
+            Err(NotRunnable::NeedsDynamicLoader)
+        );
+        assert_eq!(interpreter(&linux_program(62)), None);
+        assert_eq!(interpreter(&program[..program.len() - 30]), None);
+        let mut far = program.clone();
+        far[64 + 56 + 8..64 + 56 + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(interpreter(&far), None);
     }
 
     #[test]

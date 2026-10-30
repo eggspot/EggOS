@@ -52,6 +52,7 @@ struct Installer {
     machine: Architecture,
     name: Option<Name>,
     entry: Option<Path>,
+    arguments: Option<Path>,
     buffer: &'static mut [u8],
 }
 
@@ -131,6 +132,11 @@ impl Installer {
         let entry = self.entry.as_ref().map(Path::as_bytes);
         let (dialog, plan) =
             dialog::install_prompt_entry(&mut self.files, path, name, entry, self.machine);
+        let arguments = self.arguments;
+        let plan = plan.and_then(|plan| match arguments {
+            Some(arguments) => plan.with_arguments(arguments.as_bytes()),
+            None => Ok(plan),
+        });
         match plan {
             Ok(plan) => self.show(dialog, Stage::Prompting(plan)),
             Err(refused)
@@ -372,9 +378,22 @@ pub fn run(startup: &Startup) -> i32 {
             return command::USAGE_ERROR;
         }
     };
-    let (name, entry) = match command {
-        Command::Install { name, entry, .. } => (name.map(Name::new), entry.map(entry_as_given)),
-        _ => (None, None),
+    let (name, entry, arguments) = match command {
+        Command::Install {
+            name,
+            entry,
+            arguments,
+            ..
+        } => (name.map(Name::new), entry.map(entry_as_given), arguments),
+        _ => (None, None, None),
+    };
+    let arguments = match arguments {
+        Some(words) if !eggos_app_manifest::is_arguments(words) => {
+            complain(&[b"its arguments must be letters, digits, spaces and -_./:=+,@% only"]);
+            return command::USAGE_ERROR;
+        }
+        Some(words) => Path::from(words),
+        None => None,
     };
     let (width, height) = SIZE;
     let mut window = match Window::create(title(&command), width, height, SIZE) {
@@ -395,6 +414,7 @@ pub fn run(startup: &Startup) -> i32 {
         machine: linux::machine(),
         name,
         entry,
+        arguments,
         buffer,
     };
     first_screen(&mut installer, command);

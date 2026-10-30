@@ -735,6 +735,13 @@ pub const APP_INSTALL: CommandDefinition = CommandDefinition {
             ValueType::Path,
             "The program inside a .zip holding several.",
         ),
+        valued(
+            None,
+            Some("arguments"),
+            "words",
+            ValueType::Text,
+            "Words the app opens with: letters, digits, spaces and -_./:=+,@% (D172).",
+        ),
         long_flag("window", "Show the installer's window instead of text."),
     ],
     operands: &[operand("path", ValueType::Path, Count::One)],

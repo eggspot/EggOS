@@ -11,7 +11,10 @@
 //! the copy the app's own icon (D148) is made from what was installed and written as
 //! `app.icon`, named by the manifest; an app without one installs all the same. Symbolic links
 //! in a bundle or a `.zip` (a macOS framework's `Versions/Current`) are made again as links
-//! with the same target, when [`link_stays_inside`] (D170).
+//! with the same target, when [`link_stays_inside`] (D170). A dynamically linked Linux program
+//! installs from a `.zip` that also holds the dynamic loader its `PT_INTERP` names: the
+//! manifest then names that loader and the folders holding the archive's libraries, and the
+//! app opens through them; `--arguments` gives the words it opens with (D172).
 
 use crate::architecture::Architecture;
 use crate::archive::{self, Archive, ArchiveError, Cursor, Entry};
@@ -102,6 +105,8 @@ pub enum Problem {
     ReservedName,
     /// A `.zip` whose files take more than [`MAX_EXTRACTED_BYTES`] once extracted.
     TooLarge,
+    /// Arguments a manifest cannot hold ([`manifest::is_arguments`]).
+    InvalidArguments,
     /// Another error of the file system.
     Failed(Errno),
 }
@@ -268,8 +273,19 @@ pub struct Plan {
     bundle: bool,
     archive: Option<Archive>,
     run: Path,
+    loader: Option<Loader>,
+    arguments: Option<Path>,
     leftover: bool,
     total_bytes: u64,
+}
+
+/// A dynamically linked program's loader and library folders inside its `.zip` (D172).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loader {
+    /// The loader's path inside the app's folder.
+    pub path: Path,
+    /// The folders holding libraries, inside the app's folder, separated by `:`.
+    pub libraries: Path,
 }
 
 impl Plan {
@@ -306,6 +322,34 @@ impl Plan {
     /// The bytes the copy writes.
     pub fn total_bytes(&self) -> u64 {
         self.total_bytes
+    }
+
+    /// The dynamic loader and library folders the program opens through, for a dynamically
+    /// linked Linux program.
+    pub fn loader(&self) -> Option<&Loader> {
+        self.loader.as_ref()
+    }
+
+    /// The words the app opens with, if any.
+    pub fn arguments(&self) -> Option<&[u8]> {
+        self.arguments.as_ref().map(Path::as_bytes)
+    }
+
+    /// The same plan, opening the app with `arguments` (D172); refused when a manifest
+    /// cannot hold them.
+    pub fn with_arguments(self, arguments: &[u8]) -> Result<Self, Refused> {
+        let refused = Refused {
+            name: self.name,
+            problem: Problem::InvalidArguments,
+        };
+        if !manifest::is_arguments(arguments) {
+            return Err(refused);
+        }
+        let arguments = Path::from(arguments).ok_or(refused)?;
+        Ok(Self {
+            arguments: Some(arguments),
+            ..self
+        })
     }
 }
 
@@ -533,6 +577,8 @@ pub fn plan_entry(
         bundle,
         archive: None,
         run,
+        loader: None,
+        arguments: None,
         leftover,
         total_bytes,
     })
@@ -783,7 +829,71 @@ struct Scanned {
     run: Path,
     named_after: Path,
     program: Program,
+    loader: Option<Loader>,
     total: u64,
+}
+
+const MAX_LIBRARY_FOLDERS: usize = 4;
+const SHARED_OBJECT: &[u8] = b".so";
+
+fn parent_folder(name: &[u8]) -> Option<&[u8]> {
+    name.iter()
+        .rposition(|&byte| byte == b'/')
+        .map(|slash| &name[..slash])
+}
+
+fn is_shared_object(file_name: &[u8]) -> bool {
+    file_name
+        .windows(SHARED_OBJECT.len())
+        .any(|window| window == SHARED_OBJECT)
+}
+
+fn find_loader(
+    zip: &mut impl Reader,
+    archive: &Archive,
+    interpreter: &[u8],
+) -> Result<Loader, Problem> {
+    let wanted = files::file_name(interpreter);
+    let mut loader = None;
+    let mut folders = [Path::new(); MAX_LIBRARY_FOLDERS];
+    let mut count = 0;
+    let mut cursor = archive.first();
+    while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
+        if entry.is_metadata() || entry.is_directory() {
+            continue;
+        }
+        let name = entry.name();
+        let file_name = files::file_name(name);
+        if loader.is_none() && file_name == wanted && !entry.is_link() {
+            loader = Some(Path::from(name).ok_or(Problem::PathTooLong)?);
+        }
+        if !is_shared_object(file_name) {
+            continue;
+        }
+        let Some(folder) = parent_folder(name).filter(|folder| !folder.is_empty()) else {
+            continue;
+        };
+        let known = folders[..count]
+            .iter()
+            .any(|listed| listed.as_bytes() == folder);
+        if !known && count < MAX_LIBRARY_FOLDERS {
+            folders[count] = Path::from(folder).ok_or(Problem::PathTooLong)?;
+            count += 1;
+        }
+    }
+    let path = loader.ok_or(Problem::NotRunnable(NotRunnable::NeedsDynamicLoader))?;
+    let mut libraries = Path::new();
+    for (at, folder) in folders[..count].iter().enumerate() {
+        if (at > 0 && !libraries.append(b":")) || !libraries.append(folder.as_bytes()) {
+            return Err(Problem::PathTooLong);
+        }
+    }
+    if !manifest::is_icon(path.as_bytes())
+        || (count > 0 && !manifest::is_libraries(libraries.as_bytes()))
+    {
+        return Err(Problem::InvalidProgramPath);
+    }
+    Ok(Loader { path, libraries })
 }
 
 fn program_role(
@@ -860,7 +970,21 @@ fn scan(
     };
     let mut head = [0u8; program::HEAD_BYTES];
     let length = archive::head(zip, &entry, window, &mut head).map_err(Problem::Archive)?;
-    let program = program::recognise(&head[..length], machine).map_err(Problem::NotRunnable)?;
+    let head = &head[..length];
+    let (program, loader) = match program::recognise(head, machine) {
+        Ok(program) => (program, None),
+        Err(NotRunnable::NeedsDynamicLoader) if role == Role::MaybeLinuxProgram => {
+            let interpreter = program::interpreter(head)
+                .ok_or(Problem::NotRunnable(NotRunnable::NeedsDynamicLoader))?;
+            let loader = find_loader(zip, &archive, interpreter)?;
+            let program = Program {
+                source: Source::Linux,
+                architecture: machine,
+            };
+            (program, Some(loader))
+        }
+        Err(reason) => return Err(Problem::NotRunnable(reason)),
+    };
     let named_after = match role {
         Role::BundleProgram { bundle_end } if program.source == Source::Macos => {
             &entry.name()[..bundle_end]
@@ -875,6 +999,7 @@ fn scan(
         run: Path::from(entry.name()).ok_or(Problem::PathTooLong)?,
         named_after: Path::from(named_after).ok_or(Problem::PathTooLong)?,
         program,
+        loader,
         total,
     })
 }
@@ -906,6 +1031,8 @@ fn plan_archive(
         bundle: false,
         archive: Some(scanned.archive),
         run: scanned.run,
+        loader: scanned.loader,
+        arguments: None,
         leftover,
         total_bytes: scanned.total,
     })
@@ -1534,8 +1661,15 @@ impl Installation {
 
     fn register(&mut self, files: &mut impl Files) -> Result<Progress, Problem> {
         let folder = self.folder()?;
-        let run = core::str::from_utf8(self.plan.run.as_bytes())
-            .map_err(|_| Problem::InvalidProgramPath)?;
+        let text = path_text;
+        let run = text(&self.plan.run)?;
+        let loader = self.plan.loader.as_ref().map(|loader| &loader.path);
+        let libraries = self
+            .plan
+            .loader
+            .as_ref()
+            .map(|loader| &loader.libraries)
+            .filter(|libraries| !libraries.as_bytes().is_empty());
         let entry = Manifest {
             name: self.plan.name.as_str(),
             source: self.plan.program.source,
@@ -1543,6 +1677,9 @@ impl Installation {
             architecture: Some(self.plan.program.architecture.name()),
             synonyms: "",
             icon: self.icon.then_some(icon_file::FILE_NAME),
+            loader: loader.map(text).transpose()?,
+            libraries: libraries.map(text).transpose()?,
+            arguments: self.plan.arguments.as_ref().map(text).transpose()?,
         };
         let mut file = [0u8; manifest::LARGEST];
         let length = manifest::write(&entry, &mut file).map_err(|refused| match refused {
@@ -1570,6 +1707,10 @@ impl Installation {
         self.stage = Stage::Finished;
         Ok(Progress::Installed)
     }
+}
+
+fn path_text(path: &Path) -> Result<&str, Problem> {
+    core::str::from_utf8(path.as_bytes()).map_err(|_| Problem::InvalidProgramPath)
 }
 
 /// Installs `plan` in one go.

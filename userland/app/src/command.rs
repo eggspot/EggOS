@@ -1,6 +1,7 @@
 //! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--entry <path>]
-//! [--window] <path>` (a program, an `.app` or a `.zip`; `--entry` chooses the program inside a
-//! `.zip`, D148), `app uninstall [--window] <name>` (`remove` is the same), `app open <name>`
+//! [--arguments <words>] [--window] <path>` (a program, an `.app` or a `.zip`; `--entry`
+//! chooses the program inside a `.zip`, D148; `--arguments` gives the words it opens with,
+//! D172), `app uninstall [--window] <name>` (`remove` is the same), `app open <name>`
 //! (D137; the built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app
 //! list` (name, source, architecture, program and icon file, D148; `--json` writes them as JSON
 //! lines, D160; `--limit <count>` and `--after <cursor>` page them by name, D164). `app uninstall
@@ -17,6 +18,7 @@ pub enum Command<'a> {
         path: &'a [u8],
         name: Option<&'a [u8]>,
         entry: Option<&'a [u8]>,
+        arguments: Option<&'a [u8]>,
         window: bool,
     },
     Uninstall {
@@ -36,8 +38,8 @@ pub enum Command<'a> {
 }
 
 /// The command's usage, printed for `--help` and with a usage error.
-pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] [--window] \
-                         [--] <path>\n       \
+pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
+                         [--arguments <words>] [--window] [--] <path>\n       \
                          app uninstall [--window] [--dry-run] [--] <name>\n       \
                          app open [--] <name>\n       \
                          app list [--json] [--limit <count>] [--after <cursor>]\n";
@@ -62,6 +64,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut window = false;
     let mut name = None;
     let mut entry = None;
+    let mut words = None;
     let mut json = false;
     let mut dry_run = false;
     let mut limit = None;
@@ -88,6 +91,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             }
             b"--name" if verb == b"install" => name = Some(*rest.next()?),
             b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
+            b"--arguments" if verb == b"install" => words = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
             _ if operand.is_none() => operand = Some(argument),
             _ => return None,
@@ -98,6 +102,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             path: operand?,
             name,
             entry,
+            arguments: words,
             window,
         }),
         b"uninstall" | b"remove" if !(window && dry_run) => Some(Command::Uninstall {
@@ -189,12 +194,24 @@ mod program {
         unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), COPY_BUFFER) }
     }
 
-    fn install(path: &[u8], name: Option<&[u8]>, entry: Option<&[u8]>) -> i32 {
+    fn install(
+        path: &[u8],
+        name: Option<&[u8]>,
+        entry: Option<&[u8]>,
+        arguments: Option<&[u8]>,
+    ) -> i32 {
         let mut files = LinuxFiles::new();
         let machine = linux::machine();
         let mut subject = Line::new();
         subject.push_bytes(crate::files::file_name(path));
-        let plan = match installer::plan_entry(&mut files, path, name, entry, machine) {
+        let planned =
+            installer::plan_entry(&mut files, path, name, entry, machine).and_then(|plan| {
+                match arguments {
+                    Some(arguments) => plan.with_arguments(arguments),
+                    None => Ok(plan),
+                }
+            });
+        let plan = match planned {
             Ok(plan) => plan,
             Err(refused) => {
                 let line = messages::install_failed(
@@ -477,8 +494,12 @@ mod program {
                 Command::Install { window: true, .. } | Command::Uninstall { window: true, .. },
             ) => open_window(startup, &arguments[..count]),
             Some(Command::Install {
-                path, name, entry, ..
-            }) => install(path, name, entry),
+                path,
+                name,
+                entry,
+                arguments,
+                ..
+            }) => install(path, name, entry, arguments),
             Some(Command::Uninstall {
                 name,
                 dry_run: true,
@@ -521,6 +542,7 @@ mod tests {
                 path: b"/media/host/win-paint.exe",
                 name: None,
                 entry: None,
+                arguments: None,
                 window: false
             })
         );
@@ -530,6 +552,7 @@ mod tests {
                 path: b"x.exe",
                 name: Some(b"Paint"),
                 entry: None,
+                arguments: None,
                 window: true
             })
         );
@@ -555,9 +578,21 @@ mod tests {
                 path: b"tools.zip",
                 name: None,
                 entry: Some(b"bin/a.exe"),
+                arguments: None,
                 window: false
             })
         );
+        assert_eq!(
+            parse(&[b"install", b"--arguments", b"-n --size 4", b"brogue.zip"]),
+            Some(Command::Install {
+                path: b"brogue.zip",
+                name: None,
+                entry: None,
+                arguments: Some(b"-n --size 4"),
+                window: false
+            })
+        );
+        assert_eq!(parse(&[b"open", b"--arguments", b"x", b"a"]), None);
         assert_eq!(parse(&[b"uninstall", b"--entry", b"a", b"b"]), None);
         assert_eq!(parse(&[b"install", b"--entry"]), None);
         assert_eq!(
@@ -643,6 +678,7 @@ mod tests {
                 path: b"/media/host/-x.exe",
                 name: None,
                 entry: None,
+                arguments: None,
                 window: false
             })
         );
@@ -652,6 +688,7 @@ mod tests {
                 path: b"-",
                 name: None,
                 entry: None,
+                arguments: None,
                 window: false
             })
         );

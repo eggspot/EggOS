@@ -139,6 +139,7 @@ struct InstalledApp {
     name_length: u8,
     source: Source,
     program: Command,
+    line: Command,
     synonyms: [u8; SYNONYMS_CAPACITY],
     synonyms_length: u8,
     icon: Option<IconPixels>,
@@ -166,6 +167,66 @@ impl InstalledApp {
             .filter(|word| !word.is_empty())
             .take(manifest::MAX_SYNONYMS)
     }
+}
+
+fn push_word(line: &mut Command, path: &[u8]) -> bool {
+    let plain = path
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || PLAIN_PATH_BYTES.contains(byte));
+    match plain {
+        true => line.push(path),
+        false => line.push(b"'") && line.push(path) && line.push(b"'"),
+    }
+}
+
+fn push_in_folder(line: &mut Command, name: &str, relative: &str) -> bool {
+    [
+        manifest::DIRECTORY.as_bytes(),
+        b"/",
+        name.as_bytes(),
+        b"/",
+        relative.as_bytes(),
+    ]
+    .iter()
+    .all(|part| line.push(part))
+}
+
+fn launch_line(app: &manifest::Manifest<'_>, program: &Command) -> Option<Command> {
+    let mut line = Command::new();
+    if let Some(loader) = app.loader {
+        let mut path = Command::new();
+        if !push_in_folder(&mut path, app.name, loader)
+            || !push_word(&mut line, path.as_bytes())
+            || !line.push(b" ")
+        {
+            return None;
+        }
+        if let Some(libraries) = app.libraries {
+            let mut folders = Command::new();
+            for (at, folder) in libraries.split(':').enumerate() {
+                if (at > 0 && !folders.push(b":"))
+                    || !push_in_folder(&mut folders, app.name, folder)
+                {
+                    return None;
+                }
+            }
+            if !line.push(b"--library-path ")
+                || !push_word(&mut line, folders.as_bytes())
+                || !line.push(b" ")
+            {
+                return None;
+            }
+        }
+    }
+    if !push_word(&mut line, program.as_bytes()) {
+        return None;
+    }
+    if let Some(arguments) = app.arguments
+        && (!line.push(b" ") || !line.push(arguments.as_bytes()))
+    {
+        return None;
+    }
+    Some(line)
 }
 
 /// The catalogue. See the module documentation.
@@ -236,7 +297,11 @@ impl Catalogue {
             Ok(_) => return false,
             Err(at) => at,
         };
-        if !resolved || self.installed.try_reserve(1).is_err() {
+        let line = launch_line(&app, &program);
+        let Some(line) = line.filter(|_| resolved) else {
+            return false;
+        };
+        if self.installed.try_reserve(1).is_err() {
             return false;
         }
         let mut entry = InstalledApp {
@@ -244,6 +309,7 @@ impl Catalogue {
             name_length: app.name.len() as u8,
             source: app.source,
             program,
+            line,
             synonyms: [0; SYNONYMS_CAPACITY],
             synonyms_length: app.synonyms.len() as u8,
             icon: None,
@@ -428,8 +494,10 @@ impl Catalogue {
     /// programs, `Install from host share...` the installer on the share, and the host share
     /// Files on it (D135); without Files the share's listing and installed apps are typed in
     /// the terminal (the program's path, single-quoted when it holds more than letters, digits
-    /// and `/._-+`), after Ctrl-U so a half-typed line does not run with it; the terminal is
-    /// only focused, which the desktop does itself.
+    /// and `/._-+`; for a Linux program carrying its own dynamic loader, the loader first with
+    /// `--library-path` and its library folders; then the app's arguments, D172), after Ctrl-U
+    /// so a half-typed line does not run with it; the terminal is only focused, which the
+    /// desktop does itself.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
             AppId::Terminal => None,
@@ -451,18 +519,10 @@ impl Catalogue {
                 typed.then_some(Launch::Type(line))
             }
             AppId::Installed(index) => {
-                let path = self.installed(index)?.program;
-                let plain = path
-                    .as_bytes()
-                    .iter()
-                    .all(|byte| byte.is_ascii_alphanumeric() || PLAIN_PATH_BYTES.contains(byte));
+                let typed = self.installed(index)?.line;
                 let mut line = Command::new();
-                let typed = line.push(KILL_LINE)
-                    && match plain {
-                        true => line.push(path.as_bytes()) && line.push(b"\r"),
-                        false => line.push(b"'") && line.push(path.as_bytes()) && line.push(b"'\r"),
-                    };
-                typed.then_some(Launch::Type(line))
+                let fits = line.push(KILL_LINE) && line.push(typed.as_bytes()) && line.push(b"\r");
+                fits.then_some(Launch::Type(line))
             }
         }
     }
@@ -644,6 +704,32 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_program_with_its_own_loader_opens_through_it_with_its_arguments() {
+        let mut catalogue = Catalogue::new();
+        let file = b"eggos-app 1\nname=brogue\nsource=linux\nrun=brogue\n\
+                     loader=lib/ld-musl-x86_64.so.1\nlibraries=lib:usr/lib\n\
+                     arguments=--data-dir /Applications/brogue/share/brogue\n";
+        assert!(catalogue.add_installed(b"brogue", file));
+        let brogue = catalogue.installed_named("brogue").unwrap();
+        match catalogue.launch(brogue) {
+            Some(Launch::Type(line)) => assert_eq!(
+                line.as_bytes(),
+                b"\x15/Applications/brogue/lib/ld-musl-x86_64.so.1 --library-path \
+                  /Applications/brogue/lib:/Applications/brogue/usr/lib \
+                  /Applications/brogue/brogue --data-dir /Applications/brogue/share/brogue\r"
+            ),
+            other => panic!("{other:?}"),
+        }
+        let long = format!(
+            "eggos-app 1\nname=long\nsource=linux\nrun={}\nloader={}\narguments={}\n",
+            "p".repeat(150),
+            "l".repeat(100),
+            "a".repeat(100)
+        );
+        assert!(!catalogue.add_installed(b"long", long.as_bytes()));
     }
 
     #[test]

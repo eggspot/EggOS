@@ -4,7 +4,7 @@ use crate::fake::{FakeFiles, Node, Operation};
 use crate::files::{Files, Kind, Path};
 use crate::installer::*;
 use crate::program::NotRunnable;
-use crate::program::samples::{linux_program, mach_o, windows_program};
+use crate::program::samples::{dynamic_program, linux_program, mach_o, windows_program};
 use eggos_app_manifest::Source;
 
 fn host_with(path: &str, bytes: &[u8]) -> FakeFiles {
@@ -1152,4 +1152,52 @@ fn installed_apps_page_by_name_in_the_folder_s_order() {
         (Vec::new(), None)
     );
     assert_eq!(page_of(&mut files, None, None).0.len(), 4);
+}
+
+#[test]
+fn a_dynamically_linked_program_installs_with_the_loader_and_libraries_its_zip_holds() {
+    let program = dynamic_program(62, b"/lib/ld-musl-x86_64.so.1");
+    let archive = zip(&[
+        stored("brogue", &program),
+        stored("lib/ld-musl-x86_64.so.1", &linux_program(62)),
+        stored("lib/libSDL3.so.0", b"library"),
+        stored("share/brogue/keymap.txt", b"keys"),
+    ]);
+    let mut files = host_with("/media/host/brogue.zip", &archive);
+    let plan = planned(&mut files, "/media/host/brogue.zip", X86_64)
+        .with_arguments(b"-n --data-dir /Applications/brogue/share/brogue")
+        .unwrap();
+    assert_eq!(plan.name(), "brogue");
+    assert_eq!(
+        plan.loader().map(|loader| loader.path.as_bytes()),
+        Some(&b"lib/ld-musl-x86_64.so.1"[..])
+    );
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let manifest = manifest_of(&files, "brogue");
+    assert!(
+        manifest.contains(
+            "run=brogue\narchitecture=x86_64\nloader=lib/ld-musl-x86_64.so.1\nlibraries=lib\n\
+             arguments=-n --data-dir /Applications/brogue/share/brogue\n"
+        ),
+        "{manifest}"
+    );
+    let alone = zip(&[
+        stored("brogue", &program),
+        stored("lib/libSDL3.so.0", b"library"),
+    ]);
+    let mut files = host_with("/media/host/brogue.zip", &alone);
+    assert_eq!(
+        refused(&mut files, "/media/host/brogue.zip", X86_64),
+        Problem::NotRunnable(NotRunnable::NeedsDynamicLoader)
+    );
+    let mut files = host_with("/media/host/brogue.zip", &archive);
+    let unsafe_words = planned(&mut files, "/media/host/brogue.zip", X86_64)
+        .with_arguments(b"-n; reboot")
+        .unwrap_err();
+    assert_eq!(unsafe_words.problem, Problem::InvalidArguments);
+    let mut files = host_with("/media/host/brogue", &program);
+    assert_eq!(
+        refused(&mut files, "/media/host/brogue", X86_64),
+        Problem::NotRunnable(NotRunnable::NeedsDynamicLoader)
+    );
 }

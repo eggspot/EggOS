@@ -2,8 +2,11 @@
 //! holding its program and the file `app.manifest`, a small text file: the line `eggos-app 1`,
 //! then `key=value` lines. `name` (the folder's name), `source` (`windows`, `macos` or
 //! `linux`) and `run` (the program, absolute or relative to the folder) are required;
-//! `architecture`, `synonyms` (comma-separated words the launcher also matches) and `icon`
-//! (the app's own icon file, relative to the folder, D148: see [`icon`]) are optional. Reading
+//! `architecture`, `synonyms` (comma-separated words the launcher also matches), `icon`
+//! (the app's own icon file, relative to the folder, D148: see [`icon`]), and for a
+//! dynamically linked Linux program `loader` (its dynamic loader, relative to the folder),
+//! `libraries` (the folders its libraries are in, relative to the folder, separated by `:`)
+//! and `arguments` (words given to the program when the app opens; D172) are optional. Reading
 //! is tolerant: a file of another format, longer than [`LARGEST`], missing a required key, or
 //! naming another folder is no app; lines that are no entry are skipped; an invalid optional
 //! value is ignored; the last line of a key wins. Nothing here allocates or panics: the
@@ -39,6 +42,16 @@ pub const MAX_SYNONYMS: usize = 8;
 
 /// The longest `architecture` value, in bytes; a longer one is ignored.
 pub const ARCHITECTURE_CAPACITY: usize = 16;
+
+/// The longest `libraries` value, in bytes; a longer one is ignored.
+pub const LIBRARIES_CAPACITY: usize = 128;
+
+/// The longest `arguments` value, in bytes; a longer one is ignored.
+pub const ARGUMENTS_CAPACITY: usize = 128;
+
+/// The bytes besides letters and digits an `arguments` value may hold: none that a shell
+/// reads as anything but part of a word or the space between words.
+pub const ARGUMENT_PUNCTUATION: &[u8] = b" -_./:=+,@%";
 
 /// The system an app was built for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +109,14 @@ pub struct Manifest<'a> {
     pub synonyms: &'a str,
     /// The app's own icon file ([`icon`]), relative to its folder, if it has one.
     pub icon: Option<&'a str>,
+    /// The dynamic loader a Linux program runs through, relative to the app's folder with
+    /// `run`'s rules, when the app carries its own (D172).
+    pub loader: Option<&'a str>,
+    /// The folders the loader finds the program's libraries in, relative to the app's folder,
+    /// separated by `:`.
+    pub libraries: Option<&'a str>,
+    /// Words given to the program after its path when the app opens, separated by spaces.
+    pub arguments: Option<&'a str>,
 }
 
 impl<'a> Manifest<'a> {
@@ -155,6 +176,25 @@ pub fn is_run(run: &[u8]) -> bool {
 /// Whether `icon` may be an app's icon file: a path [`is_run`] accepts that is relative.
 pub fn is_icon(icon: &[u8]) -> bool {
     is_run(icon) && !icon.starts_with(b"/")
+}
+
+/// Whether `libraries` may be an app's library folders: at most [`LIBRARIES_CAPACITY`]
+/// bytes of relative paths [`is_icon`] accepts, separated by `:`.
+pub fn is_libraries(libraries: &[u8]) -> bool {
+    libraries.len() <= LIBRARIES_CAPACITY
+        && libraries
+            .split(|&byte| byte == b':')
+            .all(|folder| is_icon(folder) && !folder.contains(&b' '))
+}
+
+/// Whether `arguments` may be an app's arguments: 1 to [`ARGUMENTS_CAPACITY`] bytes of
+/// letters, digits and [`ARGUMENT_PUNCTUATION`], not starting with a space.
+pub fn is_arguments(arguments: &[u8]) -> bool {
+    (1..=ARGUMENTS_CAPACITY).contains(&arguments.len())
+        && arguments.first() != Some(&b' ')
+        && arguments
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || ARGUMENT_PUNCTUATION.contains(byte))
 }
 
 fn is_key(key: &[u8]) -> bool {
@@ -218,6 +258,15 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
     let icon = last(file, "icon")
         .filter(|value| is_icon(value))
         .and_then(text);
+    let loader = last(file, "loader")
+        .filter(|value| is_icon(value))
+        .and_then(text);
+    let libraries = last(file, "libraries")
+        .filter(|value| is_libraries(value))
+        .and_then(text);
+    let arguments = last(file, "arguments")
+        .filter(|value| is_arguments(value))
+        .and_then(text);
     Some(Manifest {
         name: text(name)?,
         source,
@@ -225,6 +274,9 @@ pub fn parse<'a>(file: &'a [u8], folder: &[u8]) -> Option<Manifest<'a>> {
         architecture,
         synonyms,
         icon,
+        loader,
+        libraries,
+        arguments,
     })
 }
 
@@ -263,7 +315,17 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
     {
         return Err(Refused::InvalidValue);
     }
-    if manifest.icon.is_some_and(|icon| !is_icon(icon.as_bytes())) {
+    let invalid = manifest.icon.is_some_and(|icon| !is_icon(icon.as_bytes()))
+        || manifest
+            .loader
+            .is_some_and(|loader| !is_icon(loader.as_bytes()))
+        || manifest
+            .libraries
+            .is_some_and(|libraries| !is_libraries(libraries.as_bytes()))
+        || manifest
+            .arguments
+            .is_some_and(|arguments| !is_arguments(arguments.as_bytes()));
+    if invalid {
         return Err(Refused::InvalidValue);
     }
     let mut writer = Writer { out, length: 0 };
@@ -277,8 +339,15 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
     if !manifest.synonyms.is_empty() {
         writer.put(&[b"synonyms=", manifest.synonyms.as_bytes(), b"\n"])?;
     }
-    if let Some(icon) = manifest.icon {
-        writer.put(&[b"icon=", icon.as_bytes(), b"\n"])?;
+    for (key, value) in [
+        (&b"icon="[..], manifest.icon),
+        (b"loader=", manifest.loader),
+        (b"libraries=", manifest.libraries),
+        (b"arguments=", manifest.arguments),
+    ] {
+        if let Some(value) = value {
+            writer.put(&[key, value.as_bytes(), b"\n"])?;
+        }
     }
     Ok(writer.length)
 }
@@ -409,6 +478,9 @@ mod tests {
             architecture: Some("x86_64"),
             synonyms: "draw,mspaint",
             icon: Some("app.icon"),
+            loader: None,
+            libraries: None,
+            arguments: None,
         };
         let mut out = [0u8; LARGEST];
         let length = write(&manifest, &mut out).unwrap();
@@ -428,6 +500,9 @@ mod tests {
             architecture: None,
             synonyms: "",
             icon: None,
+            loader: None,
+            libraries: None,
+            arguments: None,
         };
         let mut out = [0u8; LARGEST];
         let refused = |manifest: Manifest<'_>, out: &mut [u8]| write(&manifest, out);
@@ -472,6 +547,57 @@ mod tests {
             Err(Refused::InvalidValue)
         );
         assert_eq!(refused(good, &mut [0u8; 8]), Err(Refused::TooLarge));
+        for (loader, libraries, arguments) in [
+            (Some("/lib/ld.so"), None, None),
+            (None, Some("lib:/usr/lib"), None),
+            (None, Some("lib:../x"), None),
+            (None, None, Some("-n; reboot")),
+            (None, None, Some(" -n")),
+            (None, None, Some("--name 'x'")),
+        ] {
+            assert_eq!(
+                refused(
+                    Manifest {
+                        loader,
+                        libraries,
+                        arguments,
+                        ..good
+                    },
+                    &mut out
+                ),
+                Err(Refused::InvalidValue),
+                "{loader:?} {libraries:?} {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dynamically_linked_program_s_loader_libraries_and_arguments_read_back() {
+        let manifest = Manifest {
+            name: "brogue",
+            source: Source::Linux,
+            run: "brogue",
+            architecture: Some("x86_64"),
+            synonyms: "",
+            icon: None,
+            loader: Some("lib/ld-musl-x86_64.so.1"),
+            libraries: Some("lib:usr/lib"),
+            arguments: Some("--data-dir /Applications/brogue/share/brogue"),
+        };
+        let mut out = [0u8; LARGEST];
+        let length = write(&manifest, &mut out).unwrap();
+        assert!(out[..length].ends_with(
+            b"loader=lib/ld-musl-x86_64.so.1\nlibraries=lib:usr/lib\n\
+                  arguments=--data-dir /Applications/brogue/share/brogue\n"
+        ));
+        assert_eq!(parse(&out[..length], b"brogue"), Some(manifest));
+        let ignored = b"eggos-app 1\nname=A\nsource=linux\nrun=a\nloader=/abs\nlibraries=a::b\n\
+                        arguments=$(reboot)\n";
+        let read = parse(ignored, b"A").unwrap();
+        assert_eq!(
+            (read.loader, read.libraries, read.arguments),
+            (None, None, None)
+        );
     }
 
     #[test]

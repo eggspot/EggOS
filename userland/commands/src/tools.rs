@@ -1024,6 +1024,15 @@ pub const APP_INSTALL: ToolDefinition = ToolDefinition {
             "For a .zip holding several programs: the path inside it of the one to install \
                  (an .app bundle's own path names its program).",
         ),
+        described(
+            optional(
+                "arguments",
+                JsonType::String,
+                Mapping::Option("--arguments"),
+            ),
+            "Words the app opens with, as app install --arguments takes them: letters, \
+                 digits, spaces and -_./:=+,@% only, at most 128 bytes.",
+        ),
     ],
     max_effect: Effect::Change,
     grant: Some(Grant::Install),

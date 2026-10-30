@@ -98,7 +98,7 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
             line.write_str("it is a 32-bit program, and EggOS runs 64-bit programs only")
         }
         NotRunnable::NeedsDynamicLoader => line.write_str(
-            "it needs a dynamic loader, and EggOS runs static Linux programs only for now",
+            "it needs a dynamic loader: install it in a .zip that holds its loader and libraries",
         ),
         NotRunnable::OtherCpu(architecture) => write!(
             line,
@@ -181,6 +181,9 @@ pub fn reason(problem: Problem) -> Line {
              installer writes itself",
         ),
         Problem::TooLarge => line.write_str("its files would take more than 4 GiB once extracted"),
+        Problem::InvalidArguments => line.write_str(
+            "its arguments must be letters, digits, spaces and -_./:=+,@% only, at most 128 bytes",
+        ),
         Problem::Failed(error) => {
             line.push_bytes(error.message());
             Ok(())

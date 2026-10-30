@@ -136,6 +136,9 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
         architecture: Some(arch.name),
         synonyms: "",
         icon: Some(manifest::icon::FILE_NAME),
+        loader: None,
+        libraries: None,
+        arguments: None,
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("mac-paint's manifest is valid");
