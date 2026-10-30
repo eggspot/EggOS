@@ -11891,3 +11891,122 @@ the license, by an explicit instruction recorded here.
   SDL 3.5.0's release replacing the build from `main`; audio and game controllers; whatever the
   first CI run finds missing in the kernel for SDL `main`, `sdl2-compat` and libwayland (listed
   above), to be recorded in the roadmap once it has run.
+
+## D173 A multi-crate workspace builds inside EggOS with a job per CPU, timed against Linux in the same QEMU machine: `EDEADLK` for record locks, record locks released by every way a descriptor closes, `/proc/<pid>/fd` links that reopen pipes, the build timer and CI's `workspace-build` job (the CI track's stage 2, milestone 3; extends D101, D122, D125, D166, D168, D171) — Decided by the build loop (how the build is measured against Linux decided by research)
+- **Why.** The CI track's stage 2 (D166) ends with a multi-crate workspace building inside
+  EggOS, measured against Linux. D171's `hello-crate` job ran cargo with one job; a real build
+  runs a `rustc` per CPU, shares cargo's jobserver (a pipe of tokens every `rustc` reads and
+  writes, which jobserver clients reopen through `/dev/fd/<n>` and interrupt with `SIGUSR1`),
+  and takes more locks at once. EggOS's target is to be faster than Linux on the same machine,
+  so the milestone's job times both.
+- **Record-lock deadlocks** (`kernel/src/linux/file_locks.rs`). A process's `F_SETLKW` that
+  conflicts with a lock whose holder waits, directly or through other waiting processes, for a
+  lock the caller holds fails with `EDEADLK` (35, new) instead of waiting, as Linux's
+  `posix_locks_deadlock`: the table keeps a `Waiter` (thread, wanted lock) for each thread
+  waiting for a process-owned record lock, recorded in the same change that finds the
+  conflict and forgotten as soon as its wait ends, and `Table::would_deadlock` follows holder
+  to waited-for lock to holder for at most `MAX_DEADLOCK_STEPS` (10, Linux's
+  `MAX_DEADLK_ITERATIONS`). Open-file-description and `flock` waits are not followed, as on
+  Linux. Because the check and the record happen under one lock, of two processes closing a
+  cycle the second always sees it.
+- **Record locks go with every close** (D171's "Not yet"). `close_range` (it takes the
+  caller's id now), `dup2` and `dup3` over an open descriptor, and `execve`'s close-on-exec
+  call `file_locks::descriptor_closed` for each descriptor they close, as `close` did: one
+  relaxed load while no lock exists.
+- **`/proc/<pid>/fd` links reopen pipes** (D168's "Not yet"). Opening such a link (or
+  `/dev/fd/<n>`, which leads to it) that names an end of a pipe makes a new open file
+  description of that pipe, as Linux's "magic" links do: its reading end for `O_RDONLY`, its
+  writing end for `O_WRONLY`, with its own status flags (`pipe::reopen`; `EINVAL` for
+  `O_RDWR`). The open path is unchanged until a walk fails with `ENOENT` (a pipe's link text,
+  `pipe:[n]`, names no file): a cold function then walks again without following the last
+  link and asks `/proc` (`proc::described_file`) for the description it names. The jobserver
+  crate that cargo and rustc use reopens its pipe this way so `O_NONBLOCK` stays its own; it
+  falls back to `dup` when that fails, so this changes how, not whether, builds run.
+- **A job per CPU.** `hello_crate::cargo_environment` no longer sets `CARGO_BUILD_JOBS=1`:
+  cargo runs its default, a job per CPU (`sched_getaffinity`, D117), in `hello-crate` and
+  on the runner alike.
+- **The workspace** (`tests/multi-crate`, its own workspace and `Cargo.lock`, not a member of
+  ours, no dependencies): `words`, `numbers`, `shapes` and `checksums` (independent, so cargo
+  builds them at once), `report` on all four, and the program `eggos-multi-crate` on `report`
+  and `checksums`, which prints each crate's results, checksums made in four threads, `OS` and
+  `ARCH`.
+- **The build timer** (`tests/build-timer`, `eggos-build-timer`, static musl, in our
+  workspace and `USER_CRATES`). It runs `rustc --version`, a cold `cargo build --locked`, the
+  same again (nothing to do) and `cargo run --locked --quiet`, in `<root>/workspace` (root
+  `/work` or its argument) with a cleared environment: the toolchain's `rustc`, `cargo-home`,
+  `tmp`, `glibc` as `LD_LIBRARY_PATH`, `CARGO_INCREMENTAL=0`, offline, no colour or progress,
+  and `CARGO_BUILD_JOBS` the CPUs `available_parallelism` reports. It writes `BUILD-TIMER jobs
+  <n>`, `BUILD-TIMER begin <phase>`, `BUILD-TIMER end <phase> status <code> milliseconds
+  <guest ms>`, a `BUILD-TIMER program <line>` per line the program printed and `BUILD-TIMER
+  done`. As a machine's first process (Linux's `/init`) it mounts `/proc`, `devtmpfs` on
+  `/dev` and `tmpfs` on `/tmp`, takes `/dev/console` as its standard streams, and powers the
+  machine off at the end (`reboot`).
+- **The job** (`cargo xtask workspace-build --arch <arch>`, `xtask/src/workspace_build.rs` and
+  `xtask/src/qemu/workspace_build.rs`, ci.yml `workspace-build`, x86_64 and aarch64, part of
+  `check`). The work folder is `hello-crate`'s (`hello_crate::{assemble_toolchain,
+  cargo_config, copy_tree, make_new_folder, musl_target}`, `rustc_version::{copy_libraries,
+  host_library_folders}`) with the workspace and the timer. On an x86_64 runner building for
+  x86_64 the timer first runs natively, as a reference; the folder is then cleaned and packed.
+  EggOS boots the release image with it on a work disk, glibc's loader in the image, 4 GiB, 4
+  CPUs and `-accel tcg,thread=multi`, and `eggsh` runs `/work/build-timer /work`. Linux boots
+  in the same QEMU machine (the architecture's machine arguments, 4 CPUs, 4 GiB, the same TCG)
+  from Alpine `v3.24`'s `linux-virt` 6.18.59-r0 kernel (the package, its `boot/vmlinuz-virt`
+  and, on aarch64, the gzipped `Image` inside its EFI zboot file, which QEMU's `-kernel` takes,
+  pinned by SHA-256; test data in `target/workspace-build/downloads`, never committed or
+  shipped) with an uncompressed initramfs xtask writes (`initramfs::archive`): the timer as
+  `/init`, glibc's loader at its `PT_INTERP` path and the same work folder at `/work`, with
+  `console=ttyS0`/`ttyAMA0 quiet loglevel=3 rdinit=/init panic=-1 mitigations=off` and
+  `-no-reboot`. Each phase's time is the host's clock between reading its `begin` and `end`
+  lines (the same ruler for both machines; the guest's own milliseconds are kept). Every phase
+  must end with 0 on both, and both programs (and the runner's) must print the same. The report,
+  a Markdown table of each phase and the total (EggOS, Linux, EggOS / Linux, Linux on the
+  runner), goes to standard error and, in CI, to the job summary (`GITHUB_STEP_SUMMARY`); the
+  times are reported, never gated (D122).
+- **Front-ends (D22).** ABI only: programs take and release locks and reopen pipes; the job is
+  CI's. No capability is added, so no GUI, CLI or MCP tool; nothing a user sees changes, so no
+  Claude Fable design (D16).
+- **Checks.** Host tests: a cycle of three waiting processes is a deadlock and stops being one
+  when a wait ends, description and `flock` locks are never followed; a reopened pipe end is a
+  description of its own (its own `O_NONBLOCK`), counts as a reader or writer so the pipe does
+  not end while it is open, and `O_RDWR` is `EINVAL`; `close_range` with the caller's id; the
+  timer's lines parsed (both clocks, the program's lines, a phase without its `begin`), a
+  failed, missing or unfinished run refused, the report's table and ratios, the zboot payload
+  and its refusals, the pinned kernels and command lines, Linux's initramfs members in order
+  with their modes, the workspace's manifest and lock; the console stamping keeps only the
+  timer's whole lines. QEMU: the `workspace-build` job.
+- **Decided by research (how the build is measured against Linux).** A research subagent read
+  the `hello-crate` job, xtask's QEMU arguments and initramfs writer, QEMU's documentation and
+  Alpine's package index, downloaded and hashed the `linux-virt` packages and read their
+  kernels' headers. Its recommendation, followed: compare with Linux booted in the same QEMU
+  machine (same `qemu-system` binary, machine, CPU, 4 CPUs, 4 GiB, multi-threaded TCG
+  requested explicitly so a fallback to one thread fails loudly), because a ratio against
+  Linux on the runner (or under `qemu-user`) mostly measures emulation; keep the runner's own
+  build as a labelled reference on x86_64, never a ratio; time on the host's clock between
+  console markers written by one timer program run on both systems; Linux from an initramfs
+  (its virtio-blk and ext4 are modules), which favours Linux (RAM against EggOS's work disk),
+  the safe direction, and `mitigations=off` (Linux's best case, which EggOS must beat); report
+  only, failing on a build error or a different output. Its risks, left to the first run:
+  whether QEMU unpacks aarch64's gzipped `Image` itself (else inflate it in xtask), Alpine
+  dropping the pinned build (the error says to pin the new one), and noise on shared runners.
+- **Decided without research.** The six crates and what they print; the timer's phases, line
+  format and cleared environment; the timer as Linux's `/init` instead of a shell; one run per
+  system (no repetitions or minimum yet); 3600 s per boot and 150 minutes for the job; the
+  `--threads=1` link argument kept from D171 on both systems; the `Waiter` keyed by thread and
+  removed after every wait; `EINVAL` for a pipe reopened `O_RDWR`; reopening only pipes (the
+  jobserver's need); the new `linux_dup3_replace` benchmark (`dup3` over an open descriptor,
+  as a child's standard streams are set before `execve`). The owner can overrule any of these.
+- **Performance and size (D24).** `close_range`, `dup2`/`dup3` over an open descriptor and
+  `execve`'s close-on-exec gain one relaxed load per descriptor closed while no lock exists
+  (`linux_dup3_replace` is new and measures the replace path; `linux_dup3_close`,
+  `linux_execve` and `linux_vfork_exec` show the rest; its baseline lines are added by the
+  build phase); `open`'s hot path gains nothing but a cold call in its `ENOENT` arm
+  (`linux_openat_close` shows it); `F_SETLKW` waits record and forget a waiter. The kernel grows
+  by the deadlock walk, `pipe::reopen` and `proc::described_file`; the image does not change.
+- **Not yet.** CPU time per phase (`getrusage` is not implemented: EggOS keeps no CPU time per
+  process yet, roadmap M4) and parallel efficiency; repeated runs with the minimum reported;
+  Linux from a virtio-blk disk with ext4 (its modules from the package) for a disk-to-disk
+  comparison; a run with Linux's default mitigations; KVM or real-hardware numbers; a native
+  aarch64 reference on `ubuntu-24.04-arm`; incremental builds; reopening sockets, event files
+  and memory files through `/proc` links, and a pipe opened for reading and writing; deadlock
+  detection across open-file-description locks (Linux has none either); the gaps and the
+  times the first run shows, to be recorded in the roadmap; stage 3, EggOS building EggDB.

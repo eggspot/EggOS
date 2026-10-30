@@ -134,8 +134,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   from files are read only when first touched). `/proc/self` and `/proc/<pid>` hold `cmdline`,
   `exe`, `fd`, `maps`, `stat` and `status` only (no `task`, `environ`, `cwd`, `mountinfo` or
   `/proc/thread-self`; `stat`'s times and fault counts are 0, `status` has no signal or memory
-  lines but `VmSize`, links in `fd` to pipes and sockets cannot be opened, and every file is
-  root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
+  lines but `VmSize`, links in `fd` to sockets cannot be opened (to pipes they can, D173), and
+  every file is root's), and there is no `/sys` (D168); `/dev` holds the memory devices, `tty`, `console`, the
   standard streams' links, `window`, `agent` and `shm` (a memory file system for `shm_open`,
   D169), but no `/dev/pts` or block devices;
   symbolic links work on `/tmp`, `/home`, the work disk and the initramfs, and hard links on
@@ -172,19 +172,26 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
   with mode 0 only, and a write, `fallocate` or mapping at a gigabyte-scale offset fails
   (`ENOSPC`, `ENOMEM`). File locks work (D171): `flock` and `fcntl`'s record and
-  open-file-description locks, waiting or not; a wait that would deadlock waits instead of
-  failing with `EDEADLK`, and a process's record locks go with `close` and its end but not yet
-  with `close_range`, a `dup2` over the descriptor or `execve`'s close-on-exec; no leases
-  (`F_SETLEASE`) or mandatory locks. `statfs` and `fstatfs` work (D171), from what each file
+  open-file-description locks, waiting or not; a record lock's wait that would deadlock fails
+  with `EDEADLK` (D173; chains of at most ten waiting processes are followed, as on Linux),
+  and a process's record locks go with `close`, `close_range`, a `dup2` or `dup3` over the
+  descriptor, `execve`'s close-on-exec and its end; no leases (`F_SETLEASE`) or mandatory
+  locks. `statfs` and `fstatfs` work (D171), from what each file
   system keeps in memory: the read-only host share and the initramfs report no free blocks,
   `/proc` and `/dev` none at all, and `/tmp` its share of memory.
 - **cargo builds inside EggOS, in CI** (D171). CI's `hello-crate` job hands EggOS the official
   toolchain's `rustc` and `cargo` (glibc builds, 1.99.1, test data) with the musl target's
   standard library on a work disk, and `cargo build` and `cargo run` a hello-world crate,
   linked by the toolchain's `rust-lld` with musl's self-contained files; the program must print
-  what it prints on Linux. EggOS ships no toolchain, C compiler or linker: programs for the
-  glibc targets (whose linker is a C compiler) do not link inside it yet, and builds use one
-  job (`CARGO_BUILD_JOBS=1`).
+  what it prints on Linux. CI's `workspace-build` job (D173) builds a multi-crate workspace of
+  ours with a job per CPU (cargo's jobserver, a `rustc` per CPU) inside EggOS and inside Linux
+  booted in the same QEMU machine, and reports each phase's time against Linux's in the job
+  summary; the times are reported, not gated, and the gaps go into the roadmap once the job has
+  run. EggOS ships no toolchain, C compiler or linker: programs for the glibc targets (whose
+  linker is a C compiler) do not link inside it yet. A `/proc/<pid>/fd` link to an end of a
+  pipe opens that pipe again (D173), as jobserver clients do; links to sockets, event files
+  and memory files cannot be opened, and a pipe cannot be opened for reading and writing at
+  once (`EINVAL`).
 - **Linux GUI programs: Wayland clients and SDL apps, not GTK or Qt yet.** `eggway` (D140,
   D172) shows a program's `xdg_toplevel`s as desktop windows with their subsurfaces and popups
   drawn in, and an SDL app installed from a `.zip` with its loader and libraries runs (Brogue

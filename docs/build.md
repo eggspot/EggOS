@@ -230,7 +230,21 @@ holds what used to be written in them.
   boots the release image with glibc's loader and 4 GiB, runs `cargo build` and `cargo run`
   in `/work/hello`, unpacks the disk and wants the program's output to be Linux's. On a host
   that is not Linux it compares with the output the program's source gives, and with `CI` set
-  it refuses to.
+  it refuses to. cargo runs a job per CPU (D173).
+- **`cargo xtask workspace-build --arch <arch>`** (D173, Linux hosts, x86_64 and aarch64)
+  assembles `hello-crate`'s toolchain (downloads kept in `target/workspace-build/downloads`)
+  with a copy of `tests/multi-crate` (six crates of ours, no dependencies, its own workspace and
+  `Cargo.lock`) and the build timer (`tests/build-timer`, static musl) in a work folder; on an
+  x86_64 host building for x86_64 it first runs the timer here, as a reference; then it boots
+  the release image with the folder on a work disk and runs `/work/build-timer /work` from the
+  shell, and boots Alpine's `linux-virt` kernel (pinned SHA-256s; on aarch64 the gzipped
+  `Image` inside its EFI zboot file) in the same QEMU machine (4 CPUs, 4 GiB, `-accel
+  tcg,thread=multi`) from an initramfs holding the same folder at `/work`, glibc's loader and the
+  timer as `/init`. The timer runs `rustc --version`, `cargo build`, `cargo build` again and
+  `cargo run` with a job per CPU, writing `BUILD-TIMER` lines; xtask times each phase by when
+  it reads those lines, wants every phase to end with 0 and both programs to print the same,
+  and writes a table of EggOS's times against Linux's to standard error and, in CI, to the job
+  summary (`GITHUB_STEP_SUMMARY`). The kernel and toolchain are test data, never shipped.
 - **`cargo xtask sdl3 --arch <arch>`** (D172, x86_64 and aarch64, hosts with Docker) builds
   `libSDL3.so.0` from SDL's pinned commit (its archive checked against a pinned SHA-256) for
   Alpine's musl, with SDL's Wayland video driver and its `wl_shm` framebuffer alone (no OpenGL,
@@ -392,6 +406,8 @@ holds what used to be written in them.
   programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
   installing the glibc cross compilers and target in the CI image, D167), `rustc-version` (D168)
   and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run),
+  `workspace-build` (D173, one per architecture: EggOS and Linux in the same QEMU machine,
+  the times in the job summary),
   `sdl3` (D172: `cargo xtask sdl3` outside the CI image, on a runner of each architecture's own
   CPU, `ubuntu-24.04` and `ubuntu-24.04-arm`, cached by `xtask/src/sdl_app.rs`'s hash and handed
   on as an artifact kept one day) and `sdl-app` (D172, one per architecture in the CI image,

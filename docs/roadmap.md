@@ -561,8 +561,18 @@ The release path (the release-path review's issues #141-#145, after the items ab
   job: the official `rustc` and `cargo` with the musl target's standard library on a work disk,
   `cargo build` and `cargo run` of `tests/hello-crate` inside EggOS with 4 GiB, linked by the
   toolchain's `rust-lld` (decided by research), its output compared with the same build run on
-  Linux. Gaps against Linux recorded once the job has run. Next: milestone 3, a multi-crate
-  workspace builds, measured against Linux (part 21).
+  Linux. Gaps against Linux recorded once the job has run. Stage 2, milestone 3 **written,
+  unchecked** (D173): cargo runs a job per CPU (D171's one job lifted); a record lock's wait
+  that would deadlock fails with `EDEADLK`; record locks go with `close_range`, `dup2`/`dup3`
+  over a descriptor and `execve`'s close-on-exec; `/proc/<pid>/fd` links to pipe ends open the
+  pipe again (jobserver clients reopen theirs); CI's `workspace-build` job builds
+  `tests/multi-crate` (six crates) with the build timer (`tests/build-timer`) inside EggOS and
+  inside Linux 6.18 (Alpine's `linux-virt`, test data) booted in the same QEMU machine (4 CPUs,
+  4 GiB, multi-threaded TCG; Linux from RAM with `mitigations=off`, decided by research), and
+  reports `rustc --version`, the build, the no-op rebuild and `cargo run` against Linux in the
+  job summary, with the runner's own build as a reference on x86_64. Gaps against Linux, and
+  the times, recorded once the job has run. Next: stage 3, EggOS builds EggDB (another
+  repository's).
 - After v0.3.0, the Real apps track (alternating with the CI track): real Linux, Windows and
   macOS apps install and run, each to be listed in a new docs/compatibility.md. Its first step,
   event loops, copy-on-write `fork` and POSIX shared memory, **written, unchecked** (D169): `epoll`,
