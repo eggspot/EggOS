@@ -132,7 +132,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **Linux programs: static ones, and dynamic ones with their own libraries.** The kernel runs
   Linux programs through its own Linux system-call layer, from the host folder (`--apps`),
   installed as apps (`app install`), or built into an image by `cargo xtask image --add`
-  ([Linux programs](linux-programs.md), D117, D130, D134). Dynamically linked programs run
+  ([Linux programs](linux-programs.md), D117, D130, D134); static glibc programs and static
+  PIEs run on all three architectures (D188), with no `rseq`, `clone3` or `riscv_hwprobe`
+  (glibc falls back from each). Dynamically linked programs run
   with glibc's or musl's loader (D167), but EggOS ships no C library: the loader and libraries
   go into the image with the program; no vDSO (`AT_SYSINFO_EHDR`), and `execve` still reads a
   program and its loader whole into memory and copies their segments at once (pages mapped

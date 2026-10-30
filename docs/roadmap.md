@@ -162,11 +162,13 @@ Must-have, in order:
     standard musl toolchain as a static executable and with `relocation-model=pie` (a static PIE on
     x86_64), and runs it at the prompt, by name and by path: arguments, environment, standard
     output and error, a file, a directory listing, the clocks, a `HashMap`, threads, the CPU count,
-    exit statuses and an aborting panic. Next, as user capabilities: users' programs can start
-    other programs (`std::process::Command`, `posix_spawn`, `system`, `popen`) once pipes exist;
-    users can run static glibc programs, tested in CI; users can choose a program's CPUs
-    (`sched_setaffinity`); users can add programs to a running system once there is a writable file
-    system; static PIEs built for aarch64 and riscv64 are tested too.
+    exit statuses and an aborting panic. Users can run static glibc programs, static
+    executables and static PIEs, on all three architectures, and static PIEs built for aarch64
+    and riscv64 are tested too: CI's `static-glibc` job boots the same program linked against
+    glibc both ways (D188, with `AT_PLATFORM`). Next, as user capabilities: users' programs can
+    start other programs (`std::process::Command`, `posix_spawn`, `system`, `popen`) once pipes
+    exist; users can choose a program's CPUs (`sched_setaffinity`); users can add programs to a
+    running system once there is a writable file system.
 17. **done** — Android: users can now run Android console programs from `eggsh` on aarch64 and
     x86_64 (D119, docs/android-programs.md): a static program built with the Android NDK, with
     bionic's own start-up code and C library, runs natively through the Linux layer, which

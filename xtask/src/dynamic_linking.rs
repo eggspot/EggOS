@@ -30,7 +30,7 @@ pub(crate) struct Glibc {
     /// Rust's target.
     pub(crate) target: &'static str,
     /// Cargo's variable that names the target's linker, and the linker.
-    linker: (&'static str, &'static str),
+    pub(crate) linker: (&'static str, &'static str),
     /// The folder of the host that holds the dynamic loader and `libc.so.6`.
     pub(crate) libraries: &'static str,
     /// The loader's file name there.

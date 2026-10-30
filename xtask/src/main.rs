@@ -25,6 +25,7 @@ mod release;
 mod rustc_version;
 mod sdl_app;
 mod sha256;
+mod static_glibc;
 mod win32_app;
 mod windows;
 mod work_disk;
@@ -106,6 +107,11 @@ commands:
                          this Linux host's cross compilers' packages, musl downloaded from
                          Alpine into target/dynamic-linking) to the release image, boot it
                          and check both run (<arch> may be `all`)
+  static-glibc --arch <arch>
+                         build our Linux console program statically against glibc (test
+                         data: this Linux host's cross compilers' static C library), as a
+                         static executable and as a static PIE, add both to the release
+                         image, boot it and check both run (<arch> may be `all`)
   rustc-version --arch <arch>
                          download the official Rust toolchain's rustc (test data, into
                          target/rustc-version, checked against its pinned SHA-256), hand
@@ -597,6 +603,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("dynamic-linking") => {
             for arch in arch()? {
                 dynamic_linking::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("static-glibc") => {
+            for arch in arch()? {
+                static_glibc::check(arch)?;
             }
             Ok(())
         }

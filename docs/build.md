@@ -219,6 +219,13 @@ holds what used to be written in them.
   unpacks with `tar` into `target/dynamic-linking/`, linked by `rust-lld`), adds both with
   their loaders (at the paths their `PT_INTERP` names) and glibc's `libc.so.6` to the release
   image, boots it and wants both programs' lines. The libraries are test data, never shipped.
+- **`cargo xtask static-glibc --arch <arch>`** (D188, Linux hosts) builds `tests/linux-static`
+  for `<arch>-unknown-linux-gnu` with `+crt-static`, as a static executable
+  (`relocation-model=static`) and as a static PIE (`pic`), linked by the host's `gcc` or the
+  `gcc-aarch64-linux-gnu` and `gcc-riscv64-linux-gnu` cross compilers against their static
+  glibc (`libc.a`, `crt1.o`, `rcrt1.o`; `rustup target add <arch>-unknown-linux-gnu`), checks
+  each is the kind asked for, adds both to the release image and boots it, wanting the Linux
+  programs test's lines from each. glibc is test data, never shipped.
 - **`cargo xtask hello-crate --arch <arch>`** (D171, Linux hosts, x86_64 and aarch64)
   downloads the pinned release's `rustc` and `cargo` for the architecture's glibc target and
   the standard library of its musl target from static.rust-lang.org (checked against their
@@ -423,7 +430,8 @@ holds what used to be written in them.
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
   programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
-  installing the glibc cross compilers and target in the CI image, D167), `rustc-version` (D168)
+  installing the glibc cross compilers and target in the CI image, D167), `static-glibc` (one
+  per architecture: `cargo xtask static-glibc` the same way, D188), `rustc-version` (D168)
   and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run),
   `workspace-build` (D173, one per architecture: EggOS and Linux in the same QEMU machine,
   the times in the job summary),

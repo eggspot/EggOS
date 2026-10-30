@@ -56,12 +56,22 @@ host without a Linux linker, add `-C linker=rust-lld -C link-self-contained=yes`
 own build does). Static executables and static PIEs both run: Rust's x86_64 musl target makes
 a static PIE, its aarch64 and riscv64 targets a static executable at a fixed address.
 
+Programs linked statically against glibc run too, static executables and static PIEs alike,
+on all three architectures (D188): for Rust, the `<arch>-unknown-linux-gnu` target with
+`+crt-static` makes a static PIE, and with `-C relocation-model=static` too a static
+executable, linked by the target's `gcc` (`aarch64-linux-gnu-gcc` and `riscv64-linux-gnu-gcc`
+on Ubuntu, which bring glibc's static library); for C, `gcc -static` or `gcc -static-pie`.
+EggOS gives such programs the auxiliary vector glibc reads, `AT_PLATFORM` included (`x86_64`,
+`aarch64`; none on riscv64, as on Linux).
+
 What CI checks on all three architectures (`tests/linux-static`, a std-only Rust program,
 built with `-C relocation-model=static` and with `-C relocation-model=pie`): its arguments and
 environment, standard output and standard error, reading a file, listing a directory, the
 monotonic and realtime clocks, a `HashMap` with random keys, threads spawned and joined, the
 number of CPUs it may use (`std::thread::available_parallelism`), its exit status, and a panic
-that aborts it.
+that aborts it. `cargo xtask static-glibc` (its own CI job) builds the same program statically
+against glibc, as a static executable and as a static PIE, checks each is the kind asked for,
+and runs both with the same checks.
 
 ## Dynamically linked programs
 

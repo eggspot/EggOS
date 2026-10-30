@@ -90,6 +90,7 @@ pub mod auxv {
     pub const EUID: u64 = 12;
     pub const GID: u64 = 13;
     pub const EGID: u64 = 14;
+    pub const PLATFORM: u64 = 15;
     pub const HWCAP: u64 = 16;
     pub const CLKTCK: u64 = 17;
     pub const SECURE: u64 = 23;
@@ -98,6 +99,14 @@ pub mod auxv {
     pub const EXECFN: u64 = 31;
     pub const MINSIGSTKSZ: u64 = 51;
 }
+
+/// The string `AT_PLATFORM` points to, as Linux names this machine: `x86_64` and `aarch64`;
+/// RISC-V Linux gives none, so neither does EggOS there (D188).
+pub const PLATFORM: Option<&[u8]> = match elf::machine::NATIVE {
+    elf::machine::X86_64 => Some(b"x86_64"),
+    elf::machine::AARCH64 => Some(b"aarch64"),
+    _ => None,
+};
 
 /// Why a program could not be started, as `execve` reports it ([`Self::errno`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +278,7 @@ pub fn load_program<P: Platform>(
     let stack = InitialStack::new(
         user_end,
         path,
+        PLATFORM,
         arguments,
         environment,
         &auxiliary,
@@ -629,8 +639,9 @@ fn random_bytes<P: Platform>() -> [u8; 16] {
 /// A program's stack at its entry, as Linux lays it out: from [`Self::start`], where the stack
 /// pointer points (16-byte aligned), `argc`; the `argv` pointers and a null one; the `envp`
 /// pointers and a null one; the auxiliary vector's (type, value) pairs ended by `AT_NULL`;
-/// then, higher up, the 16 `AT_RANDOM` bytes, the argument strings, the environment strings
-/// and the program's path, each NUL-terminated, and 8 zero bytes at the very top.
+/// then, higher up, the 16 `AT_RANDOM` bytes, the platform's name, the argument strings, the
+/// environment strings and the program's path, each NUL-terminated, and 8 zero bytes at the
+/// very top.
 #[derive(Debug)]
 struct InitialStack {
     /// The user address of the stack's lowest byte: the stack pointer.
@@ -644,10 +655,12 @@ struct InitialStack {
 impl InitialStack {
     /// The stack for a program whose stack ends at `top` (page-aligned). `auxiliary`'s
     /// `AT_RANDOM` and `AT_EXECFN` entries get their values here, since they point into the
-    /// stack, and `AT_NULL` ends it.
+    /// stack, `AT_PLATFORM` follows them when there is a `platform` name, and `AT_NULL` ends
+    /// it.
     fn new(
         top: u64,
         path: &[u8],
+        platform: Option<&[u8]>,
         arguments: &[&[u8]],
         environment: &[&[u8]],
         auxiliary: &[(u64, u64)],
@@ -665,9 +678,11 @@ impl InitialStack {
         };
         let argument_bytes = strings(arguments);
         let environment_bytes = strings(environment);
+        let platform_entries = u64::from(platform.is_some());
+        let platform_bytes = platform.map_or(0, |name| name.len() as u64 + 1);
         // argc, argv and its null, envp and its null, the vector and `AT_NULL`.
         let words = (arguments.len() as u64 + environment.len() as u64)
-            .saturating_add(3 + 2 * (auxiliary.len() as u64 + 1));
+            .saturating_add(3 + 2 * (auxiliary.len() as u64 + platform_entries + 1));
         // The 8-byte end marker, the strings, then (each 16-byte aligned) the random bytes
         // and the pointers: at most 15 bytes of padding each.
         let most = [
@@ -675,6 +690,7 @@ impl InitialStack {
             path.len() as u64 + 1,
             environment_bytes,
             argument_bytes,
+            platform_bytes,
             16 + 15,
             words.saturating_mul(8).saturating_add(15),
         ]
@@ -686,7 +702,8 @@ impl InitialStack {
         let path_at = top - 8 - (path.len() as u64 + 1);
         let environment_at = path_at - environment_bytes;
         let arguments_at = environment_at - argument_bytes;
-        let random_at = (arguments_at - 16) & !15;
+        let platform_at = arguments_at - platform_bytes;
+        let random_at = (platform_at - 16) & !15;
         let start = (random_at - words * 8) & !15;
         let mut bytes = vec![0u8; (top - start) as usize];
         let mut put = |address: u64, data: &[u8]| {
@@ -694,6 +711,9 @@ impl InitialStack {
             bytes[at..at + data.len()].copy_from_slice(data);
         };
         put(path_at, path);
+        if let Some(name) = platform {
+            put(platform_at, name);
+        }
         put(random_at, random);
         let lists = [(arguments, arguments_at), (environment, environment_at)];
         for (list, mut address) in lists {
@@ -715,7 +735,12 @@ impl InitialStack {
             }
             put_word(0);
         }
-        for &(kind, value) in auxiliary.iter().chain(&[(auxv::NULL, 0)]) {
+        let platform_entry = platform.map(|_| (auxv::PLATFORM, platform_at));
+        for &(kind, value) in auxiliary
+            .iter()
+            .chain(&platform_entry)
+            .chain(&[(auxv::NULL, 0)])
+        {
             put_word(kind);
             put_word(match kind {
                 auxv::RANDOM => random_at,
@@ -1696,29 +1721,34 @@ mod tests {
             );
             // Linux's order.
             let kinds: Vec<_> = auxiliary.iter().map(|(kind, _)| *kind).collect();
-            assert_eq!(
-                kinds,
-                [
-                    auxv::MINSIGSTKSZ,
-                    auxv::HWCAP,
-                    auxv::PAGESZ,
-                    auxv::CLKTCK,
-                    auxv::PHDR,
-                    auxv::PHENT,
-                    auxv::PHNUM,
-                    auxv::BASE,
-                    auxv::FLAGS,
-                    auxv::ENTRY,
-                    auxv::UID,
-                    auxv::EUID,
-                    auxv::GID,
-                    auxv::EGID,
-                    auxv::SECURE,
-                    auxv::RANDOM,
-                    auxv::HWCAP2,
-                    auxv::EXECFN,
-                ]
-            );
+            let mut linux_order = alloc::vec![
+                auxv::MINSIGSTKSZ,
+                auxv::HWCAP,
+                auxv::PAGESZ,
+                auxv::CLKTCK,
+                auxv::PHDR,
+                auxv::PHENT,
+                auxv::PHNUM,
+                auxv::BASE,
+                auxv::FLAGS,
+                auxv::ENTRY,
+                auxv::UID,
+                auxv::EUID,
+                auxv::GID,
+                auxv::EGID,
+                auxv::SECURE,
+                auxv::RANDOM,
+                auxv::HWCAP2,
+                auxv::EXECFN,
+            ];
+            if let Some(platform) = PLATFORM {
+                linux_order.push(auxv::PLATFORM);
+                assert_eq!(
+                    string(&process, value(&auxiliary, auxv::PLATFORM)),
+                    platform
+                );
+            }
+            assert_eq!(kinds, linux_order);
             assert_eq!(
                 value(&auxiliary, auxv::MINSIGSTKSZ),
                 signals::MIN_STACK_SIZE
@@ -1747,6 +1777,47 @@ mod tests {
             assert_eq!(headers, image[elf::HEADER_SIZE..elf::HEADER_SIZE + table]);
         }
         assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn the_platform_s_name_lies_between_the_random_bytes_and_the_arguments() {
+        let arguments: [&[u8]; 1] = [b"x"];
+        let auxiliary = [(auxv::RANDOM, 0)];
+        for platform in [None, Some(&b"aarch64"[..])] {
+            let stack = InitialStack::new(
+                1 << 20,
+                b"/bin/x",
+                platform,
+                &arguments,
+                &[],
+                &auxiliary,
+                &[7; 16],
+            )
+            .unwrap();
+            let word = |at: u64| {
+                let at = (at - stack.start) as usize;
+                u64::from_le_bytes(stack.bytes[at..at + 8].try_into().unwrap())
+            };
+            let vector = stack.start + 4 * 8;
+            let pairs: Vec<(u64, u64)> = (0u64..)
+                .map(|index| (word(vector + 16 * index), word(vector + 16 * index + 8)))
+                .take_while(|&(kind, _)| kind != auxv::NULL)
+                .collect();
+            assert_eq!(pairs[0].0, auxv::RANDOM);
+            let random_at = pairs[0].1;
+            match platform {
+                None => assert_eq!(pairs.len(), 1),
+                Some(name) => {
+                    assert_eq!(pairs.len(), 2);
+                    let (kind, platform_at) = pairs[1];
+                    assert_eq!(kind, auxv::PLATFORM);
+                    let at = (platform_at - stack.start) as usize;
+                    assert_eq!(&stack.bytes[at..at + name.len() + 1], b"aarch64\0");
+                    assert!(platform_at >= random_at + 16);
+                    assert_eq!(platform_at + name.len() as u64 + 1, stack.arguments.0);
+                }
+            }
+        }
     }
 
     fn position_independent() -> (Vec<u8>, u64) {

@@ -22,6 +22,7 @@ pub mod rustc_version;
 pub mod sdl_app;
 pub mod settings;
 pub mod shell;
+pub mod static_glibc;
 pub mod text_editor;
 pub mod win32_app;
 mod win_controls;
@@ -1199,31 +1200,40 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
     ]
 }
 
+fn linux_static_lines(name: &str) -> Vec<Line> {
+    vec![
+        Line::Whole(format!("LINUX-STATIC {name} args a|b c")),
+        Line::Whole("LINUX-STATIC env GREETING=hi".into()),
+        Line::Whole("LINUX-STATIC file eggos".into()),
+        Line::Whole("LINUX-STATIC dir about".into()),
+        Line::Whole("LINUX-STATIC time monotonic realtime".into()),
+        Line::Whole("LINUX-STATIC hashmap egg=3 shell=1 yolk=1".into()),
+        Line::Whole("LINUX-STATIC threads 4 joined sum 30".into()),
+        Line::Whole(format!("LINUX-STATIC cpus {TEST_CPUS}")),
+        Line::Whole("LINUX-STATIC stderr".into()),
+        Line::Whole("LINUX-STATIC status 0".into()),
+    ]
+}
+
+fn linux_static_exit_lines() -> Vec<Line> {
+    vec![Line::Whole("LINUX-STATIC status 42".into())]
+}
+
+fn linux_static_panic_lines() -> Vec<Line> {
+    vec![
+        Line::Around("thread 'main' ", ":"),
+        Line::Whole("LINUX-STATIC panicked as asked".into()),
+        Line::Whole("Aborted".into()),
+        Line::Whole("LINUX-STATIC status 134".into()),
+    ]
+}
+
 fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
-    let checks = |name: &'static str| {
-        vec![
-            Line::Whole(format!("LINUX-STATIC {name} args a|b c")),
-            Line::Whole("LINUX-STATIC env GREETING=hi".into()),
-            Line::Whole("LINUX-STATIC file eggos".into()),
-            Line::Whole("LINUX-STATIC dir about".into()),
-            Line::Whole("LINUX-STATIC time monotonic realtime".into()),
-            Line::Whole("LINUX-STATIC hashmap egg=3 shell=1 yolk=1".into()),
-            Line::Whole("LINUX-STATIC threads 4 joined sum 30".into()),
-            Line::Whole(format!("LINUX-STATIC cpus {TEST_CPUS}")),
-            Line::Whole("LINUX-STATIC stderr".into()),
-            Line::Whole("LINUX-STATIC status 0".into()),
-        ]
-    };
     [
-        checks("linux-static"),
-        checks("linux-static-pie"),
-        vec![Line::Whole("LINUX-STATIC status 42".into())],
-        vec![
-            Line::Around("thread 'main' ", ":"),
-            Line::Whole("LINUX-STATIC panicked as asked".into()),
-            Line::Whole("Aborted".into()),
-            Line::Whole("LINUX-STATIC status 134".into()),
-        ],
+        linux_static_lines("linux-static"),
+        linux_static_lines("linux-static-pie"),
+        linux_static_exit_lines(),
+        linux_static_panic_lines(),
         LINUX_SOCKETS_LINES
             .iter()
             .map(|line| Line::Whole((*line).into()))

@@ -14043,3 +14043,52 @@ the license, by an explicit instruction recorded here.
   folder; the panel narrowed to a window narrower than 416 (Fable's section 4); packet mode,
   `TIOCSTI`, `TIOCGPTPEER`, a controlling side that waits when the line discipline is full, and
   `TOSTOP`; the console's own window resizing; measured costs.
+
+## D188 Linux and Android console breadth, part 1: static glibc programs and static PIEs on every architecture, booted in CI; `AT_PLATFORM` in the auxiliary vector (batch part 36, slice 36a; v0.3.0 item 16's "Next"; D117's "Not yet"; extends D51, D86, D117, D167) — Decided by the build loop (`AT_PLATFORM`'s values and glibc's static PIE support on each architecture decided by research)
+
+- **What.** Users can run Linux programs linked statically against glibc, as static
+  executables and as static PIEs, on aarch64, riscv64 and x86_64, and static PIEs built for
+  aarch64 and riscv64 are tested for the first time (Rust's musl targets there make
+  fixed-address executables, D86, so the `linux-static-pie` build was one only on x86_64).
+- **Kernel.** `linux::exec::PLATFORM` and `auxv::PLATFORM`: the auxiliary vector ends with
+  `AT_PLATFORM` after `AT_EXECFN`, as Linux orders it, pointing to `x86_64` or `aarch64` on the
+  stack between the `AT_RANDOM` bytes and the argument strings; RISC-V Linux gives no
+  platform, so EggOS gives none there. Nothing else in the kernel changed: what glibc's static
+  start-up calls was already there (`brk` for its TLS block, `set_tid_address`,
+  `set_robust_list`, `prlimit64`, `getrandom`, `mprotect` for `PT_GNU_RELRO`, x86_64's
+  `arch_prctl`, `TPIDR_EL0` and `tp` written from user mode and kept per thread by D57, static
+  PIEs at the PIE base by D51); `rseq`, `clone3` and RISC-V's `riscv_hwprobe` stay `ENOSYS`,
+  which glibc falls back from (`clone`, no restartable sequences, the generic string
+  functions).
+- **The check.** `cargo xtask static-glibc --arch <arch>` (`xtask/src/static_glibc.rs`, Linux
+  hosts) builds `tests/linux-static` for `<arch>-unknown-linux-gnu` with `+crt-static`, twice:
+  `relocation-model=static` (a static executable, glibc's `crt1.o`) and `pic` (a static PIE,
+  `rcrt1.o`), linked by the host's `gcc` (x86_64) or the Ubuntu cross compilers, checks each is
+  the kind asked for (ELF type `ET_EXEC` or `ET_DYN`, no `PT_INTERP`; a linker without static
+  PIE support would quietly make the other), adds them to the release image as
+  `/bin/linux-static-glibc` and `/bin/linux-static-glibc-pie` and boots it
+  (`xtask/src/qemu/static_glibc.rs`): both run from `eggsh` with the musl builds' checks
+  (arguments, environment, a file, a directory, the clocks, a `HashMap`, threads, the CPU
+  count, standard error), one exits with 42 and one panics and aborts with 134. CI's
+  `static-glibc` job (one per architecture, in the CI image, part of `check`) runs it after
+  installing `libc6-dev` and the cross compilers. glibc is test data, never shipped.
+- **Front-ends (D22).** The ABI only: a program runs from `eggsh`, MCP `run` and as an
+  installed app as any Linux program does; no new capability.
+- **Cost (D24, D78).** Not measured (no builds in this batch). One more string and auxiliary
+  entry on every Linux program's stack (8 bytes of string, 16 of vector): `linux_exec_load` to
+  report in the build phase. The image is unchanged.
+- **Decided by research** (research subagents, 2026-10-30, from the `getauxval(3)` page,
+  published `LD_SHOW_AUXV` output, glibc's `configure.ac` history and rustc's linker code):
+  `AT_PLATFORM` is `x86_64` and `aarch64` and absent on riscv64, and no `AT_BASE_PLATFORM` on
+  any of the three; glibc 2.39 (Ubuntu 24.04's cross packages) is the first with static PIE on
+  RISC-V and has it on AArch64, `rcrt1.o` and `libc.a` ship in the cross `-dev` packages, and
+  rustc links a static PIE (`-static-pie`) for the `*-linux-gnu` targets with `+crt-static`
+  and the default relocation model, and `-static -no-pie` with `relocation-model=static`.
+- **Decided without research.** The test reuses `tests/linux-static` rather than a second
+  program, so glibc and musl answer the same checks; its own CI job rather than a step of
+  `dynamic-linking` (a public repository: parallel jobs shorten the run); the musl builds on
+  aarch64 and riscv64 stay fixed-address executables (Rust's musl targets there have no static
+  PIE), the glibc PIE covering the static PIE path.
+- **Not yet.** Android system properties, `getprop`, `setprop` and `logcat` (slice 36b);
+  dynamically linked Android programs through `linker64` and Android programs on riscv64
+  (slice 36c); a vDSO; `rseq`, `clone3` and `riscv_hwprobe`.
