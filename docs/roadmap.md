@@ -238,9 +238,11 @@ Must-have, in order:
     capabilities: the rest of std (`fs::copy`, links, `File::lock`, networking) and MinGW
     DLLs; users can now run programs that queue APCs and wait alertably, see abandoned mutexes,
     import ws2_32 by ordinal and search with DOS wildcards (D189, slice 37c, checked by
-    `eggsync.exe`); then named objects shared between processes, file mappings and
-    `_dowildcard` (D189's "Not yet"), and x64 programs on Arm through ahead-of-time
-    translation (D121's and D124's "Not yet").
+    `eggsync.exe`); users can now run programs that share named mutexes, events, semaphores
+    and file mappings with other programs, map files and memory into views, call
+    `SignalObjectAndWait` and get wildcard arguments expanded (D189, slice 37d, checked by
+    `eggnamed.exe`); then x64 programs on Arm through ahead-of-time translation (D121's and
+    D124's "Not yet").
 20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
     (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
     docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which

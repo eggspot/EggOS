@@ -14516,13 +14516,75 @@ the license, by an explicit instruction recorded here.
   the planned design keeps named objects in a table in a `/dev/shm` file every Windows process
   maps (`Global\` and `Local\` namespaces, `Local\` per user), under a lock word in that
   memory, with waits on them polling every 10 ms like process waits.
-- **Not yet.** Named objects shared between processes: `CreateMutexW`, `CreateEventW`,
-  `CreateSemaphoreW` and their `Open` forms with a name (`ERROR_ALREADY_EXISTS`,
-  `ERROR_INVALID_HANDLE` for another kind, `ERROR_FILE_NOT_FOUND` from `Open`, abandonment by
-  an ended process), and file mappings (`CreateFileMappingW`, `OpenFileMappingW`,
-  `MapViewOfFile`, `UnmapViewOfFile`; none exist yet); `SignalObjectAndWait`; `_dowildcard`
-  (MinGW's `__getmainargs` and the UCRT's `_configure_narrow_argv` with expanded arguments,
-  over `find::matches`; arguments arrive already split, so quoting is not seen).
+- **Slice 37d: named objects, file mappings, `SignalObjectAndWait` and wildcard arguments.**
+  Named objects live in one table shared by every Windows process, the pure `named_objects.rs`
+  (`Shared`: a lock word, a generation counter and 128 `Slot`s of a kind, a namespace, a name
+  of up to 120 UTF-16 units, up to 16 holders (a process and its count of handles and views)
+  and the kind's state), in `/dev/shm/eggos-windows-objects`, which `win32/named.rs` maps the
+  first time the process uses a name, so a program that names nothing maps nothing. The lock
+  word holds the id of the process holding it and is taken over once `kill(id, 0)` says that
+  process is gone; creating or opening a name first drops the holders of ended processes and
+  abandons the mutexes they owned, and a slot with no holder is free. A handle to a named
+  object is the object kind `Named` (`sync.rs`) holding a `named::Reference`, given back when
+  the handle closes; its state changes under the shared lock, taken after the object table's,
+  and a wait that includes one checks the dead owner of a mutex, then looks again every 10 ms
+  (another process's change wakes nobody here; one in the same process does at once).
+  `CreateEventW`/`A`, `CreateMutexW`/`A`, `CreateSemaphoreW`/`A`, their `Ex` forms and
+  `OpenEventW`/`A`, `OpenMutexW`/`A` and `OpenSemaphoreW`/`A` take names; a mutex is owned by
+  a thread of a process, so the one a child ended with comes back `WAIT_ABANDONED`. File
+  mappings (`win32/file_mapping.rs`, rules in the pure `mapping_views.rs`):
+  `CreateFileMappingW`/`A` over a file (its descriptor duplicated; size 0 is the file's, a
+  writable mapping grows the file) or over the page file (`INVALID_HANDLE_VALUE`: a file in
+  `/dev/shm`, removed at once when unnamed, named `eggos-windows-section-<generation>` and
+  removed with its slot when named), `OpenFileMappingW`/`A`, `MapViewOfFile` and
+  `MapViewOfFileEx` (the kernel's `mmap`: `FILE_MAP_WRITE` shared and writable, `FILE_MAP_COPY`
+  private, `FILE_MAP_EXECUTE` executable, each refused with `ERROR_ACCESS_DENIED` where the
+  mapping's `PAGE_*` protection forbids it; offsets on 64 KiB, `ERROR_MAPPED_ALIGNMENT`
+  otherwise), `UnmapViewOfFile` (any address in a view) and `FlushViewOfFile` (`msync`). A view
+  of a named mapping holds its own reference, so the name lives while it is viewed.
+  `SignalObjectAndWait` sets an event, releases a mutex or adds one to a semaphore, then waits
+  like `WaitForSingleObjectEx`. Wildcard arguments: `_configure_narrow_argv` and
+  `_configure_wide_argv` with `_crt_argv_expanded_arguments` (2, which MSVC programs linked
+  with `setargv.obj` ask for) and `__getmainargs` and `__wgetmainargs` with a nonzero
+  `_DoWildCard` (MinGW's `_dowildcard`) replace each argument after the program's name whose
+  last component holds `*` or `?` (`find::argument_pattern_start`) by the names in its folder
+  that `find::matches` accepts, behind the folder as written, sorted byte-wise; `.` and `..`
+  never, hidden files too, and an argument matching nothing or with a `:` past the drive stays.
+  Check: `tests/windows-crt/eggnamed.c`, our own C program built by MSVC with `setargv.obj`
+  (`windows::PROGRAMS`), in the C runtime boot test at `/bin/eggnamed.exe` (`EGGNAMED_LINES`,
+  x86_64 and aarch64): the name rules (`ERROR_ALREADY_EXISTS` from `CreateMutexA`, an event
+  under a mutex's name, a missing name, a bad path), a child started with `C:\tmp\eggnamed\*.txt`
+  that got the two `.txt` files, read the parent's text through a named mapping, found the
+  named mutex held, added two to the named semaphore and took the mutex through
+  `SignalObjectAndWait` on the named event, the mutex abandoned once the child ended, the
+  mapping gone with its last handle and view, two views of a page-file mapping sharing memory
+  and refusing an empty mapping, a misaligned offset and a view past the end, and a file's
+  writable view flushed, a copy-on-write view and a refused write to a read-only mapping;
+  status 0. Decided by research (sonnet, from Microsoft's documentation of kernel object
+  namespaces, the synchronization and file-mapping functions, "Expanding wildcard arguments"
+  and `GetCommandLineW`, and mingw-w64's `corecrt_startup.h`): the name rules above (slice
+  37c's research); the UCRT expands every argument holding a wildcard whether or not it was
+  quoted, so the quotes lost when `CreateProcessW` splits a command line need no channel to
+  the child (carrying the exact command line to a child is a separate fidelity question);
+  the argument modes 0, 1 and 2 and `_DoWildCard`'s meaning; the folder kept as written, `.`
+  and `..` skipped, hidden files kept, no match keeps the argument. Decided without research:
+  the table's sizes (128 objects, 120-unit names, 16 holding processes; a full table or full
+  holders are `ERROR_NOT_ENOUGH_MEMORY`, a longer name `ERROR_FILENAME_EXCED_RANGE`, a prefix
+  with nothing after it `ERROR_INVALID_NAME`); `Local\` is one namespace for every user; a
+  process is alive while `kill(id, 0)` finds it (a reused id keeps its holders); the lock is
+  a spin lock with a yield, and a process dying while it holds it may leave one slot half
+  changed; a read-only mapping larger than its file is `ERROR_NOT_ENOUGH_MEMORY`, a view past
+  the mapping's end `ERROR_ACCESS_DENIED`, `SEC_IMAGE` `ERROR_NOT_SUPPORTED`, `FILE_MAP_WRITE`
+  wins over `FILE_MAP_COPY`, a taken address for `MapViewOfFileEx` `ERROR_INVALID_ADDRESS`, at
+  most 256 views per process; a named mapping of a file registers its name, but opening it
+  (`OpenFileMappingW`, or `CreateFileMappingW` finding it) is `ERROR_NOT_SUPPORTED`, since
+  another process cannot reopen the file; `SignalObjectAndWait` on anything else is
+  `ERROR_INVALID_HANDLE` and does not wait; matches sort byte-wise.
+- **Not yet.** Opening a named mapping of a file by name; `Local\` names per user or session;
+  waking another process's waiters at once instead of polling; `VirtualQuery` describing views;
+  `SEC_IMAGE` mappings and `MapViewOfFileExNuma`; access rights on named objects (every `Open`
+  gets full access); carrying a parent's exact command line to a Windows child
+  (`GetCommandLineW` is rebuilt from the split arguments).
   MinGW: DLLs built by MinGW (`__dllonexit`), `_putenv`, `setlocale`, the old runtime's `swprintf` (no count),
   `_sys_errlist` and `_sys_nerr`, and `_file` in the `FILE` array's entries (MinGW reads it
   through `_fileno`). Rust

@@ -253,13 +253,17 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `fs::remove_dir_all`, networking and waitable timers do not yet.
   Programs linked to MinGW's `msvcrt.dll` run (D189, slice 37b2): its startup, `printf` (MinGW's
   own and the old runtime's variadic one), streams, the heap, strings, `qsort`, `getenv`,
-  `signal`, `atexit`; MinGW DLLs (`__dllonexit`), DOS wildcards in `__getmainargs`, wide
-  `swprintf`, `_putenv`, `setlocale` and line-ending translation do not yet.
+  `signal`, `atexit`; MinGW DLLs (`__dllonexit`), wide `swprintf`, `_putenv`, `setlocale`
+  and line-ending translation do not yet.
   APCs (`QueueUserAPC`, alertable `SleepEx` and waits, `MsgWaitForMultipleObjectsEx`),
   abandoned mutexes (`WAIT_ABANDONED`), ws2_32's ordinal imports and DOS wildcards in
-  `FindFirstFileW` work (D189, slice 37c); named objects (mutexes, events, semaphores and file
-  mappings shared by name between processes; a name is still ignored), file mappings
-  themselves, `_dowildcard` in `__getmainargs` and `SignalObjectAndWait` do not yet.
+  `FindFirstFileW` work (D189, slice 37c). Named mutexes, events, semaphores and file mappings
+  shared between processes, file mappings and their views, `SignalObjectAndWait` and wildcard
+  arguments (`setargv.obj`, `_dowildcard`) work (D189, slice 37d); a wait sees another
+  process's change within 10 ms, at most 128 named objects exist at once (names up to 120
+  characters, 16 processes each), a named mapping of a file cannot be opened by name, `Local\`
+  names are not per user, quotes do not stop an argument's expansion, and `VirtualQuery` does
+  not describe views.
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
   function, a throw out of a window procedure), a stack overflow is not an exception, and on
   aarch64 a context resumed after a fault loses `x16`.

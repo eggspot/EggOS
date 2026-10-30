@@ -178,9 +178,9 @@ and the old runtime's `printf` family (`printf`, `fprintf`, `sprintf`, `_snprint
 `_scprintf`, `wprintf` and their `v` forms, with `%I64d`), `stdout` and `stderr` through
 `__iob_func`, `setvbuf`, the heap, strings, `qsort`, `getenv`, `signal` and `raise`,
 `strerror`, `localeconv`, `_setmode` and `exit`. The layer gives `msvcrt.dll` the same
-functions as the Universal C Runtime where the two agree. Not yet: MinGW DLLs (`__dllonexit`),
-DOS wildcards in the arguments (`_dowildcard`), `_putenv`, `setlocale`, the old runtime's
-`swprintf` and line-ending translation in text mode.
+functions as the Universal C Runtime where the two agree; a program built with `_dowildcard`
+gets its wildcard arguments expanded (see below). Not yet: MinGW DLLs (`__dllonexit`),
+`_putenv`, `setlocale`, the old runtime's `swprintf` and line-ending translation in text mode.
 
 `tests/windows-mingw/eggmingw.c` is our own example: CI builds it with llvm-mingw for x64 and
 ARM64, and the Windows C runtime boot test runs it (`cargo xtask windows-crt`).
@@ -198,8 +198,26 @@ from `wsock32.dll`'s in three places; both work, and `GetProcAddress` with an or
 `FindFirstFileW` matches names with DOS's rules: `*.*` is everything, `*.` names without an
 extension, `?` one character or none before a dot or the end, and `<`, `>` and `"` as Windows'
 file systems match them. `tests/windows-crt/eggsync.c` is our own example, in the same boot
-test. Named objects shared between processes are not there yet: a name given to
-`CreateMutexW`, `CreateEventW` or `CreateSemaphoreW` is ignored.
+test.
+
+## Named objects, file mappings and wildcard arguments
+
+A mutex, event, semaphore or file mapping created with a name is shared with every Windows
+program that opens the name (`OpenMutexW`, `OpenEventW`, `OpenSemaphoreW`,
+`OpenFileMappingW`, and the `Create` functions, which then answer `ERROR_ALREADY_EXISTS`).
+Names follow Windows' rules: `Global\` and `Local\` in either case, a bare name in `Local\`,
+one namespace for every kind (another kind's name is `ERROR_INVALID_HANDLE`, a missing one
+`ERROR_FILE_NOT_FOUND`), and a mutex whose owner ended comes back `WAIT_ABANDONED`. A wait for
+one sees another program's change within 10 ms. `CreateFileMappingW` maps a file or, with
+`INVALID_HANDLE_VALUE`, memory of its own; `MapViewOfFile(Ex)` gives views that read, write
+(`FILE_MAP_WRITE` reaches the file and every other view), copy on write (`FILE_MAP_COPY`) or
+run, `FlushViewOfFile` writes a view back and `UnmapViewOfFile` removes it.
+`SignalObjectAndWait` signals one object and waits for another. A program built with
+`setargv.obj` (MSVC) or `_dowildcard` (MinGW) gets each argument with `*` or `?` in its last
+part replaced by the matching names, sorted, with the folder as written; a pattern that
+matches nothing stays as it is. `tests/windows-crt/eggnamed.c` is our own example, in the same
+boot test: it starts a copy of itself with `*.txt` and shares a mutex, an event, a semaphore
+and a mapping with it (D189).
 
 ## Programs that start other programs
 
@@ -370,9 +388,10 @@ size needed, as each function documents.
 - **DOS wildcard special cases** (`a?` matching `a`, `*.` matching names without an
   extension); `lstrcmpW` and `lstrcmpiW` compare ordinally, not by locale;
   `DuplicateHandle(GetCurrentThread())` is refused.
-- **Abandoned mutexes** (`WAIT_ABANDONED`), `SuspendThread`, `TerminateThread`, named objects,
-  alertable waits and APCs, `FlsFree` and `TlsFree` clearing other threads' slots (only the
-  caller's), the TLS expansion slots (64 TLS and 64 FLS slots per thread).
+- `SuspendThread`, `TerminateThread`, `FlsFree` and `TlsFree` clearing other threads' slots
+  (only the caller's), the TLS expansion slots (64 TLS and 64 FLS slots per thread); opening a
+  named mapping of a file from another program, and `Local\` names per user (D189's "Not
+  yet").
 - **Creating and removing** files and directories: the file system is read-only, so
   `CreateDirectoryW`, `DeleteFileW` and `RemoveDirectoryW` on a path that exists (or could)
   fail with `ERROR_ACCESS_DENIED`.
