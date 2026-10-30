@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 eggos-c-format = { path = "../c-format" }
 eggos-element-tree = { path = "../element-tree" }
+eggos-net = { path = "../../net" }
+eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
 eggos-windows-gui = { path = "../windows-gui" }
 

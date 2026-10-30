@@ -82,6 +82,48 @@ fn value_of<R>(name: &[u8], work: impl FnOnce(Option<&[u8]>) -> R) -> R {
     })
 }
 
+/// Copies the value of variable `name` (ignoring ASCII case) into `out` as far as it fits; its
+/// whole length, or `None` when the variable is not set.
+pub(super) fn variable(name: &[u8], out: &mut [u8]) -> Option<usize> {
+    value_of(name, |value| {
+        let value = value?;
+        let copied = value.len().min(out.len());
+        out[..copied].copy_from_slice(&value[..copied]);
+        Some(value.len())
+    })
+}
+
+/// The environment as `execve` takes it: one heap block holding a null-ended array of pointers
+/// to the NUL-terminated `NAME=value` strings that follow it; null without memory.
+pub(super) fn exec_block() -> *mut u8 {
+    with_variables(|variables| {
+        let entries = &variables.entries[..variables.count];
+        let table = (entries.len() + 1) * core::mem::size_of::<usize>();
+        let strings: usize = entries.iter().map(|(_, length)| length + 1).sum();
+        let block = heap::allocate(table + strings);
+        if block.is_null() {
+            return block;
+        }
+        let mut at = table;
+        for (index, entry) in entries.iter().enumerate() {
+            let bytes = entry_bytes(entry);
+            let string = block.wrapping_add(at);
+            // SAFETY: the zeroed block holds the table of `entries.len() + 1` pointers, then
+            // every string with its NUL; `at` stays inside the strings.
+            unsafe { string.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len()) };
+            // SAFETY: as above: `index` is below `entries.len()`.
+            unsafe {
+                block
+                    .cast::<usize>()
+                    .wrapping_add(index)
+                    .write(string as usize)
+            };
+            at += bytes.len() + 1;
+        }
+        block
+    })
+}
+
 fn set(name: &[u8], value: Option<&[u8]>) -> Bool {
     if name.is_empty() || name.contains(&b'=') {
         return fail(error::INVALID_PARAMETER, FALSE);

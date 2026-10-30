@@ -297,6 +297,8 @@ version = "0.2.0"
 dependencies = [
  "eggos-c-format",
  "eggos-element-tree",
+ "eggos-net",
+ "eggos-png",
  "eggos-runtime",
  "eggos-windows-gui",
 ]

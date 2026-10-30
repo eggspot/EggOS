@@ -2,7 +2,7 @@
 //! `ReadConsoleW` reads it, converted a stack buffer at a time, and the console's code pages are
 //! UTF-8 (65001). A GUI program has no console, as on Windows: its standard handles are null
 //! where they would be the terminal, and the files or pipes the shell redirected them to
-//! otherwise (D129).
+//! otherwise (D129). `SetStdHandle` replaces what `GetStdHandle` answers (D178).
 
 use super::file::{fd_of, handle_of, read_into, write_bytes};
 use super::{Bool, FALSE, INVALID_HANDLE_VALUE, TRUE, error, fail};
@@ -10,7 +10,7 @@ use crate::library::Export;
 use crate::linux;
 use crate::text;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const STD_INPUT_HANDLE: u32 = -10i32 as u32;
 const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
@@ -34,12 +34,36 @@ pub(super) fn standard_handle(fd: usize) -> usize {
     }
 }
 
-extern "efiapi" fn get_std_handle(which: u32) -> usize {
+static REPLACED: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
+static REPLACEMENTS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+
+fn standard_index(which: u32) -> Option<usize> {
     match which {
-        STD_INPUT_HANDLE => standard_handle(0),
-        STD_OUTPUT_HANDLE => standard_handle(1),
-        STD_ERROR_HANDLE => standard_handle(2),
-        _ => fail(error::INVALID_HANDLE, INVALID_HANDLE_VALUE),
+        STD_INPUT_HANDLE => Some(0),
+        STD_OUTPUT_HANDLE => Some(1),
+        STD_ERROR_HANDLE => Some(2),
+        _ => None,
+    }
+}
+
+extern "efiapi" fn get_std_handle(which: u32) -> usize {
+    match standard_index(which) {
+        Some(index) if REPLACED[index].load(Ordering::Acquire) => {
+            REPLACEMENTS[index].load(Ordering::Relaxed)
+        }
+        Some(index) => standard_handle(index),
+        None => fail(error::INVALID_HANDLE, INVALID_HANDLE_VALUE),
+    }
+}
+
+extern "efiapi" fn set_std_handle(which: u32, handle: usize) -> Bool {
+    match standard_index(which) {
+        Some(index) => {
+            REPLACEMENTS[index].store(handle, Ordering::Relaxed);
+            REPLACED[index].store(true, Ordering::Release);
+            TRUE
+        }
+        None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
@@ -162,6 +186,7 @@ unsafe extern "efiapi" fn read_console_a(
 
 pub(super) const EXPORTS: &[Export] = exports![
     b"GetStdHandle" => get_std_handle,
+    b"SetStdHandle" => set_std_handle,
     b"GetConsoleMode" => get_console_mode,
     b"SetConsoleMode" => set_console_mode,
     b"GetConsoleCP" => get_code_page,

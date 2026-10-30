@@ -3,7 +3,10 @@
 //! `eggos_windows_gui::controls`. Each control's state is a heap block its window's entry
 //! points to, reached only under the GUI state's lock and looked up again by handle after every
 //! call into the program, so a control the program destroys from a notification is never
-//! touched again. Notifications are `WM_COMMAND`s sent to the parent.
+//! touched again. Notifications are `WM_COMMAND`s sent to the parent. comctl32's common
+//! controls (D178) are system classes too, answered by `common_controls`. A `STATIC` with
+//! `SS_BITMAP` or `SS_ICON` (D178, design section 28) keeps the image `STM_SETIMAGE` gave it and
+//! draws its pixels.
 
 use super::dialog::{has_focus, release_capture, set_capture, set_focus};
 use super::gui::{self, Gui, with};
@@ -11,13 +14,16 @@ use super::paint;
 use super::user32::def_window_proc_w;
 use super::{heap, window_text};
 use crate::gui::message;
-use crate::gui::windows::{ControlKind, Procedure, Window};
+use crate::gui::objects::{self, Object};
+use crate::gui::windows::{self, ControlKind, Procedure, Window};
 use crate::text::equal_ignoring_ascii_case;
 use eggos_windows_gui::controls::button::{self, Button, ButtonKind, ButtonLook, ButtonOutcome};
 use eggos_windows_gui::controls::edit::{self, Edit, EditLook, EditOutcome, visible_cells};
+use eggos_windows_gui::controls::image::{self, Picture};
 use eggos_windows_gui::controls::label::{self, LabelLook};
 use eggos_windows_gui::controls::list_box::{self, ITEM_HEIGHT, ListBox, ListLook, visible_rows};
 use eggos_windows_gui::controls::{DARK, LIGHT, Palette};
+use eggos_windows_gui::surface::{Rect, Surface};
 
 const VK_SPACE: usize = 0x20;
 const LB_ERR: usize = usize::MAX;
@@ -58,6 +64,73 @@ const BST_CHECKED: usize = 1;
 const BST_PUSHED: usize = 4;
 const BST_FOCUS: usize = 8;
 
+mod static_image {
+    pub const TYPE: u32 = 0x1f;
+    pub const ICON: u32 = 0x3;
+    pub const BITMAP: u32 = 0xe;
+    pub const REAL_SIZE_CONTROL: u32 = 0x40;
+    pub const CENTER_IMAGE: u32 = 0x200;
+    pub const STM_SETICON: u32 = 0x0170;
+    pub const STM_GETICON: u32 = 0x0171;
+    pub const STM_SETIMAGE: u32 = 0x0172;
+    pub const STM_GETIMAGE: u32 = 0x0173;
+    pub const IMAGE_BITMAP: usize = 0;
+    pub const IMAGE_ICON: usize = 1;
+    pub const IMAGE_CURSOR: usize = 2;
+}
+
+/// The image of a `STATIC` with `SS_BITMAP` or `SS_ICON`: the handle the program gave and the
+/// bitmaps drawn, the icon's colour and mask bitmaps for an icon.
+#[derive(Debug, Clone, Copy, Default)]
+struct StaticPicture {
+    image: usize,
+    colour: usize,
+    mask: usize,
+}
+
+fn is_picture(style: u32) -> bool {
+    matches!(
+        style & static_image::TYPE,
+        static_image::ICON | static_image::BITMAP
+    )
+}
+
+/// Bitmap `handle`'s pixels while the lock is held through `gui`; `None` for no such bitmap or
+/// one that draws nowhere.
+pub(super) fn picture_of(gui: &Gui, handle: usize) -> Option<Picture<'_>> {
+    super::gdi::load_section(handle);
+    let Object::Bitmap(bitmap) = objects::object(&gui.objects, handle)? else {
+        return None;
+    };
+    if bitmap.address == 0 {
+        return None;
+    }
+    // SAFETY: a bitmap's pixels are a heap block of `width * height` pixels, freed only after
+    // the bitmap left the object table, which cannot happen while the lock is held through `gui`.
+    let pixels = unsafe {
+        core::slice::from_raw_parts(
+            bitmap.address as *const u32,
+            bitmap.width as usize * bitmap.height as usize,
+        )
+    };
+    Picture::new(pixels, bitmap.width as i32, bitmap.height as i32)
+}
+
+/// Draws the colour bitmap `colour`, masked by `mask` (0 for none), with its top-left at (`x`,
+/// `y`) by the design's section 27 rule, as an icon is drawn.
+pub(super) fn draw_bitmaps(
+    gui: &Gui,
+    surface: &mut Surface<'_>,
+    (colour, mask): (usize, usize),
+    x: i32,
+    y: i32,
+) {
+    if let Some(picture) = picture_of(gui, colour) {
+        let mask = picture_of(gui, mask);
+        image::draw_picture(surface, &picture, mask.as_ref(), x, y);
+    }
+}
+
 /// The system class a class name names, compared ignoring case.
 pub fn system_class(name: &[u16]) -> Option<ControlKind> {
     let is = |wanted: &str| {
@@ -71,7 +144,7 @@ pub fn system_class(name: &[u16]) -> Option<ControlKind> {
         () if is("STATIC") => Some(ControlKind::Static),
         () if is("LISTBOX") => Some(ControlKind::ListBox),
         () if is("COMBOBOX") => Some(ControlKind::ComboBox),
-        () => None,
+        () => super::common_controls::class_of(name).map(ControlKind::Common),
     }
 }
 
@@ -85,10 +158,11 @@ fn allocate<T>(value: T) -> Option<usize> {
     Some(block as usize)
 }
 
-/// A new control's state for a window of `style`; `None` without memory (0 for a static,
-/// which keeps none).
+/// A new control's state for a window of `style`; `None` without memory (0 for a static
+/// without a picture, which keeps none).
 pub fn new_state(kind: ControlKind, style: u32) -> Option<usize> {
     match kind {
+        ControlKind::Static if is_picture(style) => allocate(StaticPicture::default()),
         ControlKind::Static => Some(0),
         ControlKind::Button => allocate(Button::new(ButtonKind::of(style))),
         ControlKind::Edit => {
@@ -112,6 +186,7 @@ pub fn new_state(kind: ControlKind, style: u32) -> Option<usize> {
             Some(address as usize)
         }
         ControlKind::ComboBox => super::combo_box::new_state(0),
+        ControlKind::Common(kind) => super::common_controls::new_state(kind, style),
     }
 }
 
@@ -128,6 +203,7 @@ enum State<'a> {
     Button(&'a mut Button),
     Edit(&'a mut Edit),
     ListBox(&'a mut ListBox),
+    Picture(&'a mut StaticPicture),
     Static,
 }
 
@@ -145,8 +221,12 @@ fn state_of(gui: &mut Gui, window: usize) -> Option<(&mut Window, State<'_>)> {
         ControlKind::Edit => State::Edit(unsafe { &mut *(address as *mut Edit) }),
         // SAFETY: as for the button.
         ControlKind::ListBox => State::ListBox(unsafe { &mut *(address as *mut ListBox) }),
+        ControlKind::Static if address != 0 => {
+            // SAFETY: as for the button: a picture static's state is a `StaticPicture`.
+            State::Picture(unsafe { &mut *(address as *mut StaticPicture) })
+        }
         ControlKind::Static => State::Static,
-        ControlKind::ComboBox => return None,
+        ControlKind::ComboBox | ControlKind::Common(_) => return None,
     };
     Some((entry, state))
 }
@@ -264,6 +344,11 @@ fn paint_control(window: usize) {
                 };
                 list_box::paint(surface, rect, model, look, palette);
             }
+            ControlKind::Static if address != 0 => {
+                // SAFETY: as above; a picture static's state is a `StaticPicture`.
+                let picture = unsafe { &*(address as *const StaticPicture) };
+                paint_picture(surface, rect, entry.style, picture, (palette, gui));
+            }
             ControlKind::Static => {
                 let look = LabelLook {
                     style: entry.style,
@@ -271,10 +356,99 @@ fn paint_control(window: usize) {
                 };
                 label::paint(surface, rect, text, look, palette);
             }
-            ControlKind::ComboBox => {}
+            ControlKind::ComboBox | ControlKind::Common(_) => {}
         }
     });
     paint::finish(hdc);
+}
+
+fn paint_picture(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    style: u32,
+    picture: &StaticPicture,
+    (palette, gui): (&Palette, &Gui),
+) {
+    let saved = surface.clip();
+    surface.clip_to(rect);
+    surface.fill(rect, palette.surface);
+    if let Some(colour) = picture_of(gui, picture.colour) {
+        let mask = picture_of(gui, picture.mask);
+        let bitmap = style & static_image::TYPE == static_image::BITMAP;
+        match () {
+            () if bitmap && style & static_image::REAL_SIZE_CONTROL != 0 => {
+                image::draw_stretched(surface, &colour, rect);
+            }
+            () if style & static_image::CENTER_IMAGE != 0 => image::draw_picture(
+                surface,
+                &colour,
+                mask.as_ref(),
+                rect.left + (rect.width() - colour.width) / 2,
+                rect.top + (rect.height() - colour.height) / 2,
+            ),
+            () => image::draw_picture(surface, &colour, mask.as_ref(), rect.left, rect.top),
+        }
+    }
+    surface.set_clip(saved);
+}
+
+fn picture_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    let (setting, kind, handle) = match number {
+        static_image::STM_SETICON => (true, static_image::IMAGE_ICON, wparam),
+        static_image::STM_GETICON => (false, static_image::IMAGE_ICON, 0),
+        static_image::STM_GETIMAGE => (false, wparam, 0),
+        static_image::STM_SETIMAGE => (true, wparam, lparam),
+        _ => return 0,
+    };
+    let style = with(|gui| gui.windows.get(window).map(|entry| entry.style))
+        .flatten()
+        .unwrap_or(0);
+    let fits = match style & static_image::TYPE {
+        static_image::BITMAP => kind == static_image::IMAGE_BITMAP,
+        static_image::ICON => matches!(kind, static_image::IMAGE_ICON | static_image::IMAGE_CURSOR),
+        _ => false,
+    };
+    if !fits {
+        return 0;
+    }
+    if !setting {
+        return with_state(window, |_, state| match state {
+            State::Picture(picture) => picture.image,
+            _ => 0,
+        })
+        .unwrap_or(0);
+    }
+    let (colour, mask) = match kind {
+        static_image::IMAGE_BITMAP => (handle, 0),
+        _ if handle == 0 => (0, 0),
+        _ => super::icon::icon_bitmaps(handle).unwrap_or((0, 0)),
+    };
+    let resizes = style & (static_image::CENTER_IMAGE | static_image::REAL_SIZE_CONTROL) == 0;
+    let previous = with(|gui| {
+        let size = picture_of(gui, colour).map(|picture| (picture.width, picture.height));
+        let (entry, state) = state_of(gui, window)?;
+        let State::Picture(picture) = state else {
+            return None;
+        };
+        let new = StaticPicture {
+            image: handle,
+            colour,
+            mask,
+        };
+        let previous = core::mem::replace(picture, new).image;
+        let old = entry.bounds;
+        if resizes && let Some((width, height)) = size {
+            entry.bounds = Rect::sized(old.left, old.top, width, height);
+            entry.width = width as u32;
+            entry.height = height as u32;
+        }
+        let (parent, changed) = (entry.parent, old.union(&entry.bounds));
+        windows::invalidate_tree(&mut gui.windows, parent, Some(changed), true);
+        Some(previous)
+    })
+    .flatten();
+    gui::wake();
+    previous.unwrap_or(0)
 }
 
 pub(super) fn point(lparam: usize) -> (i32, i32) {
@@ -331,8 +505,14 @@ pub fn procedure(
     wparam: usize,
     lparam: usize,
 ) -> usize {
-    if kind == ControlKind::ComboBox {
-        return super::combo_box::procedure(window, number, wparam, lparam);
+    match kind {
+        ControlKind::ComboBox => {
+            return super::combo_box::procedure(window, number, wparam, lparam);
+        }
+        ControlKind::Common(kind) => {
+            return super::common_controls::procedure(window, kind, number, wparam, lparam);
+        }
+        _ => {}
     }
     match number {
         message::NC_CREATE => 1,
@@ -448,6 +628,9 @@ pub fn procedure(
         {
             list_message(window, number, wparam, lparam)
         }
+        static_image::STM_SETICON..=static_image::STM_GETIMAGE if kind == ControlKind::Static => {
+            picture_message(window, number, wparam, lparam)
+        }
         _ => def_window_proc_w(window, number, wparam, lparam),
     }
 }
@@ -524,7 +707,7 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             .flatten();
             list_changed(window, changed);
         }
-        ControlKind::Static | ControlKind::ComboBox => {}
+        ControlKind::Static | ControlKind::ComboBox | ControlKind::Common(_) => {}
     }
 }
 

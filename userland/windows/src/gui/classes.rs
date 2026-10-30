@@ -114,6 +114,13 @@ impl ClassTable {
         Some((FIRST_ATOM + slot as u16, entry.class))
     }
 
+    /// The name of the class with atom `atom` (`GetClassNameW`).
+    pub fn name(&self, atom: u16) -> Option<&[u16]> {
+        let slot = self.slot_of(ClassName::Atom(atom))?;
+        let entry = self.entries[slot].as_ref()?;
+        Some(&entry.name[..entry.length])
+    }
+
     /// Removes the class `name` names.
     pub fn unregister(&mut self, name: ClassName<'_>) -> Result<Class, ClassError> {
         let slot = self.slot_of(name).ok_or(ClassError::NotFound)?;
@@ -147,6 +154,8 @@ mod tests {
             Some((atom, class))
         );
         assert_eq!(table.find(ClassName::Atom(atom)), Some((atom, class)));
+        assert_eq!(table.name(atom), Some(&wide("PaintWindow")[..]));
+        assert_eq!(table.name(atom + 1), None);
         assert_eq!(table.find(ClassName::Atom(atom + 1)), None);
         assert_eq!(table.find(ClassName::Atom(1)), None);
         assert_eq!(table.find(ClassName::Name(&wide("Paint"))), None);

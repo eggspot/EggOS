@@ -1,8 +1,9 @@
 //! Strings: conversions between UTF-16 and the code pages (UTF-8 for `CP_UTF8` and, since the
 //! layer's ANSI and OEM code pages are UTF-8, for those too), lengths, ordinal comparisons,
-//! upper and lower case, and `FormatMessage` for the system's messages.
+//! upper and lower case, user32's character classes (`IsCharAlphaW` and its companions, by
+//! Unicode's properties, D178), and `FormatMessage` for the system's messages.
 
-use super::{FALSE, error, fail, heap};
+use super::{Bool, FALSE, error, fail, heap};
 use crate::errors;
 use crate::library::Export;
 use crate::text;
@@ -382,7 +383,31 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"FormatMessageW" => format_message_w,
 ];
 
+fn is_character(unit: u16, test: fn(char) -> bool) -> Bool {
+    Bool::from(char::from_u32(u32::from(unit)).is_some_and(test))
+}
+
+extern "efiapi" fn is_char_alpha_w(unit: u16) -> Bool {
+    is_character(unit, char::is_alphabetic)
+}
+
+extern "efiapi" fn is_char_alpha_numeric_w(unit: u16) -> Bool {
+    is_character(unit, char::is_alphanumeric)
+}
+
+extern "efiapi" fn is_char_upper_w(unit: u16) -> Bool {
+    is_character(unit, char::is_uppercase)
+}
+
+extern "efiapi" fn is_char_lower_w(unit: u16) -> Bool {
+    is_character(unit, char::is_lowercase)
+}
+
 pub(super) const USER32_EXPORTS: &[Export] = exports![
     b"CharUpperW" => char_upper_w,
     b"CharLowerW" => char_lower_w,
+    b"IsCharAlphaW" => is_char_alpha_w,
+    b"IsCharAlphaNumericW" => is_char_alpha_numeric_w,
+    b"IsCharUpperW" => is_char_upper_w,
+    b"IsCharLowerW" => is_char_lower_w,
 ];

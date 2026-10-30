@@ -9,7 +9,9 @@
 //! below each window, the text the program drew in it with `TextOutW` and `DrawTextW`
 //! (`gui::drawn`). `invoke` clicks a button as `BM_CLICK` does, `focus` is `SetFocus` and
 //! `set-text` is `WM_SETTEXT` on an edit control, the last two for windows of the thread that
-//! reads the records.
+//! reads the records. comctl32's common controls (D178) add their rows, tree items, tabs,
+//! status parts and toolbar buttons as elements below theirs (`common_controls`), which take
+//! `select`, `invoke` and `focus` as the design's section 29 says.
 
 use super::gui::{self, Delivery, Gui, with};
 use super::window_device::Device;
@@ -114,9 +116,13 @@ fn role_of(window: &Window) -> (Role, u16) {
             _ => (Role::Button, flags::FOCUSABLE),
         },
         Procedure::Control(ControlKind::Edit, _) => (Role::TextField, flags::FOCUSABLE),
+        Procedure::Control(ControlKind::Static, picture) if picture != 0 => (Role::Graphic, 0),
         Procedure::Control(ControlKind::Static, _) => (Role::Label, 0),
         Procedure::Control(ControlKind::ListBox | ControlKind::ComboBox, _) => {
             (Role::List, flags::FOCUSABLE)
+        }
+        Procedure::Control(ControlKind::Common(kind), _) => {
+            super::common_controls::role_of(kind, window)
         }
         _ => (Role::Group, 0),
     }
@@ -159,9 +165,19 @@ fn push_children(
         };
         let mut text = [0u8; MAX_LABEL_BYTES];
         let text = utf8(source, &mut text);
+        let common = super::common_controls::kind_of(window);
+        let mut common_value = [0u8; MAX_LABEL_BYTES];
+        let common_value = match common {
+            Some(kind) => {
+                let length = super::common_controls::value_of(gui, kind, kid, &mut common_value);
+                &common_value[..length]
+            }
+            None => &[][..],
+        };
         let (name, value): (&[u8], &[u8]) = match role {
             Role::TextField => (&[], text),
             _ if is_combo => (&[], text),
+            _ if common.is_some() => (text, common_value),
             _ => (text, &[]),
         };
         let bounds = Bounds::new(
@@ -175,7 +191,14 @@ fn push_children(
             .named(name)
             .valued(value)
             .flagged(state);
+        let items_pushed = |tree: &mut TreeWriter<'_>| match common {
+            Some(kind) => {
+                super::common_controls::push_items(gui, kind, kid, id, placement.origin, tree)
+            }
+            None => true,
+        };
         if !tree.push(&element)
+            || !items_pushed(tree)
             || !push_drawn(gui, kid, id, tree)
             || !push_children(gui, root, kid, id, depth + 1, tree)
         {
@@ -232,7 +255,11 @@ fn act(
     if element == ROOT_ELEMENT || drawn {
         return Outcome::NotSupported;
     }
-    let handle = element as usize;
+    let item = with(|gui| super::common_controls::element_item(gui, root, element)).flatten();
+    let (handle, item) = match item {
+        Some((window, item)) => (window, Some(item)),
+        None => (element as usize, None),
+    };
     let target = with(|gui| {
         if handle == root || !windows::is_in_tree(&gui.windows, root, handle) {
             return None;
@@ -253,6 +280,14 @@ fn act(
         return Outcome::Disabled;
     }
     let ours = target.thread == thread && thread == thread_environment::thread_id();
+    if let Procedure::Control(ControlKind::Common(kind), _) = target.procedure
+        && (item.is_some() || action != Action::Focus)
+    {
+        return super::common_controls::act(kind, handle, item, action, ours);
+    }
+    if item.is_some() {
+        return Outcome::NoSuchElement;
+    }
     match (action, target.procedure) {
         (Action::Invoke, Procedure::Control(ControlKind::Button, _))
             if target.style & BUTTON_TYPE != GROUP_BOX =>

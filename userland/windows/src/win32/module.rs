@@ -7,44 +7,20 @@ use super::{Bool, FALSE, TRUE, error, fail};
 use crate::library::{self, Export, Library};
 use crate::text;
 
-static KERNEL32_MODULE: u64 = 1;
-static NTDLL_MODULE: u64 = 2;
-static SHELL32_MODULE: u64 = 3;
-static USER32_MODULE: u64 = 4;
-static GDI32_MODULE: u64 = 5;
-static COMDLG32_MODULE: u64 = 6;
-static VCRUNTIME_MODULE: u64 = 7;
-static UCRT_MODULE: u64 = 8;
-static COMCTL32_MODULE: u64 = 9;
+static MODULES: [u64; Library::ALL.len()] = [0; Library::ALL.len()];
 
 fn module_handle(library: Library) -> usize {
-    match library {
-        Library::Kernel32 => &raw const KERNEL32_MODULE as usize,
-        Library::Ntdll => &raw const NTDLL_MODULE as usize,
-        Library::Shell32 => &raw const SHELL32_MODULE as usize,
-        Library::User32 => &raw const USER32_MODULE as usize,
-        Library::Gdi32 => &raw const GDI32_MODULE as usize,
-        Library::Comdlg32 => &raw const COMDLG32_MODULE as usize,
-        Library::Comctl32 => &raw const COMCTL32_MODULE as usize,
-        Library::VcRuntime => &raw const VCRUNTIME_MODULE as usize,
-        Library::Ucrt => &raw const UCRT_MODULE as usize,
-    }
+    let index = Library::ALL
+        .iter()
+        .position(|known| *known == library)
+        .unwrap_or(0);
+    &raw const MODULES[index] as usize
 }
 
 fn library_of(module: usize) -> Option<Library> {
-    [
-        Library::Kernel32,
-        Library::Ntdll,
-        Library::Shell32,
-        Library::User32,
-        Library::Gdi32,
-        Library::Comdlg32,
-        Library::Comctl32,
-        Library::VcRuntime,
-        Library::Ucrt,
-    ]
-    .into_iter()
-    .find(|library| module_handle(*library) == module)
+    Library::ALL
+        .into_iter()
+        .find(|library| module_handle(*library) == module)
 }
 
 fn find_library(name: &[u8]) -> usize {
@@ -86,6 +62,71 @@ unsafe extern "efiapi" fn get_module_handle_a(name: *const u8) -> usize {
     }
 }
 
+const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x1;
+const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 0x2;
+const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x4;
+const SIZE_OF_IMAGE: usize = 24 + 56;
+
+fn module_at(address: usize) -> usize {
+    let base = process().image_base as usize;
+    let headers = base as *const u8;
+    // SAFETY: the program's headers stay mapped and readable at its base: the PE header's
+    // offset is at 0x3c.
+    let header = unsafe { headers.wrapping_add(0x3c).cast::<u32>().read_unaligned() } as usize;
+    // SAFETY: as above: `SizeOfImage` is in the PE header's optional header.
+    let size = unsafe {
+        headers
+            .wrapping_add(header + SIZE_OF_IMAGE)
+            .cast::<u32>()
+            .read_unaligned()
+    } as usize;
+    if (base..base + size).contains(&address) {
+        return base;
+    }
+    Library::ALL
+        .into_iter()
+        .find(|library| {
+            super::exports(*library)
+                .iter()
+                .flat_map(|list| list.iter())
+                .any(|export| export.address as usize == address)
+        })
+        .map_or(0, module_handle)
+}
+
+unsafe extern "efiapi" fn get_module_handle_ex_w(
+    flags: u32,
+    name: *const u16,
+    module: *mut usize,
+) -> Bool {
+    let known = GET_MODULE_HANDLE_EX_FLAG_PIN
+        | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
+        | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
+    let both = GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if module.is_null() || flags & !known != 0 || flags & both == both {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let found = match (
+        flags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS != 0,
+        name.is_null(),
+    ) {
+        (true, _) => match module_at(name as usize) {
+            0 => fail(error::MOD_NOT_FOUND, 0),
+            found => found,
+        },
+        (false, true) => process().image_base as usize,
+        // SAFETY: `GetModuleHandleExW`'s contract: a NUL-terminated UTF-16 name.
+        (false, false) => unsafe { find_library_wide(name) },
+    };
+    // SAFETY: the caller passes a writable `HMODULE`.
+    unsafe { module.write(found) };
+    Bool::from(found != 0)
+}
+
+extern "efiapi" fn set_dll_directory_w(_path: *const u16) -> Bool {
+    TRUE
+}
+
 unsafe extern "efiapi" fn load_library_w(name: *const u16) -> usize {
     if name.is_null() {
         return fail(error::INVALID_PARAMETER, 0);
@@ -124,22 +165,14 @@ unsafe extern "efiapi" fn get_proc_address(module: usize, name: *const u8) -> us
         return fail(error::PROC_NOT_FOUND, 0);
     };
     if (name as usize) < 0x1_0000 {
-        return fail(error::PROC_NOT_FOUND, 0);
+        return match super::resolve_ordinal(library.name(), name as usize as u16) {
+            Some(address) => address as usize,
+            None => fail(error::PROC_NOT_FOUND, 0),
+        };
     }
     // SAFETY: `GetProcAddress`'s contract: a NUL-terminated name (ordinals are below 64 Ki).
     let name = unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
-    let name_of = |library| match library {
-        Library::Kernel32 => &b"kernel32"[..],
-        Library::Ntdll => b"ntdll",
-        Library::Shell32 => b"shell32",
-        Library::User32 => b"user32",
-        Library::Gdi32 => b"gdi32",
-        Library::Comdlg32 => b"comdlg32",
-        Library::Comctl32 => b"comctl32",
-        Library::VcRuntime => b"vcruntime140",
-        Library::Ucrt => b"ucrtbase",
-    };
-    match super::resolve(name_of(library), name) {
+    match super::resolve(library.name(), name) {
         Some(address) => address as usize,
         None => fail(error::PROC_NOT_FOUND, 0),
     }
@@ -197,6 +230,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetModuleFileNameA" => get_module_file_name_a,
     b"GetModuleHandleW" => get_module_handle_w,
     b"GetModuleHandleA" => get_module_handle_a,
+    b"GetModuleHandleExW" => get_module_handle_ex_w,
+    b"SetDllDirectoryW" => set_dll_directory_w,
     b"LoadLibraryW" => load_library_w,
     b"LoadLibraryA" => load_library_a,
     b"LoadLibraryExW" => load_library_ex_w,

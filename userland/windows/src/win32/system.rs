@@ -1,10 +1,14 @@
 //! The system: `GetSystemInfo` (the CPU architecture, the page size and allocation
 //! granularity, the CPUs the process may use) and the Windows version a program sees, which is
-//! Windows 11's (10.0, build 26100) whether or not its manifest asks for it.
+//! Windows 11's (10.0, build 26100) whether or not its manifest asks for it. The computer's
+//! name is the host name in capitals, the Windows and system folders are `/usr/lib/eggos`,
+//! where the layer lives, pointers are encoded with a secret of the process's (D178), no
+//! debugger listens to `OutputDebugStringW` and there is no beeper for `Beep`.
 
 use super::{Bool, FALSE, TRUE, error, fail};
 use crate::library::Export;
 use crate::linux;
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 #[cfg(target_arch = "x86_64")]
 const PROCESSOR_ARCHITECTURE: u16 = 9;
@@ -113,7 +117,136 @@ extern "efiapi" fn mul_div(number: i32, numerator: i32, denominator: i32) -> i32
     multiply_divide(number, numerator, denominator)
 }
 
+/// The folder Windows' and its system folder are on EggOS: where the layer's own libraries
+/// live (D178).
+pub(super) const WINDOWS_FOLDER: &[u8] = b"/usr/lib/eggos";
+const HOST_NAME_FILES: [&[u8]; 2] = [b"/proc/sys/kernel/hostname\0", b"/etc/hostname\0"];
+const MAX_COMPUTER_NAME: usize = 15;
+pub(super) const HOST_NAME_CAPACITY: usize = 64;
+
+/// The machine's host name (`uname`'s node name) into `out`; its length, 0 if it has none.
+pub(super) fn host_name(out: &mut [u8; HOST_NAME_CAPACITY]) -> usize {
+    for file in HOST_NAME_FILES {
+        let Ok(read) = linux::read_file(file, out) else {
+            continue;
+        };
+        let name = out[..read]
+            .split(|byte| byte.is_ascii_whitespace())
+            .next()
+            .unwrap_or(&[]);
+        let length = name.len();
+        if length > 0 {
+            return length;
+        }
+    }
+    0
+}
+
+unsafe extern "efiapi" fn get_computer_name_w(buffer: *mut u16, size: *mut u32) -> Bool {
+    if size.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let mut name = [0u8; HOST_NAME_CAPACITY];
+    let length = host_name(&mut name).min(MAX_COMPUTER_NAME);
+    let mut units = [0u16; MAX_COMPUTER_NAME];
+    for (unit, byte) in units.iter_mut().zip(&name[..length]) {
+        *unit = u16::from(byte.to_ascii_uppercase());
+    }
+    // SAFETY: the caller passes a readable and writable `DWORD` for the size.
+    let capacity = unsafe { size.read() };
+    // SAFETY: `GetComputerNameW`'s contract: `buffer` holds that many writable units.
+    let out = unsafe { super::file::wide_buffer(buffer, capacity as usize) };
+    let (result, count) = match super::file::copy_terminated(&units[..length], out) {
+        Ok(written) => (TRUE, written),
+        Err(needed) => (fail(error::BUFFER_OVERFLOW, FALSE), needed),
+    };
+    // SAFETY: as above.
+    unsafe { size.write(count as u32) };
+    result
+}
+
+fn windows_folder_units(out: &mut [u16; 32]) -> usize {
+    let mut length = 0;
+    crate::text::windows_path(WINDOWS_FOLDER, &mut |c| {
+        length += c.encode_utf16(&mut out[length..]).len();
+    });
+    length
+}
+
+unsafe extern "efiapi" fn get_system_windows_directory_w(buffer: *mut u16, size: u32) -> u32 {
+    let mut units = [0u16; 32];
+    let length = windows_folder_units(&mut units);
+    // SAFETY: the caller passes `size` writable units, or null.
+    let out = unsafe { super::file::wide_buffer(buffer, size as usize) };
+    match super::file::copy_terminated(&units[..length], out) {
+        Ok(written) | Err(written) => written as u32,
+    }
+}
+
+unsafe extern "efiapi" fn get_system_directory_a(buffer: *mut u8, size: u32) -> u32 {
+    let mut units = [0u16; 32];
+    let length = windows_folder_units(&mut units);
+    if length >= size as usize || buffer.is_null() {
+        return length as u32 + 1;
+    }
+    for (at, unit) in units[..length].iter().enumerate() {
+        // SAFETY: the caller passes `size` writable bytes, more than the ASCII path takes.
+        unsafe { buffer.wrapping_add(at).write(*unit as u8) };
+    }
+    // SAFETY: as above.
+    unsafe { buffer.wrapping_add(length).write(0) };
+    length as u32
+}
+
+extern "efiapi" fn output_debug_string_w(_text: *const u16) {}
+
+extern "efiapi" fn beep(_frequency: u32, _duration: u32) -> Bool {
+    fail(error::NOT_SUPPORTED, FALSE)
+}
+
+static ERROR_MODE: AtomicU32 = AtomicU32::new(0);
+
+extern "efiapi" fn set_error_mode(mode: u32) -> u32 {
+    ERROR_MODE.swap(mode, Ordering::Relaxed)
+}
+
+static POINTER_SECRET: AtomicUsize = AtomicUsize::new(0);
+
+fn pointer_secret() -> usize {
+    match POINTER_SECRET.load(Ordering::Relaxed) {
+        0 => {
+            let stack = 0u8;
+            let fresh = (linux::clock_nanoseconds(linux::CLOCK_MONOTONIC) as usize
+                ^ (&raw const stack as usize).rotate_left(17))
+                | 1;
+            match POINTER_SECRET.compare_exchange(0, fresh, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => fresh,
+                Err(current) => current,
+            }
+        }
+        secret => secret,
+    }
+}
+
+extern "efiapi" fn encode_pointer(pointer: usize) -> usize {
+    let secret = pointer_secret();
+    (pointer ^ secret).rotate_right(secret as u32 % usize::BITS)
+}
+
+extern "efiapi" fn decode_pointer(pointer: usize) -> usize {
+    let secret = pointer_secret();
+    pointer.rotate_left(secret as u32 % usize::BITS) ^ secret
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
+    b"GetComputerNameW" => get_computer_name_w,
+    b"GetSystemWindowsDirectoryW" => get_system_windows_directory_w,
+    b"GetSystemDirectoryA" => get_system_directory_a,
+    b"OutputDebugStringW" => output_debug_string_w,
+    b"Beep" => beep,
+    b"SetErrorMode" => set_error_mode,
+    b"EncodePointer" => encode_pointer,
+    b"DecodePointer" => decode_pointer,
     b"MulDiv" => mul_div,
     b"GetSystemInfo" => get_system_info,
     b"GetNativeSystemInfo" => get_system_info,

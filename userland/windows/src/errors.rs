@@ -44,6 +44,32 @@ pub mod code {
     pub const CONTROL_ID_NOT_FOUND: u32 = 1421;
     pub const TIMEOUT: u32 = 1460;
     pub const NOT_ENOUGH_QUOTA: u32 = 1816;
+    pub const BAD_NETPATH: u32 = 53;
+    pub const BUFFER_OVERFLOW: u32 = 111;
+    pub const CALL_NOT_IMPLEMENTED: u32 = 120;
+    pub const BAD_EXE_FORMAT: u32 = 193;
+    pub const NO_MORE_ITEMS: u32 = 259;
+    pub const INVALID_FLAGS: u32 = 1004;
+    pub const INVALID_SERVICE_LOCK: u32 = 1071;
+    pub const NO_ASSOCIATION: u32 = 1155;
+    pub const NOT_ALL_ASSIGNED: u32 = 1300;
+    pub const NO_SUCH_PRIVILEGE: u32 = 1313;
+    pub const BAD_LENGTH: u32 = 24;
+    pub const INVALID_CURSOR_HANDLE: u32 = 1402;
+    pub const RESOURCE_DATA_NOT_FOUND: u32 = 1812;
+    pub const RESOURCE_TYPE_NOT_FOUND: u32 = 1813;
+    pub const RESOURCE_NAME_NOT_FOUND: u32 = 1814;
+    pub const RESOURCE_LANG_NOT_FOUND: u32 = 1815;
+    pub const RESOURCE_ENUM_USER_STOP: u32 = 15106;
+    pub const PRIVILEGE_NOT_HELD: u32 = 1314;
+    pub const INVALID_ACCEL_HANDLE: u32 = 1403;
+    pub const INVALID_HOOK_HANDLE: u32 = 1404;
+    pub const HOTKEY_ALREADY_REGISTERED: u32 = 1409;
+    pub const CLIPBOARD_NOT_OPEN: u32 = 1418;
+    pub const HOTKEY_NOT_REGISTERED: u32 = 1419;
+    pub const INVALID_HOOK_FILTER: u32 = 1426;
+    pub const INVALID_THREAD_ID: u32 = 1444;
+    pub const MENU_ITEM_NOT_FOUND: u32 = 1456;
 }
 
 /// The Win32 error code for Linux error number `errno`.
@@ -121,6 +147,30 @@ pub fn message(code: u32) -> Option<&'static str> {
         code::CLASS_HAS_WINDOWS => "Class still has open windows.",
         code::INVALID_INDEX => "Invalid index.",
         code::NOT_ENOUGH_QUOTA => "Not enough quota is available to process this command.",
+        code::BAD_NETPATH => "The network path was not found.",
+        code::BUFFER_OVERFLOW => "The file name is too long.",
+        code::CALL_NOT_IMPLEMENTED => "This function is not supported on this system.",
+        code::BAD_EXE_FORMAT => "%1 is not a valid Win32 application.",
+        code::NO_MORE_ITEMS => "No more data is available.",
+        code::INVALID_FLAGS => "Invalid flags.",
+        code::INVALID_SERVICE_LOCK => "The service database lock is invalid.",
+        code::NO_ASSOCIATION => {
+            "No application is associated with the specified file for this operation."
+        }
+        code::NOT_ALL_ASSIGNED => {
+            "Not all privileges or groups referenced are assigned to the caller."
+        }
+        code::NO_SUCH_PRIVILEGE => "A specified privilege does not exist.",
+        code::BAD_LENGTH => "The program issued a command but the command length is incorrect.",
+        code::PRIVILEGE_NOT_HELD => "A required privilege is not held by the client.",
+        code::INVALID_ACCEL_HANDLE => "Invalid accelerator table handle.",
+        code::INVALID_HOOK_HANDLE => "Invalid hook handle.",
+        code::HOTKEY_ALREADY_REGISTERED => "Hot key is already registered.",
+        code::CLIPBOARD_NOT_OPEN => "Thread does not have a clipboard open.",
+        code::HOTKEY_NOT_REGISTERED => "Hot key is not registered.",
+        code::INVALID_HOOK_FILTER => "Invalid hook procedure type.",
+        code::INVALID_THREAD_ID => "Invalid thread identifier.",
+        code::MENU_ITEM_NOT_FOUND => "A menu item was not found.",
         _ => return None,
     })
 }

@@ -1,6 +1,7 @@
 //! The process: its command line (`GetCommandLineW`/`A`, built once from the arguments the
 //! layer was started with), its ids and pseudo-handles, and its end (`ExitProcess`, whose
-//! code's low 8 bits are the status the shell sees).
+//! code's low 8 bits are the status the shell sees); `TerminateProcess` ends other processes
+//! too (`processes.rs`).
 
 use super::heap;
 use crate::command_line;
@@ -117,9 +118,10 @@ extern "efiapi" fn exit_process(code: u32) -> ! {
 
 extern "efiapi" fn terminate_process(process: usize, code: u32) -> super::Bool {
     if process == CURRENT_PROCESS {
+        super::crt::flush_streams_at_process_exit();
         linux::exit(code);
     }
-    super::fail(super::error::ACCESS_DENIED, super::FALSE)
+    super::processes::terminate(process, code)
 }
 
 extern "efiapi" fn get_current_process() -> usize {

@@ -1,9 +1,10 @@
-//! Kernel objects and waits: events, mutexes, semaphores and threads live in one table of
-//! handles (`OBJECT_HANDLES` plus four times the slot), each a reference-counted heap block,
-//! and their states change only under the table's lock. A wait checks (and for wait-all takes)
-//! every object under the lock and otherwise sleeps on one process-wide futex word, the wake
-//! sequence, which every state change bumps, so a wake can never be lost between the check and
-//! the sleep. Critical sections, SRW locks, condition variables, one-time initialisation and
+//! Kernel objects and waits: events, mutexes, semaphores, threads, other processes and access
+//! tokens (D178) live in one table of handles (`OBJECT_HANDLES` plus four times the slot), each
+//! a reference-counted heap block, and their states change only under the table's lock. A wait
+//! checks (and for wait-all takes) every object under the lock and otherwise sleeps on one
+//! process-wide futex word, the wake sequence, which every state change bumps, so a wake can
+//! never be lost between the check and the sleep; a process's end bumps nothing, so a wait for
+//! one looks again every 10 ms. Critical sections, SRW locks, condition variables, one-time initialisation and
 //! `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
@@ -45,6 +46,8 @@ pub enum Kind {
     Mutex { owner: u32, recursion: u32 },
     Semaphore { count: i32, maximum: i32 },
     Thread(Thread),
+    Process(super::processes::ProcessObject),
+    Token,
 }
 
 #[derive(Debug)]
@@ -264,6 +267,8 @@ fn is_signaled(kind: &Kind, caller: u32) -> bool {
         Kind::Mutex { owner, .. } => *owner == 0 || *owner == caller,
         Kind::Semaphore { count, .. } => *count > 0,
         Kind::Thread(thread) => thread.ended,
+        Kind::Process(process) => process.ended(),
+        Kind::Token => false,
     }
 }
 
@@ -278,14 +283,16 @@ fn acquire(kind: &mut Kind, caller: u32) {
             *recursion += 1;
         }
         Kind::Semaphore { count, .. } => *count -= 1,
-        Kind::Event { .. } | Kind::Thread(_) => {}
+        Kind::Event { .. } | Kind::Thread(_) | Kind::Process(_) | Kind::Token => {}
     }
 }
 
 enum Check {
     Done(u32),
-    Sleep(u32),
+    Sleep { sequence: u32, polling: bool },
 }
+
+const PROCESS_POLL_NANOSECONDS: u64 = 10_000_000;
 
 fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
     TABLE.with(|table| {
@@ -293,6 +300,15 @@ fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
             object(table, *handle).ok_or(error::INVALID_HANDLE)?;
             if wait_all && handles[..index].contains(handle) {
                 return Err(error::INVALID_PARAMETER);
+            }
+        }
+        for handle in handles {
+            if let Some(Object {
+                kind: Kind::Process(process),
+                ..
+            }) = object(table, *handle)
+            {
+                process.refresh();
             }
         }
         let mut signaled = handles.iter().enumerate().filter(|(_, handle)| {
@@ -317,8 +333,20 @@ fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
                 Ok(Check::Done(WAIT_OBJECT_0 + first as u32))
             }
             None => {
+                let polling = handles.iter().any(|handle| {
+                    matches!(
+                        object(table, *handle),
+                        Some(Object {
+                            kind: Kind::Process(_),
+                            ..
+                        })
+                    )
+                });
                 SLEEPERS.fetch_add(1, Ordering::AcqRel);
-                Ok(Check::Sleep(WAKE_SEQUENCE.load(Ordering::Acquire)))
+                Ok(Check::Sleep {
+                    sequence: WAKE_SEQUENCE.load(Ordering::Acquire),
+                    polling,
+                })
             }
         }
     })
@@ -345,10 +373,10 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
     let caller = thread_environment::thread_id();
     let mut deadline = None;
     loop {
-        let sequence = match check(handles, wait_all, caller) {
+        let (sequence, polling) = match check(handles, wait_all, caller) {
             Err(code) => return fail(code, WAIT_FAILED),
             Ok(Check::Done(result)) => return result,
-            Ok(Check::Sleep(sequence)) => sequence,
+            Ok(Check::Sleep { sequence, polling }) => (sequence, polling),
         };
         let left = match milliseconds {
             0 => Some(0),
@@ -356,7 +384,13 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
             _ => remaining(*deadline.get_or_insert_with(|| deadline_after(milliseconds))),
         };
         if left != Some(0) {
-            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, left);
+            let slice = match polling {
+                true => Some(left.map_or(PROCESS_POLL_NANOSECONDS, |left| {
+                    left.min(PROCESS_POLL_NANOSECONDS)
+                })),
+                false => left,
+            };
+            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, slice);
         }
         SLEEPERS.fetch_sub(1, Ordering::AcqRel);
         if left == Some(0) {

@@ -6,6 +6,8 @@
 //! own origin, clipped to its client area and its ancestors'; what a window of a tree draws is
 //! committed once no paint of the same thread is left to hand out in that tree, so a window
 //! never shows with its controls half painted, and an open drop-down is painted over it first.
+//! A DIB section whose bits are not its pixels (D178, `gdi.rs`) is read from the program's bits
+//! before each drawing call on it and the rows drawn are written back after.
 
 use super::gui::{self, Gui, try_with, with};
 use super::thread_environment;
@@ -98,6 +100,10 @@ pub fn draw_in<R>(
 ) -> Result<R, u32> {
     try_with(|gui| {
         let mut context = *gui.contexts.get(hdc).ok_or(error::INVALID_HANDLE)?;
+        let section = context.memory.then_some(context.bitmap);
+        if let Some(bitmap) = section {
+            super::gdi::load_section(bitmap);
+        }
         let surface = raster_of(gui, &context).and_then(|raster| {
             // SAFETY: a raster's buffer is a top-level window's mapped buffer, mapped while the
             // window is in the table, or a bitmap's heap block, freed only once no context holds
@@ -116,7 +122,11 @@ pub fn draw_in<R>(
         let result = match surface {
             Some(mut surface) => {
                 let result = work(Some(&mut surface), &mut context, gui);
-                context.drawn = context.drawn.union(&surface.drawn());
+                let drawn = surface.drawn();
+                context.drawn = context.drawn.union(&drawn);
+                if let Some(bitmap) = section {
+                    super::gdi::store_section(bitmap, drawn);
+                }
                 result
             }
             None => work(None, &mut context, gui),
@@ -364,9 +374,20 @@ unsafe extern "efiapi" fn invalidate_rect(
 unsafe extern "efiapi" fn fill_rect(hdc: usize, rect: *const Win32Rect, brush: usize) -> i32 {
     // SAFETY: the caller passes a readable `RECT`.
     let rect = rect_of(unsafe { &*rect });
-    let filled = draw(hdc, |surface, _, objects| {
-        if let (Some(surface), Some(colour)) = (surface, objects::brush_colour(objects, brush)) {
-            surface.fill(rect, colour);
+    let filled = draw(hdc, |surface, context, objects| {
+        let (Some(surface), Some(colour)) = (surface, objects::brush_colour(objects, brush)) else {
+            return;
+        };
+        match super::gdi::pattern(brush) {
+            Some(tile) => {
+                let area = rect.intersection(&surface.clip());
+                for y in area.top..area.bottom {
+                    for x in area.left..area.right {
+                        surface.pixel(x, y, tile.at((x, y), context.brush_origin));
+                    }
+                }
+            }
+            None => surface.fill(rect, colour),
         }
     });
     match filled {
@@ -487,15 +508,10 @@ extern "efiapi" fn delete_object(handle: usize) -> Bool {
         }
     });
     match removed {
-        Some(Ok(Object::Bitmap(bitmap))) => {
-            if bitmap.address != 0 {
-                // SAFETY: a bitmap's pixels are the heap block `CreateCompatibleBitmap` made; the
-                // bitmap left the table and no context holds it, so nothing reaches them.
-                unsafe { super::heap::free(bitmap.address as *mut u8) };
-            }
+        Some(Ok(object)) => {
+            super::gdi::release(handle, object);
             TRUE
         }
-        Some(Ok(_)) => TRUE,
         Some(Err(code)) => fail(code, FALSE),
         None => fail(error::NOT_ENOUGH_MEMORY, FALSE),
     }

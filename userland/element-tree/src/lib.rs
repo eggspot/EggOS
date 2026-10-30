@@ -219,14 +219,17 @@ pub mod flags {
     pub const CHECKED: u16 = 16;
     /// It is the window's default button (Enter).
     pub const DEFAULT: u16 = 32;
+    /// Its children are shown: an open tree item (D178).
+    pub const EXPANDED: u16 = 64;
     /// Every flag, with its name as `wm show` writes it, in order.
-    pub const NAMES: [(u16, &str); 6] = [
+    pub const NAMES: [(u16, &str); 7] = [
         (FOCUSED, "focused"),
         (FOCUSABLE, "focusable"),
         (DISABLED, "disabled"),
         (SELECTED, "selected"),
         (CHECKED, "checked"),
         (DEFAULT, "default"),
+        (EXPANDED, "expanded"),
     ];
 }
 

@@ -3,13 +3,16 @@
 //! window's content, and its drop-downs, which the pointer drives: they are painted over the
 //! client area in the same buffer and committed by themselves, whichever thread reads the
 //! server's records, and a chosen item is `WM_COMMAND` with its id. The table is a heap block
-//! made at the first menu, so programs without menus pay nothing for it.
+//! made at the first menu, so programs without menus pay nothing for it. A context menu
+//! (`TrackPopupMenuEx`, design section 12, D178) is a drop-down opened at a point of a window's
+//! content, run in a modal loop until an item is chosen or it is dismissed.
 
-use super::gui::{self, Gui, try_with, with};
+use super::gui::{self, Gui, Next, try_with, with};
 use super::window_device::Device;
 use super::{Bool, FALSE, TRUE, error, fail, heap};
 use crate::gui::menus::{self, MAX_ITEMS, Menu, MenuTable, flag};
 use crate::gui::message;
+use crate::gui::queue::Filter;
 use crate::gui::windows;
 use crate::library::Export;
 use eggos_windows_gui::controls::LIGHT;
@@ -17,16 +20,21 @@ use eggos_windows_gui::menu::{self as layout, BAR_HEIGHT, MenuLabel};
 use eggos_windows_gui::surface::{Rect, Surface};
 
 const VK_ESCAPE: usize = 0x1b;
+const VK_RETURN: usize = 0x0d;
 const NO_ID: u32 = u32::MAX;
 
-/// An open drop-down: the window, its bar entry, the item under the pointer and where it is
-/// in the window's content.
+/// An open drop-down: the window, its bar entry, the menu it shows, the item under the pointer
+/// and where it is in the window's content; a context menu has no bar entry, and the right
+/// button's release chooses in it too when `right_button` says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tracking {
     pub root: usize,
     pub entry: usize,
+    pub popup: usize,
     pub highlighted: Option<usize>,
     pub rect: Rect,
+    pub context: bool,
+    pub right_button: bool,
 }
 
 /// What an input did to a menu: the content rectangle to show and the item chosen.
@@ -36,13 +44,15 @@ pub struct Effect {
     pub command: Option<usize>,
 }
 
-fn table(gui: &Gui) -> Option<&MenuTable> {
+/// The program's menus, if it made one.
+pub(super) fn table(gui: &Gui) -> Option<&MenuTable> {
     // SAFETY: a published table is the heap block `table_mut` made and never frees; it is
     // reached only under the state's lock, which the caller holds through `gui`.
     (gui.menus != 0).then(|| unsafe { &*(gui.menus as *const MenuTable) })
 }
 
-fn table_mut(gui: &mut Gui) -> Option<&mut MenuTable> {
+/// The program's menus, made now if it had none.
+pub(super) fn table_mut(gui: &mut Gui) -> Option<&mut MenuTable> {
     if gui.menus == 0 {
         let block = heap::allocate(core::mem::size_of::<MenuTable>()).cast::<MenuTable>();
         if block.is_null() {
@@ -104,7 +114,7 @@ pub fn paint_bar(gui: &mut Gui, root: usize) -> Option<Rect> {
     }
     let open = gui
         .tracking
-        .filter(|tracking| tracking.root == root)
+        .filter(|tracking| tracking.root == root && !tracking.context)
         .map(|tracking| tracking.entry);
     let bar = table(gui)?.get(menu)?;
     let entries = labels(bar, false);
@@ -117,10 +127,7 @@ pub fn paint_bar(gui: &mut Gui, root: usize) -> Option<Rect> {
 /// Paints `root`'s open drop-down over its content, if one is open; its rectangle.
 pub fn paint_open_drop_down(gui: &mut Gui, root: usize) -> Option<Rect> {
     let tracking = gui.tracking.filter(|tracking| tracking.root == root)?;
-    let menu = gui.windows.get(root)?.menu;
-    let bar = table(gui)?.get(menu)?;
-    let popup = bar.items().get(tracking.entry)?.popup()?;
-    let items = table(gui)?.get(popup)?;
+    let items = table(gui)?.get(tracking.popup)?;
     let labels = labels(items, true);
     with_root_surface(gui, root, |surface| {
         layout::paint_drop_down(
@@ -160,8 +167,11 @@ fn open(gui: &mut Gui, root: usize, entry: usize) -> Option<Rect> {
     gui.tracking = Some(Tracking {
         root,
         entry,
+        popup,
         highlighted: None,
         rect,
+        context: false,
+        right_button: false,
     });
     let bar_rect = paint_bar(gui, root).unwrap_or_default();
     let drop = paint_open_drop_down(gui, root).unwrap_or_default();
@@ -187,10 +197,7 @@ pub fn close(gui: &mut Gui, root: usize) -> Option<Rect> {
 }
 
 fn drop_down_item_at(gui: &Gui, tracking: &Tracking, point: (i32, i32)) -> Option<(usize, usize)> {
-    let menu = gui.windows.get(tracking.root)?.menu;
-    let bar = table(gui)?.get(menu)?;
-    let popup = bar.items().get(tracking.entry)?.popup()?;
-    let items = table(gui)?.get(popup)?;
+    let items = table(gui)?.get(tracking.popup)?;
     let labels = labels(items, true);
     let index = layout::item_at(tracking.rect, &labels[..items.count], point.0, point.1)?;
     Some((index, items.items()[index].id))
@@ -218,6 +225,12 @@ pub fn input(
     wparam: usize,
     point: (i32, i32),
 ) -> Option<Effect> {
+    if let Some(tracking) = gui
+        .tracking
+        .filter(|tracking| tracking.root == root && tracking.context)
+    {
+        return Some(context_input(gui, &tracking, number, wparam, point));
+    }
     let window = gui.windows.get(root)?;
     if window.menu == 0 || window.menu_height == 0 {
         return None;
@@ -299,6 +312,185 @@ pub fn input(
     Some(effect)
 }
 
+fn context_item(gui: &Gui, tracking: &Tracking, index: usize) -> Option<usize> {
+    let item = table(gui)?.get(tracking.popup)?.items().get(index)?;
+    (!item.is_grayed() && !item.is_separator() && item.popup().is_none()).then_some(item.id)
+}
+
+fn context_input(
+    gui: &mut Gui,
+    tracking: &Tracking,
+    number: u32,
+    wparam: usize,
+    point: (i32, i32),
+) -> Effect {
+    let mut effect = Effect::default();
+    let over_item = drop_down_item_at(gui, tracking, point);
+    let chosen = match number {
+        message::MOUSE_MOVE => {
+            let highlighted = over_item.map(|(index, _)| index);
+            if highlighted != tracking.highlighted {
+                gui.tracking = Some(Tracking {
+                    highlighted,
+                    ..*tracking
+                });
+                effect.commit = paint_open_drop_down(gui, tracking.root);
+            }
+            None
+        }
+        message::LEFT_BUTTON_DOWN | message::RIGHT_BUTTON_DOWN | message::MIDDLE_BUTTON_DOWN => {
+            (!tracking.rect.contains(point.0, point.1)).then_some(0)
+        }
+        message::LEFT_BUTTON_UP => over_item.map(|(_, id)| id),
+        message::RIGHT_BUTTON_UP if tracking.right_button => over_item.map(|(_, id)| id),
+        message::KEY_DOWN | message::SYS_KEY_DOWN if wparam == VK_ESCAPE => Some(0),
+        message::KEY_DOWN if wparam == VK_RETURN => tracking
+            .highlighted
+            .and_then(|index| context_item(gui, tracking, index)),
+        _ => None,
+    };
+    if let Some(id) = chosen {
+        effect.commit = close(gui, tracking.root);
+        gui.menu_choice = Some(id);
+    }
+    effect
+}
+
+/// The command `command` of `menu` (searched in its drop-downs) is a grayed or disabled item:
+/// an accelerator for it does nothing (design section 12).
+pub(super) fn command_grayed(gui: &Gui, menu: usize, command: usize) -> bool {
+    let Some(table) = table(gui) else {
+        return false;
+    };
+    menus::locate(table, menu, command, false)
+        .and_then(|(owner, index)| table.get(owner)?.items().get(index).copied())
+        .is_some_and(|item| item.is_grayed())
+}
+
+const TPM_CENTERALIGN: u32 = 0x4;
+const TPM_RIGHTALIGN: u32 = 0x8;
+const TPM_VCENTERALIGN: u32 = 0x10;
+const TPM_BOTTOMALIGN: u32 = 0x20;
+const TPM_RIGHTBUTTON: u32 = 0x2;
+const TPM_RETURNCMD: u32 = 0x100;
+
+fn open_context(
+    gui: &mut Gui,
+    root: usize,
+    popup: usize,
+    point: (i32, i32),
+    flags: u32,
+) -> Result<Option<Rect>, u32> {
+    let window = gui.window(root)?;
+    if !window.shown {
+        return Err(error::INVALID_WINDOW_HANDLE);
+    }
+    let (width, height) = (window.buffer_width as i32, window.buffer_height as i32);
+    let size = {
+        let items = table(gui)
+            .and_then(|table| table.get(popup))
+            .ok_or(error::INVALID_MENU_HANDLE)?;
+        let labels = labels(items, true);
+        let laid = layout::drop_down_rect(&labels[..items.count], 0, width);
+        (laid.width(), laid.height())
+    };
+    let x = match flags & (TPM_CENTERALIGN | TPM_RIGHTALIGN) {
+        TPM_RIGHTALIGN => point.0 - size.0,
+        TPM_CENTERALIGN => point.0 - size.0 / 2,
+        _ => point.0,
+    };
+    let y = match flags & (TPM_VCENTERALIGN | TPM_BOTTOMALIGN) {
+        TPM_BOTTOMALIGN => point.1 - size.1,
+        TPM_VCENTERALIGN => point.1 - size.1 / 2,
+        _ => point.1,
+    };
+    let left = x.min(width - size.0).max(0);
+    let top = match y + size.1 > height && y - size.1 >= 0 {
+        true => y - size.1,
+        false => y.max(0),
+    };
+    if let Some(other) = gui.tracking {
+        close(gui, other.root);
+    }
+    gui.menu_choice = None;
+    gui.tracking = Some(Tracking {
+        root,
+        entry: 0,
+        popup,
+        highlighted: None,
+        rect: Rect::sized(left, top, size.0, size.1),
+        context: true,
+        right_button: flags & TPM_RIGHTBUTTON != 0,
+    });
+    Ok(paint_open_drop_down(gui, root))
+}
+
+fn show(root: usize, rect: Option<Rect>) {
+    let target = with(|gui| {
+        let window = gui.windows.get(root)?;
+        Some((gui.device?, window.server, window.committed))
+    })
+    .flatten();
+    if let (Some(rect), Some((device, server, true))) = (rect, target) {
+        let _ = device.commit(server, Some(rect));
+    }
+}
+
+extern "efiapi" fn track_popup_menu_ex(
+    menu: usize,
+    flags: u32,
+    x: i32,
+    y: i32,
+    window: usize,
+    _parameters: usize,
+) -> i32 {
+    let Some(root) = with(|gui| windows::root_of(&gui.windows, window)).flatten() else {
+        return fail(error::INVALID_WINDOW_HANDLE, 0);
+    };
+    let (left, top) = match super::placement::content_origin(root) {
+        Ok(origin) => origin,
+        Err(code) => return fail(code, 0),
+    };
+    match try_with(|gui| open_context(gui, root, menu, (x - left, y - top), flags)) {
+        Ok(rect) => show(root, rect),
+        Err(code) => return fail(code, 0),
+    }
+    gui::wake();
+    let finished = |gui: &Gui| {
+        gui.menu_choice.is_some()
+            || !gui
+                .tracking
+                .is_some_and(|tracking| tracking.root == root && tracking.context)
+    };
+    loop {
+        match gui::wait_for(Filter::default(), true, true, &finished) {
+            Next::Done | Next::Nothing => break,
+            Next::Message(next) if next.message == message::QUIT => {
+                let closed = with(|gui| {
+                    gui.queue.quit(next.thread, next.wparam);
+                    close(gui, root)
+                })
+                .flatten();
+                show(root, closed);
+                gui::wake();
+                break;
+            }
+            Next::Message(next) => {
+                super::user32::translate(&next);
+                super::user32::dispatch(&next);
+            }
+        }
+    }
+    let choice = with(|gui| gui.menu_choice.take()).flatten().unwrap_or(0);
+    if flags & TPM_RETURNCMD != 0 {
+        return choice as i32;
+    }
+    if choice != 0 {
+        let _ = gui::post(window, message::COMMAND, choice & 0xffff, 0);
+    }
+    TRUE
+}
+
 /// Shows what [`input`] changed and gives the chosen item's `WM_COMMAND` to deliver.
 pub fn finish_input(
     device: &Device,
@@ -335,7 +527,8 @@ pub fn forget_window(gui: &mut Gui, root: usize, menu: usize) {
     }
 }
 
-fn destroy(gui: &mut Gui, menu: usize) -> bool {
+/// Destroys `menu` and its drop-downs; whether it was one.
+pub(super) fn destroy(gui: &mut Gui, menu: usize) -> bool {
     let Some(removed) = table_mut(gui).and_then(|table| table.remove(menu)) else {
         return false;
     };
@@ -604,4 +797,5 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetSubMenu" => get_sub_menu,
     b"GetMenuItemCount" => get_menu_item_count,
     b"GetMenuItemID" => get_menu_item_id,
+    b"TrackPopupMenuEx" => track_popup_menu_ex,
 ];

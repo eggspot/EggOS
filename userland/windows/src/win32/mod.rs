@@ -3,6 +3,8 @@
 //! and exception handling (`exception/`, D177): each is an `extern "efiapi"` function (Windows'
 //! calling convention on x86_64 and aarch64, `abi.rs`) the program calls through its import
 //! address table, directly on x86_64 and through an entry that restores `x18` on aarch64.
+//! comctl32's common controls (`common_controls/`), GDI+ (`gdiplus.rs`), COM (`com/`) and the
+//! smaller system libraries a real app imports came with AutoHotkey (D178).
 
 #[macro_use]
 mod abi;
@@ -16,42 +18,75 @@ macro_rules! exports {
     };
 }
 
+mod accelerator;
+mod advapi32;
 mod ansi;
 mod clipboard;
+mod com;
 mod combo_box;
 mod common_controls;
 mod console;
 mod controls;
 mod crt;
 mod dialog;
+mod dialog_box;
 mod dialog_window;
+mod dib;
 mod directory;
+mod dwmapi;
 mod elements;
 mod environment;
 mod exception;
 mod file;
 mod file_picker;
 mod gdi;
+mod gdiplus;
 mod gui;
 mod heap;
+mod icon;
+mod keyboard;
 mod memory;
 mod menu;
+mod menu_items;
 mod message_box;
+mod messages;
 mod module;
+mod monitor;
+mod nls;
 mod paint;
 mod placement;
+mod private_profile;
 mod process;
+mod processes;
+mod psapi;
+mod resource;
+mod send_input;
 mod shell;
+mod shell_desktop;
+mod shell_files;
+mod shell_folders;
+mod shlwapi;
 mod strings;
+mod subclass;
 mod sync;
 mod system;
 mod thread;
 pub mod thread_environment;
 mod time;
 mod timer;
+mod toolhelp;
 mod user32;
+mod uxtheme;
+mod version;
+mod volume;
+mod window_class;
 mod window_device;
+mod window_state;
 mod window_text;
+mod window_tree;
+mod wininet;
+mod winmm;
+mod winsock;
 
 use crate::library::{self, Export, Library};
 use eggos_runtime::errno::Errno;
@@ -60,7 +95,7 @@ pub use abi::call_program;
 pub use console::set_gui_program;
 pub use crt::set_processor_features;
 pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_exception_image};
-pub use heap::{allocate as heap_allocate, process_heap};
+pub use heap::{allocate as heap_allocate, free as heap_free, process_heap};
 pub use process::set_process;
 pub use thread::finish as end_thread;
 
@@ -174,6 +209,12 @@ const KERNEL32: &[&[Export]] = &[
     time::EXPORTS,
     crt::KERNEL32_EXPORTS,
     exception::KERNEL32_EXPORTS,
+    resource::EXPORTS,
+    nls::EXPORTS,
+    private_profile::EXPORTS,
+    processes::EXPORTS,
+    toolhelp::EXPORTS,
+    volume::EXPORTS,
 ];
 
 const NTDLL: &[&[Export]] = &[
@@ -182,7 +223,12 @@ const NTDLL: &[&[Export]] = &[
     exception::NTDLL_EXPORTS,
 ];
 
-const SHELL32: &[&[Export]] = &[shell::EXPORTS];
+const SHELL32: &[&[Export]] = &[
+    shell::EXPORTS,
+    shell_folders::EXPORTS,
+    shell_files::EXPORTS,
+    shell_desktop::EXPORTS,
+];
 
 const USER32: &[&[Export]] = &[
     strings::USER32_EXPORTS,
@@ -197,13 +243,49 @@ const USER32: &[&[Export]] = &[
     dialog_window::EXPORTS,
     placement::EXPORTS,
     clipboard::EXPORTS,
+    icon::EXPORTS,
+    subclass::EXPORTS,
+    window_tree::EXPORTS,
+    window_state::EXPORTS,
+    window_class::EXPORTS,
+    messages::EXPORTS,
+    keyboard::EXPORTS,
+    send_input::EXPORTS,
+    monitor::EXPORTS,
+    accelerator::EXPORTS,
+    dialog_box::EXPORTS,
+    menu_items::EXPORTS,
 ];
 
 const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];
 
 const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS, gdi::EXPORTS];
 
-const COMCTL32: &[&[Export]] = &[common_controls::EXPORTS];
+const COMCTL32: &[&[Export]] = common_controls::EXPORT_LISTS;
+
+const GDIPLUS: &[&[Export]] = &[gdiplus::EXPORTS];
+
+const OLE32: &[&[Export]] = &[com::OLE32_EXPORTS];
+
+const OLEAUT32: &[&[Export]] = &[com::OLEAUT32_EXPORTS];
+
+const ADVAPI32: &[&[Export]] = &[advapi32::EXPORTS];
+
+const WSOCK32: &[&[Export]] = &[winsock::EXPORTS];
+
+const WINMM: &[&[Export]] = &[winmm::EXPORTS];
+
+const VERSION: &[&[Export]] = &[version::EXPORTS];
+
+const PSAPI: &[&[Export]] = &[psapi::EXPORTS];
+
+const WININET: &[&[Export]] = &[wininet::EXPORTS];
+
+const SHLWAPI: &[&[Export]] = &[shlwapi::EXPORTS];
+
+const UXTHEME: &[&[Export]] = &[uxtheme::EXPORTS];
+
+const DWMAPI: &[&[Export]] = &[dwmapi::EXPORTS];
 
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
@@ -216,6 +298,18 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Comctl32 => COMCTL32,
         Library::VcRuntime => crt::VCRUNTIME,
         Library::Ucrt => crt::UCRT,
+        Library::GdiPlus => GDIPLUS,
+        Library::Ole32 => OLE32,
+        Library::OleAut32 => OLEAUT32,
+        Library::Advapi32 => ADVAPI32,
+        Library::Wsock32 => WSOCK32,
+        Library::Winmm => WINMM,
+        Library::Version => VERSION,
+        Library::Psapi => PSAPI,
+        Library::Wininet => WININET,
+        Library::Shlwapi => SHLWAPI,
+        Library::UxTheme => UXTHEME,
+        Library::Dwmapi => DWMAPI,
     }
 }
 
@@ -226,10 +320,14 @@ pub fn resolve(library: &[u8], function: &[u8]) -> Option<u64> {
 }
 
 /// The address of the function an import names by `ordinal` in `library` (D174: comctl32's
-/// `InitCommonControls` is the one programs import so).
+/// `InitCommonControls`; D178: oleaut32's and wsock32's functions, which programs import only
+/// so).
 pub fn resolve_ordinal(library: &[u8], ordinal: u16) -> Option<u64> {
-    match library::library(library)? {
-        Library::Comctl32 => common_controls::by_ordinal(ordinal).map(|address| address as u64),
+    let address = match library::library(library)? {
+        Library::Comctl32 => common_controls::by_ordinal(ordinal),
+        Library::OleAut32 => com::oleaut32_by_ordinal(ordinal),
+        Library::Wsock32 => winsock::by_ordinal(ordinal),
         _ => None,
-    }
+    };
+    address.map(|address| address as u64)
 }

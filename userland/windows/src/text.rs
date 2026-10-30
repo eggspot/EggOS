@@ -204,6 +204,50 @@ pub fn compare_ordinal(a: &[u16], b: &[u16], ignore_case: bool) -> core::cmp::Or
     a.iter().map(fold).cmp(b.iter().map(fold))
 }
 
+fn is_digit(unit: u16) -> bool {
+    (u16::from(b'0')..=u16::from(b'9')).contains(&unit)
+}
+
+/// Compares UTF-16 strings as `StrCmpLogicalW` does: runs of digits as the numbers they
+/// spell (leading zeros aside), everything else unit by unit ignoring case (after [`upper`]).
+pub fn compare_logical(a: &[u16], b: &[u16]) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+    let digits_from = |text: &[u16], start: usize| {
+        start
+            + text[start..]
+                .iter()
+                .take_while(|unit| is_digit(**unit))
+                .count()
+    };
+    let without_zeros = |digits: &[u16]| -> usize {
+        digits
+            .iter()
+            .position(|unit| *unit != u16::from(b'0'))
+            .unwrap_or(digits.len())
+    };
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let ordering = if is_digit(a[i]) && is_digit(b[j]) {
+            let (end_a, end_b) = (digits_from(a, i), digits_from(b, j));
+            let number_a = &a[i..end_a][without_zeros(&a[i..end_a])..];
+            let number_b = &b[j..end_b][without_zeros(&b[j..end_b])..];
+            (i, j) = (end_a, end_b);
+            number_a
+                .len()
+                .cmp(&number_b.len())
+                .then_with(|| number_a.cmp(number_b))
+        } else {
+            let ordering = upper(a[i]).cmp(&upper(b[j]));
+            (i, j) = (i + 1, j + 1);
+            ordering
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}
+
 /// Writes the EggOS path `path` (UTF-8, no NUL) in Windows' form through `out`: `/` is `\`,
 /// and an absolute path starts with the drive `C:`.
 pub fn windows_path(path: &[u8], out: &mut impl FnMut(char)) {
@@ -399,6 +443,29 @@ mod tests {
         assert_eq!(
             compare_ordinal(&wide("é"), &wide("É"), true),
             Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn logical_comparison_reads_digit_runs_as_numbers_and_ignores_case() {
+        use core::cmp::Ordering;
+        let compare = |a: &str, b: &str| {
+            let a: Vec<u16> = a.encode_utf16().collect();
+            let b: Vec<u16> = b.encode_utf16().collect();
+            compare_logical(&a, &b)
+        };
+        assert_eq!(compare("file2.txt", "file10.txt"), Ordering::Less);
+        assert_eq!(compare("file10.txt", "file2.txt"), Ordering::Greater);
+        assert_eq!(compare("File2", "file2"), Ordering::Equal);
+        assert_eq!(compare("file02", "file2"), Ordering::Equal);
+        assert_eq!(compare("a100b", "a99c"), Ordering::Greater);
+        assert_eq!(compare("abc", "abcd"), Ordering::Less);
+        assert_eq!(compare("", ""), Ordering::Equal);
+        assert_eq!(compare("2", "a"), Ordering::Less);
+        assert_eq!(compare("x9y", "x9z"), Ordering::Less);
+        assert_eq!(
+            compare("123456789012345678901234567890", "99"),
+            Ordering::Greater
         );
     }
 

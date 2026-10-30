@@ -41,6 +41,7 @@ const MINIMUM_OUTSIDE: (i32, i32) = (160, 92);
 const DOUBLE_CLICK_SQUARE: i32 = 8;
 const MOUSE_BUTTONS: i32 = 3;
 const ICON_SIZE: i32 = 32;
+const CONTEXT_MENU: u32 = 0x007b;
 const SMALL_ICON_SIZE: i32 = 16;
 
 #[repr(C)]
@@ -368,6 +369,7 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     window.class_style = class_of.style;
     window.enabled = style & WS_DISABLED == 0;
     window.thread = thread_environment::thread_id();
+    window.creation_sequence = next_sequence();
     let Some(Some(handle)) = with(|gui| gui.windows.insert(window)) else {
         // SAFETY: the window never reached the table, so nothing holds its buffer.
         unsafe { device.destroy(&buffer) };
@@ -433,6 +435,14 @@ pub fn remove_window(handle: usize) {
         gui.contexts.retain(|context| context.window != handle);
         gui.timers.kill_window(handle);
         gui.drawn.forget_window(handle);
+        if let Some(extras) = gui.made_extras_mut() {
+            extras.properties.forget(handle);
+            for slot in &mut extras.hot_keys {
+                if slot.is_some_and(|hot_key| hot_key.window == handle) {
+                    *slot = None;
+                }
+            }
+        }
         let window = gui.windows.remove(handle)?;
         if window.is_child() {
             let parent = window.parent;
@@ -455,6 +465,9 @@ pub fn remove_window(handle: usize) {
             }
         } else {
             super::menu::forget_window(gui, handle, window.menu);
+            if window.system_menu != 0 {
+                super::menu::destroy(gui, window.system_menu);
+            }
             if gui.active_root == handle {
                 gui.active_root = 0;
             }
@@ -521,6 +534,11 @@ struct ChildRequest<'a> {
 
 static NEXT_SEQUENCE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
 
+/// The next window creation sequence number: windows made or raised later come later.
+pub(super) fn next_sequence() -> u32 {
+    NEXT_SEQUENCE.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+
 fn child_bounds(x: i32, y: i32, width: i32, height: i32) -> Rect {
     let or_zero = |value: i32| if value == CW_USE_DEFAULT { 0 } else { value };
     Rect::sized(
@@ -543,8 +561,7 @@ fn insert_child(mut window: Window, text: &[u16]) -> Result<usize, u32> {
             return Err(error::NOT_SUPPORTED);
         }
         window.thread = thread_environment::thread_id();
-        window.creation_sequence =
-            NEXT_SEQUENCE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        window.creation_sequence = next_sequence();
         let handle = gui.windows.insert(window).ok_or(error::NOT_ENOUGH_MEMORY)?;
         if !window_text::store(gui, handle, text) {
             gui.windows.remove(handle);
@@ -767,11 +784,34 @@ unsafe extern "efiapi" fn adjust_window_rect(rect: *mut Win32Rect, style: u32, m
     unsafe { adjust_window_rect_ex(rect, style, menu, 0) }
 }
 
+fn cut(value: usize, size: usize) -> usize {
+    match size {
+        4 => value as u32 as usize,
+        _ => value,
+    }
+}
+
+/// A system control's procedure as the program sees it (D178): the program's own that
+/// subclassed it, else the layer's entry that runs the control's.
+fn control_procedure(window: &Window) -> Option<usize> {
+    match window.procedure {
+        Procedure::Control(..) => Some(match window.subclass {
+            0 => super::subclass::entry_address(),
+            subclass => subclass,
+        }),
+        _ => None,
+    }
+}
+
 fn window_long(handle: usize, index: i32, size: usize) -> usize {
     let value = try_with(|gui| {
-        gui.window(handle)?
-            .long(index, size)
-            .ok_or(error::INVALID_INDEX)
+        let window = gui.window(handle)?;
+        if index == windows::index::PROCEDURE
+            && let Some(procedure) = control_procedure(window)
+        {
+            return Ok(cut(procedure, size));
+        }
+        window.long(index, size).ok_or(error::INVALID_INDEX)
     });
     match value {
         Ok(value) => value,
@@ -780,8 +820,20 @@ fn window_long(handle: usize, index: i32, size: usize) -> usize {
 }
 
 fn set_window_long(handle: usize, index: i32, size: usize, value: usize) -> usize {
+    let entry = super::subclass::entry_address();
     let previous = try_with(|gui| {
-        gui.window_mut(handle)?
+        let window = gui.window_mut(handle)?;
+        if index == windows::index::PROCEDURE
+            && let Some(procedure) = control_procedure(window)
+        {
+            window.subclass = match value {
+                0 => return Err(error::INVALID_PARAMETER),
+                value if value == entry => 0,
+                value => value,
+            };
+            return Ok(cut(procedure, size));
+        }
+        window
             .set_long(index, size, value)
             .ok_or(error::INVALID_INDEX)
     });
@@ -813,7 +865,9 @@ extern "efiapi" fn set_window_long_w(handle: usize, index: i32, value: i32) -> i
 /// What `DefWindowProcW` does: `WM_CLOSE` destroys the window, `WM_SYSCOMMAND`'s `SC_CLOSE`
 /// sends `WM_CLOSE`, `WM_PAINT` validates (and shows) what waits to be painted,
 /// `WM_ERASEBKGND` paints the class's background, `WM_NCCREATE` agrees, the window's text is
-/// kept and read, and a child passes system keys to its parent; the rest is 0.
+/// kept and read, a child passes system keys and `WM_CONTEXTMENU` to its parent, and the right
+/// button's release asks for a context menu (`WM_CONTEXTMENU` at the pointer on the screen,
+/// D178); the rest is 0.
 pub extern "efiapi" fn def_window_proc_w(
     handle: usize,
     number: u32,
@@ -826,12 +880,23 @@ pub extern "efiapi" fn def_window_proc_w(
         // SAFETY: `WM_GETTEXT`'s contract: `lParam` holds `wParam` writable units.
         message::GET_TEXT => unsafe { window_text::get_default(handle, wparam, lparam) },
         message::GET_TEXT_LENGTH => window_text::length_default(handle),
-        message::SYS_KEY_DOWN | message::SYS_KEY_UP | message::SYS_CHAR => {
+        message::SYS_KEY_DOWN | message::SYS_KEY_UP | message::SYS_CHAR | CONTEXT_MENU => {
             let parent = with(|gui| gui.windows.get(handle).map_or(0, |window| window.parent));
             match parent {
                 Some(parent) if parent != 0 => send(parent, number, wparam, lparam),
                 _ => 0,
             }
+        }
+        message::RIGHT_BUTTON_UP => {
+            let (x, y) = (
+                lparam as u16 as i16 as i32,
+                (lparam >> 16) as u16 as i16 as i32,
+            );
+            if let Ok((left, top)) = super::placement::client_origin(handle) {
+                let at = point_parameter(left.saturating_add(x), top.saturating_add(y));
+                send(handle, CONTEXT_MENU, handle, at);
+            }
+            0
         }
         message::NC_CREATE => 1,
         message::CLOSE => {
@@ -1005,30 +1070,8 @@ extern "efiapi" fn post_message_w(
     wparam: usize,
     lparam: usize,
 ) -> Bool {
-    let posted = try_with(|gui| {
-        let thread = match handle {
-            0 => thread_environment::thread_id(),
-            handle => gui.window(handle)?.thread,
-        };
-        let message = Message {
-            window: handle,
-            message: number,
-            wparam,
-            lparam,
-            time: now_ms(),
-            point: (0, 0),
-            thread,
-        };
-        match gui.queue.post(message) {
-            true => Ok(()),
-            false => Err(error::NOT_ENOUGH_QUOTA),
-        }
-    });
-    match posted {
-        Ok(()) => {
-            gui::wake();
-            TRUE
-        }
+    match gui::post(handle, number, wparam, lparam) {
+        Ok(()) => TRUE,
         Err(code) => fail(code, FALSE),
     }
 }

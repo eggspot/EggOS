@@ -58,7 +58,8 @@ pub(super) fn content_origin(root: usize) -> Result<(i32, i32), u32> {
     ))
 }
 
-fn client_origin(window: usize) -> Result<(i32, i32), u32> {
+/// The top-left of `window`'s client area on the screen.
+pub(super) fn client_origin(window: usize) -> Result<(i32, i32), u32> {
     let (root, origin) = try_with(|gui| {
         let placement =
             windows::client_placement(&gui.windows, window).ok_or(error::INVALID_WINDOW_HANDLE)?;

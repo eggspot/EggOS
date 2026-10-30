@@ -38,7 +38,12 @@ fn page_range(address: usize, size: usize) -> Option<(usize, usize)> {
     Some((start, end - start))
 }
 
-extern "efiapi" fn virtual_alloc(address: usize, size: usize, kind: u32, protect: u32) -> usize {
+pub(super) extern "efiapi" fn virtual_alloc(
+    address: usize,
+    size: usize,
+    kind: u32,
+    protect: u32,
+) -> usize {
     let (Some(prot), Some((start, length))) = (protection(protect), page_range(address, size))
     else {
         return fail(error::INVALID_PARAMETER, 0);
@@ -76,7 +81,7 @@ extern "efiapi" fn virtual_alloc(address: usize, size: usize, kind: u32, protect
     mapped
 }
 
-extern "efiapi" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
+pub(super) extern "efiapi" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
     match kind {
         MEM_RELEASE if size == 0 => {
             let length = RESERVATIONS.with(|table| {

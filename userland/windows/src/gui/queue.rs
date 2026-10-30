@@ -40,6 +40,17 @@ pub struct Filter {
 /// The window filter `-1`: messages posted to the thread, not to a window.
 pub const THREAD_MESSAGES: usize = usize::MAX;
 
+/// `GetQueueStatus`'s `QS_` bits for the kinds of message waiting.
+pub mod status {
+    pub const KEY: u32 = 0x1;
+    pub const MOUSE_MOVE: u32 = 0x2;
+    pub const MOUSE_BUTTON: u32 = 0x4;
+    pub const POST_MESSAGE: u32 = 0x8;
+    pub const TIMER: u32 = 0x10;
+    pub const PAINT: u32 = 0x20;
+    pub const HOT_KEY: u32 = 0x80;
+}
+
 impl Filter {
     pub fn accepts_number(&self, number: u32) -> bool {
         (self.first == 0 && self.last == 0) || (self.first..=self.last).contains(&number)
@@ -208,6 +219,45 @@ impl Queue {
         })
     }
 
+    /// The kinds of message waiting for `thread` as [`status`] bits: posted messages (a posted
+    /// `WM_HOTKEY` as a hot key, a `WM_QUIT` as a posted message), keys, mouse moves and mouse
+    /// buttons.
+    pub fn status(&self, thread: u32) -> u32 {
+        let mine = Filter {
+            thread,
+            ..Filter::default()
+        };
+        let mut bits = 0;
+        for index in 0..self.posted.length {
+            let posted = self.posted.at(index);
+            if mine.accepts(posted) {
+                bits |= match posted.message {
+                    message::HOT_KEY => status::HOT_KEY,
+                    _ => status::POST_MESSAGE,
+                };
+            }
+        }
+        for index in 0..self.input.length {
+            let input = self.input.at(index);
+            if mine.accepts(input) {
+                bits |= match input.message {
+                    message::MOUSE_MOVE => status::MOUSE_MOVE,
+                    message::FIRST_MOUSE..=message::LAST_MOUSE => status::MOUSE_BUTTON,
+                    _ => status::KEY,
+                };
+            }
+        }
+        if self
+            .quits
+            .iter()
+            .flatten()
+            .any(|(asking, _)| *asking == thread)
+        {
+            bits |= status::POST_MESSAGE;
+        }
+        bits
+    }
+
     /// Drops everything waiting for `window`, which is gone.
     pub fn forget(&mut self, window: usize) {
         let filter = Filter {
@@ -319,6 +369,28 @@ mod tests {
             "the oldest request was replaced"
         );
         assert_eq!(queue.take(&mine(9), true).unwrap().wparam, 9);
+    }
+
+    #[test]
+    fn the_status_names_the_kinds_of_message_waiting_for_a_thread() {
+        let mut queue = Box::new(Queue::new());
+        assert_eq!(queue.status(5), 0);
+        let of = |thread: u32, number: u32| Message {
+            thread,
+            ..message(1, number, 0)
+        };
+        queue.post(of(5, 0x400));
+        queue.post(of(6, message::HOT_KEY));
+        queue.post_input(of(5, message::KEY_DOWN));
+        queue.post_input(of(5, message::MOUSE_MOVE));
+        queue.post_input(of(6, message::LEFT_BUTTON_DOWN));
+        assert_eq!(
+            queue.status(5),
+            status::POST_MESSAGE | status::KEY | status::MOUSE_MOVE
+        );
+        assert_eq!(queue.status(6), status::HOT_KEY | status::MOUSE_BUTTON);
+        queue.quit(7, 0);
+        assert_eq!(queue.status(7), status::POST_MESSAGE);
     }
 
     #[test]

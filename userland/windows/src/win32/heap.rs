@@ -2,7 +2,8 @@
 //! size classes, each class a free list, carved from 1 MiB chunks; larger blocks are mappings
 //! of their own. Every block starts with a 16-byte header holding its class and the size asked
 //! for, so blocks stay 16-byte aligned as Windows' are, and a pointer the heap did not hand out
-//! is refused instead of corrupting it. No system call on the common path.
+//! is refused instead of corrupting it. No system call on the common path. Its size classes
+//! make it what `HeapQueryInformation` calls a low-fragmentation heap (D178).
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail};
 use crate::library::Export;
@@ -310,6 +311,31 @@ extern "efiapi" fn heap_destroy(_heap: usize) -> Bool {
     TRUE
 }
 
+const HEAP_COMPATIBILITY_INFORMATION: u32 = 0;
+const LOW_FRAGMENTATION_HEAP: u32 = 2;
+
+unsafe extern "efiapi" fn heap_query_information(
+    _heap: usize,
+    class: u32,
+    information: *mut u32,
+    length: usize,
+    returned: *mut usize,
+) -> Bool {
+    if class != HEAP_COMPATIBILITY_INFORMATION {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    if !returned.is_null() {
+        // SAFETY: the caller passes a writable `SIZE_T`.
+        unsafe { returned.write(core::mem::size_of::<u32>()) };
+    }
+    if information.is_null() || length < core::mem::size_of::<u32>() {
+        return fail(error::INSUFFICIENT_BUFFER, FALSE);
+    }
+    // SAFETY: the caller passes `length` writable bytes, at least a `ULONG`.
+    unsafe { information.write_unaligned(LOW_FRAGMENTATION_HEAP) };
+    TRUE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"GetProcessHeap" => get_process_heap,
     b"HeapAlloc" => heap_alloc,
@@ -318,6 +344,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"HeapReAlloc" => heap_realloc,
     b"HeapCreate" => heap_create,
     b"HeapDestroy" => heap_destroy,
+    b"HeapQueryInformation" => heap_query_information,
     b"LocalAlloc" => local_alloc,
     b"LocalFree" => local_free,
     b"GlobalAlloc" => local_alloc,

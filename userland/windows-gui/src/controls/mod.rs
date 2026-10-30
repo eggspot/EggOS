@@ -1,14 +1,23 @@
 //! The system's controls (`BUTTON`, `EDIT`, `STATIC`, `LISTBOX`) as `docs/ux/windows-controls-v0.3.md`
 //! designs them (D145): each drawn by one function from a [`Palette`] (light inside a program,
 //! dark in EggOS's own dialogs), and the state each one keeps as a model the layer drives and
-//! the boot test's host render paints from.
+//! the boot test's host render paints from. comctl32's common controls (D178) follow sections
+//! 20-28 of the design, with their own palette roles (`common`).
 
 pub mod button;
 pub mod combo_box;
+pub mod common;
 pub mod edit;
+pub mod image;
 pub mod label;
 pub mod list_box;
+pub mod list_view;
+pub mod progress;
 pub mod scroll_bar;
+pub mod status_bar;
+pub mod tab_control;
+pub mod toolbar;
+pub mod tree_view;
 
 use crate::surface::{Rect, Surface};
 use crate::text::{self, CELL_HEIGHT, CELL_WIDTH, Cell, Reading};

@@ -319,7 +319,7 @@ pub fn set_last_error(code: u32) {
 }
 
 #[cfg(target_arch = "x86_64")]
-extern "efiapi" fn get_last_error() -> u32 {
+pub(super) extern "efiapi" fn get_last_error() -> u32 {
     let code: u32;
     // SAFETY: as in `set_last_error`; reading the current thread's TEB field.
     unsafe {
@@ -334,7 +334,7 @@ extern "efiapi" fn get_last_error() -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-extern "efiapi" fn get_last_error() -> u32 {
+pub(super) extern "efiapi" fn get_last_error() -> u32 {
     // SAFETY: as in `set_last_error`; reading the current thread's TEB field.
     unsafe { ((current() + teb::LAST_ERROR) as *const u32).read() }
 }

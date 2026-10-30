@@ -51,6 +51,13 @@ pub fn icon_handle(system: bool, id: usize) -> usize {
     }
 }
 
+/// Whether `handle` is one of [`icon_handle`]'s or [`cursor_handle`]'s: a shared system icon or
+/// cursor, which has no image of its own (D178).
+pub fn is_system_icon(handle: usize) -> bool {
+    (ICON_BASE..ICON_BASE + RESOURCE_IDS).contains(&handle)
+        || (CURSOR_BASE..CURSOR_BASE + RESOURCE_IDS).contains(&handle)
+}
+
 /// The server's pointer shape for cursor `handle`: the arrow for every cursor the server has
 /// no shape for, and for none.
 pub fn pointer_shape(handle: usize) -> u32 {
@@ -200,8 +207,8 @@ pub const SIMPLE_REGION: usize = 2;
 
 /// A device context: the window it draws on (0 for one that draws nowhere) or, for a memory
 /// context, the bitmap selected into it (D174), where it may draw (`clip`, inside
-/// `base_clip`, which `SelectClipRgn(NULL)` returns to), what it drew, and its selected objects
-/// and text state.
+/// `base_clip`, which `SelectClipRgn(NULL)` returns to), what it drew, its selected objects
+/// and text state, and the point pattern brushes are tiled from (D178).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceContext {
     pub window: usize,
@@ -218,6 +225,7 @@ pub struct DeviceContext {
     pub background_colour: u32,
     pub background_mode: u32,
     pub position: (i32, i32),
+    pub brush_origin: (i32, i32),
 }
 
 impl DeviceContext {
@@ -240,6 +248,7 @@ impl DeviceContext {
             background_colour: 0x00ff_ffff,
             background_mode: OPAQUE,
             position: (0, 0),
+            brush_origin: (0, 0),
         }
     }
 
@@ -353,6 +362,9 @@ mod tests {
         assert_eq!(pointer_shape(0), 0);
         assert_ne!(icon_handle(true, 32512), 0);
         assert_ne!(icon_handle(false, 0x4_0000), 0);
+        assert!(is_system_icon(icon_handle(true, 32512)));
+        assert!(is_system_icon(cursor_handle(true, cursor::I_BEAM)));
+        assert!(!is_system_icon(0x0130_0000));
     }
 
     #[test]

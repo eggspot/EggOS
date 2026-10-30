@@ -18,6 +18,8 @@ mod c_text;
 #[cfg(any(test, runs_windows_programs))]
 mod calendar;
 #[cfg(any(test, runs_windows_programs))]
+mod com;
+#[cfg(any(test, runs_windows_programs))]
 mod command_line;
 #[cfg(any(test, runs_windows_programs))]
 mod counted_print;
@@ -38,13 +40,23 @@ mod gui;
 #[cfg(any(test, runs_windows_programs))]
 mod image;
 #[cfg(any(test, runs_windows_programs))]
+mod ini;
+#[cfg(any(test, runs_windows_programs))]
+mod known_folders;
+#[cfg(any(test, runs_windows_programs))]
 mod library;
 #[cfg(runs_windows_programs)]
 mod linux;
 #[cfg(any(test, runs_windows_programs))]
+mod locale;
+#[cfg(any(test, runs_windows_programs))]
 mod pe;
 #[cfg(any(test, runs_windows_programs))]
+mod process_list;
+#[cfg(any(test, runs_windows_programs))]
 mod scan;
+#[cfg(any(test, runs_windows_programs))]
+mod sockets;
 #[cfg(runs_windows_programs)]
 mod start;
 #[cfg(any(test, runs_windows_programs))]
@@ -52,9 +64,13 @@ mod stream;
 #[cfg(any(test, runs_windows_programs))]
 mod text;
 #[cfg(any(test, runs_windows_programs))]
+mod trash;
+#[cfg(any(test, runs_windows_programs))]
 mod unwind;
 #[cfg(any(test, runs_windows_programs))]
 mod user_shared_data;
+#[cfg(any(test, runs_windows_programs))]
+mod version_info;
 #[cfg(runs_windows_programs)]
 mod win32;
 

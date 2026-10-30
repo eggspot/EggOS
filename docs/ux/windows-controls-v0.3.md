@@ -12,6 +12,8 @@ Primitives: `fill`, `rounded` with an inset table, 1 px rectangles, `pixel`, `gl
 
 Sections 10-19 were added for the Real apps track's first Windows app, Pegs from Simon Tatham's Puzzles (D174); sections 0-9 stand, except where a later section says it replaces a rule.
 
+Sections 20-31 were added for the Real apps track's next Windows app, AutoHotkey v2.0.31 (`AutoHotkey64.exe`, D178): comctl32's common controls (status bar, progress bar, tab control, list view with its header, tree view, toolbar, image lists) and STATIC pictures; sections 0-19 stand, except where a later section says it replaces a rule.
+
 ## 0. Two palettes, one set of controls
 
 **Decision: a program's client area, its menu bar and its drop-downs are light (Win32's
@@ -816,3 +818,589 @@ pointer; `WM_LBUTTONDBLCLK` at 399 and 401 ms. Section 18's About and Custom dia
 at 400x148 and 368x148, the combo open above included. The QEMU boot test runs `pegs.exe`:
 it opens `Help > About`, then `Type > Custom...`, opens the combo, chooses `Random`, presses
 `OK`, and each `screendump` is compared with the host's render.
+
+## 20. Common controls: shared rules and palette
+
+The six comctl32 classes (`msctls_statusbar32`, `msctls_progress32`, `SysTabControl32`,
+`SysListView32`, `SysHeader32`, `SysTreeView32`, `ToolbarWindow32`) are registered when the
+layer starts; `InitCommonControlsEx` returns `TRUE` whatever `dwICC` asks. Common controls only
+ever live inside programs, so they are drawn with the **Light** palette; the Dark column below
+exists for completeness and is never shown in this item. Palette rows added to section 0's
+table (Light values are Windows 10's themed constants):
+
+| Role | Light | Dark |
+|---|---|---|
+| `selection.inactive` / `selection.inactive.text` | `D9D9D9` / `000000` | `progress.track` `#26303F` / `text` |
+| `bar.track` / `bar.border` / `bar.fill` | `E6E6E6` / `BCBCBC` / `06B025` | `progress.track` / `button.border` / `button.primary` |
+| `bar.error` / `bar.paused` | `E81123` / `FFB900` | `E81123` / `FFB900` |
+| `tab.fill` / `tab.hover.fill` / `tab.border` | `F0F0F0` / `D8EAF9` / `D9D9D9` | `button.bg` / `button.hover` / `button.border` |
+| `page.fill` | `FFFFFF` | `menu.bg` |
+| `header.fill` / `header.hover.fill` / `header.pressed.fill` / `header.line` | `FFFFFF` / `D9EBF9` / `BCDCF4` / `E5E5E5` | `field.bg` / `button.hover` / `button.pressed` / `button.border` |
+| `tree.line` | `A0A0A0` | `text.dim` |
+
+Rules shared by sections 21-28, on top of section 1:
+
+- **Rect.** Each control is exactly the rect the program gave, except the docked ones (status
+  bar, toolbar): with neither `CCS_NOPARENTALIGN` nor `CCS_NORESIZE`, a `CCS_TOP` control is
+  `(0, 0, client_w, H)` and a `CCS_BOTTOM` one `(0, client_h - H, client_w, H)` of its parent's
+  client, `H` its own height (21, 26), set at creation, on every `WM_SIZE` the control itself
+  receives (Win32's rule: the program forwards its parent's, as AutoHotkey does) and on
+  `TB_AUTOSIZE`; `CCS_NOPARENTALIGN` keeps the given x and y, `CCS_NORESIZE` the given w and h.
+- **Notifications** are `WM_NOTIFY`, sent (not posted) to the parent window with an `NMHDR`
+  (`hwndFrom` the control, `idFrom` its `GetDlgCtrlID`, `code`) and the structure each code
+  names; only the W codes exist (`WM_NOTIFYFORMAT` is answered `NFR_UNICODE`). `NM_CUSTOMDRAW`
+  is never sent, tooltips never exist, `*_GETDISPINFOW` is never asked (an `LPSTR_TEXTCALLBACK`
+  text draws as empty and `I_IMAGECALLBACK` as no image; listed). `WM_CTLCOLOR*` is not sent
+  for common controls (Win32 does not either); colours come from their own messages.
+- **Disabled** (`WS_DISABLED`, or a disabled ancestor): text `text.disabled`, no selection fill
+  (the selected row keeps only its text), no hover, the pointer ignored, not focusable.
+- **Hover** looks (tab, header, toolbar button, scroll bars) exist only while the pointer is
+  inside the program's window (section 1), so a screendump taken with the pointer outside the
+  window shows none; nothing blinks and no timer changes a pixel (scroll-bar repeats of section
+  14 need the button held).
+- **Focus.** A left button-down anywhere inside a focusable common control focuses it before
+  anything else happens (the list's rows, header or empty space; the tree's buttons, labels or
+  empty space; the tab row or page frame). Windows leaves the focus alone for a tree's +/- box;
+  EggOS focuses, so the keyboard always follows the pointer (D178). Toolbars, status bars and
+  progress bars are never focused; `WS_TABSTOP` on them is ignored.
+- **Text** is one line of Egg Mono, cut with section 1's `...` rule at its room; `&` is a
+  plain glyph in common controls (no mnemonics, as Win32).
+- **Scroll bars** inside a list view or tree view are section 14's 16 px bars, drawn inside the
+  1 px border, the vertical one at the right over the full inner height (less 16 when the
+  horizontal one shows), the horizontal one at the bottom, and the 16x16 size box at the
+  corner when both show. The wheel is out of scope (listed).
+
+## 21. Status bar
+
+**Height 24** (`H` of section 20; `SB_SETMINHEIGHT` is accepted and ignored), docked at the
+bottom (`CreateStatusWindowW` and the class default `CCS_BOTTOM`; `CCS_TOP` docks at the top).
+The whole rect is filled `surface` (`SB_SETBKCOLOR` replaces it; `CLR_DEFAULT` restores). No
+line along its top, no size grip: `SBARS_SIZEGRIP` draws nothing and reserves nothing, because
+the window server resizes windows by their frame (listed).
+
+**Parts.** `SB_SETPARTS(n, edges)` (`n` 1..256) gives right edges in the bar's own coordinates;
+`-1` means the bar's width, and an edge is re-read on every resize so `-1` follows it. Part `i`
+is `(left_i, 0, right_i - left_i, 24)` with `left_0 = 0` and `left_i = right_{i-1}`; a part whose
+left edge is at or beyond the width is not drawn. Between parts, a 1 px `menu.separator`
+column at `right_i - 1`, rows 2..21, after every part but the last; `SBT_NOBORDERS` on a part
+drops the column after it. `SBT_POPOUT` and `SBT_OWNERDRAW` draw as plain text (listed).
+Without `SB_SETPARTS`, one part with right edge `-1`. `SB_SIMPLE TRUE` shows one full-width
+part with the text set for part 255 (`SB_SIMPLE FALSE` returns to the parts, their texts kept).
+
+**Text** (`SB_SETTEXTW`, `LOBYTE(wParam)` the part, `HIBYTE` the drawing type; `SB_GETTEXTW`,
+`SB_GETTEXTLENGTHW`, `SB_GETPARTS`, `SB_GETRECT` as Win32): split at tab characters into up to
+three pieces; the first is left-aligned with its cell at `left + 6`, the second centred at
+`left + (w - 8n) / 2`, the third right-aligned with its last cell ending at `right - 6`; pieces
+after the third are dropped. Cell top 4. Room for each piece is `w - 12`, with `...`; pieces
+that would overlap are drawn in order and the later one wins (as Win32 lets them collide). An
+icon set with `SB_SETICON` (16x16, drawn by section 27's rule) sits at `(left + 4, 4)` and moves
+the first piece's cell to `left + 24` (room `w - 30`); `SB_GETICON` returns it. Text colour
+`text` (`text.disabled` when disabled). Pointer: `Arrow`; clicks fall through to nothing
+(`NM_CLICK`, `NM_DBLCLK` from a status bar are not sent; listed).
+
+## 22. Progress bar
+
+The rect: a 1 px `bar.border` rectangle, inside it the track `bar.track`, and the fill
+`bar.fill`. Range `min..max` (`PBM_SETRANGE` with 16-bit `LOWORD`/`HIWORD` of `lParam`,
+`PBM_SETRANGE32`, `PBM_GETRANGE`; default 0..100; `max <= min` is made `min + 1`), position
+`pos` clamped into it (`PBM_SETPOS` returns the previous position, `PBM_GETPOS`,
+`PBM_DELTAPOS`, `PBM_SETSTEP` default 10, `PBM_STEPIT` adds the step and wraps to `min` when it
+would pass `max`, as Win32). Horizontal: the fill is `(x + 1, y + 1, (w - 2) * (pos - min) /
+(max - min), h - 2)`, integer division (floor), so 40 of 100 in a 424 px bar fills 168 px and 60
+fills 253. `PBS_VERTICAL`: the fill is `(x + 1, y + h - 1 - f, w - 2, f)` with `f = (h - 2) *
+(pos - min) / (max - min)`, growing upwards. `PBS_SMOOTH` and its absence look the same (no
+segments). **`PBS_MARQUEE`**: no animation, ever; while `PBM_SETMARQUEE TRUE` is in force a
+block one third of the track long, `(w - 2) / 3` px starting at `x + 1 + (w - 2) / 3` (the
+middle third; vertical: the middle third of the height), is filled `bar.fill` and never moves;
+`PBM_SETMARQUEE FALSE` shows the empty track. `PBM_SETBARCOLOR` replaces `bar.fill` and
+`PBM_SETBKCOLOR` `bar.track` (`CLR_DEFAULT` restores; `PBM_GETBARCOLOR`/`GETBKCOLOR` answer).
+`PBM_SETSTATE`: `PBST_NORMAL` `bar.fill`, `PBST_ERROR` `bar.error`, `PBST_PAUSED` `bar.paused`
+(a program colour from `PBM_SETBARCOLOR` wins over the state; `PBM_GETSTATE` answers). The
+border and track never change with state. Disabled: the same pixels (Win32 greys nothing).
+Never focused, no notifications; pointer `Arrow`.
+
+## 23. Tab control
+
+**The tab row** is the control's top 24 rows; **the page** is the rest. Tabs run from `x + 2`
+in insertion order, each `8n + 16` wide (`n` its label's cells) or `TCM_SETITEMSIZE`'s `cx`
+with `TCS_FIXEDWIDTH` (default 96; the label centred), with no gap. An unselected tab `i` at
+`tx` is `(tx, y + 2, tw, 22)`: fill `tab.fill`, a 1 px `tab.border` line on its top row and its
+left and right columns (no bottom), label cell at `tx + 8`, cell top `y + 5`, room `tw - 16`.
+The **selected tab** is `(tx - 2, y, tw + 4, 24)`: fill `page.fill`, the same three border
+lines, label at `tx + 8`, cell top `y + 4`; it is drawn last, over 2 px of each neighbour, and
+joins the page: the page frame's top line is not drawn under its interior (columns `tx - 1` to
+`tx + tw`). **The page frame** is a 1 px `tab.border` rectangle at `(x, y + 23, w, h - 23)`,
+filled `page.fill` inside; the frame's top row is the selected tab's bottom. Hover: an
+unselected tab under the pointer fills `tab.hover.fill`. Disabled control: labels
+`text.disabled`, no hover. Tabs whose rect would pass `x + w` are not drawn, nor those after
+them; they stay selectable by keyboard and message, and a selected tab that is not drawn leaves
+the frame's top line whole (no scroll arrows; listed). Focus (the control is focusable, a click
+on a tab or the page frame focuses it, `TCS_FOCUSNEVER` makes a click leave the focus alone):
+the dotted rect on the outline of the selected tab's rect inset 3. Pointer: `Arrow`.
+
+**`TCM_ADJUSTRECT`** with `FALSE` turns the control rect `(x, y, w, h)` into the display rect
+`(x + 4, y + 28, w - 8, h - 32)`; with `TRUE` it adds the same back. `TCM_GETITEMRECT` answers
+the tab's rect above (selected or not), `TCM_HITTEST` the tab under a point (`TCHT_ONITEM`) or
+-1, `TCM_GETROWCOUNT` 1. `TCS_BUTTONS`, `TCS_MULTILINE`, `TCS_BOTTOM`, `TCS_VERTICAL`,
+`TCS_RIGHTJUSTIFY`, `TCS_OWNERDRAWFIXED`, `TCS_HOTTRACK`, `TCS_TOOLTIPS`, tab images
+(`TCM_SETIMAGELIST`, `TCIF_IMAGE`), `TCM_SETPADDING` and `TCM_SETMINTABWIDTH` have no effect:
+one row of plain tabs at the top (listed). `TCM_INSERTITEMW`, `TCM_SETITEMW`, `TCM_GETITEMW`
+(`TCIF_TEXT`, `TCIF_PARAM`), `TCM_DELETEITEM`, `TCM_DELETEALLITEMS`, `TCM_GETITEMCOUNT`,
+`TCM_GETCURSEL`, `TCM_GETCURFOCUS` as Win32; deleting the selected tab selects none (-1, no
+tab drawn selected, the frame whole). Inserting the first tab selects it, so a program's usual
+`TCM_SETCURSEL 0` afterwards changes nothing.
+
+| Input | Does |
+|---|---|
+| button-down on an enabled tab (whole rect) | focuses the control, then selects it (below) if it is not the selected one |
+| Left / Right while focused | the previous / next tab (clamped); Home / End the first / last |
+| Ctrl+Tab, Ctrl+PgDn / Ctrl+Shift+Tab, Ctrl+PgUp while **the control** is focused | the next / previous tab, wrapping. With the focus on a page control the keys reach that control: switching pages from inside a page is the program's job (AutoHotkey does it itself with `TCM_SETCURSEL`) |
+| Tab, Shift+Tab | section 1 (`IsDialogMessageW`); the tab control is one stop |
+| `TCM_SETCURSEL n` | selects without any notification, returns the previous index |
+| `TCM_SETCURFOCUS n` | selects with the notifications below (Win32's rule for non-button tabs) |
+
+**Selecting** by the user or `TCM_SETCURFOCUS`: `TCN_SELCHANGING` (an `NMHDR`; a nonzero
+return refuses and nothing changes), then the selection changes and the row is repainted, then
+`TCN_SELCHANGE`. The page's controls are the program's: it shows and hides them on
+`TCN_SELCHANGE` (AutoHotkey's `Tab3` does), whether they are the tab's child windows or its
+siblings; the tab control draws only the row, the frame and the page fill, and a page control
+over the page draws on top of it.
+
+## 24. List view, report view, and its header
+
+**Frame.** The rect filled `field.fill` (`LVM_SETBKCOLOR`; `CLR_NONE` is `field.fill`), a 1 px
+`field.border`, never changing with focus (`WS_EX_CLIENTEDGE` and `WS_BORDER` add nothing). The
+inner rect is the rect inset 1. **The header** is a real child window of class `SysHeader32`
+(`LVM_GETHEADER` returns it; `HDM_GETITEMCOUNT`, `HDM_GETITEMW`/`SETITEMW` with `HDI_TEXT`,
+`HDI_WIDTH`, `HDI_FORMAT`, `HDI_LPARAM`, `HDM_GETITEMRECT`, `HDM_HITTEST`, `HDM_LAYOUT`
+answering a 24-row rect, `HDM_ORDERTOARRAY` the identity: the header's items are the list's
+columns, so a width set through either is seen through both) at `(1, 1, inner_w, 24)` of the
+list (less 16 while the vertical scroll bar shows), **24 tall**; `LVS_NOCOLUMNHEADER` hides it
+(rows start at the inner top). Rows start under it: **row height 20**, row `i` at `inner_y +
+24 + 20 (i - top)` spanning the columns' total width `T = sum(col_w)` (at least the inner
+width for the fill), `V = (inner_h - 24) / 20` whole visible rows (at least 1), the partial row
+drawn clipped. Programs may create the header themselves (`CreateWindowExW` `SysHeader32`,
+`HDS_BUTTONS`, `HDS_HORZ`): the same look at the rect given.
+
+**Columns** (`LVM_INSERTCOLUMNW`, `LVM_SETCOLUMNW`, `LVM_GETCOLUMNW`, `LVM_DELETECOLUMN`,
+`LVM_SETCOLUMNWIDTH`, `LVM_GETCOLUMNWIDTH`; `LVCF_TEXT`, `LVCF_WIDTH`, `LVCF_FMT`,
+`LVCF_SUBITEM`; the first inserted column is always left-aligned, as Win32): column `c` at
+`cx = inner_x - hpos + (the sum of the widths of the columns before c)` (`hpos` the horizontal
+scroll offset in px, 0 unless scrolled),
+width `col_w`. Header text, cell top `header_y + 4`, and every cell's text, cell top `row_y +
+2`, share one placement: `LVCFMT_LEFT` at `cx + 6`, `LVCFMT_CENTER` at `cx + (col_w - 8n) /
+2`, `LVCFMT_RIGHT` ending at `cx + col_w - 6`; room `col_w - 12`, with `...`. The header: fill
+`header.fill`; a 1 px `header.line` divider column at `cx + col_w - 1`, rows `header_y + 4`
+to `header_y + 19`, after every column; a 1 px `header.line` line along the header's bottom row
+over the full inner width; the area after the last column is `header.fill` with no divider.
+An enabled, sortable header item (not `LVS_NOSORTHEADER`) under the pointer fills
+`header.hover.fill`, held `header.pressed.fill`; a release inside sends `LVN_COLUMNCLICK`
+(`NMLISTVIEW`, `iSubItem` the column, `iItem` -1; Win32's `HDN_ITEMCLICKW` goes from the header
+to the list only). `LVS_NOSORTHEADER`: plain header items, no hover, no notification. Dragging
+a divider to resize, `LVS_EX_HEADERDRAGDROP`, `HDF_SORTUP`/`SORTDOWN` arrows, `HDF_IMAGE`,
+`HDF_BITMAP`: no effect (listed). `LVSCW_AUTOSIZE` sets a column to `max over rows of 8n + 12`
+(plus 20 when the column is the first and the list has a small image list, plus 20 with
+`LVS_EX_CHECKBOXES`), `LVSCW_AUTOSIZE_USEHEADER` to the larger of that and the header text's
+`8n + 12`, and on the last column to the inner width left after the others (as Win32); an empty
+list gives 12 (or the header's). Column 0's width is at least 12.
+
+**Rows** (`LVM_INSERTITEMW`, `LVM_SETITEMW`/`GETITEMW` with `LVIF_TEXT`, `LVIF_IMAGE`,
+`LVIF_STATE`, `LVIF_PARAM`, `LVM_SETITEMTEXTW`/`GETITEMTEXTW`, `LVM_DELETEITEM`
+(`LVN_DELETEITEM`), `LVM_DELETEALLITEMS` (`LVN_DELETEALLITEMS`, then one `LVN_DELETEITEM` per
+row unless the program returned `TRUE`), `LVM_GETITEMCOUNT`, `LVM_GETNEXTITEM` with
+`LVNI_ALL`/`SELECTED`/`FOCUSED`, `LVM_GETSELECTEDCOUNT`, `LVM_SETITEMSTATE`/`GETITEMSTATE`,
+`LVM_ENSUREVISIBLE`, `LVM_GETTOPINDEX`, `LVM_GETCOUNTPERPAGE` `V`, `LVM_SCROLL`,
+`LVM_GETITEMRECT` (`LVIR_BOUNDS` the row over `T`, `LVIR_LABEL`/`LVIR_SELECTBOUNDS` the first
+cell, `LVIR_ICON` the 16x16 image rect), `LVM_GETSUBITEMRECT`, `LVM_HITTEST`,
+`LVM_SUBITEMHITTEST`, `LVM_SORTITEMS`/`SORTITEMSEX` (a stable merge sort calling the compare
+function), `LVM_SETSELECTIONMARK`/`GETSELECTIONMARK`, `LVM_SETITEMCOUNT` and `LVM_UPDATE`
+ignored, `LVM_REDRAWITEMS` repaints). A cell's text in `text` (`LVM_SETTEXTCOLOR`) on the row's
+fill (`LVM_SETTEXTBKCOLOR`, `CLR_NONE` the frame fill). The first column's cell: with a small
+image list (`LVM_SETIMAGELIST` `LVSIL_SMALL`; 16x16, section 27) the row's `iImage` at `(cx + 2,
+row_y + 2)` and the text's placement shifted right by 20 (room less 20); with
+`LVS_EX_CHECKBOXES` a section 2 check box (14x14, `box.*`) at `(cx + 3, row_y + 3)` before the
+image, shifting everything after it by 20; a row's check is state image 2 (`LVIS_STATEIMAGEMASK`,
+`INDEXTOSTATEIMAGEMASK(2)`), 1 is unchecked. `LVS_EX_GRIDLINES`: a 1 px `header.line` row along
+each row's bottom row over `T`, and a 1 px `header.line` column at each column's `cx + col_w - 1`
+from the header's bottom to the inner bottom. Subitem images, `LVCFMT_IMAGE`, `LVS_OWNERDATA`,
+`LVS_OWNERDRAWFIXED`, `LVS_EX_SUBITEMIMAGES`, `LVS_EX_DOUBLEBUFFER` (nothing to do), hot
+tracking, `LVS_EDITLABELS` and label editing, item tooltips, groups and tiles: no effect
+(listed). **Other views**: `LVS_ICON`, `LVS_SMALLICON` and `LVS_LIST` (and `LVM_SETVIEW`) draw as
+this report view without the header, one column as wide as the inner width holding each row's
+text and small image (the large list, `LVSIL_NORMAL`, is stored and not drawn; listed).
+
+| Row state | Fill / text | Where |
+|---|---|---|
+| plain | the frame fill / `text` | |
+| selected, list focused | `highlight` / `highlight.text` | the whole row over `min(T, inner_w)` with `LVS_EX_FULLROWSELECT`; else the first column's cell `(cx, row_y, col_w, 20)` |
+| selected, list not focused, `LVS_SHOWSELALWAYS` | `selection.inactive` / `selection.inactive.text` | the same area |
+| selected, not focused, no `LVS_SHOWSELALWAYS` | plain | |
+| focused item (`LVIS_FOCUSED`), list focused | plus the dotted rect on the area's outline, `highlight.text` on `highlight`, else `focus` | the same area |
+| hover | nothing (no hot tracking; deterministic) | |
+
+Selection: `LVS_SINGLESEL` keeps at most one selected row; otherwise Ctrl+click toggles a row,
+Shift+click selects the range from the anchor (the last row clicked or arrowed to without
+Shift), a plain click selects that row alone, Ctrl+A selects all. The **focused item** is one
+row (or none while the list is empty); on first focus with none, row 0. Every state change of a
+row sends `LVN_ITEMCHANGING` (`NMLISTVIEW`, `uChanged = LVIF_STATE`, `uOldState`, `uNewState`
+carrying the `LVIS_SELECTED` and `LVIS_FOCUSED` bits that differ; a nonzero return keeps that
+row as it was) then `LVN_ITEMCHANGED`, one pair per row: first the rows losing a bit in index
+order, then the rows gaining one in index order, so a program handling `LVN_ITEMCHANGED` with
+`uNewState & LVIS_SELECTED` sees the new row last. `LVM_SETITEMSTATE` sends the same pairs;
+`LVM_DELETEALLITEMS` sends none for the state. `NM_SETFOCUS`/`NM_KILLFOCUS` on focus.
+
+| Input | Does |
+|---|---|
+| button-down on a row (anywhere over `T` with `LVS_EX_FULLROWSELECT`, else in the first column's cell), or on its check box | focuses the list; the check box toggles the state image (one `LVN_ITEMCHANGING`/`CHANGED` pair with the `LVIS_STATEIMAGEMASK` bits, no selection change); else the row becomes the focused item and is selected per the Ctrl/Shift rules; scrolled fully into view |
+| button-down on empty space (below the rows, or right of `T` without full-row select) | focuses the list; without Ctrl or Shift every row is deselected (the focused item stays) |
+| release after a down inside the rows area | `NM_CLICK` (`NMITEMACTIVATE`, `iItem` the row or -1, `iSubItem` the column) |
+| double-click (section 17) on a row | `NM_DBLCLK`, then `LVN_ITEMACTIVATE` (`NMITEMACTIVATE`) |
+| Up / Down | the previous / next row becomes the focused item (clamped); without Ctrl it is selected alone (Shift extends from the anchor); with Ctrl only the focus moves |
+| Home / End, PgUp / PgDn | the first / last row, by `V - 1`; the same selection rules |
+| Space | with Ctrl toggles the focused item's selection; alone selects it alone; with `LVS_EX_CHECKBOXES` and no Ctrl toggles its check instead |
+| Enter | `NM_RETURN`, then `LVN_ITEMACTIVATE` for the focused item when one is selected |
+| Ctrl+A (not `LVS_SINGLESEL`) | selects every row |
+| a printable key | the next row after the focused item, wrapping, whose first column's first glyph matches case-insensitively (section 5's rule; no prefix accumulation, listed), selected alone |
+| any `WM_KEYDOWN` | `LVN_KEYDOWN` (`NMLVKEYDOWN`, `wVKey`) first, then the row above |
+
+After any change `top` follows section 5's rule for the focused item. **Scroll bars**: the
+vertical one when `count > V` (its `SCROLLINFO` rows, `V`, `top`), the horizontal one when `T >
+inner_w` (px, `inner_w`, `hpos`; `LVM_SCROLL` moves `hpos` by `dx`, clamped); the header scrolls
+with `hpos` and ends 16 px before the inner right edge while the vertical bar shows; the rows
+area loses 16 at the bottom while the horizontal bar shows (`V` shrinks). An empty list shows
+the frame and the header only. Pointer: `Arrow`.
+
+## 25. Tree view
+
+**Frame** as the list view's (`TVM_SETBKCOLOR`, `TVM_SETTEXTCOLOR`, `TVM_SETLINECOLOR` replace
+`field.fill`, `text`, `tree.line`; `CLR_DEFAULT` restores; `WS_EX_CLIENTEDGE` adds nothing).
+Inner rect the rect inset 1. **Item height 20** (`TVM_GETITEMHEIGHT`; `TVM_SETITEMHEIGHT` is
+accepted and ignored, listed), **indent 20** (`TVM_GETINDENT`; `TVM_SETINDENT n` sets `max(n,
+12)`). Visible items (every item whose ancestors are all expanded) are numbered from 0 in
+depth-first order; visible item `k` is the row `(inner_x, inner_y + 20 (k - top), inner_w, 20)`,
+`V = inner_h / 20` whole rows (at least 1), the partial row clipped. An item at depth `d`
+(roots 0) has `lead = 1` when the control has `TVS_LINESATROOT` together with `TVS_HASLINES` or
+`TVS_HASBUTTONS`, else 0, and its **content x** `cx = inner_x + 2 + indent (d + lead)`. With
+`TVS_CHECKBOXES` a section 2 check box (14x14) at `(cx + 3, row_y + 3)` and `cx += 20` for what
+follows (state image 2 checked, 1 unchecked, `TVIS_STATEIMAGEMASK`). With an image list
+(`TVM_SETIMAGELIST` `TVSIL_NORMAL`, 16x16, section 27) the item's `iImage` (`iSelectedImage`
+while selected) at `(cx, row_y + 2)` and the label cell at `cx + 20`; without one at `cx + 4`;
+room to the inner right edge, with `...`. The **label area** is `(label_x - 2, row_y + 1, 8n + 4,
+18)` (an empty label: 4 px wide).
+
+**Button** (`TVS_HASBUTTONS`, an item with children, `d + lead >= 1`): a 9x9 box at `(cx -
+indent + (indent - 9) / 2, row_y + 5)` (indent 20: `cx - 15`), 1 px `tree.line` border, fill
+`field.fill`, a 5 px `text` horizontal line at the box's row 4, columns 2..6 (`-`, expanded),
+plus the 5 px vertical line at column 4, rows 2..6 (`+`, collapsed). Classic boxes, not Explorer
+chevrons: they are fixed pixels in both states and need no hover (D178). **Lines**
+(`TVS_HASLINES`): dotted, the pixels where `x + y` is even in content coordinates, in
+`tree.line`. Each item with `d + lead >= 1` has a horizontal line on row `row_y + 9` from its
+parent column `pc = cx - indent + indent / 2` (indent 20: `cx - 10`) to `cx - 1`, starting
+after the box (`box_x + 9`) when it has one. Vertical lines on column `pc`: an item with a
+following sibling runs from `row_y` to `row_y + 19`, the last sibling from `row_y` to `row_y +
+9`; the first item of its parent (and the first root) starts at `row_y + 9` instead of `row_y`;
+where the item has a box, the rows `row_y + 5` to `row_y + 13` of that column are the box's, not
+the line's. For every ancestor at depth `a < d` that has a following sibling, a vertical line on
+that ancestor's `pc` over the whole row. Without `TVS_LINESATROOT`, roots have neither box nor
+lines (their children get them from `cx - indent`, as Win32).
+
+| Item state | Fill / text | Where |
+|---|---|---|
+| plain | the frame fill / `text` | |
+| selected (`TVIS_SELECTED`, the caret item), tree focused | `highlight` / `highlight.text` | the label area; with `TVS_FULLROWSELECT` the row over the inner width |
+| selected, not focused, `TVS_SHOWSELALWAYS` | `selection.inactive` / `selection.inactive.text` | the same |
+| selected, not focused, without it | plain | |
+| focused (always the selected item), tree focused | plus the dotted rect on the area's outline, `highlight.text` on `highlight` | the same |
+| `TVIS_BOLD`, `TVIS_CUT`, `TVIS_DROPHILITED`, hover | nothing (one font; deterministic; listed) | |
+
+| Input | Does |
+|---|---|
+| button-down on a box | focuses the tree, toggles the item (below); no selection change |
+| button-down on a check box | focuses, toggles the state image (`TVN_ITEMCHANGINGW`/`TVN_ITEMCHANGEDW` with the state bits) |
+| button-down on a label, image or the row (`TVS_FULLROWSELECT`) | focuses, `NM_CLICK` (a nonzero return stops here), then selects the item (below, `TVC_BYMOUSE`), scrolled into view |
+| button-down on empty space | focuses, `NM_CLICK` with nothing else |
+| double-click (section 17) on a label | `NM_DBLCLK` (nonzero stops here), then toggles the item (`TVC_BYMOUSE`) |
+| Up / Down | the previous / next visible item, selected (`TVC_BYKEYBOARD`); Home / End the first / last; PgUp / PgDn by `V - 1` |
+| Left | collapses the item when expanded, else selects its parent (a root: nothing) |
+| Right | expands the item when it has children and is collapsed, else selects its first child (a leaf: nothing) |
+| `+` / `-` (numeric pad `VK_ADD`/`VK_SUBTRACT`, and the main `=`/`-` keys) | expands / collapses the item |
+| `*` (`VK_MULTIPLY`) | expands the item and every descendant (`TVE_EXPAND` each, with the notifications) |
+| Backspace | selects the parent |
+| Enter | `NM_RETURN` |
+| a printable key | the next visible item after the selected one, wrapping, whose label's first glyph matches case-insensitively, selected (section 5's rule) |
+| any `WM_KEYDOWN` | `TVN_KEYDOWN` (`NMTVKEYDOWN`) first |
+
+**Selecting** item `n` (the user, `TVM_SELECTITEM TVGN_CARET`, `TVM_ENSUREVISIBLE`'s scroll does
+not): `TVN_SELCHANGINGW` (`NMTREEVIEWW`, `itemOld`, `itemNew` with `hItem`, `state`, `lParam`;
+`action` `TVC_BYMOUSE`, `TVC_BYKEYBOARD` or `TVC_UNKNOWN` for a message; a nonzero return
+refuses), then the selection changes, the previous item is repainted, then `TVN_SELCHANGEDW`.
+Selecting an item already selected sends nothing. **Expanding or collapsing** by the user or
+`TVM_ENSUREVISIBLE` (which expands every ancestor of its item, then scrolls it into view):
+`TVN_ITEMEXPANDINGW` (`action` `TVE_EXPAND` or `TVE_COLLAPSE`; nonzero refuses), the change,
+`TVN_ITEMEXPANDEDW`; `TVM_EXPAND` changes the state with **no** notifications (listed
+difference, the simplest rule; `TVE_TOGGLE`, `TVE_COLLAPSERESET` as Win32). An item with no
+children has nothing to expand (`cChildren` 1 draws a box; expanding it sends the pair and
+changes nothing). Collapsing an ancestor of the selected item selects that ancestor (with the
+selection notifications, `TVC_UNKNOWN`). After any change `top` follows section 5's rule for the
+selected item's visible index. `TVM_INSERTITEMW` (`TVI_ROOT`, `TVI_FIRST`, `TVI_LAST`, `TVI_SORT`
+case-insensitive as `LBS_SORT`, or after a sibling; `TVIF_TEXT`, `TVIF_IMAGE`,
+`TVIF_SELECTEDIMAGE`, `TVIF_STATE`, `TVIF_PARAM`, `TVIF_CHILDREN`), `TVM_DELETEITEM`
+(`TVN_DELETEITEMW` per item, depth first; `TVI_ROOT` clears all; deleting the selected item
+selects its parent, else nothing), `TVM_GETITEMW`/`SETITEMW`, `TVM_GETNEXTITEM` (every `TVGN_*`;
+`TVGN_NEXTVISIBLE`/`PREVIOUSVISIBLE` over visible items, `TVGN_FIRSTVISIBLE` the `top` item),
+`TVM_GETCOUNT`, `TVM_GETVISIBLECOUNT` `V`, `TVM_GETITEMRECT` (the label area when `TRUE`, the
+row when `FALSE`), `TVM_HITTEST` (`TVHT_ONITEMBUTTON`, `ONITEMICON`, `ONITEMLABEL`,
+`ONITEMRIGHT`, `ONITEMINDENT`, `NOWHERE`), `TVM_SORTCHILDREN`, `TVM_SORTCHILDRENCB`,
+`TVM_GETEDITCONTROL` 0 as Win32. `TVS_EDITLABELS`, `TVS_INFOTIP`, `TVS_TRACKSELECT`,
+`TVS_SINGLEEXPAND`, `TVS_NONEVENHEIGHT`, drag and drop (`TVN_BEGINDRAGW`) and `TVS_NOSCROLL`
+beyond hiding the bars: no effect (listed). **Scroll bars**: the vertical one when
+`visible_count > V`; the horizontal one when the widest visible item's label area ends past
+the inner right edge (`TVS_NOHSCROLL` never), shifting every row left by `hpos`. Pointer:
+`Arrow`.
+
+## 26. Toolbar
+
+Docked at the top by default (`CCS_TOP`; section 20's rule, so the rect the program gave is
+replaced by `(0, 0, client_w, H)`), filled `surface` (the program's colour: `TB_SETINSERTMARKCOLOR`
+and friends change nothing, listed). Rows 0 and 1 are the **divider**, `menu.separator` and
+`FFFFFF`, unless `CCS_NODIVIDER` (then `surface`). Buttons sit on one row from `x = 2`, top
+`y = 4`, no gap between them; `H = bh + 6`. Images come from `TB_SETIMAGELIST`'s list (16x16
+by default; `img_w x img_h` its size; no list: no images, as if every button were
+`I_IMAGENONE`); text from `TB_ADDSTRINGW` (a `\0`-separated run ending `\0\0`; the return is the
+first string's index) or `iString` as a pointer. Button height `bh` is one value for the
+toolbar: `max(16, img_h) + 8` for `TBSTYLE_LIST` and for text-only or image-only buttons, `img_h
++ 26` for the classic text-under-image layout (image, 2 px gap, 16 px text, 4 px above and
+below), the largest over the buttons; `TB_SETBUTTONSIZE` raises `bh` and the non-autosize
+width below. Each button's **natural width**: text only `8n + 12`; image only `img_w + 8`;
+`TBSTYLE_LIST` with both `img_w + 8n + 16`; classic with both `max(img_w, 8n) + 12`. Buttons
+without `BTNS_AUTOSIZE` all take the widest natural width in the toolbar (Win32's uniform
+buttons); a `BTNS_AUTOSIZE` button takes its own. Content: text only, centred at `bx + (bw -
+8n) / 2`, cell top `by + (bh - 16) / 2`; image only, centred likewise; list layout, the image at
+`(bx + 4, by + (bh - img_h) / 2)` and the text cell at `bx + 4 + img_w + 4`; classic, the image at
+`(bx + (bw - img_w) / 2, by + 4)` and the text at `(bx + (bw - 8n) / 2, by + 4 + img_h + 2)`.
+`TBSTYLE_EX_MIXEDBUTTONS` draws text only on `BTNS_SHOWTEXT` buttons (the others are image
+only). A **separator** (`BTNS_SEP`) is 8 px wide (`iBitmap` sets another width when positive):
+a 1 px `menu.separator` column at its 4th column, rows `by + 2` to `by + bh - 3`. A hidden
+button (`TBSTATE_HIDDEN`) takes no room. `BTNS_DROPDOWN` and `BTNS_WHOLEDROPDOWN` draw as plain
+buttons (no arrow, no `TBN_DROPDOWN`; listed); `BTNS_GROUP`: checking one unchecks the other
+`BTNS_GROUP` buttons adjacent to it without a separator between.
+
+| Button state | Fill / 1 px border / text, image |
+|---|---|
+| plain | none (the toolbar's `surface`) / none / `text`, the image as given |
+| hovered (`TBSTYLE_FLAT` or not: one look) | `button.hover.fill` / `button.hover.border` |
+| pressed (held inside) | `button.pressed.fill` / `button.pressed.border` |
+| checked (`BTNS_CHECK` toggled, `TBSTATE_CHECKED`, `TB_CHECKBUTTON`), plain | `button.pressed.fill` / `button.hover.border` |
+| checked and hovered or pressed | `button.pressed.fill` / `button.pressed.border` |
+| disabled (`TBSTATE_ENABLED` clear, `TB_ENABLEBUTTON FALSE`, or the toolbar disabled) | none / none / `text.disabled`, the image greyed by section 27 (or `TB_SETDISABLEDIMAGELIST`'s image when set) |
+| `TBSTATE_PRESSED` set by `TB_PRESSBUTTON` | as pressed |
+
+A left button-down on an enabled button captures it (section 1's pointer rules); the release
+inside toggles a `BTNS_CHECK` button and sends **`WM_COMMAND`** to the parent (`LOWORD(wParam)`
+the command id, `HIWORD` 0, `lParam` the toolbar) after the repaint. `TBN_BEGINDRAG`,
+`TBN_ENDDRAG`, `TBN_HOTITEMCHANGE`, `TBN_GETINFOTIPW`, `NM_CUSTOMDRAW`: never (listed). The
+toolbar is never focused and no key reaches it (Win32 toolbars are not tab stops either).
+`TBSTYLE_TOOLTIPS` creates nothing (listed). Messages: `TB_BUTTONSTRUCTSIZE`, `TB_ADDBUTTONSW`,
+`TB_INSERTBUTTONW`, `TB_DELETEBUTTON`, `TB_BUTTONCOUNT`, `TB_GETBUTTON`, `TB_GETBUTTONINFOW`/
+`SETBUTTONINFOW` (`TBIF_TEXT`, `TBIF_STATE`, `TBIF_STYLE`, `TBIF_IMAGE`, `TBIF_COMMAND`,
+`TBIF_SIZE`), `TB_ENABLEBUTTON`, `TB_CHECKBUTTON`, `TB_PRESSBUTTON`, `TB_HIDEBUTTON`,
+`TB_ISBUTTON*`, `TB_GETSTATE`/`SETSTATE`, `TB_COMMANDTOINDEX`, `TB_GETITEMRECT`, `TB_GETRECT`,
+`TB_GETBUTTONSIZE`, `TB_GETMAXSIZE` (the buttons' total width and `bh`), `TB_AUTOSIZE`,
+`TB_SETSTYLE`/`GETSTYLE`, `TB_SETEXTENDEDSTYLE`/`GET`, `TB_GETIMAGELIST`, `TB_SETHOTIMAGELIST`
+(stored, unused), `TB_SETBITMAPSIZE`, `TB_SETPADDING`, `TB_SETMAXTEXTROWS` (0 hides the text,
+else ignored), `TB_ADDBITMAP` (returns the index; the standard bitmaps `HINST_COMMCTRL` draw
+nothing, so such buttons are text only; listed). Pointer: `Arrow`.
+
+## 27. Image lists, as drawn
+
+`ImageList_Create(cx, cy, flags, initial, grow)`, `ImageList_Add(hbmImage, hbmMask)`,
+`ImageList_AddMasked(hbm, crMask)`, `ImageList_AddIcon`, `ImageList_ReplaceIcon`,
+`ImageList_Replace`, `ImageList_Remove` (-1 clears), `ImageList_GetImageCount`,
+`ImageList_GetIconSize`, `ImageList_SetImageCount`, `ImageList_GetImageInfo`,
+`ImageList_Destroy`, `ImageList_Draw(himl, i, hdc, x, y, style)` and `ImageList_DrawEx` as Win32,
+the last two drawing into the program's DC by the rule below (`ILD_NORMAL`, `ILD_TRANSPARENT`
+and `ILD_IMAGE` alike; `ILD_BLEND*`, `ILD_SELECTED`, `ILD_MASK` draw as normal; `rgbBk` and
+`rgbFg` ignored; listed). Each image is kept as `cx x cy` 32-bit pixels plus a one-bit mask,
+cut from the bitmap at `(i * cx, 0)`; a bitmap shorter than `cy` or an icon of another size is
+placed at the top-left of its cell and the rest of the cell is masked out (no stretching,
+listed). The mask: with `hbmMask` or an icon's mask bitmap, its 1 bits; with `AddMasked`, the
+pixels equal to `crMask` (`CLR_DEFAULT`: the bitmap's top-left pixel); with none, nothing is
+masked. **A pixel is drawn when it is not masked and, in a 32-bit bitmap with alpha (`ILC_COLOR32`
+or a 32-bit DIB whose alpha channel is not all zero), its alpha is at least 128**; it is copied
+as given, no blending, so the result never depends on what is under it (D178; "no
+anti-aliasing" is a rule for our own glyphs, a program's image keeps its own pixels). A 32-bit
+bitmap whose alpha is zero everywhere is opaque (Win32's rule). **Greyed** (a disabled toolbar
+button, section 26): each drawn pixel becomes the grey `g = 128 + (77 r + 151 g + 28 b) / 512`
+(128..255), the mask unchanged. `ImageList_SetBkColor` and overlays (`ImageList_SetOverlayImage`,
+`INDEXTOOVERLAYMASK`) have no effect (listed).
+
+## 28. STATIC pictures
+
+Replacing section 4's "draw only the fill" for two styles. **`SS_BITMAP`** with `STM_SETIMAGE`
+(`IMAGE_BITMAP`; `STM_GETIMAGE` returns the handle; a resource name at creation is looked up in
+the module's `RT_BITMAP`, else nothing): the rect gets the `WM_CTLCOLORSTATIC` fill, then the
+bitmap's pixels by section 27's rule (alpha threshold on a 32-bit DIB with alpha; no mask
+otherwise) at the rect's top-left, unscaled, clipped to the rect. `SS_CENTERIMAGE`: at `(x +
+(w - bw) / 2, y + (h - bh) / 2)`, negative offsets clipping the image (Win32's top-left-pixel
+fill around a smaller image is not done: the fill is the `WM_CTLCOLORSTATIC` answer, listed).
+`SS_REALSIZECONTROL`: the bitmap stretched to the whole rect, nearest neighbour (`src_x = dx *
+bw / w`, `src_y = dy * bh / h`). As Win32, `STM_SETIMAGE` resizes the control to the image
+(`(x, y, bw, bh)`, `WM_SIZE` to nobody) unless `SS_CENTERIMAGE` or `SS_REALSIZECONTROL`; the
+return is the previous handle. **`SS_ICON`** with `STM_SETICON` or `STM_SETIMAGE IMAGE_ICON`
+(or a resource name at creation): the icon's colour and mask bitmaps (`GetIconInfo`) by the
+same rule at the top-left (`SS_CENTERIMAGE` centres; the control is resized to the icon unless
+`SS_CENTERIMAGE` or `SS_REALSIZECONTROL`; `SS_REALSIZEIMAGE` and stretching an icon: listed).
+`SS_ENHMETAFILE`, `SS_ETCHEDFRAME`, `SS_BLACKRECT` and the other picture styles keep section
+4's fill-only rule. `WM_SETTEXT` on these changes nothing drawn. Never focused; `SS_NOTIFY`
+clicks as section 4. Pointer: `Arrow`.
+
+## 29. Element tree
+
+Every common control is mapped with the roles `userland/element-tree` already has; one flag is
+added, **`EXPANDED = 64`** (`flags::NAMES` gets `"expanded"`), since a tree item's open state
+has no existing flag and readers ignore bits they do not know (a value string would be mistaken
+for content). Names and values are the controls' texts, as data. Bounds are in the window's
+content pixels; a row or item scrolled out of view, a collapsed item's descendants and a hidden
+page's controls get their control's rows-area width and **height 0** at the area's top (above
+the view) or bottom (below it), so they are present, ordered and recognisably not visible.
+
+| Control | Role, name, value, flags, children |
+|---|---|
+| status bar | `Group`, no name; one `Label` child per part, name the part's text (tabs replaced by one space), bounds the part's rect |
+| progress bar | `Progress`, name the window text, value the per mille `1000 (pos - min) / (max - min)` as decimal text (`400` for 40 of 100); no flags |
+| tab control | `RadioGroup`, name the window text, `FOCUSABLE` (`FOCUSED` while focused); one `Radio` child per tab, name its label, `SELECTED` on the current one, bounds its tab rect. The page's controls follow as the tab's children when they are its child windows, else as siblings (AutoHotkey) |
+| list view | `List`, name the window text, `FOCUSABLE`, `FOCUSED`; first a `Group` child for the header (bounds the header's rect) with one `Button` child per column (`Label` with `LVS_NOSORTHEADER` or no header), name the column's text; then one `ListItem` per row in index order, name the first column's text, value the other columns' texts joined by a tab, `SELECTED`, `FOCUSED` on the focused item while the list is focused, `CHECKED` with `LVS_EX_CHECKBOXES`, bounds the row over `min(T, inner_w)` |
+| tree view | `List`, as the list view; one `ListItem` per item, nested under its parent item's element (roots under the list), name the label, no value, `SELECTED`, `FOCUSED` as above, `EXPANDED` when expanded, `CHECKED` with `TVS_CHECKBOXES`; a collapsed parent still lists its children (height 0) |
+| toolbar | `Group`, name the window text; one `Button` child per visible button (separators and hidden buttons omitted), name its text (empty for an image-only button), `CHECKED`, `DISABLED`; never `FOCUSABLE` |
+| header window alone | `Group` with `Button` children, as above |
+| `SS_BITMAP` / `SS_ICON` static | `Graphic`, name the window text |
+
+Actions (`ACT_ON_ELEMENT`): `select` on a tab's `Radio` or `invoke` on it selects that tab as a
+click would (the notifications of section 23; a refused `TCN_SELCHANGING` still answers `Done`
+and the agent re-reads the tree); `select` on a list row selects it alone as a plain click
+(section 24's pairs, then `NM_CLICK`), `invoke` on it does that and then `LVN_ITEMACTIVATE` as a
+double-click (with `NM_DBLCLK`); `select` on a tree item selects it (`TVC_UNKNOWN`), `invoke`
+on it is section 25's double-click on its label (`NM_DBLCLK`, then toggle); `invoke` on a
+header `Button` is a header click (`LVN_COLUMNCLICK`); `invoke` on a toolbar `Button` is a
+click (`WM_COMMAND`); `focus` on a list, tree or tab control is `SetFocus`; `focus` on a row or
+item focuses its control and makes it the focused item (list) or selects it (tree); `set-text`
+and the rest answer `NotSupported`; a disabled control answers `Disabled`. Status bar parts,
+progress bars and graphics take no action.
+
+## 30. Worked example: the AutoHotkey test window
+
+`AutoHotkey64.exe controls.ahk`: a v2 script with `-DPIScale`, `Gui("-DPIScale", "EggOS
+controls")`, shown with `Show("w480 h360")`. AutoHotkey's default window has no
+`WS_THICKFRAME`, so it is a `Normal` `FIXED_SIZE` server window, outside **482x390**, client
+**480x360**, surface `F0F0F0` (the Gui's `COLOR_BTNFACE` erase). The script creates, in this
+order (AutoHotkey calls; styles the implementer checks against the created windows):
+
+| Control | AutoHotkey | Rect (x, y, w, h) |
+|---|---|---|
+| toolbar | `AddCustom("ClassToolbarWindow32 x0 y0 w480 h30 0x184C")` (`TBSTYLE_LIST 0x1000`, `TBSTYLE_FLAT 0x800`, `CCS_NODIVIDER 0x40`, `CCS_NOPARENTALIGN 0x8`, `CCS_NORESIZE 0x4`), `TB_BUTTONSTRUCTSIZE`, `TB_ADDSTRINGW` `Step\0Reset\0Show tree\0\0`, three `TB_ADDBUTTONSW` with `iBitmap I_IMAGENONE`, `idCommand` 1001, 1002, 1003, `fsStyle BTNS_BUTTON | BTNS_AUTOSIZE`, then `TB_AUTOSIZE` | 0, 0, 480, 30 |
+| tab control | `AddTab3("x8 y36 w464 h240", ["List", "Tree"])` | 8, 36, 464, 240 |
+| list view (page `List`) | `AddListView("x12 y64 w456 h208 -Multi", ["Fruit", "Count"])`, rows from a `Scripting.Dictionary` (`ComObject`) `Apples 3`, `Bananas 5`, `Cherries 7`, `Dates 11`, `Elderberries 13` in insertion order; `ModifyCol(1, 200)`, `ModifyCol(2, "80 Integer")`; `Modify(1, "Select Focus")` | 12, 64, 456, 208 |
+| tree view (page `Tree`) | `AddTreeView("x12 y64 w456 h208")`: `Fruit` with the five names as children, `Vegetables` with `Carrots`, `Leeks`; both collapsed; `Modify(fruit, "Select")` | 12, 64, 456, 208 |
+| progress bar | `AddProgress("x8 y282 w424 h20 Range0-100", 40)` | 8, 282, 424, 20 |
+| picture | `AddPicture("x440 y276 w32 h32", "egg.png")`: a 32x32 opaque PNG we make, a 2 px `0078D7` border, `F2B33D` inside, an 8x8 `000000` square at (12, 12) of the image; AutoHotkey decodes it with GDI+ into a 32-bit DIB and sets it with `STM_SETIMAGE` | 440, 276, 32, 32 |
+| status bar | `AddStatusBar()`, `SetParts(240)`, `SetText("Ready", 1)`, `SetText("5 items", 2)` | 0, 336, 480, 24 |
+
+Handlers: `OnMessage(0x111)` answers the toolbar's `WM_COMMAND`: 1001 adds 20 to the progress
+(`PBM_SETPOS`) and sets part 1 to `Progress <value>`; 1002 sets it to 0 and `Progress 0`; 1003
+selects the `Tree` tab with `Tab.Value := 2` and sets `Tree`. The list's `ItemSelect` (from
+`LVN_ITEMCHANGED` with `LVIS_SELECTED` gained) sets part 1 to `<fruit> <count>`; the tree's
+`ItemSelect` (`TVN_SELCHANGEDW`) to the label; the Gui's `Close` event calls `ExitApp`. After
+`Show`, `LV.Focus()`. The first frame (pointer outside the window; the server's activation pair
+changes nothing):
+
+| Element | Rect | Pixels |
+|---|---|---|
+| toolbar | 0, 0, 480, 30 | `F0F0F0`; `bh = 24`; natural widths 44, 52, 84 (autosize) |
+| `Step` | 2, 4, 44, 24 | no fill, no border; `Step` at (8, 8) `000000` |
+| `Reset` | 46, 4, 52, 24 | `Reset` at (52, 8) |
+| `Show tree` | 98, 4, 84, 24 | `Show tree` at (104, 8) |
+| tab `List`, selected | 8, 36, 52, 24 | fill `FFFFFF`; `D9D9D9` on row 36 (x 8..59) and columns 8 and 59 (rows 36..59); `List` at (18, 40) |
+| tab `Tree` | 58, 38, 48, 22 | fill `F0F0F0`; `D9D9D9` on row 38 and columns 58 and 105 (rows 38..59); `Tree` at (66, 41); its columns 58 and 59 are covered by the selected tab |
+| page frame | 8, 59, 464, 217 | `D9D9D9` on row 59 (x 8 and 59..471; x 9..58 is `FFFFFF`, under the selected tab's interior), columns 8 and 471 (rows 59..275), row 275; inside `FFFFFF` |
+| list view, focused | 12, 64, 456, 208 | border `7A7A7A`; inner (13, 65, 454, 206); `T = 280`; `V = 9`; no scroll bars |
+| header | 13, 65, 454, 24 | fill `FFFFFF`; `Fruit` at (19, 69); divider column 212, rows 69..84; `Count` right-aligned, its last cell ending at 287: at (247, 69); divider column 292, rows 69..84; bottom line row 88, x 13..466, `E5E5E5` |
+| row 0 `Apples`, selected, focused | 13, 89, 280, 20 | fill `0078D7`; `Apples` at (19, 91) `FFFFFF`; `3` at (279, 91); dotted rect on the outline of (13, 89, 280, 20) in `FFFFFF`; x 293..466 `FFFFFF` |
+| rows 1-4 | 13, 109 / 129 / 149 / 169, 280, 20 | `FFFFFF`; `Bananas` (19, 111) `5` (279, 111); `Cherries` (19, 131) `7` (279, 131); `Dates` (19, 151) `11` (271, 151); `Elderberries` (19, 171) `13` (271, 171), all `000000` |
+| tree view | hidden | nothing drawn; the page fill shows where it would be only if it were shown, here the list covers that rect |
+| progress bar | 8, 282, 424, 20 | border `BCBCBC`; track `E6E6E6` (9, 283, 422, 18); fill `06B025` (9, 283, 168, 18) |
+| picture | 440, 276, 32, 32 | the PNG's pixels: `0078D7` ring 2 px, `F2B33D` inside, `000000` at (452, 288, 8, 8) |
+| status bar | 0, 336, 480, 24 | `F0F0F0`; `Ready` at (6, 340); separator column 239, rows 338..357, `D7D7D7`; `5 items` at (246, 340) |
+| the rest of the client | | `F0F0F0` |
+
+Scripted steps, each checked against the host's render of the same state:
+
+- **(a) Down, Down** in the focused list: `LVN_KEYDOWN`, then the pairs (`Apples` loses
+  `LVIS_SELECTED | LVIS_FOCUSED`, `Bananas` gains them), `Bananas`' handler sets `Bananas 5`;
+  again to `Cherries`. Frame: row 2 `(13, 129, 280, 20)` `0078D7` with `Cherries` and `7` in
+  `FFFFFF` and the dotted rect; rows 0 and 1 plain; part 1 `Cherries 7` at (6, 340).
+- **(b) click `Step`** (press and release at (24, 16)): while held the button is `(2, 4, 44,
+  24)` filled `CCE4F7` with a `005499` border; on release `WM_COMMAND 1001`; the list keeps the
+  focus (a toolbar never takes it), so row 2 stays `0078D7`. Frame: the progress fill is `(9,
+  283, 253, 18)`; part 1 `Progress 60`; the button is back to plain once the pointer leaves it
+  (the step moves the pointer outside the window before the screendump).
+- **(c) click the `Tree` tab** at (80, 48): the tab control takes the focus (the list gets
+  `NM_KILLFOCUS`; its row 2 would turn `D9D9D9`, `LVS_SHOWSELALWAYS`), `TCN_SELCHANGING`, the
+  selection becomes 1, `TCN_SELCHANGE`, and AutoHotkey hides the list and shows the tree.
+  Frame: tab `Tree` selected `(56, 36, 52, 24)` `FFFFFF`, `Tree` at (66, 40), its dotted rect on
+  the outline of (59, 39, 46, 18); tab `List` plain `(10, 38, 48, 22)` `F0F0F0`, `List` at (18,
+  41), its columns 56 and 57 covered; frame row 59 whole except x 57..106. Tree view `(12, 64,
+  456, 208)`: border `7A7A7A`, fill `FFFFFF`; `lead = 1`, roots' `cx = 35`, boxes at x 20, label
+  cells at x 39; `Fruit`: box `(20, 70, 9, 9)` with `+`, line row 74 from x 29 to 34 (pixels 30,
+  32, 34), label `(39, 67)`, selected but unfocused: label area `(37, 66, 44, 18)` `D9D9D9`,
+  text `000000`; column 25 rows 79..84 dotted (79, 81, 83); `Vegetables`: box `(20, 90, 9, 9)`
+  `+`, line row 94 (x 30, 32, 34), label `(39, 87)`, column 25 rows 85..89 (85, 87, 89); part 1
+  still `Progress 60`.
+- **(d) click `Fruit`'s box** at (24, 74): the tree takes the focus (the tab's dotted rect
+  goes), `TVN_ITEMEXPANDINGW` (`TVE_EXPAND`), the expansion, `TVN_ITEMEXPANDEDW`; no selection
+  change, part 1 unchanged. Frame: the box shows `-`; `Fruit`'s label area `(37, 66, 44, 18)`
+  `0078D7`, `Fruit` in `FFFFFF`, the dotted rect on its outline in `FFFFFF`; children at `cx =
+  55`, labels at x 59: `Apples` row 85, `Bananas` 105, `Cherries` 125, `Dates` 145,
+  `Elderberries` 165, each with a horizontal dotted line on `row + 9` from x 45 to 54 and the
+  vertical line on column 45 (rows `row`..`row + 19`; `Apples`, the first child, from 94;
+  `Elderberries`, the last, to `row + 9`, 174);
+  `Vegetables` moves to row 185, box `(20, 190, 9, 9)`; column 25 runs dotted from 79 to 189.
+- **(e) Down**: `TVN_KEYDOWN`, `TVN_SELCHANGINGW`, `TVN_SELCHANGEDW` (`TVC_BYKEYBOARD`), the
+  handler sets `Apples`. Frame: `Apples`' label area `(57, 86, 52, 18)` `0078D7` with the text
+  in `FFFFFF` and the dotted rect; `Fruit` plain; part 1 `Apples` at (6, 340).
+- **(f) the close control**: `CloseRequest`, `WM_CLOSE`, the Gui's `Close` event, `ExitApp`:
+  the process exits with code 0 and the window is destroyed.
+
+## 31. Tests
+
+Host tests, pixel by pixel against the tables, Light palette (the Dark column is checked only
+for the palette rows): the status bar's part rects for edges `[240, -1]`, `[100, 200, -1]` at
+widths 480 and 150 (a part past the width), the three tab-aligned pieces, `SBT_NOBORDERS`, an
+icon's shift, `SB_SIMPLE`; the progress fill for 0, 40, 60, 100 of 0..100 in 424 px and for
+`PBM_STEPIT` wrapping, vertical, the marquee block, error and paused colours, `PBM_SETBARCOLOR`
+over a state; the tab row for two and five tabs (the fifth clipped), the selected tab's 2 px
+overlap and the frame's gap, `TCM_ADJUSTRECT` both ways, `TCS_FIXEDWIDTH`, the focus rect, a
+refused `TCN_SELCHANGING`, `TCM_SETCURSEL` silent and `TCM_SETCURFOCUS` loud, Ctrl+Tab
+wrapping; the header's text placement for the three formats, dividers and bottom line,
+`LVSCW_AUTOSIZE` and `_USEHEADER` with and without an image list, the five rows' text positions,
+full-row versus first-cell selection, inactive selection with and without `LVS_SHOWSELALWAYS`,
+the dotted rect's colour on both fills, grid lines, check boxes, the notification pairs' order
+for a plain click, Ctrl+click, Shift+click, Down, Ctrl+Down, Ctrl+A and `LVM_SETITEMSTATE`, a
+refused `LVN_ITEMCHANGING`, `NM_CLICK` on release, `NM_DBLCLK` then `LVN_ITEMACTIVATE`, `top`
+after Down past row 8 and PageDown with 30 rows in 9, both scroll bars and `hpos`, `LVS_LIST`
+drawn as a report; the tree's `cx`, box and line pixels for the example's two states and for a
+three-level tree with `TVS_LINESATROOT` off, `TVM_SETINDENT 24`, the label area for an empty
+label, check boxes, images, every key of the table (Left on a root, Right on a leaf, `*`),
+`TVN_SELCHANGINGW` refused, `TVM_EXPAND` silent and `TVM_ENSUREVISIBLE` loud, collapsing the
+selected item's ancestor, `TVM_DELETEITEM` of the selected item, `TVM_HITTEST` codes, the
+horizontal bar from a long label; the toolbar's `bh` and widths for text-only, image-only,
+list and classic buttons with and without `BTNS_AUTOSIZE`, `TB_SETBUTTONSIZE`, a separator, a
+hidden button, every state row, `BTNS_GROUP`, `WM_COMMAND` on release inside and nothing on
+release outside, docking versus `CCS_NOPARENTALIGN | CCS_NORESIZE`; the image list's mask from
+`AddMasked`, an alpha of 127 and 128, an all-zero alpha bitmap drawn opaque, a 12x12 icon in a
+16x16 cell, the grey formula on `FF0000` (`g = 166`); `SS_BITMAP` at the top-left, centred,
+stretched 2x, the control resized by `STM_SETIMAGE`, `SS_ICON`; the element tree of the
+example's first frame and of step (d) (the `EXPANDED` flag, the hidden page's rows at height 0,
+the per mille `400` then `600`), and `select`/`invoke` on a tab, a row, a tree item, a header
+button and a toolbar button with their notifications. The QEMU boot test runs
+`AutoHotkey64.exe controls.ahk` and compares a `screendump` of the first frame and after each
+of steps (a) to (e) with the host's render, then checks the exit after (f).

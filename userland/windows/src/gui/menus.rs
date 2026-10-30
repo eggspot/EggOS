@@ -1,10 +1,12 @@
 //! The program's menus (`CreateMenu`, `CreatePopupMenu`, `AppendMenuW`, D145): each a list of
-//! items with a label, flags and an id or a drop-down menu, by handle.
+//! items with a label, flags, a command id, a drop-down menu and the program's own value, by
+//! handle; items are inserted, changed and removed as `InsertMenuItemW`, `SetMenuItemInfoW` and
+//! `RemoveMenu` do (D178).
 
 use super::slots::Slots;
 
-/// The most menus a program has at once.
-pub const MAX_MENUS: usize = 16;
+/// The most menus a program has at once (window menus included).
+pub const MAX_MENUS: usize = 32;
 /// The most items in one menu.
 pub const MAX_ITEMS: usize = 24;
 /// The longest label kept, in UTF-16 units.
@@ -19,6 +21,7 @@ pub mod flag {
     pub const POPUP: u32 = 0x10;
     pub const OWNER_DRAW: u32 = 0x100;
     pub const SEPARATOR: u32 = 0x800;
+    pub const DEFAULT: u32 = 0x1000;
 }
 
 /// One item.
@@ -28,11 +31,33 @@ pub struct MenuItem {
     pub length: usize,
     pub flags: u32,
     pub id: usize,
+    pub submenu: usize,
+    pub data: usize,
 }
 
 impl MenuItem {
+    /// An item of `flags` with command id `id`, the drop-down `submenu` it opens (with
+    /// [`flag::POPUP`]) and `label`, cut at [`MAX_LABEL`].
+    pub fn new(flags: u32, id: usize, submenu: usize, label: &[u16]) -> MenuItem {
+        let mut item = MenuItem {
+            flags,
+            id,
+            submenu,
+            ..EMPTY_ITEM
+        };
+        item.set_label(label);
+        item
+    }
+
     pub fn label(&self) -> &[u16] {
         &self.label[..self.length]
+    }
+
+    /// Gives it `label`, cut at [`MAX_LABEL`].
+    pub fn set_label(&mut self, label: &[u16]) {
+        let length = label.len().min(MAX_LABEL);
+        self.label[..length].copy_from_slice(&label[..length]);
+        self.length = length;
     }
 
     pub fn is_separator(&self) -> bool {
@@ -45,7 +70,7 @@ impl MenuItem {
 
     /// The drop-down menu it opens, for an `MF_POPUP` item.
     pub fn popup(&self) -> Option<usize> {
-        (self.flags & flag::POPUP != 0).then_some(self.id)
+        (self.flags & flag::POPUP != 0).then_some(self.submenu)
     }
 }
 
@@ -54,6 +79,9 @@ impl MenuItem {
 pub struct Menu {
     pub items: [MenuItem; MAX_ITEMS],
     pub count: usize,
+    /// What `SetMenuInfo` gave it: its `MNS_` style and the program's own value.
+    pub style: u32,
+    pub data: usize,
 }
 
 const EMPTY_ITEM: MenuItem = MenuItem {
@@ -61,6 +89,8 @@ const EMPTY_ITEM: MenuItem = MenuItem {
     length: 0,
     flags: 0,
     id: 0,
+    submenu: 0,
+    data: 0,
 };
 
 impl Default for Menu {
@@ -74,11 +104,18 @@ impl Menu {
         Menu {
             items: [EMPTY_ITEM; MAX_ITEMS],
             count: 0,
+            style: 0,
+            data: 0,
         }
     }
 
     pub fn items(&self) -> &[MenuItem] {
         &self.items[..self.count]
+    }
+
+    /// Item `index`, to change.
+    pub fn item_mut(&mut self, index: usize) -> Option<&mut MenuItem> {
+        self.items[..self.count].get_mut(index)
     }
 
     /// Clears `clear` and sets `set` in item `index`'s flags (D174, `CheckMenuItem` and
@@ -90,21 +127,50 @@ impl Menu {
         Some(previous)
     }
 
-    /// `AppendMenuW`; whether there was room.
+    /// `AppendMenuW`: an `MF_POPUP` item's `id` is the drop-down it opens; whether there was
+    /// room.
     pub fn append(&mut self, flags: u32, id: usize, label: &[u16]) -> bool {
+        let submenu = match flags & flag::POPUP {
+            0 => 0,
+            _ => id,
+        };
+        self.insert(self.count, MenuItem::new(flags, id, submenu, label))
+    }
+
+    /// Puts `item` before item `index` (at the end when `index` is past it); whether there was
+    /// room.
+    pub fn insert(&mut self, index: usize, item: MenuItem) -> bool {
         if self.count == MAX_ITEMS {
             return false;
         }
-        let length = label.len().min(MAX_LABEL);
-        let mut item = MenuItem {
-            flags,
-            id,
-            length,
-            ..EMPTY_ITEM
-        };
-        item.label[..length].copy_from_slice(&label[..length]);
-        self.items[self.count] = item;
+        let index = index.min(self.count);
+        self.items.copy_within(index..self.count, index + 1);
+        self.items[index] = item;
         self.count += 1;
+        true
+    }
+
+    /// Takes item `index` out (`RemoveMenu`, `DeleteMenu`).
+    pub fn remove(&mut self, index: usize) -> Option<MenuItem> {
+        let item = *self.items().get(index)?;
+        self.items.copy_within(index + 1..self.count, index);
+        self.count -= 1;
+        self.items[self.count] = EMPTY_ITEM;
+        Some(item)
+    }
+
+    /// Makes item `index` the default one (`SetMenuDefaultItem`), none with `None`; whether
+    /// there is such an item.
+    pub fn set_default(&mut self, index: Option<usize>) -> bool {
+        if index.is_some_and(|index| index >= self.count) {
+            return false;
+        }
+        for (at, item) in self.items[..self.count].iter_mut().enumerate() {
+            item.flags &= !flag::DEFAULT;
+            if Some(at) == index {
+                item.flags |= flag::DEFAULT;
+            }
+        }
         true
     }
 }
@@ -179,6 +245,36 @@ mod tests {
         while entry.append(0, 1, &[0x41; 60]) {}
         assert_eq!(entry.count, MAX_ITEMS);
         assert_eq!(entry.items[MAX_ITEMS - 1].length, MAX_LABEL);
+    }
+
+    #[test]
+    fn items_are_inserted_removed_and_made_the_default() {
+        let mut menu = Menu::new();
+        assert!(menu.append(0, 10, &[0x41]));
+        assert!(menu.append(0, 30, &[0x43]));
+        assert!(menu.insert(1, MenuItem::new(0, 20, 0, &[0x42])));
+        assert!(menu.insert(99, MenuItem::new(flag::POPUP, 40, 0x140_0001, &[0x44])));
+        let ids: Vec<usize> = menu.items().iter().map(|item| item.id).collect();
+        assert_eq!(ids, [10, 20, 30, 40]);
+        assert_eq!(menu.items()[3].popup(), Some(0x140_0001));
+        assert_eq!(menu.remove(0).map(|item| item.id), Some(10));
+        assert_eq!(menu.remove(5), None);
+        assert_eq!(menu.items()[0].label(), &[0x42]);
+        assert!(menu.set_default(Some(1)));
+        assert!(menu.set_default(Some(2)));
+        assert_eq!(menu.items()[1].flags & flag::DEFAULT, 0);
+        assert_eq!(menu.items()[2].flags & flag::DEFAULT, flag::DEFAULT);
+        assert!(!menu.set_default(Some(3)));
+        assert!(menu.set_default(None));
+        assert!(
+            menu.items()
+                .iter()
+                .all(|item| item.flags & flag::DEFAULT == 0)
+        );
+        menu.item_mut(0).unwrap().set_label(&[0x5a; 50]);
+        assert_eq!(menu.items()[0].length, MAX_LABEL);
+        while menu.insert(0, MenuItem::new(0, 1, 0, &[])) {}
+        assert_eq!(menu.count, MAX_ITEMS);
     }
 
     #[test]

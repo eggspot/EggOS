@@ -38,6 +38,18 @@ pub mod number {
     pub const PPOLL: usize = 271;
     pub const PIPE2: usize = 293;
     pub const RENAMEAT2: usize = 316;
+    pub const SOCKET: usize = 41;
+    pub const CONNECT: usize = 42;
+    pub const SENDTO: usize = 44;
+    pub const RECVFROM: usize = 45;
+    pub const SHUTDOWN: usize = 48;
+    pub const WAIT4: usize = 61;
+    pub const KILL: usize = 62;
+    pub const FCNTL: usize = 72;
+    pub const FTRUNCATE: usize = 77;
+    pub const STATFS: usize = 137;
+    pub const FCHMODAT: usize = 268;
+    pub const UTIMENSAT: usize = 280;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -74,6 +86,18 @@ pub mod number {
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
     pub const RENAMEAT2: usize = 276;
+    pub const FCNTL: usize = 25;
+    pub const STATFS: usize = 43;
+    pub const FTRUNCATE: usize = 46;
+    pub const FCHMODAT: usize = 53;
+    pub const UTIMENSAT: usize = 88;
+    pub const KILL: usize = 129;
+    pub const SOCKET: usize = 198;
+    pub const CONNECT: usize = 203;
+    pub const SENDTO: usize = 206;
+    pub const RECVFROM: usize = 207;
+    pub const SHUTDOWN: usize = 210;
+    pub const WAIT4: usize = 260;
 }
 
 pub const PAGE_SIZE: usize = 4096;
@@ -715,6 +739,177 @@ pub fn exit(status: u32) -> ! {
         // SAFETY: `exit_group` ends the process.
         let _ = unsafe { syscall(number::EXIT_GROUP, [status as usize, 0, 0, 0, 0, 0]) };
     }
+}
+
+pub const AF_INET: usize = 2;
+pub const MSG_NOSIGNAL: usize = 0x4000;
+pub const F_GETFL: usize = 3;
+pub const F_SETFL: usize = 4;
+pub const SIGKILL: i32 = 9;
+pub const STATFS_WORDS: usize = 15;
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+const FIONREAD: usize = 0x541b;
+const WNOHANG: usize = 1;
+
+/// A new socket of `family`, `kind` and `protocol` that closes on `execve`.
+pub fn socket(family: usize, kind: usize, protocol: usize) -> Result<usize, Errno> {
+    // SAFETY: `socket` touches no memory.
+    unsafe {
+        syscall(
+            number::SOCKET,
+            [family, kind | O_CLOEXEC, protocol, 0, 0, 0],
+        )
+    }
+}
+
+/// Connects socket `fd` to `address`, a `struct sockaddr`'s bytes.
+pub fn connect(fd: usize, address: &[u8]) -> Result<usize, Errno> {
+    // SAFETY: `connect` reads the borrowed address.
+    unsafe {
+        syscall(
+            number::CONNECT,
+            [fd, address.as_ptr() as usize, address.len(), 0, 0, 0],
+        )
+    }
+}
+
+/// Sends `bytes` on the connected socket `fd` with the `MSG_*` `flags`.
+pub fn send(fd: usize, bytes: &[u8], flags: usize) -> Result<usize, Errno> {
+    // SAFETY: `sendto` without an address reads only the borrowed bytes.
+    unsafe {
+        syscall(
+            number::SENDTO,
+            [fd, bytes.as_ptr() as usize, bytes.len(), flags, 0, 0],
+        )
+    }
+}
+
+/// Receives into `buffer` from socket `fd` with the `MSG_*` `flags`.
+pub fn receive(fd: usize, buffer: &mut [u8], flags: usize) -> Result<usize, Errno> {
+    // SAFETY: `recvfrom` without an address writes at most `buffer.len()` bytes into the
+    // borrowed buffer.
+    unsafe {
+        syscall(
+            number::RECVFROM,
+            [fd, buffer.as_mut_ptr() as usize, buffer.len(), flags, 0, 0],
+        )
+    }
+}
+
+/// Shuts down receiving (0), sending (1) or both (2) on socket `fd`.
+pub fn shutdown(fd: usize, how: usize) -> Result<usize, Errno> {
+    // SAFETY: `shutdown` touches no memory.
+    unsafe { syscall(number::SHUTDOWN, [fd, how, 0, 0, 0, 0]) }
+}
+
+/// `fcntl` with an integer argument (`F_GETFL`, `F_SETFL`).
+pub fn control(fd: usize, command: usize, argument: usize) -> Result<usize, Errno> {
+    // SAFETY: the integer commands touch no memory.
+    unsafe { syscall(number::FCNTL, [fd, command, argument, 0, 0, 0]) }
+}
+
+/// How many bytes socket or pipe `fd` holds to read (`FIONREAD`).
+pub fn bytes_to_read(fd: usize) -> Result<usize, Errno> {
+    let mut count = 0i32;
+    // SAFETY: `FIONREAD` writes one `int` into the borrowed local.
+    unsafe {
+        syscall(
+            number::IOCTL,
+            [fd, FIONREAD, &raw mut count as usize, 0, 0, 0],
+        )
+    }?;
+    Ok(count.max(0) as usize)
+}
+
+/// Sets the length of file `fd` to `length` bytes.
+pub fn truncate(fd: usize, length: u64) -> Result<usize, Errno> {
+    // SAFETY: `ftruncate` touches no memory.
+    unsafe { syscall(number::FTRUNCATE, [fd, length as usize, 0, 0, 0, 0]) }
+}
+
+/// The `statfs` words of the file system holding the NUL-terminated `path`: its type, block
+/// size, blocks, free blocks, blocks free to programs, files, free files, id, longest name,
+/// fragment size and mount flags, in that order.
+pub fn file_system(path: &[u8]) -> Result<[u64; STATFS_WORDS], Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    let mut words = [0u64; STATFS_WORDS];
+    // SAFETY: `statfs` reads the NUL-terminated path and writes one 120-byte `struct statfs`
+    // into the borrowed words.
+    unsafe {
+        syscall(
+            number::STATFS,
+            [
+                path.as_ptr() as usize,
+                words.as_mut_ptr() as usize,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok(words)
+}
+
+/// Sets the permission bits of the file at the NUL-terminated `path` to `mode`.
+pub fn change_mode(path: &[u8], mode: u32) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `fchmodat` reads the NUL-terminated path.
+    unsafe {
+        syscall(
+            number::FCHMODAT,
+            [AT_FDCWD, path.as_ptr() as usize, mode as usize, 0, 0, 0],
+        )
+    }
+}
+
+/// Sets file `fd`'s access and modification times, each seconds and nanoseconds since 1970
+/// ([`UTIME_OMIT`] as the nanoseconds leaves one as it is).
+pub fn set_file_times(fd: usize, times: &[[i64; 2]; 2]) -> Result<usize, Errno> {
+    // SAFETY: `utimensat` with a null path reads the two borrowed `struct timespec`s and
+    // changes the file `fd` names.
+    unsafe { syscall(number::UTIMENSAT, [fd, 0, times.as_ptr() as usize, 0, 0, 0]) }
+}
+
+/// The wait status of child `id` if it ended, which reaps it; `None` while it runs.
+pub fn reap(id: u32) -> Result<Option<u32>, Errno> {
+    let mut status = 0i32;
+    // SAFETY: `wait4` writes one `int` status into the borrowed local and no usage record.
+    let found = unsafe {
+        syscall(
+            number::WAIT4,
+            [id as usize, &raw mut status as usize, WNOHANG, 0, 0, 0],
+        )
+    }?;
+    Ok((found != 0).then_some(status as u32))
+}
+
+/// Sends `signal` to process `id` (0 only checks that it exists).
+pub fn kill(id: u32, signal: i32) -> Result<usize, Errno> {
+    // SAFETY: `kill` touches no memory.
+    unsafe { syscall(number::KILL, [id as usize, signal as usize, 0, 0, 0, 0]) }
+}
+
+/// Reads the file at the NUL-terminated `path` into `buffer`, as much as fits; the bytes read.
+pub fn read_file(path: &[u8], buffer: &mut [u8]) -> Result<usize, Errno> {
+    let fd = open(path, O_RDONLY)?;
+    let mut filled = 0;
+    let result = loop {
+        if filled == buffer.len() {
+            break Ok(filled);
+        }
+        match read(fd, &mut buffer[filled..]) {
+            Ok(0) => break Ok(filled),
+            Ok(count) => filled += count,
+            Err(errno) => break Err(errno),
+        }
+    };
+    let _ = close(fd);
+    result
 }
 
 /// The CPU features Linux's auxiliary vector reports, which compiler-builtins' aarch64 atomics
