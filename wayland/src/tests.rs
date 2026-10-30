@@ -240,6 +240,8 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::TextInput,
         Interface::ServerDecorationManager,
         Interface::ServerDecoration,
+        Interface::FractionalScaleManager,
+        Interface::FractionalScale,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);
@@ -266,8 +268,8 @@ fn every_request_table_is_ordered_and_bounded() {
             ("wl_compositor", 4),
             ("wl_shm", 1),
             ("wl_seat", 5),
-            ("wl_output", 3),
-            ("xdg_wm_base", 3),
+            ("wl_output", 4),
+            ("xdg_wm_base", 5),
             ("wl_subcompositor", 1),
             ("zxdg_decoration_manager_v1", 1),
             ("wp_cursor_shape_manager_v1", 1),
@@ -276,7 +278,8 @@ fn every_request_table_is_ordered_and_bounded() {
             ("zwp_primary_selection_device_manager_v1", 1),
             ("xdg_activation_v1", 1),
             ("zwp_text_input_manager_v3", 1),
-            ("org_kde_kwin_server_decoration_manager", 1)
+            ("org_kde_kwin_server_decoration_manager", 1),
+            ("wp_fractional_scale_manager_v1", 1)
         ]
     );
     assert_eq!(
@@ -289,7 +292,7 @@ fn every_request_table_is_ordered_and_bounded() {
     );
     assert_eq!(
         protocol::GLOBALS.map(|global| global.name),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     );
 }
 
@@ -335,6 +338,37 @@ fn the_selection_activation_text_input_and_decoration_tables_follow_their_specif
         protocol::event_signature(Interface::DataSource, 1),
         Some(&[Arg::String, Arg::Fd][..])
     );
+}
+
+#[test]
+fn the_fractional_scale_output_name_and_toplevel_bounds_tables_follow_their_specifications() {
+    let name = |interface, version, opcode| {
+        protocol::request_of(interface, version, opcode).map(|request| request.name)
+    };
+    assert_eq!(
+        name(Interface::FractionalScaleManager, 1, 1),
+        Some("get_fractional_scale")
+    );
+    assert_eq!(name(Interface::FractionalScale, 1, 0), Some("destroy"));
+    assert_eq!(name(Interface::FractionalScale, 1, 1), None);
+    assert_eq!(
+        protocol::event_signature(Interface::FractionalScale, 0),
+        Some(&[Arg::Uint][..])
+    );
+    assert_eq!(protocol::output::NAME.since, 4);
+    assert_eq!(protocol::output::DESCRIPTION.opcode, 5);
+    assert_eq!(
+        protocol::event_signature(Interface::Output, 4),
+        Some(&[Arg::String][..])
+    );
+    assert_eq!(protocol::xdg_toplevel::CONFIGURE_BOUNDS.since, 4);
+    assert_eq!(protocol::xdg_toplevel::WM_CAPABILITIES.since, 5);
+    assert_eq!(
+        protocol::event_signature(Interface::XdgToplevel, 3),
+        Some(&[Arg::Array][..])
+    );
+    assert_eq!(protocol::fractional_scale::DENOMINATOR, 120);
+    assert_eq!(name(Interface::XdgToplevel, 5, 13), Some("set_minimized"));
 }
 
 #[test]

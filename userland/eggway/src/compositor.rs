@@ -1,9 +1,9 @@
-//! The compositor (D140, D172, D176): every client's requests checked against `wayland.xml`,
+//! The compositor (D140, D172, D176, D179): every client's requests checked against `wayland.xml`,
 //! `xdg-shell.xml`, `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml`, `viewporter.xml`,
-//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`
-//! and KDE's `server-decoration.xml` and carried out, each `xdg_toplevel` a window on
-//! `/dev/window` with its subsurfaces and popups drawn into it, the window server's input turned into seat and shell
-//! events for the surface under the pointer, and frame callbacks paced at 60 Hz. A client that
+//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`,
+//! `fractional-scale-v1.xml` and KDE's `server-decoration.xml` and carried out, each
+//! `xdg_toplevel` a window on `/dev/window` with its subsurfaces and popups drawn into it, the
+//! window server's input turned into seat and shell events for the surface under the pointer, and frame callbacks paced at 60 Hz. A client that
 //! breaks the protocol gets `wl_display.error` and is disconnected; nothing a client sends can
 //! make the compositor panic or hold more than its fixed limits.
 
@@ -26,8 +26,9 @@ use eggos_wayland::keymap;
 use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
-    keyboard, output, pointer, registry, seat, server_decoration, shm, subsurface, surface,
-    viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+    fractional_scale, keyboard, output, pointer, registry, seat, server_decoration, shm,
+    subsurface, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
+    xdg_wm_base,
 };
 use eggos_wayland::wire::{self, Header, MAX_ARGUMENTS, MAX_MESSAGE_SIZE, Value};
 
@@ -59,6 +60,13 @@ const WHEEL_STEP: i32 = 10;
 const REFRESH_MILLIHERTZ: i32 = 60_000;
 const REPEAT_RATE: i32 = 25;
 const REPEAT_DELAY_MS: i32 = 600;
+const OUTPUT_NAME: &[u8] = b"DISPLAY-1";
+const OUTPUT_DESCRIPTION: &[u8] = b"EggOS display";
+const PREFERRED_SCALE: u32 = fractional_scale::DENOMINATOR;
+const WM_CAPABILITIES: [u32; 2] = [
+    xdg_toplevel::CAPABILITY_MAXIMIZE,
+    xdg_toplevel::CAPABILITY_MINIMIZE,
+];
 
 mod record {
     pub const POINTER_ENTER: u16 = 1;
@@ -112,11 +120,13 @@ pub struct Watch {
 }
 
 /// What every client shares: serials, the pool memory mapped, the selections, the activation
-/// tokens and which client has the keyboard focus.
+/// tokens, which client has the keyboard focus and the work area's size, the bounds new
+/// toplevels are told to fit.
 #[derive(Debug, Default)]
 pub(crate) struct Shared {
     serial: u32,
     pool_bytes: usize,
+    bounds: (u32, u32),
     pub(crate) selections: Selections,
     pub(crate) activation: activation::Activation,
     /// The index of the client whose window has the keyboard focus.
@@ -203,6 +213,7 @@ impl Compositor {
         };
         client.index = free as u8;
         self.clients[free] = Some(client);
+        self.shared.bounds = system.work_area();
         true
     }
 
@@ -679,6 +690,8 @@ fn handle<S: System>(
         Interface::TextInput => text_input::request(client, message),
         Interface::ServerDecorationManager => server_decoration_manager_request(client, message),
         Interface::ServerDecoration => server_decoration_request(client, message),
+        Interface::FractionalScaleManager => fractional_scale_manager_request(client, message),
+        Interface::FractionalScale => fractional_scale_request(client, message),
         Interface::Region
         | Interface::Callback
         | Interface::Keyboard
@@ -800,6 +813,13 @@ fn send_output(client: &mut ClientSlot, id: u32, version: u32, width: u32, heigh
         ],
     );
     client.post(id, version, output::SCALE, &[Value::Int(1)]);
+    client.post(id, version, output::NAME, &[Value::String(OUTPUT_NAME)]);
+    client.post(
+        id,
+        version,
+        output::DESCRIPTION,
+        &[Value::String(OUTPUT_DESCRIPTION)],
+    );
     client.post(id, version, output::DONE, &[]);
 }
 
@@ -1142,6 +1162,7 @@ fn destroy_surface<S: System>(client: &mut ClientSlot, system: &mut S, index: u1
                     | Interface::Viewport
                     | Interface::ToplevelDecoration
                     | Interface::ServerDecoration
+                    | Interface::FractionalScale
             )
         );
         if role && object.index == index {
@@ -1469,6 +1490,15 @@ fn configure(client: &mut ClientSlot, shared: &mut Shared, index: u16, size: (u3
         }
     }
     let version = client.object(toplevel).map_or(1, |object| object.version);
+    let (width, height) = shared.bounds;
+    if width > 0 && height > 0 {
+        client.post(
+            toplevel,
+            version,
+            xdg_toplevel::CONFIGURE_BOUNDS,
+            &[Value::Int(width as i32), Value::Int(height as i32)],
+        );
+    }
     client.post(
         toplevel,
         version,
@@ -1687,6 +1717,13 @@ fn xdg_surface_request(client: &mut ClientSlot, shared: &mut Shared, message: &M
                 && let Some(surface) = client.surface(index)
             {
                 surface.toplevel = id;
+                let capabilities = WM_CAPABILITIES.map(u32::to_ne_bytes);
+                client.post(
+                    id,
+                    message.version,
+                    xdg_toplevel::WM_CAPABILITIES,
+                    &[Value::Array(capabilities.as_flattened())],
+                );
             }
         }
         2 => get_popup(client, shared, message, surface),
@@ -3295,6 +3332,49 @@ fn viewport_request(client: &mut ClientSlot, message: &Message) {
                 slot.viewport_pending.destination = (!unset).then_some((width, height));
             }
         }
+    }
+}
+
+fn fractional_scale_manager_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, surface_id) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, surface_id, Interface::Surface) else {
+        return;
+    };
+    if peek(client, index).is_some_and(|surface| surface.fractional_scale != 0) {
+        client.protocol_error(
+            message.object,
+            fractional_scale::FRACTIONAL_SCALE_EXISTS,
+            b"surface has a fractional scale",
+        );
+        return;
+    }
+    if new_object(
+        client,
+        id,
+        Interface::FractionalScale,
+        message.version,
+        index,
+    ) && let Some(slot) = client.surface(index)
+    {
+        slot.fractional_scale = id;
+        client.post(
+            id,
+            message.version,
+            fractional_scale::PREFERRED_SCALE,
+            &[Value::Uint(PREFERRED_SCALE)],
+        );
+    }
+}
+
+fn fractional_scale_request(client: &mut ClientSlot, message: &Message) {
+    if let Some(slot) = client
+        .surface(message.index)
+        .filter(|slot| slot.fractional_scale == message.object)
+    {
+        slot.fractional_scale = 0;
     }
 }
 

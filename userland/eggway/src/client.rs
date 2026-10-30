@@ -178,6 +178,8 @@ pub struct Surface {
     pub viewport: u32,
     pub viewport_pending: ViewportState,
     pub viewport_current: ViewportState,
+    /// The `wp_fractional_scale_v1`, 0 when it is none.
+    pub fractional_scale: u32,
 }
 
 impl Surface {
@@ -234,6 +236,7 @@ impl Surface {
                 source: None,
                 destination: None,
             },
+            fractional_scale: 0,
         }
     }
 
@@ -250,6 +253,7 @@ impl Surface {
         self.viewport = kept.viewport;
         self.viewport_pending = kept.viewport_pending;
         self.viewport_current = kept.viewport_current;
+        self.fractional_scale = kept.fractional_scale;
         self.ever_attached = true;
     }
 }

@@ -1,8 +1,8 @@
 //! The interfaces EggOS's Wayland server serves, with their requests' signatures and their
 //! events' opcodes, errors and enums, from `wayland.xml`, `xdg-shell.xml`,
 //! `xdg-decoration-unstable-v1.xml`, `cursor-shape-v1.xml`, `viewporter.xml`,
-//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`
-//! and KDE's `server-decoration.xml`. Request tables are indexed by opcode; a request whose
+//! `primary-selection-unstable-v1.xml`, `xdg-activation-v1.xml`, `text-input-unstable-v3.xml`,
+//! `fractional-scale-v1.xml` and KDE's `server-decoration.xml`. Request tables are indexed by opcode; a request whose
 //! `since` is above the object's version is no request of that object's.
 
 use crate::wire::Arg::{
@@ -53,6 +53,8 @@ pub enum Interface {
     TextInput,
     ServerDecorationManager,
     ServerDecoration,
+    FractionalScaleManager,
+    FractionalScale,
 }
 
 impl Interface {
@@ -100,6 +102,8 @@ impl Interface {
             Self::TextInput => "zwp_text_input_v3",
             Self::ServerDecorationManager => "org_kde_kwin_server_decoration_manager",
             Self::ServerDecoration => "org_kde_kwin_server_decoration",
+            Self::FractionalScaleManager => "wp_fractional_scale_manager_v1",
+            Self::FractionalScale => "wp_fractional_scale_v1",
         }
     }
 }
@@ -340,6 +344,11 @@ const SERVER_DECORATION: &[Request] = &[
     destructor("release", 1),
     request("request_mode", 1, &[Uint]),
 ];
+const FRACTIONAL_SCALE_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_fractional_scale", 1, &[NewId, Object]),
+];
+const FRACTIONAL_SCALE: &[Request] = &[destructor("destroy", 1)];
 
 /// `interface`'s requests, indexed by opcode.
 pub const fn requests(interface: Interface) -> &'static [Request] {
@@ -385,6 +394,8 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::TextInput => TEXT_INPUT,
         Interface::ServerDecorationManager => SERVER_DECORATION_MANAGER,
         Interface::ServerDecoration => SERVER_DECORATION,
+        Interface::FractionalScaleManager => FRACTIONAL_SCALE_MANAGER,
+        Interface::FractionalScale => FRACTIONAL_SCALE,
     }
 }
 
@@ -404,7 +415,7 @@ pub struct Global {
 }
 
 /// Every global, in the order the registry announces them.
-pub const GLOBALS: [Global; 14] = [
+pub const GLOBALS: [Global; 15] = [
     Global {
         name: 1,
         interface: Interface::Compositor,
@@ -423,12 +434,12 @@ pub const GLOBALS: [Global; 14] = [
     Global {
         name: 4,
         interface: Interface::Output,
-        version: 3,
+        version: 4,
     },
     Global {
         name: 5,
         interface: Interface::XdgWmBase,
-        version: 3,
+        version: 5,
     },
     Global {
         name: 6,
@@ -473,6 +484,11 @@ pub const GLOBALS: [Global; 14] = [
     Global {
         name: 14,
         interface: Interface::ServerDecorationManager,
+        version: 1,
+    },
+    Global {
+        name: 15,
+        interface: Interface::FractionalScaleManager,
         version: 1,
     },
 ];
@@ -598,6 +614,8 @@ pub mod output {
     pub const MODE: Event = event(1, 1);
     pub const DONE: Event = event(2, 2);
     pub const SCALE: Event = event(3, 2);
+    pub const NAME: Event = event(4, 4);
+    pub const DESCRIPTION: Event = event(5, 4);
     pub const SUBPIXEL_UNKNOWN: i32 = 0;
     pub const TRANSFORM_NORMAL: i32 = 0;
     pub const MODE_CURRENT: u32 = 1;
@@ -633,6 +651,8 @@ pub mod xdg_toplevel {
     use super::{Event, event};
     pub const CONFIGURE: Event = event(0, 1);
     pub const CLOSE: Event = event(1, 1);
+    pub const CONFIGURE_BOUNDS: Event = event(2, 4);
+    pub const WM_CAPABILITIES: Event = event(3, 5);
     pub const INVALID_RESIZE_EDGE: u32 = 0;
     pub const INVALID_PARENT: u32 = 1;
     pub const INVALID_SIZE: u32 = 2;
@@ -649,6 +669,10 @@ pub mod xdg_toplevel {
     pub const EDGE_RIGHT: u32 = 8;
     pub const EDGE_TOP_RIGHT: u32 = 9;
     pub const EDGE_BOTTOM_RIGHT: u32 = 10;
+    pub const CAPABILITY_WINDOW_MENU: u32 = 1;
+    pub const CAPABILITY_MAXIMIZE: u32 = 2;
+    pub const CAPABILITY_FULLSCREEN: u32 = 3;
+    pub const CAPABILITY_MINIMIZE: u32 = 4;
 }
 
 /// `xdg_popup`'s events and errors.
@@ -820,6 +844,15 @@ pub mod server_decoration {
     pub const SERVER: u32 = 2;
 }
 
+/// `wp_fractional_scale_manager_v1`'s and `wp_fractional_scale_v1`'s events and errors.
+pub mod fractional_scale {
+    use super::{Event, event};
+    pub const PREFERRED_SCALE: Event = event(0, 1);
+    pub const FRACTIONAL_SCALE_EXISTS: u32 = 0;
+    /// The denominator of a preferred scale: 120 is a scale of 1.
+    pub const DENOMINATOR: u32 = 120;
+}
+
 /// The signatures of the events the test client decodes, by the interface and opcode.
 pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'static [Arg]> {
     Some(match (interface, opcode) {
@@ -850,10 +883,13 @@ pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'stat
         (Interface::Output, 1) => &[Uint, Int, Int, Int],
         (Interface::Output, 2) => &[],
         (Interface::Output, 3) => &[Int],
+        (Interface::Output, 4 | 5) => &[String],
         (Interface::XdgWmBase, 0) => &[Uint],
         (Interface::XdgSurface, 0) => &[Uint],
         (Interface::XdgToplevel, 0) => &[Int, Int, Array],
         (Interface::XdgToplevel, 1) => &[],
+        (Interface::XdgToplevel, 2) => &[Int, Int],
+        (Interface::XdgToplevel, 3) => &[Array],
         (Interface::XdgPopup, 0) => &[Int, Int, Int, Int],
         (Interface::XdgPopup, 1) => &[],
         (Interface::XdgPopup, 2) => &[Uint],
@@ -877,6 +913,7 @@ pub const fn event_signature(interface: Interface, opcode: u16) -> Option<&'stat
         (Interface::TextInput, 5) => &[Uint],
         (Interface::ServerDecorationManager, 0) => &[Uint],
         (Interface::ServerDecoration, 0) => &[Uint],
+        (Interface::FractionalScale, 0) => &[Uint],
         _ => return None,
     })
 }

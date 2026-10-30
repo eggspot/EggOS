@@ -3,9 +3,10 @@ use crate::fake::{Fake, SentEvent, message};
 use crate::system::{Fd, System};
 use eggos_wayland::protocol::{
     Interface, SERVER_ID_START, activation_token, buffer, callback, cursor_shape, data_device,
-    data_offer, data_source, decoration, display, keyboard, pointer, primary_selection_device,
-    primary_selection_offer, primary_selection_source, registry, server_decoration, shm, surface,
-    text_input, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
+    data_offer, data_source, decoration, display, fractional_scale, keyboard, output, pointer,
+    primary_selection_device, primary_selection_offer, primary_selection_source, registry,
+    server_decoration, shm, surface, text_input, viewport, xdg_popup, xdg_positioner, xdg_surface,
+    xdg_toplevel,
 };
 use eggos_wayland::wire::Value;
 
@@ -252,13 +253,95 @@ fn the_registry_announces_every_global_and_refuses_a_newer_bind() {
         .iter()
         .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
         .collect();
-    assert_eq!(globals.len(), 14);
+    assert_eq!(globals.len(), 15);
     assert_eq!(globals[0].word(0), 1);
     session.bind(1, "wl_compositor", 5, COMPOSITOR);
     session.pump();
     assert_eq!(session.error(), Some((REGISTRY, display::INVALID_OBJECT)));
     assert!(!session.alive());
     assert!(session.fake.open.is_empty());
+}
+
+#[test]
+fn newer_binds_get_the_output_s_name_the_toplevel_s_bounds_and_capabilities_and_a_scale_of_one() {
+    const MANAGER: u32 = 40;
+    const SCALE: u32 = 41;
+    const SECOND_SCALE: u32 = 42;
+    let mut session = Session::new();
+    session.send(1, 1, &[Value::NewId(REGISTRY)]);
+    session.bind(1, "wl_compositor", 4, COMPOSITOR);
+    session.bind(4, "wl_output", 4, OUTPUT);
+    session.bind(5, "xdg_wm_base", 5, WM_BASE);
+    session.bind(15, "wp_fractional_scale_manager_v1", 1, MANAGER);
+    session.pump();
+    let name = session.of(OUTPUT, output::NAME.opcode)[0];
+    assert_eq!(name.word(0), 10);
+    assert_eq!(&name.body[4..13], b"DISPLAY-1");
+    assert_eq!(session.of(OUTPUT, output::DESCRIPTION.opcode).len(), 1);
+    let events = session.events.len();
+    session.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)]);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+    );
+    session.send(XDG_SURFACE, 1, &[Value::NewId(TOPLEVEL)]);
+    session.send(SURFACE, 6, &[]);
+    session.pump();
+    let toplevel: Vec<u16> = session.events[events..]
+        .iter()
+        .filter(|event| event.object == TOPLEVEL)
+        .map(|event| event.opcode)
+        .collect();
+    assert_eq!(
+        toplevel,
+        [
+            xdg_toplevel::WM_CAPABILITIES.opcode,
+            xdg_toplevel::CONFIGURE_BOUNDS.opcode,
+            xdg_toplevel::CONFIGURE.opcode
+        ]
+    );
+    let capabilities = session.of(TOPLEVEL, xdg_toplevel::WM_CAPABILITIES.opcode)[0];
+    assert_eq!(
+        (
+            capabilities.word(0),
+            capabilities.word(1),
+            capabilities.word(2)
+        ),
+        (
+            8,
+            xdg_toplevel::CAPABILITY_MAXIMIZE,
+            xdg_toplevel::CAPABILITY_MINIMIZE
+        )
+    );
+    let bounds = session.of(TOPLEVEL, xdg_toplevel::CONFIGURE_BOUNDS.opcode)[0];
+    assert_eq!((bounds.word(0), bounds.word(1)), (1280, 732));
+    session.send(MANAGER, 1, &[Value::NewId(SCALE), Value::Object(SURFACE)]);
+    session.pump();
+    let preferred = session.of(SCALE, fractional_scale::PREFERRED_SCALE.opcode);
+    assert_eq!(preferred.len(), 1);
+    assert_eq!(preferred[0].word(0), 120);
+    session.send(SCALE, 0, &[]);
+    session.send(
+        MANAGER,
+        1,
+        &[Value::NewId(SECOND_SCALE), Value::Object(SURFACE)],
+    );
+    session.pump();
+    assert!(session.alive());
+    assert_eq!(
+        session
+            .of(SECOND_SCALE, fractional_scale::PREFERRED_SCALE.opcode)
+            .len(),
+        1
+    );
+    session.send(MANAGER, 1, &[Value::NewId(SCALE), Value::Object(SURFACE)]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((MANAGER, fractional_scale::FRACTIONAL_SCALE_EXISTS))
+    );
+    session.end();
 }
 
 #[test]
