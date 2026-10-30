@@ -645,7 +645,17 @@ The release path (the release-path review's issues #141-#145, after the items ab
   `eggcpp.exe`, our own C++ program built by MSVC in CI, on x86_64 and aarch64. Next: the rest
   of the Windows C runtime (`setjmp`, locales, the math library, wide streams, `_open`) and
   msvcp140 (D177's "Not yet"); nib loading for apps like UDCalc (D175's "Not yet"); a real Qt
-  app (part 27).
+  app (part 27). Its seventh step, a real Win32 app on common controls, GDI+ and COM installs
+  and runs, **written, unchecked** (D178): AutoHotkey v2.0.31 (chosen by research; its x64
+  build, so x86_64 only), listed in docs/compatibility.md, running our script's window of Claude
+  Fable's design (docs/ux/windows-controls-v0.3.md sections 20-31); comctl32's status bar,
+  progress bar, tab control, list view with its header, tree view, toolbar and image lists,
+  STATIC pictures, the element tree's rows, items and tabs with the new `expanded` flag; DIB
+  sections, icons and PE resources; GDI+ images; COM with `Scripting.Dictionary`, BSTRs,
+  VARIANTs and SAFEARRAYs; dialogs from templates, accelerators, menu items, subclassing; and
+  advapi32, wsock32, WinINet, version, psapi, shlwapi, uxtheme, dwmapi and more of kernel32,
+  user32 and shell32; CI's `autohotkey` job drives the list, the toolbar, the tabs and the tree,
+  reads the element tree and compares the frames.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

@@ -12674,3 +12674,160 @@ the license, by an explicit instruction recorded here.
   generates (it is unwound as a leaf); `RtlVirtualUnwind`'s context pointers; PAC-signed
   return addresses (`pacibsp`) stripped from `lr`; a benchmark of a throw and catch
   against Windows; 32-bit (`x86`) programs' frame-based SEH (part 71).
+
+## D178 A real Win32 app on common controls, GDI+ and COM: AutoHotkey v2 with comctl32's status bar, progress bar, tab control, list view and header, tree view, toolbar and image lists, STATIC pictures, GDI+ images, COM with `Scripting.Dictionary`, PE resources, dialog templates, accelerators, subclassing, and the rest of the 280 functions it imports; CI's `autohotkey` job (batch part 26, the Real apps track's second Windows step; D174's "Not yet"; extends D18, D21, D22, D118, D129, D145, D146, D161, D162, D174, D177) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the common controls designed by Claude Fable, `docs/ux/windows-controls-v0.3.md` sections 20-31)
+- **Why.** After a classic Win32 app made of the standard controls (D174), the Real apps track's
+  next Windows step is an app built on what most real Windows programs use beyond them:
+  comctl32's common controls (list and tree views, toolbars, status bars, progress bars, tabs),
+  GDI+ for images and COM for components.
+- **The app** (decided by research): AutoHotkey v2.0.31 (GPL-2.0), the x64 `AutoHotkey64.exe`
+  of its release archive `AutoHotkey_2.0.31.zip` (3160453 bytes, SHA-256 `ca1a595a...d00a`,
+  pinned in `xtask/src/autohotkey.rs`; the program inside is 1284608 bytes, SHA-256
+  `5073ee85...73c`), downloaded from
+  <https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.31/AutoHotkey_2.0.31.zip>. It
+  is test data: downloaded by CI, never shipped or committed; only its binary is read, never its
+  source. AutoHotkey publishes x64 and 32-bit x86 builds and no ARM64 one, so it runs and is
+  checked on **x86_64 only**; on aarch64 it waits for x64 programs on Arm (part 39), and its
+  32-bit build for 32-bit Windows programs (part 71). It runs a script of ours,
+  `tests/autohotkey/controls.ahk`, that builds Claude Fable's worked example (design section 30)
+  with AutoHotkey's own `Gui` functions: a toolbar (`AddCustom` with `ToolbarWindow32`), a tab
+  control, a list view, a tree view, a progress bar, a picture AutoHotkey decodes through GDI+, a
+  status bar, and rows from a `Scripting.Dictionary` it creates through COM. docs/compatibility.md
+  lists it.
+- **What it needed.** 280 of its 480 imports were missing (a static C runtime, so more of
+  kernel32 too), in twelve libraries the layer did not have; all are in now, each with real
+  behaviour or with the failure Windows documents where EggOS lacks the facility:
+  - **comctl32's common controls** (`win32/common_controls/`, models and painting in
+    `eggos-windows-gui`'s `controls/{status_bar,progress,tab_control,list_view,tree_view,
+    toolbar,image,common}.rs`): `msctls_statusbar32` (parts, three tab-aligned pieces, icons,
+    `SB_SIMPLE`, docking; `CreateStatusWindowW`), `msctls_progress32` (range, position, step,
+    vertical, a still marquee, colours and states), `SysTabControl32` (one row of tabs, the
+    raised selected tab, `TCM_ADJUSTRECT`, keys, `TCN_SELCHANGING`/`TCN_SELCHANGE`),
+    `SysListView32` in report view with a real `SysHeader32` child (columns and autosize, rows,
+    selection and focus with `LVN_ITEMCHANGING`/`LVN_ITEMCHANGED` pairs, keys, clicks and double
+    clicks, `LVM_SORTITEMS` calling the program's compare function, small images, grid lines,
+    check boxes, scroll bars), `SysTreeView32` (items with handles that are never reused,
+    dotted lines and +/- boxes, every key of the design, expanding and selecting with their
+    notifications, hit tests, images, check boxes, scroll bars), `ToolbarWindow32` (text and
+    image buttons, list and classic layouts, separators, check and group buttons, `WM_COMMAND`
+    on release) and image lists (`ImageList_*`: masks, an alpha threshold of 128, greyed
+    images); the common control classes are system classes (`ControlKind::Common`), their
+    notifications `WM_NOTIFY`s; `InitCommonControlsEx` succeeds for every class.
+  - **STATIC pictures**: `SS_BITMAP` and `SS_ICON` with `STM_SETIMAGE`/`STM_SETICON`, drawn by
+    the image rule, centred or stretched, resizing the control as Win32 does.
+  - **The element tree** (D161): status parts, the progress bar's per mille, tabs as radios,
+    list rows as list items (the other columns as the value), the header's columns as buttons,
+    tree items nested with a new flag `EXPANDED` (64, `wm show` writes `expanded`), toolbar
+    buttons; `select`, `invoke` and `focus` act on them as section 29 says; picture statics are
+    graphics.
+  - **gdi32 and icons**: DIB sections (`CreateDIBSection`, `GetDIBits`, `GetObjectW`; a top-down
+    32-bit section shares its memory with the bitmap, other formats are converted before and
+    after each drawing call), pattern brushes, `GetPixel`, `GetClipBox`, `CreateDCW("DISPLAY")`,
+    polygon, ellipse and round-rectangle regions (kept as their bounding rectangle),
+    `EnumFontFamiliesExW` (Egg Mono under the name asked), `GetCharABCWidthsW`; icons and images
+    (`win32/icon.rs`, `win32/dib.rs`): `CreateIconIndirect`, `CreateIconFromResourceEx` (DIB and
+    PNG icons through our own `eggos-png`), `GetIconInfo`, `DrawIconEx`, `CopyImage`,
+    `LoadImageW` from resources or `.bmp`/`.ico` files.
+  - **PE resources** (`win32/resource.rs`): `FindResourceW`/`ExW`, `LoadResource`,
+    `LockResource`, `SizeofResource`, `EnumResourceNamesW`, used by `LoadImageW`, accelerators
+    and dialog templates.
+  - **GDI+** (`win32/gdiplus.rs`, `gdiplus.dll`, loaded by AutoHotkey at run time):
+    `GdiplusStartup`/`Shutdown`, bitmaps from files (PNG and BMP), from scan lines, icons and
+    `HBITMAP`s, `GdipCreateHBITMAPFromBitmap` (a top-down 32-bit DIB section), width, height,
+    pixel format and pixels, graphics on a device context and `GdipDrawImageRectI`.
+  - **COM** (`win32/com/`, the testable parts in `src/com/`): ole32's `CoInitialize`/`Ex`,
+    `CoUninitialize`, `OleInitialize`/`Uninitialize` (apartments per thread), `CoTaskMem*`,
+    `CoGetMalloc`, `CLSIDFromString`, `StringFromGUID2`, `CLSIDFromProgID`, in-process
+    `CoCreateInstance`, `CreateStreamOnHGlobal` (a real `IStream`); oleaut32 by ordinal and
+    name: BSTRs, VARIANTs with `VariantChangeType`'s conversions, SAFEARRAYs; and the first
+    in-process class the layer provides natively, `Scripting.Dictionary` (IDispatch with `Add`,
+    `Item`, `Exists`, `Count`, `Keys`, `Items`, `Remove`, `RemoveAll`, `CompareMode`, `Key` and
+    an `IEnumVARIANT`).
+  - **user32**: subclassing (`GWLP_WNDPROC` on the system's controls returns the layer's entry
+    or the program's procedure that replaced it, `CallWindowProcW`), dialogs from templates
+    (`DialogBoxParamW`, `CreateDialogIndirectParamW`, `EndDialog`, `MapDialogRect`; the class
+    `#32770`, 1 dialog unit = 2 pixels), accelerators (`LoadAcceleratorsW`,
+    `CreateAcceleratorTableW`, `TranslateAcceleratorW`), menu items (`InsertMenuItemW`,
+    `SetMenuItemInfoW`, `GetMenuItemInfoW`, `RemoveMenu`, `TrackPopupMenuEx`, ...), window
+    properties, registered messages, window enumeration and relations, the US keyboard layout
+    (`ToUnicodeEx`, `VkKeyScanExW`, `MapVirtualKeyW`), `SendInput` to the program's own windows,
+    hot keys while one of its windows has the keyboard, one monitor; uxtheme and dwmapi.
+  - **kernel32 and the smaller libraries**: locale functions for en-US (`LCMapStringW`,
+    `GetStringTypeW`, date and time pictures), `.ini` files, processes (`CreateProcessW` of
+    programs, Toolhelp snapshots over `/proc`, exit codes), volumes and free space, `CopyFileW`,
+    file attributes and times; advapi32 (an empty, read-only registry; tokens without privileges;
+    no services), wsock32 by ordinal over Linux sockets, WinINet's HTTP GET over our own
+    `eggos-net` (no HTTPS), version resources of files, `StrCmpLogicalW`, shell32's folders, file
+    operations (to the Trash with `FOF_ALLOWUNDO`) and `ShellExecuteExW` of programs.
+- **Front-ends (D22).** GUI: the app's icon and launcher row open it, Files and the installer
+  install it, and its window is what the script builds. CLI: `app install` (with `--entry` and
+  `--arguments`), `app open`, `app list`, `wm list`, `wm show` and `wm act` on its controls'
+  rows, items, tabs and buttons. MCP: `app_install`, `app_open`, `wm_list`, `wm_show`,
+  `wm_act`, `wm_click`, `wm_type`, `wm_press`.
+- **The check** (`cargo xtask autohotkey --arch x86_64`, `xtask/src/qemu/autohotkey.rs`; CI's
+  `autohotkey` job, x86_64, in `check`'s needs): boots the release image with a blank disk and a
+  host folder holding the archive, the script and a 32x32 PNG it writes (`egg.png`), installs the
+  archive as the app `autohotkey` with `--entry AutoHotkey64.exe --arguments controls.ahk`, opens
+  it in `/tmp` beside copies of the script and the picture, finds the window where the screen
+  changed and checks the design's pixels: the first row selected, the progress bar at 40, the
+  picture GDI+ decoded, the status bar's separator; Down, Down selects the third row and changes
+  the status text; a click on `Step` fills the progress bar to 60 and leaves the list focused;
+  `wm show` lists the selected `Cherries` row, the `Elderberries` row, the progress bar at 600
+  per mille and the selected `List` tab; a click on the `Tree` tab shows the tree with its `+`
+  box; a click on `Fruit`'s box opens it and selects it; Down selects `Apples`; Alt+F4 closes the
+  window, AutoHotkey exits, `wm list` has no such window and the machine powers off cleanly.
+- **Tests.** eggos-windows-gui: every control's pixels for the worked example and the design's
+  cases (section 31), the image rule, the list's notification order and the tree's keys; the
+  Windows layer (host tests outside `win32/`): GUIDs, BSTRs, VARIANT conversions, SAFEARRAYs,
+  the dictionary through IDispatch, memory streams, `.ini` files, locales and date pictures,
+  version resources, the process list, sockets' addresses, `StrCmpLogicalW`, the keyboard
+  layout, dialog templates, accelerators, properties and atoms; library names; xtask: the pin,
+  the script, the picture, the console parsing and the verdict.
+- **Decided by research.** (1) The app: AutoHotkey v2.0.31, measured against about 30 candidates
+  by their import tables (Explorer++ 1.4.0 the runner-up with every control family and 38 GDI+
+  functions but the whole shell namespace and 293 missing imports, x64 only; 7-Zip's file
+  manager ships ARM64 but imports `msvcrt.dll`; Simon Tatham's other puzzles need only the
+  status bar): it covers every control family but the toolbar in its own `Gui` and reaches
+  the toolbar as a custom control, uses GDI+ and COM, and builds its whole window from a script
+  of ours, so the frames are the same at every start; no ARM64 build exists. (2) The registry is
+  empty and read-only (root keys open; subkeys and values are not found; writes are refused):
+  every answer is a normal Windows one, and a file-backed store waits for writable folders. (3)
+  WinINet is a real HTTP/1.1 GET over `eggos-net` with up to 5 redirects; `https://` fails with
+  `ERROR_INTERNET_SECURE_CHANNEL_ERROR`.
+- **Decided without research.** The common controls' layout and looks are Fable's (design
+  sections 20-31); a left button-down focuses a list, tree or tab control first; the tab
+  control repaints the later sibling controls it overlaps; the list's columns live in its model
+  and its header window reads them; tree item handles carry a generation; a STATIC picture fills
+  with the surface colour; DIB sections other than top-down 32-bit are mirrored; GDI+ hands
+  back premultiplied, background-composited pixels; icons with alpha are blended, others drawn
+  by AND/XOR; `IsAppThemed` is TRUE; hot keys work while a window of the program has the
+  keyboard; `SendInput` reaches only the program's own windows; the Windows folder is
+  `C:\usr\lib\eggos`, AppData `~/.config`, LocalAppData `~/.local/share`, Program Files
+  `/Applications`; the user name is `USER`, `USERNAME`, else `root`; Winsock 1.1's ordinals and
+  oleaut32's ordinals as Microsoft's export tables give them (from the implementers' knowledge:
+  the build phase checks them against the program's behaviour); COM's apartment in the TEB's
+  `ReservedForOle`; the script uses `Tab2` (pages as sibling controls) instead of the design's
+  `Tab3`; exceptions through the layer's frames (D177's "Not yet") are not needed by the
+  script's paths, so they stay for a later part. The owner can overrule any of these.
+- **Performance and size (D24).** Nothing on a kernel hot path changes. A console program pays
+  nothing new: every new table (image lists, icons, properties, atoms, COM apartments) is made on
+  first use. A common control's state is one heap block (a list view about 91 KiB, a tree view
+  about 55 KiB, the others a few KiB), made when the control is created; the layer's program
+  grows by the new functions (the Windows layer is in the release images by D152, so their size
+  grows; the build phase measures it and states it in the PR). No benchmark is added: no kernel
+  hot path is touched.
+- **Not yet.** Hover looks on tabs, headers and toolbar buttons (the layer has no pointer-leave
+  signal); tooltips; `NM_CUSTOMDRAW`, text and image callbacks, label editing, drag and drop,
+  column reordering and resizing by dragging, sort arrows; ANSI messages of the common controls;
+  `LVN_DELETEITEM`/`TVN_DELETEITEMW` when the control itself is destroyed; Ctrl+Tab to a focused
+  tab control inside a dialog loop; `TB_ADDBITMAP`'s bitmaps; more of the image list
+  (`GetImageInfo`, overlays, `Merge`); non-rectangular regions; JPEG, GIF, TIFF and ICO in GDI+,
+  and most GDI+ functions beyond the image path; IPicture and `OleLoadPicture`; out-of-process
+  COM, monikers, the running object table and registry-backed classes; a real registry; global
+  keyboard and mouse hooks, global hot keys, `BlockInput`, layered windows and window regions;
+  services and privileges; a folder picker and the shell namespace (PIDLs, `IShellFolder`); the
+  tray (`Shell_NotifyIconW`); drag and drop into programs; HTTPS in WinINet; `WSAAsyncSelect`;
+  sound, joysticks and MCI; other processes' memory; exceptions through the layer's own frames
+  (D177); host tests for the code under `win32/` (that module is built only for Windows
+  programs, so its pure parts belong in modules outside it); aarch64 (part 39, x64 programs on
+  Arm).

@@ -222,7 +222,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
   apps such as Pegs from Simon Tatham's Puzzles too, with their own dialogs, drop-down list
-  combo boxes, off-screen bitmaps and `BitBlt` (D174, [compatibility](compatibility.md)), and
+  combo boxes, off-screen bitmaps and `BitBlt` (D174, [compatibility](compatibility.md)),
+  apps on comctl32's common controls, GDI+ and COM such as AutoHotkey v2 (D178: status bars,
+  progress bars, tabs, list and tree views, toolbars, image lists, GDI+ images, in-process COM
+  with `Scripting.Dictionary`, dialogs from resources, accelerators, subclassing), and
   structured exception handling and C++ exceptions work (D177): `__try`, `__except`,
   `__finally`, vectored handlers, faults as Windows exceptions, `throw` and `catch`, `signal`.
   An exception cannot yet pass through the layer's own frames (a fault inside a Windows
@@ -231,11 +234,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Programs on the C++ standard library's DLL (msvcp140: iostreams, `std::thread`),
   `std::exception_ptr`, `dynamic_cast` and `typeid`, MinGW's or Rust's std, `setjmp`,
   locales, most of the math library, wide streams, `_open`, other
-  processes, other DLLs, controls beyond buttons, edits,
-  labels, lists and drop-down lists (D145, D174: no multi-line edits or selection, radio
-  keys, scroll bars, editable combo boxes, submenus, context menus, accelerators or menu keys
-  yet), dialogs from resources, common controls (comctl32's list views, toolbars, status
-  bars), printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
+  DLLs than the layer's own, multi-line edits or selection, radio keys, editable combo boxes
+  and menu keys (D145, D174), the common controls' hover looks, tooltips, custom drawing and
+  label editing, GDI+ beyond images (JPEG, GIF and TIFF too), out-of-process COM and COM
+  classes other than `Scripting.Dictionary`, a registry with keys (it is empty and read-only),
+  global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178),
+  printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
   and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and riscv64 do
   not run yet; the clipboard is each program's own until the shared one comes; names are
   case-sensitive and local time is UTC.

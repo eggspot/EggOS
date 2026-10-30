@@ -11,6 +11,7 @@ works.
 |-----|---------|---------|----------|---------------|------------|--------|
 | [Brogue: Community Edition](https://github.com/tmewett/BrogueCE), a roguelike game | 1.15.1 (Alpine `v3.24`'s `brogue-1.15.1-r0`), on `sdl2-compat` 2.32.68 and SDL `main` at `328edfc1` | AGPL-3.0-or-later (code), CC BY-SA 4.0 (tiles) | Linux, SDL 2 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader and libraries, opens from its icon or `app open` in its own window, plays turns from the keyboard, saves and quits | `sdl3`, `sdl-app` (D172) |
 | [Pegs](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/pegs.html) from Simon Tatham's Portable Puzzle Collection, a peg solitaire game | `20260923.616da16` (the collection's official `pegs.exe`) | MIT | Windows, classic Win32 (ANSI, MSVC's `/MD` C runtime) | x86_64 (the collection publishes x64 Windows builds only) | installs from its `.exe`, opens from its icon or `app open`, plays by dragging pegs, undoes and redoes, changes its board from its `Type` menu (the window resizes, the tick moves), opens its About box and its Custom dialog with a drop-down list, quits | `win32-app` (D174) |
+| [AutoHotkey](https://www.autohotkey.com/), a scripting language for automating Windows | 2.0.31 (the release's `AutoHotkey_2.0.31.zip`, its `AutoHotkey64.exe`) | GPL-2.0 | Windows, Win32 in C++ on comctl32's common controls, GDI+ and COM (static C runtime) | x86_64 (AutoHotkey publishes x64 and 32-bit x86 builds only) | installs from its `.zip` with the script it runs, opens from its icon or `app open`, runs our script's window: a toolbar, tabs, a list view, a tree view, a progress bar, a picture through GDI+, a status bar, rows from a `Scripting.Dictionary` through COM; keys and clicks drive them, agents read them with `wm show`, Alt+F4 closes it | `autohotkey` (D178) |
 | [CocoaGame](https://github.com/reallukee/cocoagame), a small Objective-C board game | 1.0.0 (the author's release `CocoaGame.zip`) | MIT | macOS, Objective-C on AppKit (built in code, no nib), linking the Cocoa umbrella | aarch64, x86_64 (a universal binary) | installs from its `.zip`, opens from its icon or `app open` in its own window, moves its player with `w`, `a`, `s`, `d` and the arrow keys, eats the food, shows its About panel from its app menu, answers agents with its views as an element tree, quits with Cmd+Q | `cocoa-app` (D175) |
 | [Mousepad](https://docs.xfce.org/apps/mousepad/start), Xfce's text editor | 0.7.0 (Alpine `v3.24`'s `mousepad-0.7.0-r0`), on GTK 3.24.52 and GtkSourceView 4.8.4 | GPL-2.0-or-later (Mousepad; GTK and its libraries LGPL and others; DejaVu fonts free) | Linux, GTK 3 on Wayland, musl | x86_64, aarch64 | installs from a `.zip` with its loader, libraries, schemas and fonts and its environment, opens from its icon or `app open` in its own window with EggOS's title bar, edits text from the keyboard, copies and pastes inside the app (Ctrl+A, Ctrl+C, Ctrl+V), saves and quits | `gtk-app` (D176) |
 
@@ -90,6 +91,41 @@ works.
   every font is Egg Mono, so the dialogs are laid out from its metrics. What the layer still
   lacks for other puzzles of the collection (comctl32's status bar, more of the math library) is
   in D174's "Not yet".
+
+## AutoHotkey (Windows, common controls, GDI+ and COM)
+
+- **Where it comes from.** `cargo xtask autohotkey` downloads AutoHotkey's release archive
+  <https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.31/AutoHotkey_2.0.31.zip>,
+  checked against the SHA-256 pinned in `xtask/src/autohotkey.rs` (a release asset can be
+  replaced, so a new one is pinned again by hand). It is test data: never shipped in an image,
+  never committed; only the binary is used.
+- **Why it.** Research chose it as the second Windows app: a real, widely used program written
+  in C++ against the Win32 API whose own `Gui` functions create comctl32's list views, tree
+  views, tab controls, status bars and progress bars (and any other class as a custom control,
+  so the toolbar too), which loads pictures through GDI+ and creates COM objects, and which
+  builds its whole window from a script, so the window is the same at every start and its frames
+  can be compared. It ships no ARM64 build.
+- **Installing it.** `app install --name autohotkey --entry AutoHotkey64.exe --arguments
+  controls.ahk /media/host/AutoHotkey_2.0.31.zip` (or the MCP tool `app_install`, or Files)
+  installs the archive as the app `autohotkey`, opening `controls.ahk` from the folder it is
+  opened in. Any other script works the same way.
+- **Opening it.** Its icon, `app open autohotkey` or the MCP tool `app_open` runs it through the
+  Windows layer. Our script, `tests/autohotkey/controls.ahk`, builds the window of Claude
+  Fable's design (docs/ux/windows-controls-v0.3.md section 30): the toolbar's `Step` adds 20 to
+  the progress bar, `Reset` empties it and `Show tree` turns to the tree; arrows and clicks move
+  through the list and the tree, and the status bar says what is selected. Agents read the window
+  as an element tree with `wm show` (rows, tree items with `expanded`, tabs, status parts, the
+  progress bar's per mille, toolbar buttons) and act on them with `wm act`.
+- **What CI does** (`autohotkey`, x86_64): installs the archive on a blank disk, lists it, opens
+  it in `/tmp` beside the script and its picture, finds the window where the screen changed, and
+  checks the design's pixels after each step: the first frame, Down twice in the list, a click
+  on `Step`, `wm show`'s rows, progress and tabs, a click on the `Tree` tab, a click on `Fruit`'s
+  box and Down; Alt+F4 closes it, and `wm list` has no such window afterwards.
+- **Known limits.** x86_64 only: AutoHotkey ships no ARM64 build, and x64 programs do not run on
+  Arm yet (part 39). Its hot keys work only while one of its windows has the keyboard (no global
+  hooks), there is no tray icon (scripts use `#NoTrayIcon`), the registry is empty and
+  read-only, `Download` has no HTTPS, `Run` starts programs but not documents, and every font is
+  Egg Mono. What the layer still lacks is in D178's "Not yet".
 
 ## CocoaGame (macOS, Objective-C on AppKit)
 
