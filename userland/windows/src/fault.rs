@@ -1,5 +1,7 @@
-//! What the layer does with a hardware fault in a Windows program (D151), as pure logic: the
-//! one instruction it completes itself, and the line it writes before the program ends.
+//! What the layer does with a hardware fault in a Windows program (D151, D177), as pure
+//! logic: the one instruction it completes itself, the Windows exception each fault becomes
+//! (D177: an access violation, a division by zero, an illegal instruction, a breakpoint, ...),
+//! and the line it writes when the program does not handle it and ends.
 
 #[cfg(any(test, target_arch = "aarch64"))]
 const READ_CURRENT_EL: u32 = 0xd538_4240;
@@ -17,6 +19,183 @@ pub const SIGTRAP: i32 = 5;
 pub const SIGBUS: i32 = 7;
 pub const SIGFPE: i32 = 8;
 pub const SIGSEGV: i32 = 11;
+const SI_KERNEL: i32 = 0x80;
+const BUS_ADRALN: i32 = 1;
+const TRAP_BRKPT: i32 = 1;
+const PT_LOAD: u32 = 1;
+const PT_PHDR: u32 = 6;
+const PF_X: u32 = 1;
+const PROGRAM_HEADER_SIZE: usize = 56;
+const INT3: u8 = 0xcc;
+const INT_29: u32 = 0x29cd;
+const ARM64_BRK_MASK: u32 = 0xffe0_001f;
+const ARM64_BRK: u32 = 0xd420_0000;
+const ARM64_BREAKPOINT: u32 = 0xf000;
+const ARM64_ASSERTION: u32 = 0xf001;
+const ARM64_DEBUG_SERVICE: u32 = 0xf002;
+const ARM64_FAST_FAIL: u32 = 0xf003;
+const ARM64_DIVIDE_BY_ZERO: u32 = 0xf004;
+
+/// The Windows exception codes faults become (`ntstatus.h`).
+pub mod status {
+    pub const BREAKPOINT: u32 = 0x8000_0003;
+    pub const DATATYPE_MISALIGNMENT: u32 = 0x8000_0002;
+    pub const SINGLE_STEP: u32 = 0x8000_0004;
+    pub const ACCESS_VIOLATION: u32 = 0xc000_0005;
+    pub const IN_PAGE_ERROR: u32 = 0xc000_0006;
+    pub const ILLEGAL_INSTRUCTION: u32 = 0xc000_001d;
+    pub const FLOAT_DIVIDE_BY_ZERO: u32 = 0xc000_008e;
+    pub const FLOAT_INEXACT_RESULT: u32 = 0xc000_008f;
+    pub const FLOAT_INVALID_OPERATION: u32 = 0xc000_0090;
+    pub const FLOAT_OVERFLOW: u32 = 0xc000_0091;
+    pub const FLOAT_UNDERFLOW: u32 = 0xc000_0093;
+    pub const INTEGER_DIVIDE_BY_ZERO: u32 = 0xc000_0094;
+    pub const INTEGER_OVERFLOW: u32 = 0xc000_0095;
+    pub const IO_DEVICE_ERROR: u32 = 0xc000_0185;
+    pub const ASSERTION_FAILURE: u32 = 0xc000_0420;
+    pub const STACK_BUFFER_OVERRUN: u32 = 0xc000_0409;
+}
+
+/// What an access violation's first parameter says the instruction did.
+pub mod access {
+    pub const READ: u64 = 0;
+    pub const WRITE: u64 = 1;
+    pub const EXECUTE: u64 = 8;
+}
+
+/// A fault as the kernel signalled it, with what the layer read around it: `access` (one of
+/// [`access`]) from the trap information, the four bytes at `pc` and the byte before it (zero
+/// where they were not read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signalled {
+    pub signal: i32,
+    pub code: i32,
+    pub pc: u64,
+    pub address: u64,
+    pub access: u64,
+    pub instruction: u32,
+    pub byte_before: u8,
+}
+
+/// The Windows exception a fault becomes: its code, the address of the instruction and its
+/// parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exception {
+    pub code: u32,
+    pub address: u64,
+    pub parameters: [u64; 3],
+    pub parameter_count: u32,
+}
+
+/// What a fault means for the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The program gets this exception, through its vectored and frame handlers.
+    Exception(Exception),
+    /// The program asked to end at once (`__fastfail`), which no handler sees.
+    FailFast,
+}
+
+fn exception(code: u32, address: u64, parameters: &[u64]) -> Delivery {
+    let mut all = [0; 3];
+    all[..parameters.len()].copy_from_slice(parameters);
+    Delivery::Exception(Exception {
+        code,
+        address,
+        parameters: all,
+        parameter_count: parameters.len() as u32,
+    })
+}
+
+fn float_status(code: i32) -> u32 {
+    match code {
+        1 => status::INTEGER_DIVIDE_BY_ZERO,
+        2 => status::INTEGER_OVERFLOW,
+        3 => status::FLOAT_DIVIDE_BY_ZERO,
+        4 => status::FLOAT_OVERFLOW,
+        5 => status::FLOAT_UNDERFLOW,
+        6 => status::FLOAT_INEXACT_RESULT,
+        _ => status::FLOAT_INVALID_OPERATION,
+    }
+}
+
+/// The exception `fault` becomes on Windows, on an ARM64 machine when `arm64`: memory faults
+/// are access violations (a general protection fault, which names no address, reports
+/// all ones), misaligned accesses misalignments, `SIGFPE`'s causes Windows' arithmetic codes,
+/// illegal instructions `STATUS_ILLEGAL_INSTRUCTION`; `int3` and `brk #0xf000` breakpoints at
+/// the instruction, and the `brk` immediates MSVC's ARM64 code uses for an assertion and a
+/// division by zero those exceptions (any other `brk` is an illegal instruction, as on
+/// Windows); `int 0x29` and `brk #0xf003` are `__fastfail`.
+pub fn delivery(fault: &Signalled, arm64: bool) -> Delivery {
+    let pc = fault.pc;
+    match fault.signal {
+        SIGSEGV if !arm64 && fault.code == SI_KERNEL && fault.instruction & 0xffff == INT_29 => {
+            Delivery::FailFast
+        }
+        SIGSEGV if fault.code == SI_KERNEL => {
+            exception(status::ACCESS_VIOLATION, pc, &[access::READ, u64::MAX])
+        }
+        SIGSEGV => exception(status::ACCESS_VIOLATION, pc, &[fault.access, fault.address]),
+        SIGBUS if fault.code == BUS_ADRALN => exception(status::DATATYPE_MISALIGNMENT, pc, &[]),
+        SIGBUS => exception(
+            status::IN_PAGE_ERROR,
+            pc,
+            &[
+                fault.access,
+                fault.address,
+                u64::from(status::IO_DEVICE_ERROR),
+            ],
+        ),
+        SIGFPE => exception(float_status(fault.code), pc, &[]),
+        SIGTRAP if arm64 && fault.instruction & ARM64_BRK_MASK == ARM64_BRK => {
+            match fault.instruction >> 5 & 0xffff {
+                ARM64_FAST_FAIL => Delivery::FailFast,
+                ARM64_DIVIDE_BY_ZERO => exception(status::INTEGER_DIVIDE_BY_ZERO, pc, &[]),
+                ARM64_ASSERTION => exception(status::ASSERTION_FAILURE, pc, &[]),
+                ARM64_BREAKPOINT | ARM64_DEBUG_SERVICE => exception(status::BREAKPOINT, pc, &[0]),
+                _ => exception(status::ILLEGAL_INSTRUCTION, pc, &[]),
+            }
+        }
+        SIGTRAP if !arm64 && fault.code == SI_KERNEL && fault.byte_before == INT3 => {
+            exception(status::BREAKPOINT, pc.wrapping_sub(1), &[0])
+        }
+        SIGTRAP if !arm64 && fault.code == TRAP_BRKPT => exception(status::SINGLE_STEP, pc, &[]),
+        SIGTRAP => exception(status::BREAKPOINT, pc, &[0]),
+        _ => exception(status::ILLEGAL_INSTRUCTION, pc, &[]),
+    }
+}
+
+/// The range of addresses the executable segments of the program whose program headers are
+/// `headers`, mapped at `headers_address`, occupy: from the first segment's start to the last
+/// one's end. `None` without a `PT_PHDR` header, which gives the load bias.
+pub fn executable_range(headers: &[u8], headers_address: u64) -> Option<(u64, u64)> {
+    let field32 = |header: &[u8], at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(header.get(at..at + 4)?.try_into().ok()?))
+    };
+    let field64 = |header: &[u8], at: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(header.get(at..at + 8)?.try_into().ok()?))
+    };
+    let mut bias = None;
+    for header in headers.chunks_exact(PROGRAM_HEADER_SIZE) {
+        if field32(header, 0)? == PT_PHDR {
+            bias = Some(headers_address.wrapping_sub(field64(header, 16)?));
+        }
+    }
+    let bias = bias?;
+    let mut range: Option<(u64, u64)> = None;
+    for header in headers.chunks_exact(PROGRAM_HEADER_SIZE) {
+        if field32(header, 0)? != PT_LOAD || field32(header, 4)? & PF_X == 0 {
+            continue;
+        }
+        let start = bias.wrapping_add(field64(header, 16)?);
+        let end = start.wrapping_add(field64(header, 40)?);
+        range = Some(match range {
+            Some((low, high)) => (low.min(start), high.max(end)),
+            None => (start, end),
+        });
+    }
+    range
+}
 /// The faults the layer reports, each a signal the kernel sends for one.
 pub const SIGNALS: [i32; 5] = [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV];
 
@@ -101,6 +280,47 @@ fn what(signal: i32) -> &'static [u8] {
     }
 }
 
+fn push_place(line: &mut Line, program: &[u8], image: Image, pc: u64) {
+    match pc.checked_sub(image.base) {
+        Some(offset) if offset < image.size => {
+            line.push(b" (");
+            line.push(file_name(program));
+            line.push(b"+");
+            line.push_hex(offset);
+            line.push(b")");
+        }
+        _ => line.push(b" (outside the program's image)"),
+    }
+}
+
+/// The line the layer writes to standard error when the exception `code`, raised at `pc`,
+/// reached no handler, before the program ends with that code as its status.
+pub fn report_exception(program: &[u8], image: Image, code: u32, pc: u64) -> Line {
+    let mut line = Line::default();
+    line.push(b"windows: ");
+    line.push(program);
+    line.push(b": exception ");
+    line.push_hex(u64::from(code));
+    line.push(b" was not handled, raised at ");
+    line.push_hex(pc);
+    push_place(&mut line, program, image, pc);
+    line.push(b"\n");
+    line
+}
+
+/// The line the layer writes to standard error when the program ended itself at once with
+/// `__fastfail` at `pc`.
+pub fn report_fail_fast(program: &[u8], image: Image, pc: u64) -> Line {
+    let mut line = Line::default();
+    line.push(b"windows: ");
+    line.push(program);
+    line.push(b": the program ended itself at once (__fastfail) at ");
+    line.push_hex(pc);
+    push_place(&mut line, program, image, pc);
+    line.push(b"\n");
+    line
+}
+
 fn file_name(path: &[u8]) -> &[u8] {
     path.rsplit(|byte| *byte == b'/' || *byte == b'\\')
         .next()
@@ -118,16 +338,7 @@ pub fn report(program: &[u8], image: Image, fault: Fault) -> Line {
     line.push(what(fault.signal));
     line.push(b" at ");
     line.push_hex(fault.pc);
-    match fault.pc.checked_sub(image.base) {
-        Some(offset) if offset < image.size => {
-            line.push(b" (");
-            line.push(file_name(program));
-            line.push(b"+");
-            line.push_hex(offset);
-            line.push(b")");
-        }
-        _ => line.push(b" (outside the program's image)"),
-    }
+    push_place(&mut line, program, image, fault.pc);
     if matches!(fault.signal, SIGSEGV | SIGBUS) {
         line.push(b", address ");
         line.push_hex(fault.address);
@@ -199,6 +410,142 @@ mod tests {
             address: 0,
         };
         assert!(text(&report(b"a.exe", IMAGE, end)).contains("breakpoint at 0x140008000 (outside"));
+    }
+
+    fn signalled(signal: i32, code: i32) -> Signalled {
+        Signalled {
+            signal,
+            code,
+            pc: 0x1_4000_2000,
+            address: 0x10,
+            access: access::WRITE,
+            instruction: 0,
+            byte_before: 0,
+        }
+    }
+
+    fn code_of(delivery: Delivery) -> (u32, u64, Vec<u64>) {
+        match delivery {
+            Delivery::Exception(exception) => (
+                exception.code,
+                exception.address,
+                exception.parameters[..exception.parameter_count as usize].to_vec(),
+            ),
+            Delivery::FailFast => (0, 0, Vec::new()),
+        }
+    }
+
+    #[test]
+    fn faults_become_the_windows_exceptions_of_their_cause() {
+        let pc = 0x1_4000_2000;
+        for arm64 in [false, true] {
+            assert_eq!(
+                code_of(delivery(&signalled(SIGSEGV, 1), arm64)),
+                (status::ACCESS_VIOLATION, pc, vec![access::WRITE, 0x10])
+            );
+            assert_eq!(
+                code_of(delivery(&signalled(SIGFPE, 1), arm64)).0,
+                status::INTEGER_DIVIDE_BY_ZERO
+            );
+            assert_eq!(
+                code_of(delivery(&signalled(SIGFPE, 3), arm64)).0,
+                status::FLOAT_DIVIDE_BY_ZERO
+            );
+            assert_eq!(
+                code_of(delivery(&signalled(SIGILL, 1), arm64)).0,
+                status::ILLEGAL_INSTRUCTION
+            );
+            assert_eq!(
+                code_of(delivery(&signalled(SIGBUS, BUS_ADRALN), arm64)).0,
+                status::DATATYPE_MISALIGNMENT
+            );
+        }
+        assert_eq!(
+            code_of(delivery(&signalled(SIGSEGV, SI_KERNEL), false)),
+            (status::ACCESS_VIOLATION, pc, vec![access::READ, u64::MAX])
+        );
+    }
+
+    #[test]
+    fn breakpoints_division_by_zero_and_fast_fail_follow_each_cpu_s_instructions() {
+        let pc = 0x1_4000_2000;
+        let int3 = Signalled {
+            byte_before: INT3,
+            ..signalled(SIGTRAP, SI_KERNEL)
+        };
+        assert_eq!(
+            code_of(delivery(&int3, false)),
+            (status::BREAKPOINT, pc - 1, vec![0])
+        );
+        let fast_fail = Signalled {
+            instruction: 0x0000_29cd,
+            ..signalled(SIGSEGV, SI_KERNEL)
+        };
+        assert_eq!(delivery(&fast_fail, false), Delivery::FailFast);
+        let brk = |immediate: u32| Signalled {
+            instruction: ARM64_BRK | immediate << 5,
+            ..signalled(SIGTRAP, TRAP_BRKPT)
+        };
+        assert_eq!(
+            code_of(delivery(&brk(0xf000), true)),
+            (status::BREAKPOINT, pc, vec![0])
+        );
+        assert_eq!(
+            code_of(delivery(&brk(0xf004), true)),
+            (status::INTEGER_DIVIDE_BY_ZERO, pc, vec![])
+        );
+        assert_eq!(
+            code_of(delivery(&brk(0xf001), true)).0,
+            status::ASSERTION_FAILURE
+        );
+        assert_eq!(delivery(&brk(0xf003), true), Delivery::FailFast);
+        assert_eq!(
+            code_of(delivery(&brk(0), true)).0,
+            status::ILLEGAL_INSTRUCTION
+        );
+    }
+
+    #[test]
+    fn the_layer_s_code_range_comes_from_its_program_headers() {
+        let header = |kind: u32, flags: u32, address: u64, size: u64| {
+            let mut bytes = vec![0u8; PROGRAM_HEADER_SIZE];
+            bytes[0..4].copy_from_slice(&kind.to_le_bytes());
+            bytes[4..8].copy_from_slice(&flags.to_le_bytes());
+            bytes[16..24].copy_from_slice(&address.to_le_bytes());
+            bytes[40..48].copy_from_slice(&size.to_le_bytes());
+            bytes
+        };
+        let mut headers = header(PT_PHDR, 4, 0x40, 0x150);
+        headers.extend(header(PT_LOAD, 4, 0, 0x1000));
+        headers.extend(header(PT_LOAD, 5, 0x1000, 0x8000));
+        headers.extend(header(PT_LOAD, 6, 0x9000, 0x2000));
+        assert_eq!(
+            executable_range(&headers, 0x5555_0040),
+            Some((0x5555_1000, 0x5555_9000))
+        );
+        assert_eq!(
+            executable_range(&headers[PROGRAM_HEADER_SIZE..], 0x40),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unhandled_exception_and_a_fast_fail_name_where_they_happened() {
+        assert_eq!(
+            text(&report_exception(
+                b"eggcpp.exe",
+                IMAGE,
+                0xe000_0001,
+                0x1_4000_1010
+            )),
+            "windows: eggcpp.exe: exception 0xe0000001 was not handled, raised at 0x140001010 \
+             (eggcpp.exe+0x1010)\n"
+        );
+        assert_eq!(
+            text(&report_fail_fast(b"a.exe", IMAGE, 0x10)),
+            "windows: a.exe: the program ended itself at once (__fastfail) at 0x10 \
+             (outside the program's image)\n"
+        );
     }
 
     #[test]

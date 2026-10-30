@@ -4,13 +4,14 @@
 //! protects each section, maps the page Windows shares with every process, handles the
 //! program's faults (D151), builds the TEB and PEB, points the thread's TEB register at the TEB
 //! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
-//! calls the entry point, whose return value is the exit code.
+//! calls the entry point, whose return value is the exit code. Exception handling (D177) learns
+//! where the image's exception directory is and where the layer's own code lies.
 
-use crate::fault::Image;
+use crate::fault::{self, Image};
 use crate::fault_handler;
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
-use crate::pe::{InvalidPe, Machine, Pe, Subsystem};
+use crate::pe::{InvalidPe, Machine, Pe, Subsystem, directory};
 use crate::user_shared_data;
 use crate::win32::{self, thread_environment};
 use eggos_runtime::errno::Errno;
@@ -20,6 +21,7 @@ const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
 const STACK_RESERVE: usize = 8 << 20;
 const DLL_PROCESS_ATTACH: u32 = 1;
+const PROGRAM_HEADER_SIZE: usize = 56;
 #[cfg(target_arch = "x86_64")]
 const THIS_COMPUTER: Machine = Machine::X64;
 #[cfg(target_arch = "aarch64")]
@@ -186,6 +188,13 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let entry = base + pe.entry as usize;
     protect(&pe, base)?;
     share_user_data(startup);
+    let exceptions = pe.directory(directory::EXCEPTION);
+    win32::set_exception_image(
+        base as u64,
+        size as u64,
+        (exceptions.address, exceptions.size),
+        layer_code(&startup),
+    );
     fault_handler::install(
         path.to_bytes(),
         Image {
@@ -245,6 +254,21 @@ fn share_user_data(startup: Startup) {
     user_shared_data::write_processor_features(bytes, features);
     // SAFETY: the page is read-only from now on, as on Windows; nothing writes it again.
     let _ = unsafe { linux::protect(page, user_shared_data::SIZE, PROT_READ) };
+}
+
+/// Where the layer's own code lies, from its program headers, or nothing if they cannot be
+/// read.
+fn layer_code(startup: &Startup) -> (u64, u64) {
+    let headers = startup.auxiliary_value(auxv::PHDR).unwrap_or(0);
+    let count = startup.auxiliary_value(auxv::PHNUM).unwrap_or(0);
+    let size = startup.auxiliary_value(auxv::PHENT).unwrap_or(0);
+    if headers == 0 || size != PROGRAM_HEADER_SIZE {
+        return (0, 0);
+    }
+    // SAFETY: the kernel maps the layer's program headers where `AT_PHDR` says, for the
+    // process's life.
+    let bytes = unsafe { core::slice::from_raw_parts(headers as *const u8, count * size) };
+    fault::executable_range(bytes, headers as u64).unwrap_or((0, 0))
 }
 
 fn stack_top() -> usize {

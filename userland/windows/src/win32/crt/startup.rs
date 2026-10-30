@@ -1,22 +1,17 @@
 //! What the startup code MSVC links into every program needs besides the runtime: kernel32's
-//! `IsDebuggerPresent`, `IsProcessorFeaturePresent`, `InitializeSListHead`, `GetStartupInfoW`
-//! (no `STARTF_USESHOWWINDOW`, so `wWinMain` gets `SW_SHOWDEFAULT`), the unhandled-exception
-//! filter, and the unwinding functions its failure path asks, which find no function entry, so
-//! that path goes straight to ending the process; and vcruntime's exception plumbing, which
-//! only the exception dispatch EggOS does not do yet would call.
+//! `IsDebuggerPresent`, `IsProcessorFeaturePresent`, `InitializeSListHead` and
+//! `GetStartupInfoW` (no `STARTF_USESHOWWINDOW`, so `wWinMain` gets `SW_SHOWDEFAULT`), and
+//! vcruntime's `__std_type_info_destroy_list` and `_purecall`. The unhandled-exception filter,
+//! the unwinding functions and the language handlers are exception handling's (D177,
+//! `win32/exception`).
 
 use super::super::{Bool, FALSE, TRUE};
 use crate::library::Export;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 const STARTUP_INFO_SIZE: usize = 104;
 const SINGLE_LIST_HEADER_SIZE: usize = 16;
-const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
-const EXCEPTION_DISPOSITION_CONTINUE_SEARCH: i32 = 1;
 static PROCESSOR_FEATURES: AtomicU64 = AtomicU64::new(0);
-static UNHANDLED_EXCEPTION_FILTER: AtomicUsize = AtomicUsize::new(0);
-static CURRENT_EXCEPTION: AtomicUsize = AtomicUsize::new(0);
-static CURRENT_EXCEPTION_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 
 extern "efiapi" fn is_debugger_present() -> Bool {
     FALSE
@@ -47,51 +42,6 @@ unsafe extern "efiapi" fn get_startup_info(info: *mut u8) {
     unsafe { info.cast::<u32>().write_unaligned(STARTUP_INFO_SIZE as u32) };
 }
 
-extern "efiapi" fn set_unhandled_exception_filter(filter: usize) -> usize {
-    UNHANDLED_EXCEPTION_FILTER.swap(filter, Ordering::AcqRel)
-}
-
-extern "efiapi" fn unhandled_exception_filter(_pointers: usize) -> i32 {
-    EXCEPTION_EXECUTE_HANDLER
-}
-
-extern "efiapi" fn capture_context(_context: usize) {}
-
-extern "efiapi" fn lookup_function_entry(_pc: usize, _image_base: usize, _history: usize) -> usize {
-    0
-}
-
-#[allow(clippy::too_many_arguments)]
-extern "efiapi" fn virtual_unwind(
-    _kind: u32,
-    _image_base: usize,
-    _pc: usize,
-    _function: usize,
-    _context: usize,
-    _handler_data: usize,
-    _establisher_frame: usize,
-    _context_pointers: usize,
-) -> usize {
-    0
-}
-
-extern "efiapi" fn c_specific_handler(
-    _record: usize,
-    _frame: usize,
-    _context: usize,
-    _dispatcher: usize,
-) -> i32 {
-    EXCEPTION_DISPOSITION_CONTINUE_SEARCH
-}
-
-extern "efiapi" fn current_exception() -> *mut usize {
-    CURRENT_EXCEPTION.as_ptr()
-}
-
-extern "efiapi" fn current_exception_context() -> *mut usize {
-    CURRENT_EXCEPTION_CONTEXT.as_ptr()
-}
-
 extern "efiapi" fn destroy_type_info_list(_list: usize) {}
 
 extern "efiapi" fn pure_call() -> ! {
@@ -104,17 +54,9 @@ pub(super) const KERNEL32_EXPORTS: &[Export] = exports![
     b"InitializeSListHead" => initialize_single_list_head,
     b"GetStartupInfoW" => get_startup_info,
     b"GetStartupInfoA" => get_startup_info,
-    b"SetUnhandledExceptionFilter" => set_unhandled_exception_filter,
-    b"UnhandledExceptionFilter" => unhandled_exception_filter,
-    b"RtlCaptureContext" => capture_context,
-    b"RtlLookupFunctionEntry" => lookup_function_entry,
-    b"RtlVirtualUnwind" => virtual_unwind,
 ];
 
 pub(super) const VCRUNTIME_EXPORTS: &[Export] = exports![
-    b"__C_specific_handler" => c_specific_handler,
-    b"__current_exception" => current_exception,
-    b"__current_exception_context" => current_exception_context,
     b"__std_type_info_destroy_list" => destroy_type_info_list,
     b"_purecall" => pure_call,
 ];

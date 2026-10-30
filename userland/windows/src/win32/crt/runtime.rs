@@ -30,7 +30,6 @@ const LAST_LINUX_ERRNO_SHARED_WITH_WINDOWS: u16 = 34;
 const DISABLE_PER_THREAD_LOCALE: i32 = 2;
 const TEXT_MODE: i32 = 0x4000;
 const BINARY_MODE: i32 = 0x8000;
-const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 const DLL_PROCESS_DETACH: usize = 0;
 const FIRST_EXIT_TABLE_CAPACITY: usize = 32;
 const ABORT_STATUS: u32 = 3;
@@ -415,10 +414,6 @@ pub fn binary_by_default() -> bool {
     FILE_MODE.load(Ordering::Acquire) == BINARY_MODE
 }
 
-extern "efiapi" fn seh_filter_exe(_code: u32, _pointers: usize) -> i32 {
-    EXCEPTION_CONTINUE_SEARCH
-}
-
 extern "efiapi" fn register_thread_local_exe_atexit_callback(callback: usize) {
     THREAD_LOCAL_EXIT_CALLBACK.store(callback, Ordering::Release);
 }
@@ -611,7 +606,6 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"__p__fmode" => file_mode,
     b"_set_fmode" => set_file_mode,
     b"_get_fmode" => get_file_mode,
-    b"_seh_filter_exe" => seh_filter_exe,
     b"_register_thread_local_exe_atexit_callback" => register_thread_local_exe_atexit_callback,
     b"_crt_atexit" => crt_atexit,
     b"_crt_at_quick_exit" => crt_at_quick_exit,
@@ -625,7 +619,6 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_cexit" => cexit,
     b"_c_exit" => c_exit,
     b"abort" => abort,
-    b"terminate" => abort,
     b"_invalid_parameter_noinfo" => invalid_parameter,
     b"_invalid_parameter_noinfo_noreturn" => invalid_parameter,
     b"_errno" => errno_location,

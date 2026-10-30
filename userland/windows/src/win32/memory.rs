@@ -1,5 +1,6 @@
 //! Virtual memory (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`) on Linux's `mmap`,
-//! `mprotect`, `madvise` and `munmap`, and the memory functions and stack probe (`__chkstk`)
+//! `mprotect`, `madvise` and `munmap`, `FlushInstructionCache` for code a program writes, and
+//! the memory functions and stack probe (`__chkstk`)
 //! that ntdll exports and compilers call.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, error_for, fail};
@@ -212,10 +213,21 @@ core::arch::global_asm!(
     "ret",
 );
 
+extern "efiapi" fn flush_instruction_cache(_process: usize, _address: usize, _size: usize) -> Bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: barriers touch no memory; they order the program's earlier writes of code
+        // before the instructions that follow, which is all a fresh mapping needs.
+        unsafe { core::arch::asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+    }
+    TRUE
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"VirtualAlloc" => virtual_alloc,
     b"VirtualFree" => virtual_free,
     b"VirtualProtect" => virtual_protect,
+    b"FlushInstructionCache" => flush_instruction_cache,
 ];
 
 pub(super) const NTDLL_EXPORTS: &[Export] = exports![

@@ -1,6 +1,6 @@
 //! The Win32 functions Windows programs import, implemented natively on EggOS's Linux system
-//! calls and, for windows, the window server, and the C runtime of MSVC's `/MD` programs
-//! (`crt/`): each is an `extern "efiapi"` function (Windows'
+//! calls and, for windows, the window server, the C runtime of MSVC's `/MD` programs (`crt/`)
+//! and exception handling (`exception/`, D177): each is an `extern "efiapi"` function (Windows'
 //! calling convention on x86_64 and aarch64, `abi.rs`) the program calls through its import
 //! address table, directly on x86_64 and through an entry that restores `x18` on aarch64.
 
@@ -28,6 +28,7 @@ mod dialog_window;
 mod directory;
 mod elements;
 mod environment;
+mod exception;
 mod file;
 mod file_picker;
 mod gdi;
@@ -58,6 +59,7 @@ use eggos_runtime::errno::Errno;
 pub use abi::call_program;
 pub use console::set_gui_program;
 pub use crt::set_processor_features;
+pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_exception_image};
 pub use heap::{allocate as heap_allocate, process_heap};
 pub use process::set_process;
 pub use thread::finish as end_thread;
@@ -171,9 +173,14 @@ const KERNEL32: &[&[Export]] = &[
     thread_environment::EXPORTS,
     time::EXPORTS,
     crt::KERNEL32_EXPORTS,
+    exception::KERNEL32_EXPORTS,
 ];
 
-const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS, system::NTDLL_EXPORTS];
+const NTDLL: &[&[Export]] = &[
+    memory::NTDLL_EXPORTS,
+    system::NTDLL_EXPORTS,
+    exception::NTDLL_EXPORTS,
+];
 
 const SHELL32: &[&[Export]] = &[shell::EXPORTS];
 

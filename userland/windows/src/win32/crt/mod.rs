@@ -5,7 +5,10 @@
 //! runtime's startup and exit functions here (`runtime.rs`) and a few kernel32 functions of its
 //! own (`startup.rs`). The rest is the C library: the heap (`heap.rs`), strings and characters
 //! (`string.rs`), streams and `printf` (`stdio.rs`), and the utility and time functions
-//! (`utility.rs`).
+//! (`utility.rs`). Exception handling, C's and C++'s, and `signal` are in `win32/exception`
+//! (D177); both runtimes' lists include their functions.
+
+pub(super) use runtime::{end_abnormally, errno, set_errno};
 
 mod heap;
 mod runtime;
@@ -32,6 +35,9 @@ pub(super) const VCRUNTIME: &[&[Export]] = &[
     super::memory::NTDLL_EXPORTS,
     startup::VCRUNTIME_EXPORTS,
     string::VCRUNTIME_EXPORTS,
+    super::exception::C_SPECIFIC_EXPORTS,
+    super::exception::CXX_EXPORTS,
+    super::exception::TYPE_INFO_EXPORTS,
 ];
 
 /// The Universal C Runtime's functions, whichever API set names them.
@@ -42,4 +48,6 @@ pub(super) const UCRT: &[&[Export]] = &[
     string::EXPORTS,
     stdio::EXPORTS,
     utility::EXPORTS,
+    super::exception::CXX_UCRT_EXPORTS,
+    super::exception::SIGNAL_EXPORTS,
 ];

@@ -27,6 +27,7 @@ pub mod section_flags {
 
 pub mod directory {
     pub const IMPORT: usize = 1;
+    pub const EXCEPTION: usize = 3;
     pub const BASE_RELOCATION: usize = 5;
     pub const TLS: usize = 9;
     pub const COUNT: usize = 16;
@@ -327,6 +328,7 @@ impl<'a> Pe<'a> {
     fn check_directories(&self) -> Result<(), InvalidPe> {
         for index in [
             directory::IMPORT,
+            directory::EXCEPTION,
             directory::BASE_RELOCATION,
             directory::TLS,
         ] {
