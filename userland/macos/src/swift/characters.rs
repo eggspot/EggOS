@@ -46,6 +46,7 @@ fn utf8_offset(index: u64, bytes: &[u8]) -> usize {
 /// (1 for `nil`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct OptionalWord {
     value: u64,
     none: u8,

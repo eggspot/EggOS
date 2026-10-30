@@ -16,6 +16,7 @@ use crate::objc::class;
 const LONGEST: usize = 256;
 
 /// A type's name, as much of it as fits.
+#[derive(Debug)]
 pub struct Name {
     bytes: [u8; LONGEST],
     length: usize,
@@ -38,7 +39,7 @@ fn c_string(address: usize) -> &'static [u8] {
     let mut length = 0;
     // SAFETY: descriptor names are NUL-terminated strings in the program's or the runtime's
     // constant data; the scan stops at the longest name kept.
-    while length < LONGEST && unsafe { start.add(length).read() } != 0 {
+    while length < LONGEST && unsafe { start.wrapping_add(length).read() } != 0 {
         length += 1;
     }
     // SAFETY: the bytes just scanned.

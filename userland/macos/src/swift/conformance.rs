@@ -14,6 +14,7 @@ use super::type_lookup::{self, Response};
 use crate::libsystem::{Exclusive, heap};
 use crate::objc::buffer::Buffer;
 
+#[derive(Debug)]
 struct Mapped;
 
 impl Memory for Mapped {
