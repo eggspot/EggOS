@@ -1,0 +1,12 @@
+[package]
+name = "eggos-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-font = { path = "../font" }
+
+[lints]
+workspace = true

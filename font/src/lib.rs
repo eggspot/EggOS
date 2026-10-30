@@ -66,6 +66,17 @@ pub fn glyph_id(character: u32) -> u8 {
     }
 }
 
+/// The character glyph `id` draws, the inverse of [`glyph_id`]: `?` for an id the font has
+/// no glyph of its own for.
+pub fn character(id: u8) -> char {
+    match id {
+        0x20..=0x7e | FIRST_LATIN_1..=0xff => char::from(id),
+        EURO => '\u{20ac}',
+        FIRST_EXTRA..=UP_TRIANGLE => EXTRAS[usize::from(id - FIRST_EXTRA)],
+        _ => char::from(REPLACEMENT),
+    }
+}
+
 /// Whether Egg Mono has a glyph of its own for `character`.
 pub fn covers(character: u32) -> bool {
     glyph_id(character) != REPLACEMENT || character == u32::from(REPLACEMENT)

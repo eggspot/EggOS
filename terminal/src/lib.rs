@@ -1,13 +1,23 @@
-//! The terminal emulator of docs/ux/terminal-v0.3.md (D109, D114): a grid of cells fed the
-//! bytes programs write, the ANSI subset the shell, the core utilities and a full-screen editor
-//! need, a scrollback, and rendering of only what changed into a rectangle of a framebuffer.
+//! The terminal emulator of docs/ux/terminal-v0.3.md (D109, D114), shared by the kernel's
+//! console terminal and the terminal program (D187): a grid of cells fed the bytes programs
+//! write, the ANSI subset the shell, the core utilities and a full-screen editor need, a
+//! scrollback, and rendering of only what changed into a rectangle of a framebuffer; with the
+//! rectangles and damage it reports ([`geometry`]) and the keymap that turns keys into the bytes
+//! a terminal sends ([`keymap`], [`key`]).
 //!
 //! [`Terminal::feed`] parses bytes and updates the cells, recording which changed; it never
 //! draws. [`Terminal::render`] draws the changed cells and the cursor, moving pixels instead of
 //! redrawing them when the screen scrolled, and reports the rectangles it changed. Replies a
 //! program asked for (`CSI 6 n`, `CSI c`) wait in [`Terminal::replies`] for the input side.
 
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
 mod colours;
+pub mod geometry;
+pub mod key;
+pub mod keymap;
 mod parser;
 
 #[cfg(test)]
@@ -17,10 +27,10 @@ pub use colours::{
     ACCENT, ANSI_COLOURS, DEFAULT_COLOUR, TERM_BACKGROUND, TERM_CURSOR, TERM_FOREGROUND,
 };
 
-use crate::display::{Damage, Rect};
-use crate::font::{self, GLYPH_HEIGHT, GLYPH_WIDTH};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use eggos_font::{self as font, GLYPH_HEIGHT, GLYPH_WIDTH};
+use geometry::{Damage, Rect};
 use parser::Parser;
 
 /// Lines the scrollback keeps; older ones are dropped.
@@ -33,8 +43,10 @@ pub const TAB_WIDTH: u16 = 8;
 pub const WHEEL_LINES: usize = 3;
 /// Bytes of replies kept for the input side; more are dropped.
 pub const REPLY_CAPACITY: usize = 64;
+/// Bytes of a title a program sets that are kept ([`Terminal::title`]); more are dropped.
+pub const TITLE_CAPACITY: usize = 64;
 
-/// One character cell: a glyph id ([`crate::font`]), two colours (0-15 the ANSI colours,
+/// One character cell: a glyph id ([`eggos_font`]), two colours (0-15 the ANSI colours,
 /// [`DEFAULT_COLOUR`] the terminal's own) and [`cell_flags`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +249,31 @@ struct Shift {
     lines: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TitleText {
+    bytes: [u8; TITLE_CAPACITY],
+    length: u8,
+    cut: bool,
+}
+
+impl TitleText {
+    pub(crate) const EMPTY: TitleText = TitleText {
+        bytes: [0; TITLE_CAPACITY],
+        length: 0,
+        cut: false,
+    };
+
+    pub(crate) fn push(&mut self, byte: u8) {
+        let length = usize::from(self.length);
+        if length < TITLE_CAPACITY {
+            self.bytes[length] = byte;
+            self.length += 1;
+        } else {
+            self.cut = true;
+        }
+    }
+}
+
 const MAIN: usize = 0;
 const ALTERNATE: usize = 1;
 
@@ -268,6 +305,8 @@ pub struct Terminal {
     cursor_look: CursorLook,
     replies: [u8; REPLY_CAPACITY],
     reply_length: usize,
+    title: TitleText,
+    title_changed: bool,
 }
 
 impl core::fmt::Debug for Terminal {
@@ -323,6 +362,8 @@ impl Terminal {
             cursor_look: CursorLook::Block,
             replies: [0; REPLY_CAPACITY],
             reply_length: 0,
+            title: TitleText::EMPTY,
+            title_changed: false,
         };
         terminal.invalidate();
         Some(terminal)
@@ -412,6 +453,146 @@ impl Terminal {
     /// Forgets the replies once they are taken.
     pub fn clear_replies(&mut self) {
         self.reply_length = 0;
+    }
+
+    /// The title a program last set with xterm's `OSC 0` or `OSC 2` (`ESC ] 2 ; text BEL`, or
+    /// `ESC \` at its end), empty when none did or one set it empty: its bytes but control
+    /// characters, at most [`TITLE_CAPACITY`], and whether it was longer.
+    pub fn title(&self) -> (&[u8], bool) {
+        (
+            &self.title.bytes[..usize::from(self.title.length)],
+            self.title.cut,
+        )
+    }
+
+    /// Whether a program set the title since the last call.
+    pub fn take_title_change(&mut self) -> bool {
+        core::mem::take(&mut self.title_changed)
+    }
+
+    /// The characters row `row` of the view shows (the scrollback while scrolled back), as
+    /// UTF-8 written into `out` with the trailing spaces left out; returns how many bytes, cut
+    /// before the first character that does not fit. Nothing for a row past the grid.
+    pub fn row_text(&self, row: u16, out: &mut [u8]) -> usize {
+        if row >= self.rows {
+            return 0;
+        }
+        let line = self.visible_line(row);
+        let end = line
+            .iter()
+            .rposition(|cell| cell.glyph != b' ')
+            .map_or(0, |last| last + 1);
+        let mut length = 0;
+        for cell in &line[..end] {
+            let mut character = [0u8; 4];
+            let encoded = font::character(cell.glyph)
+                .encode_utf8(&mut character)
+                .as_bytes();
+            let Some(room) = out.get_mut(length..length + encoded.len()) else {
+                break;
+            };
+            room.copy_from_slice(encoded);
+            length += encoded.len();
+        }
+        length
+    }
+
+    /// The row the cursor is drawn on: `None` while it is hidden or the view is scrolled back.
+    pub fn cursor_row(&self) -> Option<u16> {
+        self.shown_cursor().map(|(row, _)| row)
+    }
+
+    /// Changes the grid to `columns` by `rows` cells, as the terminal program does when its
+    /// window's size changes (docs/ux/terminal-windows-v0.3.md section 3, D187), with no reflow:
+    /// cells past a narrower width are cut from every row and the scrollback for good; a shorter
+    /// grid drops the blank rows below the cursor first, then moves rows from the top into the
+    /// scrollback, the cursor moving up with them; a taller one adds blank rows at the bottom.
+    /// The alternate screen is cleared, the scrolling region is the whole grid again, the view
+    /// goes back to the live screen and everything is drawn at the next render. Returns `false`,
+    /// changing nothing, for a size of no cell or without memory for the new one.
+    pub fn resize(&mut self, columns: u16, rows: u16) -> bool {
+        if columns == 0 || rows == 0 {
+            return false;
+        }
+        if (columns, rows) == (self.columns, self.rows) {
+            return true;
+        }
+        let cells = usize::from(columns) * usize::from(rows);
+        let (Some(mut main), Some(alternate), Some(mut history), Some(dirty)) = (
+            filled(cells, Cell::BLANK),
+            filled(cells, Cell::BLANK),
+            filled(HISTORY_LINES * usize::from(columns), Cell::BLANK),
+            filled(usize::from(rows), Span::CLEAN),
+        ) else {
+            return false;
+        };
+        let main_cursor_row = match self.active {
+            MAIN => self.row,
+            _ => self.saved[MAIN].row,
+        };
+        let excess = self.rows.saturating_sub(rows);
+        let blank_below = (main_cursor_row.saturating_add(1)..self.rows)
+            .rev()
+            .take_while(|&row| {
+                self.line_of(MAIN, row)
+                    .iter()
+                    .all(|cell| *cell == Cell::BLANK)
+            })
+            .count() as u16;
+        let dropped_below = excess.min(blank_below);
+        let to_history = excess - dropped_below;
+        let kept = self.rows - excess;
+        let width = usize::from(columns);
+        let copied = usize::from(columns.min(self.columns));
+        for row in 0..kept {
+            let from = self.line_of(MAIN, row + to_history);
+            let start = usize::from(row) * width;
+            main[start..start + copied].copy_from_slice(&from[..copied]);
+        }
+        let lines = self.history_length + usize::from(to_history);
+        let skipped = lines.saturating_sub(HISTORY_LINES);
+        for index in skipped..lines {
+            let from = match index < self.history_length {
+                true => self.history_line(index),
+                false => self.line_of(MAIN, (index - self.history_length) as u16),
+            };
+            let start = (index - skipped) * width;
+            history[start..start + copied].copy_from_slice(&from[..copied]);
+        }
+        self.history_start = 0;
+        self.history_length = lines - skipped;
+        self.screens = [main, alternate];
+        self.history = history;
+        self.dirty = dirty;
+        let (last_row, last_column) = (rows - 1, columns - 1);
+        match self.active {
+            MAIN => self.row = self.row.saturating_sub(to_history).min(last_row),
+            _ => self.row = self.row.min(last_row),
+        }
+        self.column = self.column.min(last_column);
+        let main_saved = &mut self.saved[MAIN];
+        main_saved.row = main_saved.row.saturating_sub(to_history).min(last_row);
+        main_saved.column = main_saved.column.min(last_column);
+        let alternate_saved = &mut self.saved[ALTERNATE];
+        alternate_saved.row = alternate_saved.row.min(last_row);
+        alternate_saved.column = alternate_saved.column.min(last_column);
+        self.position_saved = (
+            self.position_saved.0.min(last_row),
+            self.position_saved.1.min(last_column),
+        );
+        self.columns = columns;
+        self.rows = rows;
+        self.top = 0;
+        self.bottom = last_row;
+        self.pending_wrap = false;
+        self.view_back = 0;
+        self.invalidate();
+        true
+    }
+
+    fn line_of(&self, screen: usize, row: u16) -> &[Cell] {
+        let start = usize::from(row) * usize::from(self.columns);
+        &self.screens[screen][start..start + usize::from(self.columns)]
     }
 
     /// Whether something changed since the last [`Self::render`].

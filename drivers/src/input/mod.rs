@@ -3,8 +3,9 @@
 //! to), what a device can report, the US keymap ([`keymap`]), the keyboard layouts with their
 //! dead keys and third level ([`layout`], D185) and the pointer's scaling.
 
-pub mod keymap;
 pub mod layout;
+
+pub use eggos_terminal::{key, keymap};
 
 #[cfg(test)]
 mod tests;
@@ -44,60 +45,6 @@ pub mod event_type {
 
 /// The code of a [`event_type::SYN`] event that ends a report.
 pub const SYN_REPORT: u16 = 0;
-
-/// Key codes the keymap knows, and the highest one.
-pub mod key {
-    pub const ESC: u16 = 1;
-    pub const MINUS: u16 = 12;
-    pub const BACKSPACE: u16 = 14;
-    pub const TAB: u16 = 15;
-    pub const W: u16 = 17;
-    pub const ENTER: u16 = 28;
-    pub const LEFT_CTRL: u16 = 29;
-    pub const A: u16 = 30;
-    pub const D: u16 = 32;
-    pub const H: u16 = 35;
-    pub const LEFT_SHIFT: u16 = 42;
-    pub const X: u16 = 45;
-    pub const M: u16 = 50;
-    pub const RIGHT_SHIFT: u16 = 54;
-    pub const LEFT_ALT: u16 = 56;
-    pub const SPACE: u16 = 57;
-    pub const CAPS_LOCK: u16 = 58;
-    pub const F1: u16 = 59;
-    pub const F2: u16 = 60;
-    pub const F3: u16 = 61;
-    pub const F4: u16 = 62;
-    pub const F5: u16 = 63;
-    pub const F6: u16 = 64;
-    pub const F7: u16 = 65;
-    pub const F8: u16 = 66;
-    pub const F9: u16 = 67;
-    pub const F10: u16 = 68;
-    pub const NUM_LOCK: u16 = 69;
-    pub const SCROLL_LOCK: u16 = 70;
-    pub const KEYPAD_DOT: u16 = 83;
-    pub const F11: u16 = 87;
-    pub const F12: u16 = 88;
-    pub const KEYPAD_ENTER: u16 = 96;
-    pub const RIGHT_CTRL: u16 = 97;
-    pub const RIGHT_ALT: u16 = 100;
-    pub const HOME: u16 = 102;
-    pub const UP: u16 = 103;
-    pub const PAGE_UP: u16 = 104;
-    pub const LEFT: u16 = 105;
-    pub const RIGHT: u16 = 106;
-    pub const END: u16 = 107;
-    pub const DOWN: u16 = 108;
-    pub const PAGE_DOWN: u16 = 109;
-    pub const INSERT: u16 = 110;
-    pub const DELETE: u16 = 111;
-    pub const LEFT_SUPER: u16 = 125;
-    pub const RIGHT_SUPER: u16 = 126;
-    pub const COMPOSE: u16 = 127;
-    /// The highest key or button code.
-    pub const MAX: u16 = 0x2ff;
-}
 
 /// Pointer button codes (reported as [`event_type::KEY`] events).
 pub mod button {

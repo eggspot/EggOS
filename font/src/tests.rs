@@ -276,3 +276,20 @@ fn the_latin_1_glyphs_keep_the_letter_gap_and_the_ascii_letters() {
     );
     assert_eq!(picture(glyph_id('é' as u32))[2], "....#...");
 }
+
+#[test]
+fn every_glyph_names_the_character_that_chose_it() {
+    for code in (0x20..0x7f).chain(0xa0..0x100).chain([0x20ac]) {
+        let character = char::from_u32(code).unwrap();
+        assert_eq!(
+            super::character(super::glyph_id(code)),
+            character,
+            "{code:#x}"
+        );
+    }
+    for &extra in &super::EXTRAS {
+        assert_eq!(super::character(super::glyph_id(extra as u32)), extra);
+    }
+    assert_eq!(super::character(0x05), '?');
+    assert_eq!(super::glyph_id(0x4e2d), super::REPLACEMENT);
+}

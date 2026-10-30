@@ -1,5 +1,5 @@
-use super::{Attributes, Terminal, cell_flags, colours};
-use crate::font;
+use super::{Attributes, Terminal, TitleText, cell_flags, colours};
+use eggos_font as font;
 
 pub(super) const MAX_PARAMETERS: usize = 16;
 pub(super) const MAX_STRING_BYTES: u16 = 1024;
@@ -55,6 +55,16 @@ impl Parameters {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Osc {
+    Number(u16),
+    Title,
+    Ignored,
+}
+
+const OSC_ICON_NAME_AND_TITLE: u16 = 0;
+const OSC_TITLE: u16 = 2;
+
 #[derive(Debug)]
 pub(super) struct Parser {
     state: State,
@@ -65,6 +75,8 @@ pub(super) struct Parser {
     utf8_codepoint: u32,
     utf8_length: u8,
     utf8_remaining: u8,
+    osc: Osc,
+    title_draft: TitleText,
 }
 
 impl Parser {
@@ -78,7 +90,39 @@ impl Parser {
             utf8_codepoint: 0,
             utf8_length: 0,
             utf8_remaining: 0,
+            osc: Osc::Ignored,
+            title_draft: TitleText::EMPTY,
         }
+    }
+
+    fn start_string(&mut self, osc: Osc) {
+        self.state = State::String;
+        self.string_length = 0;
+        self.osc = osc;
+    }
+
+    fn take_string_byte(&mut self, byte: u8) {
+        self.osc = match self.osc {
+            Osc::Number(number) => match byte {
+                b'0'..=b'9' => Osc::Number(
+                    number
+                        .saturating_mul(10)
+                        .saturating_add(u16::from(byte - b'0')),
+                ),
+                b';' if number == OSC_ICON_NAME_AND_TITLE || number == OSC_TITLE => {
+                    self.title_draft = TitleText::EMPTY;
+                    Osc::Title
+                }
+                _ => Osc::Ignored,
+            },
+            Osc::Title => {
+                if byte >= 0x20 && byte != DEL {
+                    self.title_draft.push(byte);
+                }
+                Osc::Title
+            }
+            Osc::Ignored => Osc::Ignored,
+        };
     }
 }
 
@@ -185,10 +229,8 @@ fn escape(terminal: &mut Terminal, byte: u8) {
             parser.private = 0;
             parser.intermediate = 0;
         }
-        b']' | b'P' | b'X' | b'^' | b'_' => {
-            parser.state = State::String;
-            parser.string_length = 0;
-        }
+        b']' => parser.start_string(Osc::Number(0)),
+        b'P' | b'X' | b'^' | b'_' => parser.start_string(Osc::Ignored),
         b'7' => terminal.save_cursor(),
         b'8' => terminal.restore_cursor(),
         b'D' => terminal.index_down(),
@@ -254,20 +296,32 @@ fn csi_ignore(terminal: &mut Terminal, byte: u8) {
 fn string(terminal: &mut Terminal, byte: u8) {
     let parser = &mut terminal.parser;
     match byte {
-        BEL | CAN | SUB => parser.state = State::Ground,
+        BEL => end_string(terminal),
+        CAN | SUB => parser.state = State::Ground,
         ESC => parser.state = State::StringEscape,
         _ => {
             parser.string_length += 1;
             if parser.string_length > MAX_STRING_BYTES {
                 parser.state = State::Ground;
+            } else {
+                parser.take_string_byte(byte);
             }
         }
     }
 }
 
+fn end_string(terminal: &mut Terminal) {
+    terminal.parser.state = State::Ground;
+    if terminal.parser.osc == Osc::Title {
+        terminal.title = terminal.parser.title_draft;
+        terminal.title_changed = true;
+    }
+    terminal.parser.osc = Osc::Ignored;
+}
+
 fn string_escape(terminal: &mut Terminal, byte: u8) {
     if byte == b'\\' {
-        terminal.parser.state = State::Ground;
+        end_string(terminal);
     } else {
         terminal.parser.state = State::Escape;
         escape(terminal, byte);

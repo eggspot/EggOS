@@ -66,6 +66,7 @@ dependencies = [
  "eggos-app-manifest",
  "eggos-calendar",
  "eggos-font",
+ "eggos-terminal",
 ]
 
 [[package]]
@@ -270,6 +271,13 @@ version = "0.2.0"
 [[package]]
 name = "eggos-std-selftest"
 version = "0.2.0"
+
+[[package]]
+name = "eggos-terminal"
+version = "0.2.0"
+dependencies = [
+ "eggos-font",
+]
 
 [[package]]
 name = "eggos-tls"

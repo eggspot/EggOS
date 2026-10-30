@@ -18,6 +18,6 @@ pub mod io;
 pub mod pci;
 pub mod rtc;
 pub mod serial;
-pub mod terminal;
+pub use eggos_terminal as terminal;
 pub mod timer;
 pub mod virtio;

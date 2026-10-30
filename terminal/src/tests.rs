@@ -1,5 +1,5 @@
 use super::*;
-use crate::font::rows as glyph_rows;
+use eggos_font::rows as glyph_rows;
 
 fn terminal(columns: u16, rows: u16) -> Terminal {
     Terminal::new(columns, rows).unwrap()
@@ -930,4 +930,133 @@ fn rendering_after_any_mix_of_sequences_matches_a_fresh_render() {
             String::from_utf8_lossy(&fed_bytes)
         );
     }
+}
+
+#[test]
+fn osc_0_and_2_set_the_title_and_other_strings_do_not() {
+    let mut terminal = terminal(20, 4);
+    assert_eq!(terminal.title(), (&b""[..], false));
+    assert!(!terminal.take_title_change());
+    terminal.feed(b"\x1b]2;build\x07");
+    assert_eq!(terminal.title(), (&b"build"[..], false));
+    assert!(terminal.take_title_change());
+    assert!(!terminal.take_title_change());
+    terminal.feed(b"\x1b]0;vi notes.txt\x1b\\");
+    assert_eq!(terminal.title().0, b"vi notes.txt");
+    terminal.feed(b"\x1b]1;icon\x07\x1bPq\x07\x1b]7;file:///\x07");
+    assert_eq!(terminal.title().0, b"vi notes.txt");
+    terminal.feed(b"\x1b]2;a\tb\x01c\x07");
+    assert_eq!(terminal.title().0, b"abc");
+    terminal.feed(b"\x1b]2;caf\xc3\xa9\x07");
+    assert_eq!(terminal.title().0, "café".as_bytes());
+    terminal.feed(b"\x1b]2;half\x18");
+    assert_eq!(
+        terminal.title().0,
+        "café".as_bytes(),
+        "CAN abandons the title"
+    );
+    terminal.feed(b"\x1b]2;\x07");
+    assert_eq!(terminal.title(), (&b""[..], false));
+    let long = [b'x'; TITLE_CAPACITY + 10];
+    terminal.feed(b"\x1b]2;");
+    terminal.feed(&long);
+    terminal.feed(b"\x07");
+    assert_eq!(terminal.title(), (&long[..TITLE_CAPACITY], true));
+    assert_eq!(terminal.line(0)[0], Cell::BLANK, "a title draws nothing");
+}
+
+#[test]
+fn row_text_reads_the_characters_shown_without_trailing_spaces() {
+    let mut terminal = fed(12, 3, "a\u{2500}\u{20ac} é  \r\n\r\nend".as_bytes());
+    let mut text = [0u8; 32];
+    let length = terminal.row_text(0, &mut text);
+    assert_eq!(&text[..length], "a\u{2500}\u{20ac} é".as_bytes());
+    assert_eq!(terminal.row_text(1, &mut text), 0);
+    let length = terminal.row_text(2, &mut text);
+    assert_eq!(&text[..length], b"end");
+    assert_eq!(terminal.row_text(3, &mut text), 0);
+    let mut short = [0u8; 4];
+    assert_eq!(
+        terminal.row_text(0, &mut short),
+        4,
+        "the euro sign does not fit"
+    );
+    assert_eq!(&short, "a\u{2500}".as_bytes());
+    assert_eq!(terminal.cursor_row(), Some(2));
+    terminal.feed(b"\x1b[?25l");
+    assert_eq!(terminal.cursor_row(), None);
+}
+
+#[test]
+fn a_narrower_grid_cuts_cells_for_good_and_a_wider_one_adds_blanks() {
+    let mut terminal = fed(10, 3, b"0123456789\r\nabcdefghij\r\nxy");
+    assert!(terminal.resize(4, 3));
+    assert_eq!(terminal.size(), (4, 3));
+    assert_eq!(terminal.cursor(), (2, 2));
+    let mut text = [0u8; 16];
+    let length = terminal.row_text(0, &mut text);
+    assert_eq!(&text[..length], b"0123");
+    assert!(terminal.resize(8, 3));
+    let length = terminal.row_text(1, &mut text);
+    assert_eq!(&text[..length], b"abcd");
+    assert_eq!(terminal.line(1)[7], Cell::BLANK);
+    terminal.feed(b"\x1b[3;8Hz");
+    assert_eq!(terminal.line(2)[7].glyph, b'z');
+    assert!(!terminal.resize(0, 3));
+    assert_eq!(terminal.size(), (8, 3));
+}
+
+#[test]
+fn a_shorter_grid_drops_blank_rows_below_the_cursor_then_moves_the_top_into_the_scrollback() {
+    let mut terminal = fed(6, 6, b"one\r\ntwo\r\nthree\r\nfour");
+    assert_eq!(terminal.cursor(), (3, 4));
+    assert!(terminal.resize(6, 4));
+    assert_eq!(terminal.history_length(), 0, "two blank rows went first");
+    assert_eq!(terminal.cursor(), (3, 4));
+    assert!(terminal.resize(6, 2));
+    assert_eq!(terminal.history_length(), 2);
+    assert_eq!(
+        terminal.history_line(0)[..3],
+        fed(6, 1, b"one").line(0)[..3]
+    );
+    assert_eq!(terminal.cursor(), (1, 4));
+    let mut text = [0u8; 8];
+    let length = terminal.row_text(0, &mut text);
+    assert_eq!(&text[..length], b"three");
+    assert!(terminal.resize(6, 5));
+    assert_eq!(
+        terminal.history_length(),
+        2,
+        "the scrollback is not pulled back"
+    );
+    assert_eq!(terminal.line(4), &[Cell::BLANK; 6]);
+    terminal.move_view(ViewMove::Oldest);
+    assert_eq!(terminal.view_back(), 2);
+    assert!(terminal.resize(3, 5));
+    assert_eq!(terminal.view_back(), 0);
+    assert_eq!(
+        terminal.history_line(1)[..3],
+        fed(3, 1, b"two").line(0)[..3]
+    );
+}
+
+#[test]
+fn a_resize_clears_the_alternate_screen_and_resets_the_scrolling_region() {
+    let mut terminal = fed(10, 4, b"main\x1b[?1049h\x1b[2;3rfull");
+    assert!(terminal.on_alternate_screen());
+    assert!(terminal.resize(12, 6));
+    assert!(terminal.on_alternate_screen());
+    assert!((0..6).all(|row| terminal.line(row).iter().all(|cell| *cell == Cell::BLANK)));
+    terminal.feed(b"\x1b[2;1H\n\n\n\n\n");
+    assert_eq!(
+        terminal.cursor(),
+        (5, 0),
+        "the region is the whole grid again"
+    );
+    terminal.feed(b"\x1b[?1049l");
+    let mut text = [0u8; 8];
+    let length = terminal.row_text(0, &mut text);
+    assert_eq!(&text[..length], b"main");
+    assert_eq!(terminal.cursor(), (0, 4));
+    assert!(terminal.needs_render());
 }

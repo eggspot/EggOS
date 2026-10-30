@@ -2,7 +2,7 @@
 //! keys are held, the modifiers they make, and the bytes a key press sends to a terminal,
 //! xterm's encoding. Key repeat ([`KeyRepeat`]) is timed by the caller's clock.
 
-use super::key;
+use crate::key;
 
 /// The modifiers in effect for a key press.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,7 +95,8 @@ impl KeyBytes {
         sequence
     }
 
-    pub(super) fn push_byte(&mut self, byte: u8) {
+    /// Adds `byte` at the end, if there is room for it.
+    pub fn push_byte(&mut self, byte: u8) {
         *self = self.push(byte);
     }
 
@@ -172,7 +173,9 @@ pub const fn key_for_ascii(character: u8) -> Option<(u16, Modifiers)> {
     None
 }
 
-pub(super) const fn control(character: u8) -> u8 {
+/// The control character Ctrl makes of `character`: `@` to `_` and the letters to 0x00-0x1F,
+/// a space to 0x00; any other character unchanged.
+pub const fn control(character: u8) -> u8 {
     match character {
         b' ' => 0,
         b'@'..=b'_' | b'a'..=b'z' => character & 0x1f,
