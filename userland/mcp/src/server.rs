@@ -1464,6 +1464,9 @@ impl Server {
             push_word(&mut words, &mut count, url);
         }
         if let Some(key) = arguments::setting_key_text(&prepared.checked, buffers.words) {
+            if tool.kind == Kind::Logcat {
+                push_word(&mut words, &mut count, "-s");
+            }
             push_word(&mut words, &mut count, "--");
             push_word(&mut words, &mut count, key);
         }

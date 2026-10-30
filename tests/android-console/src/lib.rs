@@ -4,7 +4,8 @@
 //! test adds to the image with `cargo xtask image --add` and runs from `eggsh` (D119). It
 //! writes one `ANDROID-CONSOLE` line for each thing console programs use through bionic: its
 //! arguments, the environment, a file, a directory listing, `malloc`, the clocks, threads, two
-//! system properties (D188), the auxiliary vector, `arc4random`, `system` (which runs
+//! system properties (D188), a log entry sent to logd's socket as liblog sends it (D188), the
+//! auxiliary vector, `arc4random`, `system` (which runs
 //! `/system/bin/sh`) and standard error, then returns 0. `exit <status>` exits with that
 //! status instead, and `abort` aborts.
 

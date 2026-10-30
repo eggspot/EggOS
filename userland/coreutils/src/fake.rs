@@ -427,6 +427,26 @@ impl Fake {
             .ok_or(Errno(9))
     }
 
+    fn log_control(&mut self, path: &[u8], request: u32, argument: &mut [u8]) -> Result<(), Errno> {
+        use eggos_android_log as log;
+        let Some((Node::File(records), _)) = self.nodes.get_mut(path) else {
+            return Err(Errno::ENOENT);
+        };
+        match request {
+            log::SNAPSHOT_REQUEST => {
+                let room = argument.get_mut(..4 + records.len()).ok_or(Errno(14))?;
+                room[..4].copy_from_slice(&(records.len() as u32).to_le_bytes());
+                room[4..].copy_from_slice(records);
+                Ok(())
+            }
+            log::CLEAR_REQUEST => {
+                records.clear();
+                Ok(())
+            }
+            _ => Err(Errno::ENOTTY),
+        }
+    }
+
     fn set_property(&mut self, path: &[u8], request: u32, argument: &[u8]) -> Result<(), Errno> {
         use eggos_android_properties::{self as format, PropertyError};
         if request != format::SET_REQUEST {
@@ -838,6 +858,9 @@ impl System for Fake {
         let path = self.file(descriptor)?.path.clone();
         if path == eggos_android_properties::AREA_PATH.to_bytes() {
             return self.set_property(&path, request, argument);
+        }
+        if path == eggos_android_log::LOG_PATH.to_bytes() {
+            return self.log_control(&path, request, argument);
         }
         if path != crate::wm::DEVICE.to_bytes() {
             return Err(Errno::ENOTTY);

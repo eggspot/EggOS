@@ -686,11 +686,13 @@ const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"exit 7\r",
 ];
 
-const ANDROID_PROGRAM_SESSION: [&[u8]; 6] = [
+const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
     b"setprop eggos.test.greeting hello; getprop eggos.test.greeting; \
       echo ANDROID-PROPERTIES status $?\r",
     b"setprop ro.build.version.sdk 30; echo ANDROID-PROPERTIES status $?\r",
     b"GREETING=hi android-console a 'b c'; echo ANDROID-CONSOLE status $?\r",
+    b"logcat -d -v brief -s eggos-test; echo ANDROID-LOG status $?\r",
+    b"logcat -c; logcat -d; echo ANDROID-LOG status $?\r",
     b"/bin/android-console exit 42; echo ANDROID-CONSOLE status $?\r",
     b"android-console abort; echo ANDROID-CONSOLE status $?\r",
     b"exit 7\r",
@@ -1066,6 +1068,7 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             "ANDROID-CONSOLE threads 4 joined sum 30",
             "ANDROID-CONSOLE property ro.build.version.sdk=29",
             "ANDROID-CONSOLE property eggos.test.greeting=hello",
+            "ANDROID-CONSOLE log sent",
             "ANDROID-CONSOLE pagesize 4096",
             "ANDROID-CONSOLE random differs",
             "ANDROID-CONSOLE shell",
@@ -1073,6 +1076,11 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
             "ANDROID-CONSOLE stderr",
             "ANDROID-CONSOLE status 0",
         ]),
+        vec![
+            Line::Around("I/eggos-test(", "): hello from android-console"),
+            Line::Whole("ANDROID-LOG status 0".to_string()),
+        ],
+        whole(&["ANDROID-LOG status 0"]),
         whole(&["ANDROID-CONSOLE status 42"]),
         whole(&["Aborted", "ANDROID-CONSOLE status 134"]),
         whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
@@ -3850,8 +3858,9 @@ mod tests {
             let command = String::from_utf8_lossy(typed);
             console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
             for line in output {
-                if let Line::Whole(line) = line {
-                    console.push_str(&format!("{line}\r\n"));
+                match line {
+                    Line::Whole(line) => console.push_str(&format!("{line}\r\n")),
+                    Line::Around(start, end) => console.push_str(&format!("{start}   42{end}\r\n")),
                 }
             }
         }
@@ -3912,6 +3921,8 @@ mod tests {
             "ANDROID-CONSOLE status 42",
             "Aborted",
             "ANDROID-CONSOLE stderr",
+            "ANDROID-CONSOLE log sent",
+            "ANDROID-LOG status 0",
         ] {
             let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
             assert!(

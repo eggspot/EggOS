@@ -439,11 +439,11 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 41] = [
+const COREUTILS: [&str; 42] = [
     "agentlog", "cat", "chmod", "cp", "date", "device", "df", "echo", "false", "fetch", "free",
-    "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "ln", "ls", "mkdir", "mv",
-    "nslookup", "ping", "poweroff", "ps", "readlink", "reboot", "rm", "setprop", "sleep", "sync",
-    "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
+    "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "ln", "logcat", "ls", "mkdir",
+    "mv", "nslookup", "ping", "poweroff", "ps", "readlink", "reboot", "rm", "setprop", "sleep",
+    "sync", "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";

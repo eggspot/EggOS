@@ -133,6 +133,8 @@ pub enum Kind {
     Getprop,
     /// `setprop`: sets an Android system property (D188).
     Setprop,
+    /// `logcat`: the Android log (D188).
+    Logcat,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -324,7 +326,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 43] = [
+pub const TOOLS: [Tool; 44] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -526,6 +528,11 @@ pub const TOOLS: [Tool; 43] = [
         &registry::SETPROP,
         Kind::Setprop,
         twin("/bin/setprop", &[], Operand::None),
+    ),
+    tool(
+        &registry::LOGCAT,
+        Kind::Logcat,
+        twin("/bin/logcat", &["-d", "-v", "threadtime"], Operand::None),
     ),
 ];
 

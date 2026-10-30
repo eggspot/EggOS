@@ -73,6 +73,8 @@ pub const MAX_SETTING_KEY_BYTES: usize = 64;
 pub const MAX_SETTING_VALUE_BYTES: usize = 64;
 /// The longest value `setprop` takes, kept where a setting's value is (D188).
 pub const MAX_PROPERTY_VALUE_BYTES: usize = 91;
+/// The longest tag `logcat` takes, kept where a setting's key is (D188).
+pub const MAX_LOG_TAG_BYTES: usize = 64;
 /// The longest `after` a list tool takes: a cursor (D164).
 pub const MAX_CURSOR_BYTES: usize = eggos_commands::page::MAX_CURSOR_BYTES;
 /// The longest `target` `ln` takes (D170).
@@ -167,6 +169,9 @@ pub enum ArgumentProblem {
     BadPropertyName,
     /// `value` is not 1 to [`MAX_PROPERTY_VALUE_BYTES`] bytes without control characters (D188).
     BadPropertyValue,
+    /// `tag` is not 1 to [`MAX_LOG_TAG_BYTES`] bytes without spaces, control characters, `:` and
+    /// `*` (D188).
+    BadLogTag,
     /// `limit` is not a whole number from 1 to the tool's page size (D164).
     BadLimit,
     /// `after` is not a cursor a page ended with (D164).
@@ -297,6 +302,9 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadPropertyValue => {
                 "value must be 1 to 91 bytes without control characters"
+            }
+            ArgumentProblem::BadLogTag => {
+                "tag must be 1 to 64 bytes without spaces, control characters, : and *"
             }
             ArgumentProblem::BadLimit => {
                 "limit must be a whole number from 1 to the most a page holds: 500 for ls, 100 \
@@ -712,6 +720,16 @@ pub fn check(
         }
         checked.setting_key = Some(length);
     }
+    if tool.kind == Kind::Logcat && get("tag").is_some() {
+        checked.setting_key = Some(short_text(
+            get("tag"),
+            "tag",
+            decoded.words,
+            MAX_LOG_TAG_BYTES,
+            is_log_tag_byte,
+            ArgumentProblem::BadLogTag,
+        )?);
+    }
     if tool.kind == Kind::Setprop {
         let room = decoded
             .words
@@ -783,6 +801,10 @@ pub fn check(
 
 fn is_setting_key_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+}
+
+fn is_log_tag_byte(byte: u8) -> bool {
+    byte > b' ' && !matches!(byte, b':' | b'*' | 0x7f)
 }
 
 fn is_property_name_byte(byte: u8) -> bool {

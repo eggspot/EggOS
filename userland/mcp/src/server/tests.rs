@@ -213,7 +213,8 @@ fn the_tools_are_listed_once_initialized() {
             "df",
             "device_list",
             "getprop",
-            "setprop"
+            "setprop",
+            "logcat"
         ]
     );
 }
@@ -2544,6 +2545,46 @@ fn the_property_tools_run_getprop_and_setprop_with_the_name_after_a_double_dash(
     let answer = granted.call(7, "setprop", r#"{"value":"1"}"#);
     assert_eq!(error_code(&answer), INVALID_PARAMS);
     assert!(error_message(&answer).contains("name is required"));
+}
+
+#[test]
+fn the_logcat_tool_dumps_the_log_and_hides_other_tags_for_a_tag() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "logcat", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/logcat", "-d", "-v", "threadtime"]
+    );
+    let answer = harness.call(2, "logcat", r#"{"tag":"ActivityManager"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/logcat",
+            "-d",
+            "-v",
+            "threadtime",
+            "-s",
+            "--",
+            "ActivityManager"
+        ]
+    );
+    let runs = harness.system.runs.len();
+    for arguments in [
+        r#"{"tag":"a b"}"#,
+        r#"{"tag":"a:I"}"#,
+        r#"{"tag":"*"}"#,
+        r#"{"tag":""}"#,
+    ] {
+        let answer = harness.call(3, "logcat", arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{arguments}");
+        assert!(
+            error_message(&answer).contains("tag must be"),
+            "{arguments}"
+        );
+    }
+    assert_eq!(harness.system.runs.len(), runs);
 }
 
 fn page_of(answer: &str) -> Option<Value<'_>> {

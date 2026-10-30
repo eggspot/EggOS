@@ -13,6 +13,7 @@ use crate::help::help;
 use crate::hwclock::hwclock;
 use crate::ip::ip;
 use crate::links::{ln, readlink};
+use crate::logcat::logcat;
 use crate::ls::{Listing, ls};
 use crate::nslookup::nslookup;
 use crate::output::{FAILURE, Output};
@@ -56,6 +57,7 @@ pub enum Utility {
     Hwclock,
     Ip,
     Ln,
+    Logcat,
     Ls,
     Mkdir,
     Mv,
@@ -81,7 +83,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::Agentlog,
         Self::Cat,
         Self::Chmod,
@@ -101,6 +103,7 @@ impl Utility {
         Self::Hwclock,
         Self::Ip,
         Self::Ln,
+        Self::Logcat,
         Self::Ls,
         Self::Mkdir,
         Self::Mv,
@@ -146,6 +149,7 @@ impl Utility {
             Self::Hwclock => b"hwclock",
             Self::Ip => b"ip",
             Self::Ln => b"ln",
+            Self::Logcat => b"logcat",
             Self::Ls => b"ls",
             Self::Mkdir => b"mkdir",
             Self::Mv => b"mv",
@@ -196,6 +200,7 @@ impl Utility {
             Self::Hwclock => hwclock(output, arguments),
             Self::Ip => ip(output, arguments),
             Self::Ln => ln(output, arguments),
+            Self::Logcat => logcat(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
             Self::Mkdir => mkdir(output, arguments),
             Self::Mv => mv(output, arguments),
