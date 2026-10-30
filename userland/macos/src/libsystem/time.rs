@@ -1,5 +1,5 @@
 //! Calendar time in UTC (the only time zone yet): `gmtime_r`, `localtime_r`, `timegm`,
-//! `mktime` and `strftime` in the C locale, on Darwin's `struct tm`.
+//! `mktime`, and `strftime` and `strptime` in the `LC_TIME` locale, on Darwin's `struct tm`.
 
 use super::set_errno;
 use crate::calendar::{self, BrokenDown};
@@ -38,6 +38,20 @@ impl Tm {
             daylight_saving: 0,
             offset: 0,
             zone: c"UTC".as_ptr(),
+        }
+    }
+
+    fn with_broken_down(self, time: BrokenDown) -> Self {
+        Self {
+            second: time.second,
+            minute: time.minute,
+            hour: time.hour,
+            day: time.day,
+            month: time.month,
+            year: time.year,
+            weekday: time.weekday,
+            year_day: time.year_day,
+            ..self
         }
     }
 
@@ -124,7 +138,7 @@ pub unsafe extern "C" fn strftime(
     let time = unsafe { time.read() }.broken_down();
     // SAFETY: as above.
     let out = unsafe { core::slice::from_raw_parts_mut(buffer.cast::<u8>(), size) };
-    match calendar::format(format, &time, out) {
+    match calendar::format_in(super::locale::time_formats(), format, &time, out) {
         Some(length) => {
             out[length] = 0;
             length
@@ -137,3 +151,33 @@ pub unsafe extern "C" fn strftime(
 }
 
 pub extern "C" fn tzset() {}
+
+/// # Safety
+/// `text` and `format` must be NUL-terminated and `time` readable and writable.
+pub unsafe extern "C" fn strptime(
+    text: *const c_char,
+    format: *const c_char,
+    time: *mut Tm,
+) -> *mut c_char {
+    // SAFETY: the caller's promise.
+    let input = unsafe { super::c_string(text) };
+    // SAFETY: as above.
+    let format = unsafe { super::c_string(format) };
+    // SAFETY: as above.
+    let mut result = unsafe { time.read() };
+    let mut broken_down = result.broken_down();
+    let formats = super::locale::time_formats();
+    let Some(parsed) = calendar::parse(input, format, formats, &mut broken_down) else {
+        return core::ptr::null_mut();
+    };
+    result = result.with_broken_down(broken_down);
+    if parsed.standard_time {
+        result.daylight_saving = 0;
+    }
+    if let Some(offset) = parsed.offset {
+        result.offset = offset as c_long;
+    }
+    // SAFETY: as above.
+    unsafe { time.write(result) };
+    text.wrapping_add(parsed.used).cast_mut()
+}

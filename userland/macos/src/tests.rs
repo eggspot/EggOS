@@ -495,6 +495,133 @@ fn strftime_formats_the_c_locale_and_refuses_what_does_not_fit() {
 }
 
 #[test]
+fn strftime_in_en_us_writes_four_digit_years_for_x() {
+    use crate::calendar::{TimeFormats, format_in, from_seconds};
+    let time = from_seconds(1_772_719_629).unwrap();
+    let mut buffer = [0u8; 64];
+    let length = format_in(TimeFormats::UNITED_STATES, b"%x|%c|%D", &time, &mut buffer).unwrap();
+    assert_eq!(
+        &buffer[..length],
+        b"03/05/2026|Thu Mar  5 14:07:09 2026|03/05/26"
+    );
+}
+
+type Fields = (i32, i32, i32, i32, i32, i32, i32, i32);
+
+fn strptime_fields(
+    text: &str,
+    format: &str,
+    formats: crate::calendar::TimeFormats,
+) -> Option<(usize, Fields)> {
+    use crate::calendar::{BrokenDown, parse};
+    let mut time = BrokenDown {
+        weekday: -9,
+        year_day: -9,
+        ..BrokenDown::default()
+    };
+    let parsed = parse(text.as_bytes(), format.as_bytes(), formats, &mut time)?;
+    let fields = (
+        time.year,
+        time.month,
+        time.day,
+        time.hour,
+        time.minute,
+        time.second,
+        time.weekday,
+        time.year_day,
+    );
+    Some((parsed.used, fields))
+}
+
+#[test]
+fn strptime_reads_what_a_mac_reads() {
+    use crate::calendar::TimeFormats;
+    let c = TimeFormats::C;
+    let read = |text, format| strptime_fields(text, format, c);
+    let full = (126, 2, 5, 14, 7, 9, 4, 63);
+    assert_eq!(
+        read("2026-03-05 14:07:09", "%Y-%m-%d %H:%M:%S"),
+        Some((19, full))
+    );
+    assert_eq!(read("Thu Mar  5 14:07:09 2026", "%c"), Some((24, full)));
+    assert_eq!(read("1772719629", "%s"), Some((10, full)));
+    let date = (126, 2, 5, 0, 0, 0, 4, 63);
+    assert_eq!(read("2026-3-5x", "%Y-%m-%d"), Some((8, date)));
+    assert_eq!(read("03/05/26", "%x"), Some((8, date)));
+    assert_eq!(read("2026 64", "%Y %j"), Some((7, date)));
+    assert_eq!(read("2026-03-05T", "%FT"), Some((11, date)));
+    assert_eq!(
+        strptime_fields("03/05/2026", "%x", TimeFormats::UNITED_STATES),
+        Some((10, date))
+    );
+    assert_eq!(
+        read("thursday, MARCH 5", "%A, %B %e"),
+        Some((17, (0, 2, 5, 0, 0, 0, 4, -9)))
+    );
+    assert_eq!(read("Thurs", "%a"), Some((3, (0, 0, 0, 0, 0, 0, 4, -9))));
+    assert_eq!(
+        read("Thursdayx", "%A"),
+        Some((8, (0, 0, 0, 0, 0, 0, 4, -9)))
+    );
+    assert_eq!(
+        read("02:07:09 PM", "%r"),
+        Some((11, (0, 0, 0, 14, 7, 9, -9, -9)))
+    );
+    assert_eq!(
+        read("12 am", "%I %p"),
+        Some((5, (0, 0, 0, 0, 0, 0, -9, -9)))
+    );
+    assert_eq!(read("PM 3", "%p %I"), Some((4, (0, 0, 0, 3, 0, 0, -9, -9))));
+    assert_eq!(read("69", "%y").map(|(_, time)| time.0), Some(69));
+    assert_eq!(read("68", "%y").map(|(_, time)| time.0), Some(168));
+    assert_eq!(read("20 26", "%C %y").map(|(_, time)| time.0), Some(126));
+    assert_eq!(
+        read("12345", "%Y").map(|(used, time)| (used, time.0)),
+        Some((4, -666))
+    );
+    assert_eq!(
+        read(" 5", "%e").map(|(used, time)| (used, time.2)),
+        Some((2, 5))
+    );
+    assert_eq!(read("60", "%S").map(|(_, time)| time.5), Some(60));
+    for (text, format) in [
+        ("  5", "%d"),
+        ("13 PM", "%H %p"),
+        ("13 PM", "%I %p"),
+        ("24", "%H"),
+        ("61", "%S"),
+        ("32", "%d"),
+        ("13", "%m"),
+        ("367", "%j"),
+        ("5x", "%d %%"),
+        ("X5", "x%d"),
+        ("abc", "%d"),
+    ] {
+        assert_eq!(read(text, format), None, "{text} {format}");
+    }
+}
+
+#[test]
+fn strptime_reads_zones_and_leaves_time_alone_when_it_fails() {
+    use crate::calendar::{BrokenDown, TimeFormats, parse};
+    let mut time = BrokenDown::default();
+    let parsed = parse(b"+0700 UTC", b"%z %Z", TimeFormats::C, &mut time).unwrap();
+    assert_eq!(
+        (parsed.used, parsed.offset, parsed.standard_time),
+        (9, Some(25_200), true)
+    );
+    let parsed = parse(b"-05:30", b"%z", TimeFormats::C, &mut time).unwrap();
+    assert_eq!(parsed.offset, Some(-19_800));
+    let before = BrokenDown {
+        hour: 7,
+        ..BrokenDown::default()
+    };
+    let mut after = before;
+    assert_eq!(parse(b"11:xx", b"%H:%M", TimeFormats::C, &mut after), None);
+    assert_eq!(after, before);
+}
+
+#[test]
 fn getopt_parses_short_and_long_options_like_bsd() {
     use crate::getopt::{Cursor, Found, Takes, next, quiet};
     let words: &[&[u8]] = &[

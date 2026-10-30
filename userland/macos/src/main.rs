@@ -39,6 +39,14 @@ mod darwin;
         any(target_arch = "aarch64", target_arch = "x86_64")
     )
 ))]
+mod darwin_locale;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
 mod darwin_signals;
 #[cfg(any(
     test,

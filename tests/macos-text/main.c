@@ -1,7 +1,15 @@
+#include <ctype.h>
+#include <errno.h>
+#include <langinfo.h>
+#include <locale.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+#include <wchar.h>
+#include <wctype.h>
 
 static int scan_list(const char *text, const char *format, ...) {
     va_list arguments;
@@ -92,6 +100,103 @@ static void spans(void) {
            strcspn(text, ";="), strpbrk(text, ";="), strpbrk(text, "!?") == NULL);
 }
 
+static void locale_names(void) {
+    char initial[16];
+    snprintf(initial, sizeof initial, "%s", setlocale(LC_ALL, NULL));
+    const char *posix = setlocale(LC_ALL, "POSIX");
+    printf("MACOS-TEXT locale %s %s %d\n", initial, posix, (int)MB_CUR_MAX);
+    setlocale(LC_ALL, "C");
+    setlocale(LC_CTYPE, "UTF-8");
+    char mixed[96];
+    snprintf(mixed, sizeof mixed, "%s", setlocale(LC_ALL, NULL));
+    int refused = setlocale(LC_ALL, "UTF-8") == NULL;
+    int unknown = setlocale(LC_ALL, "xx_YY.UTF-8") == NULL;
+    int multibyte = (int)MB_CUR_MAX;
+    setlocale(LC_ALL, "C.UTF-8");
+    const char *restored = setlocale(LC_ALL, mixed);
+    printf("MACOS-TEXT names %s %d %d %d %s\n", mixed, refused, unknown, multibyte,
+           restored == NULL ? "(null)" : restored);
+    unsetenv("LC_ALL");
+    unsetenv("LC_CTYPE");
+    setenv("LANG", "en_US.UTF-8", 1);
+    setenv("LC_TIME", "C", 1);
+    const char *environment = setlocale(LC_ALL, "");
+    printf("MACOS-TEXT environment %s\n", environment == NULL ? "(null)" : environment);
+    unsetenv("LC_TIME");
+    unsetenv("LANG");
+}
+
+static void united_states(void) {
+    setlocale(LC_ALL, "en_US.UTF-8");
+    struct lconv *conventions = localeconv();
+    printf("MACOS-TEXT en_US %s %s %s '%s' '%s' '%s' %d %d %s %s\n", nl_langinfo(CODESET),
+           nl_langinfo(D_FMT), nl_langinfo(D_T_FMT), conventions->thousands_sep,
+           conventions->int_curr_symbol, conventions->currency_symbol, conventions->grouping[0],
+           conventions->frac_digits, nl_langinfo(YESSTR), nl_langinfo(CRNCYSTR));
+    struct tm when;
+    memset(&when, 0, sizeof when);
+    when.tm_year = 126;
+    when.tm_mon = 2;
+    when.tm_mday = 5;
+    when.tm_hour = 14;
+    when.tm_min = 7;
+    when.tm_sec = 9;
+    when.tm_wday = 4;
+    when.tm_yday = 63;
+    char date[64];
+    strftime(date, sizeof date, "%x|%c|%D", &when);
+    struct tm parsed;
+    memset(&parsed, 0, sizeof parsed);
+    const char *end = strptime("03/05/2026 02:07:09 PM rest", "%x %r", &parsed);
+    printf("MACOS-TEXT time '%s' %d %d %d %d %d %d %d %d '%s'\n", date, parsed.tm_year,
+           parsed.tm_mon, parsed.tm_mday, parsed.tm_hour, parsed.tm_min, parsed.tm_sec,
+           parsed.tm_wday, parsed.tm_yday, end == NULL ? "(null)" : end);
+    memset(&parsed, 0, sizeof parsed);
+    end = strptime("thursday, MARCH 5 26", "%A, %B %e %y", &parsed);
+    int failed = strptime("24:00", "%H:%M", &parsed) == NULL;
+    printf("MACOS-TEXT parsed %d %d %d %d %d %d '%s'\n", parsed.tm_year, parsed.tm_mon,
+           parsed.tm_mday, parsed.tm_wday, parsed.tm_yday, failed, end == NULL ? "(null)" : end);
+    memset(&parsed, 0, sizeof parsed);
+    end = strptime("2026 64", "%Y %j", &parsed);
+    printf("MACOS-TEXT year day %d %d %d %d %d\n", end != NULL, parsed.tm_mon, parsed.tm_mday,
+           parsed.tm_wday, parsed.tm_yday);
+}
+
+static void characters(void) {
+    printf("MACOS-TEXT ctype %d %d %d %d %d %X %X %X %X %X %d\n", isalpha(0xE9) != 0,
+           isupper(0xC9) != 0, iswspace(0xA0) != 0, iswpunct(0xD7) != 0, isdigit('7') != 0,
+           toupper(0xE9), tolower(0xC9), (unsigned)towupper(0xFF), (unsigned)towupper(0xB5),
+           (unsigned)towlower(0x178), iswalpha(0xD7) != 0);
+    wchar_t wide[8] = {0};
+    size_t converted = mbstowcs(wide, "h\xC3\xA9\xE2\x82\xAC", 8);
+    char narrow[16] = {0};
+    size_t back = wcstombs(narrow, wide, sizeof narrow);
+    mbstate_t state;
+    memset(&state, 0, sizeof state);
+    wchar_t one = 0;
+    size_t first = mbrtowc(&one, "\xF0\x9F", 2, &state);
+    size_t second = mbrtowc(&one, "\x98\x80", 2, &state);
+    char bytes[8] = {0};
+    size_t written = wcrtomb(bytes, 0x10FFFF, &state);
+    wchar_t other = 0;
+    errno = 0;
+    size_t surrogate = mbrtowc(&other, "\xED\xA0\x80", 3, &state);
+    int illegal = errno == EILSEQ;
+    printf("MACOS-TEXT multibyte %zu %X %X %zu %d %zu %X %zu %02X %d %d %d %d\n", converted,
+           (unsigned)wide[1], (unsigned)wide[2], back, first == (size_t)-2, second,
+           (unsigned)one, written, (unsigned char)bytes[0], surrogate == (size_t)-1, illegal,
+           mblen("\xC3\xA9", 2), strcmp(narrow, "h\xC3\xA9\xE2\x82\xAC") == 0);
+    wchar_t word[8] = {0};
+    int got = sscanf("h\xC3\xA9llo w", "%3ls", word);
+    printf("MACOS-TEXT wide scan %d %X %X %X %X\n", got, (unsigned)word[0], (unsigned)word[1],
+           (unsigned)word[2], (unsigned)word[3]);
+    setlocale(LC_ALL, "C");
+    one = 0;
+    size_t single = mbrtowc(&one, "\xE9", 1, NULL);
+    printf("MACOS-TEXT C again %X %d %d %zu %X %d\n", toupper(0xE9), isalpha(0xE9) != 0,
+           (int)MB_CUR_MAX, single, (unsigned)one, wcrtomb(bytes, 0x100, NULL) == (size_t)-1);
+}
+
 int main(void) {
     printf("MACOS-TEXT main\n");
     numbers();
@@ -100,6 +205,9 @@ int main(void) {
     endings();
     stream();
     spans();
+    locale_names();
+    united_states();
+    characters();
     printf("MACOS-TEXT done\n");
     return 0;
 }

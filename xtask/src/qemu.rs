@@ -960,7 +960,7 @@ const SWIFT_PROGRAM_LINES: [&str; 19] = [
     "MACOS-CONSOLE status 0",
 ];
 
-const TEXT_PROGRAM_LINES: [&str; 10] = [
+const TEXT_PROGRAM_LINES: [&str; 21] = [
     "MACOS-TEXT main",
     "MACOS-TEXT numbers 10 -42 15 31 16 7 -9000000000 123456789012 44 -2 99",
     "MACOS-TEXT floats 3 2.500 -125.000 0.125",
@@ -969,6 +969,17 @@ const TEXT_PROGRAM_LINES: [&str; 10] = [
     "MACOS-TEXT endings -1 -1 1 2 2 0 'x' 2 5 6",
     "MACOS-TEXT stream 2 10 20 1 'eggos' 1 1.0 'e' 1 3.5 -1 1",
     "MACOS-TEXT spans 3 3 '=value; other' 1",
+    "MACOS-TEXT locale C POSIX 1",
+    "MACOS-TEXT names C/UTF-8/C/C/C/C 1 1 4 C/UTF-8/C/C/C/C",
+    "MACOS-TEXT environment en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8",
+    "MACOS-TEXT en_US UTF-8 %m/%d/%Y %a %b %e %X %Y ',' 'USD ' '$' 3 2 yes:y:YES:Y -$",
+    "MACOS-TEXT time '03/05/2026|Thu Mar  5 14:07:09 2026|03/05/26' 126 2 5 14 7 9 4 63 ' rest'",
+    "MACOS-TEXT parsed 126 2 5 4 63 1 ''",
+    "MACOS-TEXT year day 1 2 5 4 63",
+    "MACOS-TEXT ctype 1 1 1 0 1 C9 E9 178 39C FF 0",
+    "MACOS-TEXT multibyte 3 E9 20AC 6 1 2 1F600 4 F4 1 1 2 1",
+    "MACOS-TEXT wide scan 1 68 E9 6C 0",
+    "MACOS-TEXT C again E9 0 1 1 E9 1",
     "MACOS-TEXT done",
     "MACOS-CONSOLE status 0",
 ];

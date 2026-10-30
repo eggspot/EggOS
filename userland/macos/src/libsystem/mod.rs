@@ -10,6 +10,7 @@ mod file;
 pub mod heap;
 mod locale;
 mod memory;
+mod multibyte;
 mod options;
 pub mod process;
 mod scanf;
@@ -357,6 +358,28 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_nl_langinfo" => locale::nl_langinfo,
         b"_localeconv" => locale::localeconv,
         b"____mb_cur_max" => locale::mb_cur_max,
+        b"___maskrune" => locale::maskrune,
+        b"___runetype" => locale::runetype,
+        b"___toupper" => locale::to_upper,
+        b"___tolower" => locale::to_lower,
+        b"_toupper" => locale::to_upper,
+        b"_tolower" => locale::to_lower,
+        b"_towupper" => locale::to_upper,
+        b"_towlower" => locale::to_lower,
+        b"_wctype" => locale::wctype,
+        b"_mbrtowc" => multibyte::mbrtowc,
+        b"_mbrlen" => multibyte::mbrlen,
+        b"_mbsinit" => multibyte::mbsinit,
+        b"_mbtowc" => multibyte::mbtowc,
+        b"_mblen" => multibyte::mblen,
+        b"_wcrtomb" => multibyte::wcrtomb,
+        b"_wctomb" => multibyte::wctomb,
+        b"_btowc" => multibyte::btowc,
+        b"_wctob" => multibyte::wctob,
+        b"_mbsrtowcs" => multibyte::mbsrtowcs,
+        b"_wcsrtombs" => multibyte::wcsrtombs,
+        b"_mbstowcs" => multibyte::mbstowcs,
+        b"_wcstombs" => multibyte::wcstombs,
         b"_gmtime_r" => time::gmtime_r,
         b"_localtime_r" => time::gmtime_r,
         b"_gmtime" => time::gmtime,
@@ -364,6 +387,7 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_timegm" => time::timegm,
         b"_mktime" => time::timegm,
         b"_strftime" => time::strftime,
+        b"_strptime" => time::strptime,
         b"_tzset" => time::tzset,
         b"_strerror_r" => strerror_r,
         b"_dup" => file::dup,
@@ -575,6 +599,7 @@ fn data(name: &[u8]) -> Option<usize> {
         b"_optreset" => &raw const options::OPTRESET as usize,
         b"_environ" => &raw const process::ENVIRON as usize,
         b"___mb_cur_max" => &raw const locale::MB_CUR_MAX as usize,
+        b"__DefaultRuneLocale" => &raw const locale::DEFAULT_RUNE_LOCALE as usize,
         _ => return None,
     })
 }

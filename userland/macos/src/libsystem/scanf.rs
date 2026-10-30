@@ -7,14 +7,17 @@ use super::stdio::{Stream, read_byte, standard_input, stream};
 use super::variadic::{RawVaList, VaList, variadic};
 use super::{c_string, set_errno};
 use crate::darwin::EBADF;
+use crate::darwin_locale::multibyte::{Decoder, Encoding, Step};
 use crate::format::Arguments;
 use crate::format::scan::{self, Bytes, Field, Precision, Rules, Size, Source};
 use core::ffi::{c_char, c_int};
 
-const RULES: Rules = Rules {
-    dialect: crate::format::Dialect::Darwin,
-    utf8: false,
-};
+fn rules() -> Rules {
+    Rules {
+        dialect: crate::format::Dialect::Darwin,
+        utf8: super::locale::character_locale().is_utf8(),
+    }
+}
 
 struct StreamSource<'s> {
     stream: &'s mut Stream,
@@ -46,7 +49,7 @@ impl<'s> StreamSource<'s> {
             self.capacity = capacity;
         }
         // SAFETY: `length` is below the block's `capacity` bytes.
-        unsafe { self.taken.add(self.length).write(byte) };
+        unsafe { self.taken.wrapping_add(self.length).write(byte) };
         self.length += 1;
         true
     }
@@ -86,7 +89,7 @@ impl Source for StreamSource<'_> {
         let count = count.min(self.length);
         for index in (self.length - count..self.length).rev() {
             // SAFETY: `index` is below the `length` bytes kept.
-            let byte = unsafe { self.taken.add(index).read() };
+            let byte = unsafe { self.taken.wrapping_add(index).read() };
             self.stream.push_back(byte);
         }
         self.length -= count;
@@ -147,20 +150,28 @@ fn write_bytes(target: usize, bytes: &[u8], nul: bool) {
     }
 }
 
-fn write_wide(target: usize, bytes: &[u8], nul: bool) {
+fn write_wide(target: usize, bytes: &[u8], nul: bool, encoding: Encoding) {
     let target = target as *mut u32;
-    for (index, byte) in bytes.iter().enumerate() {
+    let mut decoder = Decoder::default();
+    let mut count = 0;
+    for &byte in bytes {
+        let scalar = match decoder.decode(encoding, &[byte]) {
+            Step::Character { scalar, .. } => scalar,
+            Step::Incomplete => continue,
+            Step::Invalid => u32::from(byte),
+        };
         // SAFETY: the argument for `%lc`, `%ls` or `%l[` points at room for a `wchar_t` per
-        // character (one per byte in the C locale) and, for the last two, a NUL.
-        unsafe { target.add(index).write_unaligned(u32::from(*byte)) };
+        // character and, for the last two, a NUL.
+        unsafe { target.wrapping_add(count).write_unaligned(scalar) };
+        count += 1;
     }
     if nul {
         // SAFETY: as above.
-        unsafe { target.add(bytes.len()).write_unaligned(0) };
+        unsafe { target.wrapping_add(count).write_unaligned(0) };
     }
 }
 
-fn store(field: Field<'_>, arguments: &mut VaList) -> bool {
+fn store(field: Field<'_>, arguments: &mut VaList, encoding: Encoding) -> bool {
     let target = arguments.integer() as usize;
     if target == 0 {
         return false;
@@ -180,8 +191,8 @@ fn store(field: Field<'_>, arguments: &mut VaList) -> bool {
         Field::Float(value, Precision::Extended) => write_long_double(target, value),
         Field::Characters(bytes) => write_bytes(target, bytes, false),
         Field::Text(bytes) => write_bytes(target, bytes, true),
-        Field::WideCharacters(bytes) => write_wide(target, bytes, false),
-        Field::WideText(bytes) => write_wide(target, bytes, true),
+        Field::WideCharacters(bytes) => write_wide(target, bytes, false, encoding),
+        Field::WideText(bytes) => write_wide(target, bytes, true, encoding),
     }
     true
 }
@@ -191,8 +202,14 @@ fn scanned(source: &mut dyn Source, format: *const c_char, arguments: RawVaList)
     let format = unsafe { c_string(format) };
     // SAFETY: and the `va_list` with a pointer for each conversion it stores.
     let mut arguments = unsafe { VaList::new(arguments) };
-    scan::scan(source, format, RULES, &mut |field| {
-        store(field, &mut arguments)
+    let rules = rules();
+    let encoding = if rules.utf8 {
+        Encoding::Utf8
+    } else {
+        Encoding::Byte
+    };
+    scan::scan(source, format, rules, &mut |field| {
+        store(field, &mut arguments, encoding)
     })
 }
 
