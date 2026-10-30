@@ -14141,9 +14141,70 @@ the license, by an explicit instruction recorded here.
     `getprop`); `getprop` and `setprop` are kept names, Android's, rather than `property get`
     and `property set`; the MCP tools take names of at most 64 bytes, in the settings tools'
     buffers; the build properties are Android 10's, the NDK API level the tests link for.
-- **Not yet.** A Settings page for Android properties (the GUI front-end, D22, designed by
-  Fable first); `__system_property_set` from programs (the `property_service` socket);
-  `persist.` properties kept across boots, values over 91 bytes (bionic's long values) and
-  property contexts; `logd` (`/dev/socket/logdw`, `AF_UNIX` datagram sockets, which the
-  kernel lacks) and `logcat`, dynamically linked Android programs through `linker64` and
-  Android programs on riscv64 (slice 36c); a vDSO; `rseq`, `clone3` and `riscv_hwprobe`.
+- **Slice 36c: `AF_UNIX` datagram sockets, Android's log and `logcat`.** The kernel has
+  `AF_UNIX` datagram sockets (`SOCK_DGRAM`, `kernel/src/linux/socket/unix_datagram.rs`): an
+  open `UnixSocket` with a datagram side (`Datagrams`: a queue of whole datagrams with their
+  sender's address, the peer it is connected to, what was shut down), so `bind` (paths and
+  abstract names, the stream sockets' registry), `getsockname`, `setsockopt`, `fstat`,
+  passing with `SCM_RIGHTS` and `/proc/net/unix` (type 2) are shared. `socket`,
+  `socketpair`, `connect` (`AF_UNSPEC` disconnects), `sendto`, `sendmsg`, `recvfrom`,
+  `recvmsg`, `read`/`readv`, `write`/`writev`, `getpeername`, `shutdown`, `poll`/`epoll`
+  and `ioctl(FIONREAD)` (the next datagram's length) answer as Linux does: a datagram is
+  sent whole and received whole (`MSG_TRUNC` reports its length), a socket connected to
+  another takes datagrams from that one only (`EPERM`), a sender waits while the receiver
+  holds 256 datagrams or its receive buffer's bytes (`EAGAIN` when non-blocking), a
+  datagram longer than the send buffer is `EMSGSIZE`, an unconnected send `ENOTCONN`, a
+  peer gone `ECONNREFUSED`, and a stream socket's address is `EPROTOTYPE` (both ways; the
+  new `Errno::EPROTOTYPE`). The kernel is Android's `logd`: devfs has the folder `socket`
+  with `logdw` (a socket node, mode 0222), and a datagram sent there goes to
+  `kernel/src/linux/android_log.rs`, which keeps it as an entry of the sending process in
+  one log of at most 64 KiB (Android's old per-buffer size), the oldest entries dropped
+  whole. The new no_std crate `android-log` (`eggos-android-log`: `parse_datagram`,
+  `encode_datagram`, `encode_record`, `decode_record`, `records`, `Buffer`, `priority`,
+  `SNAPSHOT_REQUEST`, `CLEAR_REQUEST`) has liblog's wire format (an 11-byte header of the
+  buffer id, the thread id in 16 bits and the real-time clock's seconds and nanoseconds,
+  then the priority, the tag and its NUL, the message and its NUL, at most 4068 bytes after
+  the header) and the kernel's records, shared by the kernel and `logcat`. `/dev/android_log`
+  is a read-only regular file of root's (0444) whose bytes are the records;
+  `ioctl(SNAPSHOT_REQUEST)` copies the whole log at once (a 4-byte length, then the
+  records) and `ioctl(CLEAR_REQUEST)` empties it, for a privileged process only.
+  - **Front-ends (D22).** CLI: `logcat [-d] [-c] [-s] [-v brief|threadtime]
+    [tag[:priority]...]` in the core utilities, a kept name (Android's): `-d` prints the log
+    and ends, otherwise it follows new entries (a snapshot every 250 ms) until stopped; a
+    filter shows a tag's entries of that priority (`V D I W E F S`) and above, `*:p` sets it
+    for every tag, `-s` hides the tags no filter names; threadtime is the default. MCP: the
+    tool `logcat` (no grant, effect `read`), run as `logcat -d -v threadtime`, with `tag`
+    as `-s -- <tag>`. GUI: none yet, see "Not yet".
+  - **The check.** Host tests of the crate (datagrams, binary and short ones, cut payloads,
+    records, priorities), the kernel's log (dropping whole records, reads across the ring's
+    halves, a datagram becoming its sender's entry), datagram sockets (a pair keeping
+    datagrams whole and cutting a short read, `MSG_TRUNC`, `EAGAIN`, `EOPNOTSUPP` for
+    `listen`, `SO_TYPE`, an abstract-bound receiver getting the sender's name or none,
+    `connect`, `ENOTCONN`, `EPROTOTYPE`), devfs's new nodes, `logcat` against the fake
+    (formats, filters, bad options, `-c`, what is new when following), the MCP tool's
+    arguments, the MCP check calling it, and the Android programs boot test: the NDK program
+    sends one entry to `/dev/socket/logdw` with `socket`, `connect` and `writev` as liblog
+    does (bionic's own calls, through our datagram path), `logcat -d -v brief -s
+    eggos-test` prints it, and `logcat -c` empties the log.
+  - **Cost (D24, D78).** Nothing until an Android program logs: then 64 KiB of kernel heap,
+    given back by `logcat -c`. A stream socket grows by one pointer. Not a hot path; no
+    benchmark.
+  - **Decided without research.** The kernel answers `/dev/socket/logdw` itself rather than
+    a `logd` service (no `init` to start one, and no cost while nothing logs); `logcat` reads
+    a file of the kernel's own records through a snapshot `ioctl` rather than Android's
+    `logdr` socket protocol (a read in pages could see records replaced between pages); the
+    log is one 64 KiB ring for every buffer, `logcat` shows main, system and crash as
+    Android's does by default, and the binary buffers (events, stats, security) are not
+    kept; times print in UTC (EggOS has no time zone setting yet); the log file is readable
+    by every user and the MCP tool needs no grant, like `cat` of a readable file; clearing
+    needs root, like `setprop`; `sendmsg` with control messages on a datagram socket is
+    `EOPNOTSUPP` for now.
+- **Not yet.** A Settings page for Android properties and a log viewer (the GUI front-ends,
+  D22, designed by Fable first); `__system_property_set` from programs (the
+  `property_service` socket); `persist.` properties kept across boots, values over 91 bytes
+  (bionic's long values) and property contexts; `logcat`'s `-b` (buffers), `-f`, `-t`,
+  `-g` and the other formats, the binary log buffers, `logdr` and the `logd` control
+  socket, per-app log access (`READ_LOGS`), `SCM_RIGHTS` and `SCM_CREDENTIALS` on datagram
+  sockets, `SOCK_SEQPACKET`; dynamically linked Android programs through `linker64` (which
+  also gives programs `liblog.so`'s `__android_log_print`) and Android programs on riscv64
+  (slice 36d); a vDSO; `rseq`, `clone3` and `riscv_hwprobe`.

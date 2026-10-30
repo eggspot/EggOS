@@ -53,7 +53,8 @@ it from `eggsh` (`cargo xtask qemu`): its arguments, the environment (`getenv`),
 through bionic's stdio (`fputs`, `printf`) and standard error, reading a file (`fopen`,
 `fgets`), listing a directory (`opendir`, `readdir`), `malloc`, `calloc` and `realloc` of small
 and 1 MiB blocks, the monotonic and realtime clocks and `usleep`, four `pthread_create` threads
-joined, `__system_property_get` (see below), `getauxval(AT_PAGESZ)`, `arc4random_buf`,
+joined, `__system_property_get` (see below), a log entry sent to `/dev/socket/logdw` (see
+"Logging"), `getauxval(AT_PAGESZ)`, `arc4random_buf`,
 `system()` running a command through `/system/bin/sh`, `exit(42)` and `abort()`.
 
 A machine without the NDK skips this test with a message (`cargo xtask qemu` says how to point
@@ -96,6 +97,31 @@ set a property before starting the program that reads it. The area holds up to 6
 The boot test sets a property with `setprop`, reads it with `getprop`, is refused a change to
 `ro.build.version.sdk`, and the program prints both properties as bionic reads them.
 
+## Logging
+
+The kernel is Android's `logd` (D188): a datagram sent to `/dev/socket/logdw` (an `AF_UNIX`
+datagram socket, as liblog sends it: an 11-byte header with the log buffer, the thread id and
+the time, then the priority, the tag and the message) becomes an entry of the sending process in
+a 64 KiB log, the oldest entries dropped first. `logcat` prints it:
+
+```
+# logcat -d -v brief -s eggos-test
+I/eggos-test(   42): hello from android-console
+# logcat -d
+10-30 12:14:56.789    42    42 I eggos-test: hello from android-console
+```
+
+`-d` prints the log and ends (without it `logcat` keeps printing new entries until stopped),
+`-v brief` or `-v threadtime` (the default) picks the lines' look, a filter `tag:priority`
+(`V D I W E F S`) shows that tag's entries of that priority and above, `*:priority` sets it for
+every tag, `-s` hides the tags no filter names, and `-c` empties the log (root only). Agents use
+the MCP tool `logcat` (no grant), with an optional `tag`. The NDK ships `liblog` only as a
+shared library, so a statically linked program logs by sending the datagram itself, as the test
+program does; `__android_log_print` comes with dynamically linked programs.
+
+The boot test's program sends one entry with `socket`, `connect` and `writev`, `logcat` prints
+it, and `logcat -c` empties the log.
+
 ## What does not work yet
 
 - **Programs' own property changes.** `__system_property_set` (Android's socket to `init`'s
@@ -103,9 +129,9 @@ The boot test sets a property with `setprop`, reads it with `getprop`, is refuse
   contexts (SELinux) and `persist.` properties kept across boots are not there.
 - **Android apps and dynamically linked programs.** No `.apk`, no ART, no `linker64`: link
   statically.
-- **Android's system services and logging.** No `logd` (`__android_log_print` is in
-  `liblog.so`, which the NDK ships only as a shared library, so it comes with dynamically linked
-  programs), no binder, no `/dev`, `/proc` or `/sys` (`sysconf(_SC_NPROCESSORS_ONLN)` and anything
+- **Android's system services and logging.** `__android_log_print` is in `liblog.so`, which the
+  NDK ships only as a shared library, so statically linked programs log only by sending liblog's
+  datagram to `/dev/socket/logdw` themselves (see "Logging"); no binder, no `/dev`, `/proc` or `/sys` (`sysconf(_SC_NPROCESSORS_ONLN)` and anything
   else that reads them falls back or fails).
 - **Pipes.** `popen()` and anything else that needs a pipe fails; `system()` works.
 - **What [Linux programs](linux-programs.md) lack** applies too: a read-only file system, no

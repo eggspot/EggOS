@@ -182,9 +182,11 @@ Must-have, in order:
     `arc4random`, `system()`, exit statuses and `abort`. Users' programs now read system
     properties (D188): the kernel's property service keeps them in bionic's property area at
     `/dev/__properties__`, sets `/system/build.prop`'s at boot, and `getprop` and `setprop`
-    (CLI and MCP tools) read and set them. Next, as user capabilities: users can read their
-    programs' logs (`logd`, `logcat`) and run Android programs on riscv64 and dynamically linked
-    ones; then apps (`.apk`).
+    (CLI and MCP tools) read and set them. Users can read their programs' logs (D188): the kernel
+    takes liblog's datagrams on `/dev/socket/logdw` (`AF_UNIX` datagram sockets) and keeps a
+    64 KiB log that `logcat` (CLI and MCP tool) prints and clears. Next, as user capabilities:
+    users can run Android programs on riscv64 and dynamically linked ones (with `liblog.so`);
+    then apps (`.apk`).
 18. **done** — Windows, part 1: users can now run Windows console programs from `eggsh` on
     x86_64 (D118, docs/windows-programs.md): an unmodified PE32+ console program runs
     natively through the Windows layer, an optional component at `/usr/lib/eggos/windows` that
