@@ -150,6 +150,65 @@ pub struct Attributes {
     pub modified: u64,
 }
 
+/// How much a file system holds and has room for, as `statfs` reports it (D171).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    /// Linux's number for its type (`f_type`, one of [`magic`]).
+    pub magic: u64,
+    /// The size of its blocks, in bytes.
+    pub block_size: u64,
+    /// Its blocks.
+    pub blocks: u64,
+    /// The blocks free.
+    pub free_blocks: u64,
+    /// Its nodes; 0 for a file system that does not count them.
+    pub nodes: u64,
+    /// The nodes free.
+    pub free_nodes: u64,
+    /// Whether nothing can be written to it.
+    pub read_only: bool,
+}
+
+impl Usage {
+    /// The block size reported by a file system that has no blocks of its own.
+    pub const PAGE_BLOCK_SIZE: u64 = 4096;
+
+    /// A file system of type `magic` that has no blocks or counted nodes of its own (`/proc`,
+    /// `/dev`).
+    pub const fn without_blocks(magic: u64, read_only: bool) -> Self {
+        Self {
+            magic,
+            block_size: Self::PAGE_BLOCK_SIZE,
+            blocks: 0,
+            free_blocks: 0,
+            nodes: 0,
+            free_nodes: 0,
+            read_only,
+        }
+    }
+}
+
+/// Linux's numbers for the types of file system EggOS has (`f_type`, `linux/magic.h`), and
+/// EggFS's own.
+pub mod magic {
+    /// A file system in memory (`/tmp`, `/home` without a disk, `/dev`, memory files).
+    pub const TMPFS: u64 = 0x0102_1994;
+    /// The initramfs, Linux's `rootfs`.
+    pub const RAMFS: u64 = 0x8584_58f6;
+    /// `/proc`.
+    pub const PROC: u64 = 0x9fa0;
+    /// FAT (the host share).
+    pub const MSDOS: u64 = 0x4d44;
+    /// EggFS (D131): `EggF` in ASCII.
+    pub const EGGFS: u64 = 0x4567_6746;
+    /// Pipes.
+    pub const PIPEFS: u64 = 0x5049_5045;
+    /// Sockets.
+    pub const SOCKFS: u64 = 0x534f_434b;
+    /// Files with no node: event files.
+    pub const ANON_INODE_FS: u64 = 0x0904_1934;
+}
+
 /// A name of one path component, at most [`NAME_MAX`] bytes, held by value: a file system
 /// whose names change gives copies of them.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -334,6 +393,11 @@ pub trait FileSystem: Sync + Send {
     /// system with nothing to put there has nothing to do.
     fn sync(&self) -> Result<(), StorageError> {
         Ok(())
+    }
+    /// How much it holds and has room for (`statfs`, D171); one with no blocks of its own
+    /// reports none.
+    fn usage(&self) -> Usage {
+        Usage::without_blocks(magic::RAMFS, !self.is_writable())
     }
 }
 
@@ -809,6 +873,31 @@ fn add_mount(point: Node, file_system: &'static dyn FileSystem) -> Result<(), Mo
     // SAFETY: `mounted` came from `Box::into_raw` above and was never published.
     drop(unsafe { alloc::boxed::Box::from_raw(mounted) });
     Err(MountError::Taken)
+}
+
+/// Calls `each` with where each mounted file system is mounted and its root, the root file
+/// system's first (`/proc/mounts`, D171).
+pub fn each_mount(mut each: impl FnMut(Node, Node)) {
+    let root = root();
+    each(root, root);
+    for mounted in mounts() {
+        each(mounted.point, mounted.root);
+    }
+}
+
+/// The name Linux gives a file system of type `magic` (`/proc/mounts`, `df -T`).
+pub fn type_name(magic: u64) -> &'static str {
+    match magic {
+        magic::TMPFS => "tmpfs",
+        magic::RAMFS => "rootfs",
+        magic::PROC => "proc",
+        magic::MSDOS => "vfat",
+        magic::EGGFS => "eggfs",
+        magic::PIPEFS => "pipefs",
+        magic::SOCKFS => "sockfs",
+        magic::ANON_INODE_FS => "anon_inodefs",
+        _ => "unknown",
+    }
 }
 
 /// Puts every mounted file system's changes on stable storage (`sync`, and before the

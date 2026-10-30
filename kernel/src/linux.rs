@@ -60,6 +60,7 @@ pub mod eventfd;
 pub mod exec;
 pub mod fault;
 pub mod file_changes;
+pub mod file_locks;
 pub mod files;
 pub mod fork;
 pub mod futex;
@@ -80,6 +81,7 @@ pub mod signalfd;
 pub mod signals;
 pub mod socket;
 pub mod stat;
+pub mod statfs;
 pub mod terminal;
 pub mod thread;
 pub mod thread_pointer;
@@ -277,6 +279,9 @@ pub mod number {
         pub const FCHMODAT: u64 = 268;
         pub const OPENAT2: u64 = 437;
         pub const FCHMODAT2: u64 = 452;
+        pub const FLOCK: u64 = 73;
+        pub const STATFS: u64 = 137;
+        pub const FSTATFS: u64 = 138;
         /// The highest number above.
         pub const LAST: u64 = FCHMODAT2;
     }
@@ -427,6 +432,9 @@ pub mod number {
         pub const FCHMODAT: u64 = 53;
         pub const OPENAT2: u64 = 437;
         pub const FCHMODAT2: u64 = 452;
+        pub const FLOCK: u64 = 32;
+        pub const STATFS: u64 = 43;
+        pub const FSTATFS: u64 = 44;
         /// The highest number above.
         pub const LAST: u64 = FCHMODAT2;
     }
@@ -619,6 +627,9 @@ pub mod number {
             FCHMODAT,
             OPENAT2,
             FCHMODAT2,
+            FLOCK,
+            STATFS,
+            FSTATFS,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -772,8 +783,11 @@ impl Errno {
     pub const EINPROGRESS: Self = Self(115);
     /// Too many buffers for one message (`sendmsg`, `recvmsg`).
     pub const EMSGSIZE: Self = Self(90);
-    /// A mapping that would end past the largest offset (`mmap` of a memfd).
+    /// A mapping that would end past the largest offset (`mmap` of a memfd), or a lock's range
+    /// past it (`fcntl`, D171).
     pub const EOVERFLOW: Self = Self(75);
+    /// No memory left for one more file lock (`flock`, `fcntl`, D171).
+    pub const ENOLCK: Self = Self(37);
     /// A datagram socket with no destination (`send` unconnected, D157).
     pub const EDESTADDRREQ: Self = Self(89);
     /// An address this machine does not have (`bind`, D157).
@@ -1081,6 +1095,10 @@ fn out_of_line_call<P: Platform>(
         number::WAIT4 => wait::wait4(process, thread, context),
         number::WAITID => wait::waitid(process, thread, context),
         number::EXECVEAT => exec::execveat(process, thread, context),
+        number::FLOCK => file_locks::flock(process, thread, context),
+        number::FCNTL if file_locks::is_lock_command(context.syscall_arguments()[1]) => {
+            file_locks::fcntl(process, thread, context)
+        }
         number::SOCKET
         | number::SOCKETPAIR
         | number::BIND
@@ -1193,7 +1211,7 @@ fn out_of_line_result<P: Platform>(
     use credentials::Kind::{Group, User};
     let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
-        number::CLOSE => descriptors::close(thread.files(), first),
+        number::CLOSE => file_locks::close(process.id().get(), thread.files(), first),
         number::DUP => descriptors::dup(process, thread.files(), first),
         #[cfg(target_arch = "x86_64")]
         number::DUP2 => descriptors::dup2(process, thread.files(), first, second),
@@ -1292,6 +1310,8 @@ fn out_of_line_result<P: Platform>(
         number::IOCTL => ioctl::<P>(process, thread, first, second, third),
         number::LSEEK => lseek(thread.files(), first, second, third),
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
+        number::STATFS => statfs::statfs(process, thread, first, second),
+        number::FSTATFS => statfs::fstatfs(process, thread.files(), first, second),
         number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
         number::STATX => stat::statx(process, thread, first, second, third, fourth, fifth),
         number::OPENAT => files::openat(process, thread, first, second, third, fourth),
@@ -1465,6 +1485,7 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
         return ControlFlow::Break(());
     }
     fork::release_vfork_parent::<P>(process);
+    file_locks::process_ended(process.id().get());
     wait::process_ended::<P>(process, how);
     if others {
         futex::wake_space::<P>(process.futex_space());
@@ -7962,6 +7983,89 @@ mod tests {
                 [1, EMPTY, execute, stat::at::EMPTY_PATH, 0, 0]
             ),
             Errno::EACCES.result()
+        );
+    }
+
+    #[test]
+    fn statfs_and_fstatfs_describe_the_file_system_a_path_or_descriptor_is_on() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let word = |at: usize| {
+            let bytes = read_bytes(&process, READ_BUFFER + at as u64, 8);
+            u64::from_ne_bytes(bytes.try_into().unwrap())
+        };
+        let path = at_path(&process, b"/etc");
+        assert_eq!(
+            call(&process, number::STATFS, [path, READ_BUFFER, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(word(0), crate::vfs::magic::RAMFS);
+        assert_eq!(word(64), 255);
+        assert_eq!(word(80), statfs::flag::VALID | statfs::flag::RDONLY);
+        let missing = at_path(&process, b"/nowhere");
+        assert_eq!(
+            call(&process, number::STATFS, [missing, READ_BUFFER, 0, 0, 0, 0]),
+            Errno::ENOENT.result()
+        );
+        assert_eq!(
+            call(&process, number::STATFS, [path, 0, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(&process, number::FSTATFS, [1, READ_BUFFER, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(word(0), crate::vfs::magic::TMPFS);
+        assert_eq!(
+            call(&process, number::FSTATFS, [99, READ_BUFFER, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+    }
+
+    #[test]
+    fn flock_takes_and_lets_go_of_a_whole_file_lock() {
+        use file_locks::operation::{EXCLUSIVE, NONBLOCK, SHARED, UNLOCK};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let flock = |fd: u64, operation: u32| {
+            call(
+                &process,
+                number::FLOCK,
+                [fd, u64::from(operation), 0, 0, 0, 0],
+            )
+        };
+        assert_eq!(flock(1, EXCLUSIVE | NONBLOCK), 0);
+        assert_eq!(
+            flock(2, SHARED | NONBLOCK),
+            0,
+            "the same description converts"
+        );
+        assert_eq!(flock(1, UNLOCK), 0);
+        assert_eq!(flock(1, 99), Errno::EINVAL.result());
+        assert_eq!(flock(1, SHARED | EXCLUSIVE), Errno::EINVAL.result());
+        assert_eq!(flock(77, SHARED), Errno::EBADF.result());
+        let mut described = [0u8; file_locks::FLOCK_SIZE];
+        described[0..2].copy_from_slice(&file_locks::lock_type::WRITE.to_ne_bytes());
+        process.write_user_memory(READ_BUFFER, &described).unwrap();
+        let fcntl = |command: u32| {
+            call(
+                &process,
+                number::FCNTL,
+                [1, u64::from(command), READ_BUFFER, 0, 0, 0],
+            )
+        };
+        assert_eq!(fcntl(file_locks::command::SETLK), 0);
+        assert_eq!(fcntl(file_locks::command::GETLK), 0);
+        assert_eq!(
+            read_bytes(&process, READ_BUFFER, 2),
+            file_locks::lock_type::UNLOCK.to_ne_bytes(),
+            "a process's own lock is not in its way"
+        );
+        assert_eq!(
+            call(&process, number::CLOSE, [3, 0, 0, 0, 0, 0]),
+            Errno::EBADF.result()
         );
     }
 

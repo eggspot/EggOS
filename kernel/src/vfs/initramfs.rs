@@ -19,7 +19,9 @@
 //! twice: an archive that breaks these rules is refused as a whole.
 
 use super::cpio::{self, Members};
-use super::{Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, PATH_MAX};
+use super::{
+    Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, PATH_MAX, Usage, magic,
+};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
@@ -334,6 +336,14 @@ impl FileSystem for Initramfs {
 
     fn device(&self) -> (u32, u32) {
         DEVICE
+    }
+
+    fn usage(&self) -> Usage {
+        Usage {
+            blocks: (self.archive.len() as u64).div_ceil(Usage::PAGE_BLOCK_SIZE),
+            nodes: self.entries.len() as u64,
+            ..Usage::without_blocks(magic::RAMFS, true)
+        }
     }
 
     #[inline]

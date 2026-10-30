@@ -654,13 +654,11 @@ impl Platform for X86_64 {
         for range in pvh.boot_data() {
             map.reserve(range);
         }
-        // The kernel's page tables are built through the boot direct map, so only memory
-        // inside it is handed out.
-        map.retain_within(PhysicalRange {
-            start: 0,
-            end: BOOT_DIRECT_MAP_END,
-        });
         map
+    }
+
+    fn boot_direct_map_end() -> u64 {
+        BOOT_DIRECT_MAP_END
     }
 
     #[inline]

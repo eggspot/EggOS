@@ -21,8 +21,8 @@
 //! its last hold is released, as on Linux.
 
 use super::{
-    Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, Refused, StorageError,
-    WriteAt,
+    Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, Refused, StorageError, Usage,
+    WriteAt, magic,
 };
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
@@ -466,6 +466,20 @@ impl FileSystem for Tmpfs {
 
     fn device(&self) -> (u32, u32) {
         self.device
+    }
+
+    fn usage(&self) -> Usage {
+        let limit = self.budget.limit as u64;
+        let used = self.budget.used() as u64;
+        Usage {
+            magic: magic::TMPFS,
+            block_size: PAGE_SIZE as u64,
+            blocks: limit / PAGE_SIZE as u64,
+            free_blocks: limit.saturating_sub(used) / PAGE_SIZE as u64,
+            nodes: 0,
+            free_nodes: 0,
+            read_only: false,
+        }
     }
 
     fn kind(&self, node: u64) -> NodeKind {
@@ -1355,5 +1369,22 @@ mod tests {
         assert_eq!(fs.attributes(root).permissions, 0o700);
         fs.remove(root, b"f", false, 0).unwrap();
         assert_eq!(fs.set_permissions(file, 0o600), Err(Refused::NotFound));
+    }
+
+    #[test]
+    fn usage_counts_the_budget_in_pages_and_what_files_take_from_it() {
+        let fs = tmpfs(64 * PAGE_SIZE);
+        let root = fs.root();
+        let empty = fs.usage();
+        assert_eq!(empty.magic, magic::TMPFS);
+        assert_eq!((empty.block_size, empty.blocks), (PAGE_SIZE as u64, 64));
+        assert!(empty.free_blocks <= 64 && !empty.read_only);
+        let file = fs.create(root, b"f", NodeKind::Regular, 0o644, 0).unwrap();
+        fs.write(file, WriteAt::End, &[7; 3 * PAGE_SIZE], 0)
+            .unwrap();
+        let written = fs.usage();
+        assert!(written.free_blocks + 3 <= empty.free_blocks, "{written:?}");
+        fs.remove(root, b"f", false, 0).unwrap();
+        assert!(fs.usage().free_blocks + 1 >= empty.free_blocks);
     }
 }

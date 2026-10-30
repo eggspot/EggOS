@@ -106,9 +106,16 @@ pub trait Platform: 'static {
     /// The physical memory the kernel may allocate: the machine's RAM as the firmware or
     /// loader describes it, minus everything in use (the kernel image and its boot stack, the
     /// firmware, and the boot data the kernel still reads, such as the device tree), limited
-    /// to what the kernel can reach today. Built from the firmware's description on each call;
-    /// the kernel calls it once at boot.
+    /// to what the kernel's direct map covers. Built from the firmware's description on each
+    /// call; the kernel calls it once at boot.
     fn memory_map() -> MemoryMap;
+
+    /// Where the boot direct map ends: the kernel builds its page tables only with memory
+    /// below this physical address, and hands out the rest of [`Self::memory_map`] once its own
+    /// tables, whose direct map covers all of it, are active (D171). No limit by default.
+    fn boot_direct_map_end() -> u64 {
+        u64::MAX
+    }
 
     /// Where the kernel reaches physical memory: free RAM at physical address `p` (from
     /// [`Self::memory_map`]) is readable and writable at virtual address `p + offset`. On every

@@ -10,7 +10,7 @@
 //! one, and the directory `shm`, which the boot mounts a memory file system on for POSIX shared
 //! memory (`shm_open`, D169). Each device has Linux's number and mode.
 
-use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind};
+use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Usage, magic};
 use alloc::vec::Vec;
 
 const ROOT: u64 = 1;
@@ -132,6 +132,10 @@ impl FileSystem for DeviceFiles {
 
     fn device(&self) -> (u32, u32) {
         DEVICE
+    }
+
+    fn usage(&self) -> Usage {
+        Usage::without_blocks(magic::TMPFS, true)
     }
 
     fn kind(&self, node: u64) -> NodeKind {

@@ -46,6 +46,7 @@ use crate::process::{Mapping, MappingLabel, Process};
 use crate::regions::FilePages;
 use crate::vfs::{
     Attributes, DirectoryEntry, FileSystem, KERNEL_CALLER, Name, NodeKind, PATH_MAX, StorageError,
+    Usage, magic,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -92,10 +93,13 @@ const OSTYPE: u64 = 18;
 
 const HOSTNAME: u64 = 19;
 
-const FILES: [(&[u8], u64); 9] = [
+const MOUNTS: u64 = 20;
+
+const FILES: [(&[u8], u64); 10] = [
     (b"cmdline", CMDLINE),
     (b"driver", DRIVER),
     (b"meminfo", MEMINFO),
+    (b"mounts", MOUNTS),
     (b"net", NET),
     (b"ps", PS),
     (b"self", SELF),
@@ -321,6 +325,33 @@ pub fn driver_rtc(seconds: u64) -> Option<Vec<u8>> {
     let mut text = Text(Vec::new());
     eggos_calendar::format::proc_driver_rtc(&mut text, seconds as i64).ok()?;
     Some(text.0)
+}
+
+/// `/proc/mounts`' text (D171): a line per mounted file system, the root's first, in Linux's
+/// layout: its type as the source, where it is mounted, its type, `ro` or `rw`, and two zeros.
+/// Files mounted over files are left out.
+pub fn mounts_text() -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    let mut path = [0u8; PATH_MAX];
+    let mut complete = true;
+    crate::vfs::each_mount(|point, root| {
+        if root.kind() != NodeKind::Directory {
+            return;
+        }
+        let Some(start) = point.path_into(&mut path) else {
+            return;
+        };
+        let usage = root.file_system().usage();
+        let kind = crate::vfs::type_name(usage.magic);
+        let options = if usage.read_only { "ro" } else { "rw" };
+        let written = text
+            .bytes(kind.as_bytes())
+            .and_then(|()| text.bytes(b" "))
+            .and_then(|()| text.bytes(&path[start..]))
+            .and_then(|()| writeln!(text, " {kind} {options} 0 0").ok());
+        complete &= written.is_some();
+    });
+    complete.then_some(text.0)
 }
 
 /// `/proc/version`'s text: Linux's layout, with what `uname` reports.
@@ -683,6 +714,10 @@ impl<P: Platform> FileSystem for Proc<P> {
         DEVICE
     }
 
+    fn usage(&self) -> Usage {
+        Usage::without_blocks(magic::PROC, true)
+    }
+
     fn kind(&self, node: u64) -> NodeKind {
         kind_of(node)
     }
@@ -800,6 +835,7 @@ impl<P: Platform> FileSystem for Proc<P> {
                 _ => return Err(StorageError),
             },
             VERSION => version_text(),
+            MOUNTS => mounts_text(),
             OSRELEASE => line(identity::utsname::RELEASE.as_bytes()),
             OSTYPE => line(identity::utsname::SYSNAME.as_bytes()),
             HOSTNAME => {
@@ -1015,6 +1051,7 @@ mod tests {
                 &b"cmdline"[..],
                 b"driver",
                 b"meminfo",
+                b"mounts",
                 b"net",
                 b"ps",
                 b"self",
@@ -1024,7 +1061,10 @@ mod tests {
             ]
         );
         assert_eq!(proc.kind(NET), NodeKind::Directory);
-        assert_eq!(proc.entry(ROOT, 3).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.entry(ROOT, 4).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.kind(MOUNTS), NodeKind::Regular);
+        let mounts = proc.generate(MOUNTS).unwrap().unwrap();
+        assert!(mounts.starts_with(b"rootfs / rootfs ro 0 0\n"), "{mounts:?}");
         assert_eq!(proc.kind(DRIVER), NodeKind::Directory);
         assert_eq!(proc.parent(DRIVER_RTC), DRIVER);
         assert_eq!(proc.parent(DRIVER), ROOT);

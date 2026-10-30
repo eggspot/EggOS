@@ -165,6 +165,31 @@ impl FrameAllocator {
         Some(range.end)
     }
 
+    /// The memory it never handed out (the buddy allocator's bitmap included), while every
+    /// frame it handed out came from untouched memory: none freed back and the buddy
+    /// allocator never used. `None` otherwise. The kernel builds its page tables with an
+    /// allocator over the memory the boot direct map reaches, then makes one over this and the
+    /// rest of RAM ([`crate::paging::enable`]).
+    pub fn untouched_memory(&self) -> Option<MemoryMap> {
+        if self.free_stack != NO_FRAME || self.buddy.zeroed {
+            return None;
+        }
+        let mut map = MemoryMap::new();
+        for range in self.untouched[..self.untouched_ranges]
+            .iter()
+            .chain([&self.current])
+        {
+            map.add_ram(*range);
+        }
+        if self.buddy.exists() {
+            map.add_ram(PhysicalRange::from_start_length(
+                self.buddy.bitmap,
+                Buddy::bitmap_bytes(self.buddy.span),
+            ));
+        }
+        Some(map)
+    }
+
     /// Where this allocator reaches physical memory: frame `p` at virtual `p + offset`.
     pub fn physical_memory_offset(&self) -> usize {
         self.physical_memory_offset
@@ -747,6 +772,32 @@ mod tests {
         );
         assert_eq!(frames.free_frames(), 0);
         assert_eq!(frames.allocate(), None);
+    }
+
+    #[test]
+    fn untouched_memory_is_what_was_never_handed_out_until_a_frame_comes_back() {
+        let mut arena = Arena::new(0x10_0000, 16);
+        let b = arena.base;
+        let map = arena.map(&[(b, b + 4 * K), (b + 8 * K, b + 10 * K)]);
+        let mut frames = FrameAllocator::new(&map, arena.offset());
+        let untouched = frames.untouched_memory().unwrap();
+        assert_eq!(untouched.ranges(), map.ranges());
+        let first = frames.allocate().unwrap();
+        let second = frames.allocate().unwrap();
+        assert_eq!((first, second), (b + 8 * K, b + 3 * K));
+        let left = frames.untouched_memory().unwrap();
+        assert_eq!(
+            left.ranges(),
+            [
+                PhysicalRange::from_start_length(b, 3 * K),
+                PhysicalRange::from_start_length(b + 9 * K, K)
+            ],
+            "the bitmap's frame stays"
+        );
+        assert_eq!(left.total(), map.total() - 2 * K);
+        // SAFETY: `second` came from this allocator and nothing uses it.
+        unsafe { frames.free(second) };
+        assert!(frames.untouched_memory().is_none());
     }
 
     #[test]

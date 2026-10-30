@@ -331,6 +331,7 @@ impl OpenFile {
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
+        super::file_locks::description_closed(self);
         if let Some(node) = self.kind.node() {
             node.release();
         }

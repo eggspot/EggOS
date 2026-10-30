@@ -15,7 +15,7 @@ hal/src/arch/riscv64/timer.rs 6
 hal/src/arch/x86_64/console_input.rs 1
 hal/src/arch/x86_64/exception.rs 62
 hal/src/arch/x86_64/fp.rs 1
-hal/src/arch/x86_64/mod.rs 109
+hal/src/arch/x86_64/mod.rs 107
 hal/src/arch/x86_64/random.rs 11
 hal/src/arch/x86_64/thread.rs 2
 hal/src/arch/x86_64/timer.rs 26

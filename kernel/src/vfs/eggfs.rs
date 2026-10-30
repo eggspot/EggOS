@@ -19,7 +19,8 @@
 //!   next mount, which frees it).
 
 use super::{
-    Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, WriteAt,
+    Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, Usage, WriteAt,
+    magic,
 };
 use crate::block::{BlockDevice, SECTOR_SIZE};
 use crate::devices::Deadline;
@@ -293,6 +294,21 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
 
     fn device(&self) -> (u32, u32) {
         self.eggfs.device
+    }
+
+    fn usage(&self) -> Usage {
+        let volume = self.volume();
+        let (blocks, free_blocks) = volume.space();
+        let (nodes, free_nodes) = volume.inodes();
+        Usage {
+            magic: magic::EGGFS,
+            block_size: BLOCK_SIZE as u64,
+            blocks,
+            free_blocks,
+            nodes,
+            free_nodes,
+            read_only: false,
+        }
     }
 
     fn kind(&self, node: u64) -> NodeKind {
@@ -594,5 +610,36 @@ mod tests {
         fs.sync().unwrap();
         assert_eq!(read_all(home.with_id(file)), b"");
         eggfs.with_volume(|volume| volume.check().unwrap());
+    }
+
+    #[test]
+    fn usage_counts_a_removed_file_s_blocks_as_used_until_the_commit_after_its_last_release() {
+        let (_, home, applications) = mounted();
+        let fs = home.file_system();
+        let empty = fs.usage();
+        assert_eq!(empty.magic, magic::EGGFS);
+        assert_eq!((empty.block_size, empty.blocks), (BLOCK_SIZE as u64, 2048));
+        assert!(empty.free_blocks < empty.blocks && empty.free_nodes < empty.nodes);
+        assert_eq!(applications.file_system().usage(), empty);
+        let file = fs
+            .create(home.id(), b"big", NodeKind::Regular, 0o644, 1)
+            .unwrap();
+        fs.write(file, WriteAt::End, &[1; 8 * BLOCK_SIZE], 2)
+            .unwrap();
+        let written = fs.usage();
+        assert!(written.free_blocks + 8 <= empty.free_blocks, "{written:?}");
+        fs.hold(file);
+        fs.remove(home.id(), b"big", false, 3).unwrap();
+        assert!(
+            fs.usage().free_blocks < written.free_blocks + 8,
+            "an orphan"
+        );
+        fs.release(file);
+        assert!(
+            fs.usage().free_blocks < written.free_blocks + 8,
+            "until the commit"
+        );
+        fs.sync().unwrap();
+        assert!(fs.usage().free_blocks >= written.free_blocks + 8);
     }
 }

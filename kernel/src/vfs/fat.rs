@@ -24,7 +24,9 @@
 //!   read as UTC; a directory reports one link and size 0, as its subdirectories are not
 //!   counted.
 
-use super::{Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, StorageError};
+use super::{
+    Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, StorageError, Usage, magic,
+};
 use crate::block::{BlockDevice, SECTOR_SIZE};
 use crate::devices::Deadline;
 use crate::sync::{SleepLock, Sleeping};
@@ -850,6 +852,14 @@ impl FileSystem for Fat {
 
     fn device(&self) -> (u32, u32) {
         self.device
+    }
+
+    fn usage(&self) -> Usage {
+        Usage {
+            block_size: self.layout.cluster_bytes,
+            blocks: u64::from(self.layout.clusters),
+            ..Usage::without_blocks(magic::MSDOS, true)
+        }
     }
 
     fn kind(&self, node: u64) -> NodeKind {
