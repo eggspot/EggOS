@@ -115,7 +115,20 @@ buffers in memory files), `wl_surface` (attach, damage, frame callbacks at up to
 commit), `wl_seat` (5; pointer and keyboard, with a US keyboard map), `wl_output` (3) and
 `xdg_wm_base` (3; `xdg_surface`, `xdg_toplevel` with title, minimum and maximum size,
 maximise, fullscreen as maximise, minimise, close, and move and resize from a press in the
-window). Surfaces are shown opaque, at scale 1.
+window). Since D172 also: `wl_subcompositor` (1; subsurfaces drawn over their parent at their
+position, synchronized or not, stacked with `place_above` and `place_below`),
+`xdg_popup` (menus and tooltips placed by their `xdg_positioner`, flipped, slid or shrunk to
+stay inside their toplevel's window, drawn into it, with `grab`, `reposition` and
+`popup_done` on a click outside), `zxdg_decoration_manager_v1` (1; always server-side: EggOS
+draws the title bar), cursor surfaces (`wl_pointer.set_cursor`; a null one hides the pointer
+over the window) and `wp_cursor_shape_manager_v1` (1; the text, resize and default shapes
+EggOS draws), and `wp_viewporter` (1; a source rectangle and a destination size, scaled to
+the nearest pixel). A toplevel's subsurfaces and popups are drawn from the buffers they hold,
+blended by their alpha over the toplevel, which is shown opaque, at scale 1.
+
+A dynamically linked program installs with its loader and libraries beside it: put them in a
+`.zip` with the program (`app install`, [apps](apps.md)), and it opens through them. The
+first real app that runs this way is Brogue CE, an SDL game ([compatibility](compatibility.md)).
 
 `tests/linux-gui` is a complete example: `linux-paint` is a static Rust program that speaks the
 wire protocol itself; the Linux GUI boot test opens its window, clicks, types, drags, maximises
@@ -123,8 +136,8 @@ and closes it on every architecture.
 
 ### What real toolkits need next
 
-GTK, Qt, SDL, browsers and Electron apps do not run yet. What they need, roughly in the order
-it unlocks them:
+SDL apps run (D172, [compatibility](compatibility.md)); GTK, Qt, browsers and Electron apps do
+not yet. What they need, roughly in the order it unlocks them:
 
 | Need | Who needs it |
 |------|--------------|
@@ -132,12 +145,12 @@ it unlocks them:
 | (`epoll`, `eventfd`, `timerfd`, `signalfd`: written, D169) | GLib and GTK, Qt, SDL3, winit/calloop, Chromium and Electron, EFL |
 | (`fork` of a process with shared memory: written, D169) | foot, weston-terminal |
 | (writable `MAP_SHARED` of tmpfs files, `shm_open` and `/dev/shm`: written, D169) | older clients |
-| `wl_subcompositor` | GTK, Qt, libdecor (SDL) |
-| `xdg-decoration` (server-side decorations) | apps that would draw their own title bars |
-| `xdg_popup` placement | menus and tooltips |
+| (`wl_subcompositor`: done, D172) | GTK, Qt, libdecor (SDL) |
+| (`xdg-decoration`, server-side decorations: done, D172) | apps that would draw their own title bars |
+| (`xdg_popup` placement: done inside the toplevel's window, D172) | menus and tooltips |
 | `wl_data_device_manager` and the primary selection | copy and paste, drag and drop |
-| cursor surfaces and `cursor-shape-v1` | the program's own pointer shapes |
-| `wp_viewporter`, fractional scale, buffer scales above 1 | scaling |
+| (cursor surfaces and `cursor-shape-v1`: done with EggOS's shapes, D172); a cursor surface's own image, the hand and busy shapes | the program's own pointer shapes |
+| (`wp_viewporter`: done, D172); fractional scale, buffer scales above 1 | scaling |
 | `linux-dmabuf` and a GPU driver stack | EGL and Vulkan through Mesa |
 | `text-input-v3` | input methods |
 | `xdg-activation` | apps that raise their own windows |
@@ -150,7 +163,8 @@ it unlocks them:
 
 - **Libraries for dynamically linked programs** come only with the program: EggOS ships no
   C library, so add the loader and the libraries a program needs to the image at the paths
-  the loader looks in (D167).
+  the loader looks in (D167), or install the program from a `.zip` holding them, which it
+  then opens through (D172).
 - **`fork` with odd shared memory.** Rust's `std::process::Command`, `posix_spawn`, `fork`
   (copy on write, D169), `vfork`, `execve` and `wait4` work, and shared memory stays shared
   across `fork`; only a process that mapped `MAP_SHARED` anonymous memory with no access or
@@ -178,7 +192,8 @@ it unlocks them:
   [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`), ping sockets and
   TCP (`std::net::TcpStream` and `TcpListener`: `connect`, `listen`, `accept`, `poll`,
   `shutdown`, timeouts), and names through musl's resolver; IPv6 and `AF_UNIX` datagrams do
-  not yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
+  not yet. Wayland GUI programs work through `eggway` (D140, above), and SDL apps on it (D172);
+  GTK and Qt not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

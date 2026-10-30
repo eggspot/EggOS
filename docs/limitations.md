@@ -185,15 +185,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   what it prints on Linux. EggOS ships no toolchain, C compiler or linker: programs for the
   glibc targets (whose linker is a C compiler) do not link inside it yet, and builds use one
   job (`CARGO_BUILD_JOBS=1`).
-- **Linux GUI programs: static Wayland clients only.** `eggway` (D140) shows a static program's
-  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need their libraries and
-  protocols eggway does not serve yet ([Linux
-  programs](linux-programs.md) lists them). It serves one seat and one output (whose mode is the
-  work area's size, at scale 1), shows surfaces opaque and ignores buffer scale and transform,
-  window geometry and the window menu request; popups close at once, and there is no clipboard,
-  subsurfaces, touch or cursor surfaces; at most 16 clients, 16 surfaces and 8 pools each, pools
-  of 32 MiB at most and 48 MiB for all clients, and the terminal waits while a Wayland program
-  opened from it runs.
+- **Linux GUI programs: Wayland clients and SDL apps, not GTK or Qt yet.** `eggway` (D140,
+  D172) shows a program's `xdg_toplevel`s as desktop windows with their subsurfaces and popups
+  drawn in, and an SDL app installed from a `.zip` with its loader and libraries runs (Brogue
+  CE, [compatibility](compatibility.md)); GTK, Qt and browsers need protocols and libraries
+  eggway does not serve yet ([Linux programs](linux-programs.md) lists them). It serves one
+  seat and one output (whose mode is the work area's size, at scale 1), shows toplevels opaque
+  and ignores buffer scale and transform and the window menu request; popups stay inside their
+  toplevel's window, input regions are not used for hit-testing, and a subsurface's restacking
+  takes effect at once instead of on its parent's commit; a cursor surface shows the arrow (its
+  own image is not drawn) and the cursor shapes EggOS has no drawing for (a hand, busy) show the
+  arrow; there is no clipboard, touch, `xdg-activation` or `text-input`; at most 16 clients, 16
+  surfaces, 8 pools and 8 positioners each, pools of 32 MiB at most and 48 MiB for all clients,
+  and the terminal waits while a Wayland program opened from it runs, which also writes its
+  files into the terminal's current folder.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, from the host

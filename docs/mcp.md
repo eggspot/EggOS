@@ -114,7 +114,7 @@ run-eggos.sh` the script's own path works too.
 | `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `clock_sync` | Sets the machine's clock and its hardware clock from a time server (SNTP, `pool.ntp.org`) and says how far it moved; 15 seconds at most (D159) | `date -u --sync` | `run` |
 | `settings_set` | Sets a setting (`key`, `value`) and applies it at once, as the Settings window would: `shell.profile` takes `windows`, `macos` or `linux`, the desktop's layout; the other keys fail with `setting_read_only` (D163); answers `Set <key> to <value>.`, and with `dry_run` what would change (D164) | `settings set [--dry-run] -- <key> <value>` | `run` |
-| `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148) | `app install [--entry <entry>] -- <path>` | `install` |
+| `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148); `arguments` gives the words it opens with (D172) | `app install [--entry <entry>] [--arguments <arguments>] -- <path>` | `install` |
 | `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
 | `edit_open` | Opens a text file in `/home`, `/media/host` or `/work` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
 | `app_uninstall` | Uninstalls an app (`name`, `confirm`, `dry_run`) | `app uninstall -- <name>` | `install` |

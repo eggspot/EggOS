@@ -11748,3 +11748,146 @@ the license, by an explicit instruction recorded here.
   3); the gaps the job finds against Linux, recorded in the roadmap once it has run; growing a
   work disk that fills; RAM beyond the direct map's reach on riscv64 (Sv48) and the device
   tree's RAM above the boot direct map on aarch64.
+
+## D172 A real SDL app installs and runs: Brogue CE through `eggway` with subsurfaces, popups, server-side decorations, cursor shapes and viewports, dynamically linked programs installed with their loader and libraries, and CI's `sdl3` and `sdl-app` jobs (the Real apps track's third step, its first real app; extends D18, D21, D22, D133, D134, D137, D140, D148, D160, D164, D167, D169, D170) — Decided by the build loop (the app, where its pieces come from and how SDL draws without a GPU decided by research)
+- **Why.** The Real apps track (roadmap) checks EggOS against applications people use. Its
+  first app is an SDL one: SDL is the most common way small Linux games and tools reach the
+  screen, and on Wayland it asks for the protocols toolkits need first (subsurfaces, popups,
+  decorations, cursor shapes, viewports), which `eggway` (D140) did not serve. The plan's part
+  20 names the kind of app, not the app: research picked it.
+- **The app** (decided by research, below): Brogue: Community Edition 1.15.1, a roguelike
+  (code AGPL-3.0-or-later, tiles CC BY-SA 4.0), as Alpine Linux `v3.24` builds it against
+  musl and SDL 2's interface (`sdl2-compat` 2.32.68, which loads SDL 3), with `sdl2_image`
+  2.8.12, Wayland 1.25.0's client, cursor and EGL stub libraries, `libxkbcommon` 1.13.1,
+  `libffi` 3.5.2 and musl 1.2.6's loader. No released SDL (2.32, 3.2 or 3.4) draws on Wayland
+  without EGL; SDL's `main` gained a `wl_shm` framebuffer for its Wayland driver on
+  2026-10-23, so `libSDL3.so.0` is built from commit `328edfc1` with that driver alone. It is
+  test data: downloaded by CI on every run, checked against SHA-256s pinned in
+  `xtask/src/sdl_app.rs`, never shipped in an image or committed. docs/compatibility.md (new)
+  lists it: app, version, license, platform, architectures, what works.
+- **eggway's new protocols** (`wayland/src/protocol.rs`, `userland/eggway/src/compositor.rs`;
+  globals 6 to 9, the first five unchanged):
+  - `wl_subcompositor` 1 / `wl_subsurface`: a surface with no role becomes a subsurface of a
+    parent that is not itself or a descendant (`bad_surface`, `bad_parent`); `set_position`
+    takes effect on the parent's commit; synchronized subsurfaces (the default, or under a
+    synchronized parent) keep what they commit until the parent's commit, desynchronized ones
+    show it at once; `place_above`/`place_below` a sibling or the parent; destroying it
+    unmaps the surface, which keeps its role.
+  - `xdg_popup` with `xdg_positioner` (`wayland/src/positioner.rs`, host-tested): size,
+    anchor rectangle, anchor, gravity, offset and constraint adjustments (flip, then slide,
+    then resize, each axis on its own), placed inside its toplevel's window (the area the
+    popup is drawn into) and announced with `xdg_popup.configure` and `xdg_surface.configure`;
+    `grab` moves the keyboard to it, a press outside the grabbed popups dismisses them with
+    `popup_done` (the press reaches no surface), `reposition` places it again with
+    `repositioned`; an incomplete positioner is `invalid_positioner`, a popup without a parent
+    is dismissed at once as before. Positioners are per client (8).
+  - `zxdg_decoration_manager_v1` 1: a toplevel's decoration is always `server_side` (EggOS
+    draws every window's chrome), answered to `set_mode` and `unset_mode` with a configure and
+    a new `xdg_surface.configure`; one per toplevel (`already_constructed`), made before its
+    first buffer (`unconfigured_buffer`).
+  - Cursor surfaces and `wp_cursor_shape_manager_v1` 1: `wl_pointer.set_cursor` gives a
+    surface the cursor role (`role` if it has another) and shows the arrow over the window, a
+    null surface hides the pointer there; a cursor shape device's `set_shape` maps text to the
+    I-beam, the edge and corner resizes to the window server's four resize shapes, everything
+    else to the arrow (`invalid_shape` past 34). Both act on the window under the pointer
+    through `SET_POINTER`, whose new shape 6 (`PointerShape::Hidden`, drivers) draws nothing.
+  - `wp_viewporter` 1 / `wp_viewport`: a source rectangle (24.8 fixed point) and a destination
+    size, double-buffered to the commit, with `bad_value`, `bad_size` (a fractional source
+    without a destination) and `out_of_buffer`; the surface's size is the destination, else the
+    source's, and its pixels are scaled to the nearest one.
+  - Drawing: a client that binds `wl_subcompositor` or `wp_viewporter`, or makes a
+    positioner, is drawn from the buffers its surfaces hold (each surface keeps its last buffer
+    and releases the one before it; with three buffers, as SDL's framebuffer has, one is held):
+    every change in a toplevel's tree draws the toplevel opaque, then its subsurfaces in
+    stacking order and its popups, blended by their premultiplied alpha
+    (`eggos_wayland::blit::{Placement, WindowPixels, blend_over}`), and commits the window. A
+    client that binds none is drawn as before (its damage copied, its buffer released at once).
+    Pointer input goes to the topmost surface under the point, in its own coordinates, with
+    `leave` and `enter` as the pointer crosses surfaces; keyboard focus goes to the topmost
+    grabbed popup.
+- **Dynamically linked programs install with their loader** (`userland/app`,
+  `app-manifest`, `drivers/src/desktop/catalogue.rs`). A `.zip` whose one program has a
+  `PT_INTERP` (`program::interpreter`) installs when the archive also holds a file named like
+  that loader (`installer::Loader`): the manifest gets `loader=` (that file) and `libraries=`
+  (the folders of the archive's `.so` files, at most four), and opening the app types `<loader>
+  --library-path <folders> <program>`, absolute in the app's folder, which glibc's and musl's
+  loaders both take. A dynamic program on its own is refused as before, with a reason that says
+  how to install it. `app install --arguments <words>` (and the installer's window's command
+  line, and the MCP tool `app_install`'s `arguments`) writes `arguments=`, typed after the
+  program: letters, digits, spaces and `-_./:=+,@%` only, at most 128 bytes
+  (`manifest::is_arguments`), so nothing reaches the shell as anything but words. Brogue
+  needs `--data-dir` (its data path is built in as Alpine's `/usr/share/brogue`).
+- **Front-ends (D22).** GUI: the app's icon and launcher row open it, Files and the installer's
+  window install it (the window takes `--arguments` on its command line; Files has no field for
+  them yet). CLI: `app install --arguments`, `app open`, `app list`, `wm list`. MCP:
+  `app_install` with `arguments`, `app_open`, `wm_list`; a Wayland window's element tree is its
+  title and app id, as before (D161).
+- **The check** (`cargo xtask sdl3`, `cargo xtask sdl-app`, `xtask/src/qemu/sdl_app.rs`; CI's
+  `sdl3` and `sdl-app` jobs, x86_64 and aarch64, in `check`'s needs). `sdl3` builds
+  `libSDL3.so.0` in an `alpine:3.24` container on a runner of the architecture's own CPU
+  (`ubuntu-24.04`, `ubuntu-24.04-arm`), cached by `xtask/src/sdl_app.rs`'s hash and passed on
+  as an artifact; `sdl-app` packs `brogue.zip`, boots the release image on a blank disk with
+  the zip in the host folder and 1 GiB, installs it with `--arguments '-n --data-dir
+  /Applications/brogue/share/brogue'`, lists it, opens it from `/tmp` with `app open`, finds its
+  window by where the screen changed, clicks its title bar, plays nine turns from the keyboard
+  through QMP and wants the window to change, saves with `S` and Enter (Brogue quits after
+  saving), and wants the saved game in `/tmp`, no Brogue window in `wm list`, a clean
+  power-off and the manifest's `loader`, `libraries` and `arguments` on the disk.
+- **Tests.** wayland: the new tables and globals, the positioner's placement, flips, slides
+  and resizes, a placement's scaling, offsets, clipping and blending. eggway (fake machine):
+  a synchronized subsurface drawn at its position on the parent's commit with the parent's
+  buffer held and `bad_surface`; a popup placed by its positioner, drawn into its toplevel,
+  taking the keyboard on `grab`, the pointer entering it, dismissed by a press outside with no
+  button event; decorations always server-side and a bad mode refused; cursor shapes, a hidden
+  cursor and a bad shape; a viewport scaling a buffer to its destination and refusing a source
+  outside it. drivers: the hidden shape's empty area; the launch line with a loader, library
+  folders and arguments, and one too long to type. app: `PT_INTERP` read and refused past the
+  head; `--arguments` parsed. manifest: the new keys written, read back and refused. mcp:
+  `arguments` checked and passed. xtask: the pinned packages, the archive's members, the
+  verdict and the window finder.
+- **Decided by research** (a research subagent read SDL's sources at every 2.32, 3.2 and 3.4
+  tag and `main`, Alpine `v3.24`'s package index and the packages' ELF headers, and Brogue CE's
+  1.15.1 sources). Its recommendation, followed: Brogue CE, because it is a real, popular,
+  freely licensed SDL app with prebuilt x86_64 and aarch64 builds in Alpine, uses SDL's
+  software renderer (`SDL_CreateRenderer`'s software path), opens no audio, ships its own
+  tiles (no fontconfig), and its main feature can be driven by keys and checked by its saved
+  game. Its finding that no released SDL can draw on Wayland without EGL (the texture
+  framebuffer needs a GL renderer, and the software renderer itself sits on the window
+  surface) made the choice between building SDL `main`'s `wl_shm` framebuffer (about 2 MB) and
+  shipping Mesa's EGL with llvmpipe (about 235 MB with LLVM, plus libdrm, gbm and X11
+  libraries): SDL `main`, pinned at commit `328edfc1` with its archive's SHA-256. The packages
+  come from Alpine `v3.24`, as D167's musl does, pinned by SHA-256s it computed (Alpine's index
+  checksums only each package's control section). `sdl2-compat` rather than Alpine's `sdl2`
+  (which has no framebuffer on Wayland either). Brogue's window is sized from the output's mode
+  (about 940 by 590 pixels on the 1280 by 800 display's work area), `-n` skips the menu, `--data-dir` finds the
+  tiles, `S` and Enter save and quit. Runner-up: `wev` (MIT; not an app). Left to the job:
+  SDL `main`'s second event queue and threads, `memfd_create`'s `MFD_NOEXEC_SEAL` retry,
+  `posix_fallocate` on a memory file, its `/sys` and `/proc` reads, and `sdl2-compat` forwarding
+  the software renderer.
+- **Decided without research.** The manifest's `loader`, `libraries` and `arguments` keys and
+  the typed launch line (rather than a per-app view of `/lib` or patching `PT_INTERP`);
+  `arguments`' character set; the libraries' folders found from the archive's `.so` files;
+  composing only clients that bind `wl_subcompositor` or `wp_viewporter` or make a positioner,
+  so single-buffer clients are never held up; popups drawn inside their toplevel's window
+  (`/dev/window`'s popup role is the server's); a cursor surface showing the arrow; the hidden
+  shape needing no Claude Fable design (it draws nothing, as every desktop hides the pointer
+  for a program that asks); the SDL build in Docker with argument lists, split from the test
+  job so the CI image needs no Docker; saving as the app's close; running it from `/tmp`; the
+  check's timings (300 s for the window under TCG, 1200 s in all). The owner can overrule any
+  of these.
+- **Performance and size (D24).** Nothing on a kernel hot path changes; the window server
+  gains one shape that draws nothing. eggway draws clients that bind none of the new globals
+  exactly as before; a composing client costs one copy of its window per change (SDL redraws
+  whole frames anyway). eggway's per-client memory grows by eight positioners and the new
+  surface fields (about 2 KiB), and its program by the new handlers; the base image does not
+  grow otherwise. No benchmark is added: no hot path of the kernel is touched.
+- **Not yet.** Popups that reach outside their toplevel's window (a client-owned popup role in
+  the window server); a cursor surface's own image, and the hand, busy, crosshair and move
+  shapes (the window server draws six shapes; docs/windows.md lists the others as not yet); input
+  regions in hit-testing; subsurfaces stacked below their parent (not drawn, as toplevels are
+  opaque) and restacking applied on the parent's commit; buffer scales above 1 and fractional
+  scale; a Files or launcher field for an app's arguments; an app's working folder (Brogue
+  saves where the terminal is); riscv64 (Alpine `v3.24` has no riscv64 Brogue build pinned);
+  SDL 3.5.0's release replacing the build from `main`; audio and game controllers; whatever the
+  first CI run finds missing in the kernel for SDL `main`, `sdl2-compat` and libwayland (listed
+  above), to be recorded in the roadmap once it has run.

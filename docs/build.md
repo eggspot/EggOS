@@ -231,6 +231,20 @@ holds what used to be written in them.
   in `/work/hello`, unpacks the disk and wants the program's output to be Linux's. On a host
   that is not Linux it compares with the output the program's source gives, and with `CI` set
   it refuses to.
+- **`cargo xtask sdl3 --arch <arch>`** (D172, x86_64 and aarch64, hosts with Docker) builds
+  `libSDL3.so.0` from SDL's pinned commit (its archive checked against a pinned SHA-256) for
+  Alpine's musl, with SDL's Wayland video driver and its `wl_shm` framebuffer alone (no OpenGL,
+  Vulkan, X11, D-Bus or audio back ends), by Alpine's own compilers in an `alpine:3.24`
+  container of the architecture's platform, started, run and removed by xtask with `docker`
+  argument lists (no shell script); the library and its commit go to
+  `target/sdl-app/sdl3-<arch>`, which a later run reuses. Test data, never shipped.
+- **`cargo xtask sdl-app --arch <arch>`** (D172) downloads Brogue CE and the libraries it loads
+  from Alpine `v3.24` (pinned SHA-256s, kept in `target/sdl-app/downloads-<arch>`), takes
+  `libSDL3.so.0` from `cargo xtask sdl3` (built first if missing), packs `brogue.zip` (the game,
+  musl's loader and the libraries in `lib/`, the game's data in `share/brogue`) into a host
+  folder and boots the release image on a blank disk: `app install --arguments` installs it,
+  `app open` opens it, keys play a few turns, `S` and Enter save and close it, and the console,
+  the disk's manifest and `/tmp`'s saved game are checked ([compatibility](compatibility.md)).
 - **`--memory` and `--room`** (D171). `cargo xtask run --memory <size>` (such as `4G`, at
   least `128M`) and the run scripts' `--memory`/`-Memory` give the machine more memory, which
   on x86_64 reaches above 4 GiB; `cargo xtask run --work <folder> --room <size>` and `cargo
@@ -377,8 +391,11 @@ holds what used to be written in them.
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
   programs, D146), `dynamic-linking` (one per architecture: `cargo xtask dynamic-linking` after
   installing the glibc cross compilers and target in the CI image, D167), `rustc-version` (D168)
-  and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run) and,
-  on PRs, `hosts`
+  and `hello-crate` (D171, one per architecture, with `qemu-user` for aarch64's Linux run),
+  `sdl3` (D172: `cargo xtask sdl3` outside the CI image, on a runner of each architecture's own
+  CPU, `ubuntu-24.04` and `ubuntu-24.04-arm`, cached by `xtask/src/sdl_app.rs`'s hash and handed
+  on as an artifact kept one day) and `sdl-app` (D172, one per architecture in the CI image,
+  after `sdl3`) and, on PRs, `hosts`
   (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other

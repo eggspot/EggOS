@@ -580,7 +580,17 @@ The release path (the release-path review's issues #141-#145, after the items ab
   `readlink` and `chmod`, the MCP tool `ln` and its path twins opening with
   `RESOLVE_NO_SYMLINKS`, `.app` bundles with their links, work disks carrying links both ways,
   and Files marking, following and making links (Claude Fable's
-  docs/ux/files-links-v0.3.md). Next: a real SDL app installs and runs (part 20).
+  docs/ux/files-links-v0.3.md). Its third step, a real SDL app installs and runs, **written,
+  unchecked** (D172): Brogue CE 1.15.1 (chosen by research; Alpine's build on `sdl2-compat`,
+  with SDL 3 built from the commit that added Wayland's `wl_shm` framebuffer, since EggOS has no
+  GPU stack yet), listed in the new docs/compatibility.md; eggway's `wl_subcompositor`,
+  `xdg_popup` placement, `zxdg_decoration_manager_v1`, cursor surfaces and
+  `wp_cursor_shape_manager_v1`, and `wp_viewporter`; the window server's hidden pointer shape;
+  dynamically linked Linux programs installed from a `.zip` with their loader and libraries,
+  the manifest's `loader`, `libraries` and `arguments`, `app install --arguments` and
+  `app_install`'s `arguments`; CI's `sdl3` and `sdl-app` jobs install it, open it, play turns,
+  save and close it on x86_64 and aarch64. Next: a real Win32 app (part 22), then a real GTK
+  app (part 24).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
