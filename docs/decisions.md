@@ -15480,3 +15480,100 @@ the license, by an explicit instruction recorded here.
   stale keys); and the 39e2c "Not yet" above (floating-point and long callbacks, Swift,
   exceptions through translated frames, `GetProcAddress` past 64 functions, freeing a thread's
   guest state).
+
+## D192 Checking, repairing and formatting EggFS disks, and big directories that stay fast: the checker and repairer, `format_with` with a size and a label, and an in-memory name index (batch part 40, slice 40a; roadmap item 25's "Next"; extends D131, D170, D171) — Decided by the build loop (the name index decided by research)
+
+- **What.** The `eggos-eggfs` crate can now check and repair an unmounted EggFS disk, format
+  part of a disk with a label, and look names up in big directories without reading every
+  block. Front-ends come in slice 40b (below).
+- **Checker and repairer.** `check_disk(disk, CheckMode, now) -> Result<DiskCheck,
+  CheckError>` works on any `Disk`. It replays the journal as mounting does, walks every
+  directory from the root without stopping at the first problem, and returns a list of
+  `Finding`s. Each finding has a `Problem` (31 kinds, each with a stable `code()` and a
+  `description()`), the inode and block it was found at, and an `Outcome` (`Repairable`,
+  `Repaired` or `NotRepairable`). It also returns a `summary` (the `CheckReport` of the
+  result) and the volume's blocks and free blocks.
+  - **What it repairs.** Entries naming damaged, free or reserved inodes, bad or repeated
+    names, and a directory's second name are removed. Entry kinds, directory counts, parents
+    and link counts are corrected. Pointers outside the data region or past a file's end are
+    cleared, and a file larger than the format allows is cut. A block used twice is copied for
+    the file found later. A directory or pointer block found later loses the block (a
+    directory then gets an empty block there). A directory's missing blocks are filled with
+    empty ones. An invalid symbolic link is removed.
+  - **Orphans and lost inodes.** Orphans left behind are freed, as mounting does (D170).
+    Inodes in use that no directory names go into `/lost+found` as `#<inode>`, created at
+    0700 if missing, or `lost+found.1` to `.9` when that name holds a file. A lost
+    directory's own entries keep their names: only directories no other lost directory names
+    are adopted, then the rest of a cycle.
+  - **Root, version and bitmaps.** A damaged root is replaced by an empty one, so everything
+    goes to `lost+found`. A version 1 volume using version 2 features is upgraded. Both bitmaps
+    are rewritten from what is in use.
+  - **How it writes.** Every change goes through the cache and the journal, committing
+    whenever the journal needs room. Copies and filled holes are allocated only after the
+    bitmaps are rewritten and committed. A repair that stops midway is finished by running it
+    again.
+  - **Checked at the end.** The repair ends with `Volume::check`. If it still fails, a
+    `RepairIncomplete` finding (`NotRepairable`) names the inconsistency.
+  - **Idempotent.** A second run reports nothing and writes nothing, and a clean disk in
+    repair mode is never written.
+  - **Read-only mode.** `CheckMode::ReadOnly` runs exactly the same code against an overlay
+    that keeps every write in memory, so it predicts the repair's findings and summary and
+    never writes to the disk.
+  - **What it cannot repair.** A damaged superblock, or one larger than the disk, is
+    `NotRepairable` (EggFS keeps no copy). A disk without the EggFS magic is
+    `CheckError::NotEggFs`.
+- **Formatting.** `format_with(disk, now, &FormatOptions { blocks, label })` formats the
+  first `blocks` blocks (all of them when `None`) and writes a label of up to `MAX_LABEL` (64)
+  bytes of UTF-8 without NUL. `format` is `format_with` with the defaults.
+  `FormatError` gains `LargerThanDisk` and `BadLabel`. `Volume::label()` reads the label
+  back. Free and used space were already there: `Volume::space()` and `inodes()`, which
+  `statfs` uses (D171).
+- **On-disk change: the label only.** The superblock's bytes 128 to 191 hold the label,
+  zero-padded, covered by the existing checksum. Older readers verify the checksum over the
+  whole block and ignore those bytes. The only superblock rewrite they make (the version 1 to
+  2 upgrade) concerns version 1 volumes, which have no label. So the format version stays 2.
+- **Big directories.** A directory of more than 4 blocks gets an index the volume keeps in
+  memory: an open-addressing table of 8-byte slots (the CRC-32C of a name and the index of
+  the block holding it), at most half full.
+  - **Building and keeping it.** It is built at the directory's first lookup from its
+    records. It is kept for the 2 directories used last, keyed by inode number and generation
+    (so a removed directory's index can never serve another). Directories of more than 32768
+    entries keep the linear scan.
+  - **Using it.** A lookup reads only the blocks whose name hash matches (usually one). A
+    miss is certain without reading any block. New entries are added to the index, and a
+    full table is dropped and rebuilt at the next lookup. A removed entry needs no change: its
+    slot only costs one block read, and every hit is checked against the real record.
+  - **Appending.** Adding an entry now tries the last block first, so appending to a big
+    directory reads one block instead of all of them. This changes no on-disk rule.
+  - **Benchmark.** `eggfs_lookup_10k` measures a lookup in a directory of 10 000 names.
+- **Decided by research.** The name index lives in memory, not on disk. An on-disk index (an
+  inode flag, index blocks kept in the same transaction as each entry, version 3, a checker
+  rebuild) would make the first lookup after mounting fast too. But it adds a write to every
+  entry change and spends journal room. It is much more code to get right, and old readers
+  would have to refuse such volumes. The in-memory index costs nothing until a big directory
+  is used and is never wrong after a crash. Its parameters are: more than 4 blocks, 2
+  directories, slots of hash and block, a load factor of at most one half, and a cap on
+  entries. Every other file system named (ext4 htree, XFS, APFS, Btrfs, NTFS) keeps a
+  persistent index, so that remains the long-term answer (below).
+- **Choices made without research.**
+  - Findings carry an inode and a block, not text, so the CLI and MCP (40b) can format them.
+  - Lost inodes are named `#<inode>`, as other Unix checkers name them.
+  - The file found first keeps a block used twice: which one wrote it last cannot be known.
+  - A directory's trailing holes shrink its size, and only inner holes are filled, so a
+    garbage size never allocates thousands of blocks.
+  - The label is 64 bytes: room for a readable name in any script, more than ext4's 16.
+  - `retire_journal` keeps the journal's sequence and writes a descriptor that counts 0
+    blocks, which never decodes.
+  - Orphans are found by their flag, not by following the chain, so a broken chain loses
+    nothing.
+- **Not yet.**
+  - The front-ends, slice 40b: `disk check` and `disk format` (userland/coreutils), the MCP
+    tools `disk_check` and `disk_format` (`destroy` with confirmation, D160-D165), the
+    Settings Storage pane (Fable design first), and a QEMU test that formats a second disk
+    and mounts it.
+  - A copy of the superblock, so a damaged one can be repaired.
+  - An on-disk name index (version 3), for fast first lookups after mounting, and hashed
+    `readdir` order.
+  - Checking a mounted volume online.
+  - A progress report for the checker on big disks.
+  - The baseline lines for `eggfs_lookup_10k` (added when the build phase measures it).

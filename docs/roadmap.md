@@ -348,8 +348,11 @@ D16):
     `/Applications` on it; disks are told apart by what they hold; virtio-blk writes and
     flushes; `sync`, `syncfs`, `fsync`, `fdatasync`, the `sync` utility and a sync before
     power-off; a committer every 5 s; host crash tests at every write and a QEMU power cut.
-    Since then: symbolic and hard links, on-disk version 2 (D170). Next: a repair tool, a format
-    command in EggOS with its three front-ends, several requests in flight.
+    Since then: symbolic and hard links, on-disk version 2 (D170); a checker and repairer for
+    unmounted disks (read-only or repairing, `lost+found`, idempotent), formatting part of a
+    disk with a label, and an in-memory name index so directories of thousands of entries look
+    names up in one block (D192). Next: `disk check` and `disk format` from the CLI, MCP and the
+    Settings Storage pane, several requests in flight.
 34. **done** — users can now open Settings, pick the Windows, macOS or Linux profile and keep
     it across reboots (D132, docs/settings.md): `userland/toolkit`, a native toolkit with no
     heap (a retained widget tree with layout, labels, buttons, checkboxes, radio groups, cards,

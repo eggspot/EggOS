@@ -44,9 +44,11 @@ the data region.
 | 20 | 4 | inodes |
 | 24 | 4 × 9 | first block and length of the block bitmap, the inode bitmap, the journal and the inode table, then the first data block |
 | 64 | 8 | when the volume was made, seconds since the Unix epoch |
+| 128 | 64 | label: the volume's name, UTF-8 without NUL, zero-padded; all zeros for none (D192) |
 | 4092 | 4 | CRC-32C of bytes 0 to 4091 |
 
-A reader must check every field: the version 1 or 2 (any other is refused), the regions in
+Bytes not listed are zeros. The label is covered by the checksum and ignored by readers older
+than D192, which leave it in place. A reader must check every field: the version 1 or 2 (any other is refused), the regions in
 the order above with no gaps, bitmaps large enough for their bits, the inode table exactly
 inodes / 32 blocks, a journal of at least 64 blocks and at least 8 data blocks. The superblock
 is written by the format and changes only once, when a version 1 volume is upgraded (see
@@ -133,8 +135,12 @@ is mapped (no holes). Each directory block holds packed **records** from offset 
 
 The first record whose inode is 0 (or the end of the block) ends the block's records, and all
 bytes after the last record are zeros. Names are unique within a directory. Removing a record
-moves the records after it down; a new record goes after the last record of the first block
-with room, or into a new block added at the directory's end. `.` and `..` are not stored: the
+moves the records after it down; a new record goes after the last record of the last block
+when it has room, else of the first block with room, else into a new block added at the
+directory's end (any of these is valid on disk). Lookups in a directory of more than four blocks
+go through an index EggOS keeps in memory only (D192): the CRC-32C of each name with the
+block holding it, built at the directory's first lookup and kept for the two directories used
+last; nothing of it is on disk, so the format does not change. `.` and `..` are not stored: the
 parent is in the inode. The directory's inode counts its records (entries) and those that are
 directories. Several records, in one directory or several, may name the same regular file or
 symbolic link (its names); never a directory.
@@ -206,7 +212,8 @@ before it returns.
 A blank disk (its first 128 KiB zeros, or block 0 starting with `EGGFSFMT`) is formatted by
 writing `EGGFSFMT` to block 0, flushing, writing the bitmaps, a zero journal descriptor and the
 inode table block holding the root (inode 1, a directory, parent 1, generation 1, 0755),
-flushing, then writing the superblock (version 2) and flushing. EggOS never formats a disk holding
+flushing, then writing the superblock (version 2) and flushing. A format may use only the first part of
+the disk (at least 256 blocks) and write a label into the superblock (`format_with`, D192). EggOS never formats a disk holding
 anything else: see "Persistent disk" in docs/build.md for erasing one on purpose.
 
 ## Checking
@@ -221,6 +228,23 @@ holes, malformed records or repeated names and their counts are right, the orpha
 only flagged, nameless files and links, each once, while no named inode is flagged, a version
 1 volume holds no symbolic link, second name or orphan, and the bitmaps mark exactly the
 blocks and inodes in use.
+
+**Checking and repairing an unmounted disk** (`check_disk`, D192). The checker replays the
+journal as mounting does (a transaction that cannot be replayed is dropped), walks every
+directory from the root without stopping at the first problem, and lists each problem with
+the inode and block it was found at. Repairing fixes what is safe: entries naming damaged,
+free or reserved inodes, bad or repeated names and a directory's second name are removed;
+entry kinds, counts, parents and link counts are corrected; pointers outside the data region
+or past a file's end are cleared; a block used twice is copied for the later file (a later
+directory or pointer block loses it); a directory's missing block is filled with an empty one;
+an invalid symbolic link is removed; files left behind as orphans are freed; inodes in use
+that no directory names go into `/lost+found` as `#<inode>` (directories with what they
+hold); a damaged root is replaced by an empty one; a version 1 volume using version 2
+features is upgraded; then both bitmaps are rewritten from what is in use. The repairs go
+through the journal, a commit at a time, and end with `Volume::check`; running the checker
+again finds nothing. A damaged superblock cannot be repaired (there is no copy). Read-only
+mode runs the same work against a copy kept in memory, so it says what a repair would do
+and writes nothing.
 
 ## Version 1
 
