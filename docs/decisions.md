@@ -14907,8 +14907,50 @@ the license, by an explicit instruction recorded here.
   refused (Intel ignores it, AMD honours it); `xchg` with memory is atomic without `lock`, as
   on x86; instructions without operands report a byte width; the decoder names `F3 0F BC/BD`
   `tzcnt`/`lzcnt` and leaves their meaning to the code generator.
-- **Not yet** (slices 39b to 39e): AArch64 code generation for the integer instructions, the
-  flags and the stack (39b); SSE, SSE2 and x87, the memory order and atomics (39c); code
+- **Slice 39b: AArch64 code generation for the integer instructions.** `translate/src/codegen/`
+  (the crate now uses `alloc`): an AArch64 encoder (`aarch64/encode.rs`, one pure function per
+  form, host-tested against hand-computed encodings from the Arm ARM's diagrams, logical
+  immediates included), a code buffer (`aarch64/emit.rs`: labels, branch fixups with their
+  26/19/14-bit ranges checked, an 8-byte-aligned literal pool), the block former
+  (`form_block`: decode until a branch, call, return, loop, trap or refused bytes, at most 256
+  instructions), the flag liveness pass (`flags.rs`: what each instruction reads, defines and
+  kills, a shift by `cl` killing nothing; `live_after`), and the lowering (`lower/`) of `mov`,
+  `movzx`, `movsx`, `movsxd`, `lea`, `push`, `pop`, `leave`, `add` ... `cmp`, `test`, `inc`,
+  `dec`, `neg`, `not`, `mul`, `imul` (1-3 operands), `div`, `idiv` (128/64-bit by a
+  shift-subtract loop when `rdx` is significant), `cbw` ... `cqo`, the shifts and rotates
+  (`rcl`/`rcr` not yet), `shld`/`shrd` (32 and 64 bits), `bt*`, `bsf`, `bsr`, `tzcnt` (as
+  `bsf`), `lzcnt`, `popcnt` (NEON `cnt`), `bswap`, `cmovcc`, `setcc`, `xchg`, `xadd`,
+  `cmpxchg`, `lock` forms (LSE `ldaddal`/`ldclral`/`ldsetal`/`ldeoral`/`swpal`/`casal`, or
+  `ldaxr`/`stlxr` loops), `jmp`, `jcc`, `loop*`, `jrcxz`, `call`, `ret`, `nop`s, `pause`,
+  fences, `clc`/`stc`/`cmc`, `int3`, `int`, `ud2`. `translate_block(block, CodegenMode,
+  live_out)` returns a `TranslatedBlock { guest, guest_end, code, exits, starts,
+  guest_address_literals }`. How it works: 32-bit results write `w` registers (zeroing the
+  upper half), 8/16-bit results are inserted with `bfi`; 8/16-bit flags come from operands
+  shifted to the top of a `w` register (`adc`/`sbb` fill the low bits so the carry
+  propagates); NZCV is only computed when live, C's sense (CF or its inverse after a
+  subtraction) is tracked and fixed with `cfinv` or `mrs`/`eor`/`msr` only where a condition
+  or an exit needs the other sense; PF's byte and AF's source byte go to the state block only
+  when live; flags that are not a direct result (shifts, rotates, `mul`, `bt`) are inserted
+  with `mrs`/`bfi`/`msr`; memory operands are computed into `x16`, loads are `ldapr`/`ldar`
+  and stores `stlr` unless `hardware_tso`, `gs:` adds `x18` and `fs:` the state block's base;
+  RIP-relative addresses and pushed return addresses are 64-bit literals listed for
+  relocation; every exit is a `brk` placeholder the image linker patches into a `b`, with C
+  holding CF at every exit; `call` pushes the guest return address and a (guest, host) pair
+  on a 64 KiB ring (`x20`), `ret` compares them with `eor`/`cbnz` (no flags touched) and
+  otherwise exits to the indirect dispatch with the target in `x16`; traps are `brk` codes
+  (`codegen::trap`). Host tests: encodings, the buffer's fixups and ranges, liveness, block
+  forming and lowering shapes (`add eax, ebx` is one `add w0, w0, w3`).
+- **Slice 39b's choices made without research.** A shift or rotate whose masked count is 0
+  (also from `cl`) changes nothing, not even the upper half of a 32-bit register; `bswap` of
+  a 16-bit register writes 0; `ret` and `call` assume no flags are passed across them beyond
+  `live_out`; `lock adc`, `lock sbb`, `lock neg` and 16-bit `shld`/`shrd` are reported as not
+  lowered; `cmpxchg` on memory is always atomic; undefined flags (`mul`'s SF/ZF, `bsf`'s
+  others) are whatever the code leaves.
+- **Not yet** (slices 39c to 39e): from 39b, `rcl`/`rcr`, `enter`, `lahf`/`sahf`/`pushf`/
+  `popf`, the string instructions, `cld`/`std`, `xlat`, `cmpxchg8b`/`16b`, `cpuid`, `rdtsc`,
+  `syscall` (all reported `Unhandled`), flag liveness across blocks (39d passes `live_out`;
+  until then `Flags::ALL`), a test-only AArch64 evaluator comparing lowered code with x86
+  semantics on random inputs; SSE, SSE2 and x87, the memory order and atomics (39c); code
   discovery, the image tables, the bridges, the cache and the Windows layer's loader (39d);
   the macOS layer, `app install` and launch, the refused-site report and the benchmarks
   (39e). Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87,

@@ -11,8 +11,10 @@ used by the Windows layer (`userland/windows`) and the macOS layer (`userland/ma
 written from Intel's and AMD's manuals and Arm's architecture reference; no code is taken from
 other translators.
 
-Status: slice 39a built the x86-64 decoder; code generation, the bridges, the cache and the
-install and launch integration are slices 39b to 39e (D191's "Not yet").
+Status: slice 39a built the x86-64 decoder and slice 39b the AArch64 encoder, the block
+former, the flag liveness pass and the lowering of the integer, stack and control-flow
+instructions; SSE, SSE2, x87 and strings, the bridges, the cache and the install and launch
+integration are slices 39c to 39e (D191's "Not yet").
 
 ## What is translated
 
@@ -84,7 +86,15 @@ nearest known function); it is never translated then.
 | `xmm0` to `xmm15` | `v0` to `v15` |
 | x87 `st(0)` to `st(7)` | the state block, as doubles, with the top index |
 
-`x29`, `x30` and `sp` stay the host's: `sp` is the native stack the bridges run on.
+`x29`, `x30` and `sp` stay the host's: `sp` is the native stack the bridges run on. The
+shadow stack is a 64 KiB ring aligned to 64 KiB, so a deep recursion overwrites old pairs and
+their returns go through the entries table. The state block holds the `fs:` base at offset 0,
+the `gs:` base at 8, PF's byte at 16 and AF's source byte at 17.
+
+**Blocks and exits.** A block runs from an entry to its first branch, call, return, loop or
+trap. Each exit is a placeholder the image linker patches into a branch to the target's
+block, or to the image's indirect dispatch (guest target in `x16`, NZCV untouched). At every
+exit C holds CF itself, never its inverse.
 
 **Flags.** CF, ZF, SF and OF live in NZCV. Each block's flag liveness is computed backwards,
 so a flag result nobody reads is never computed. After a subtraction Arm's C is the inverse of

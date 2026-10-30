@@ -12,12 +12,20 @@
 //! report the address and step over it. VEX, EVEX and XOP instructions are recognised and
 //! refused.
 //!
+//! The code generator ([`codegen`]) forms blocks from decoded instructions and lowers the
+//! integer instructions, the flags, the stack, calls, returns and branches to AArch64 code with
+//! the register map, flag handling and memory order of the design; SSE, SSE2, x87 and string
+//! instructions are reported as not lowered yet.
+//!
 //! [`Invalid`]: DecodeErrorKind::Invalid
 //! [`Unsupported`]: DecodeErrorKind::Unsupported
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
+pub mod codegen;
 mod decoder;
 pub mod instruction;
 
