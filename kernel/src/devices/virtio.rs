@@ -1,9 +1,12 @@
 //! virtio in the driver model (D110): the virtio-mmio and modern virtio-pci transports as bus
-//! drivers, each adding the virtio device it finds as a child, and the polled virtio entropy
-//! device, GPU (D112), input devices (D113), block device (D130) and console device (D136) on
-//! top of either.
+//! drivers, each adding the virtio device it finds as a child, and the virtio entropy device,
+//! GPU (D112), input devices (D113, on interrupts since D184), block device (D130) and console
+//! device (D136) on top of either. A device's driver connects its interrupt with
+//! [`connect_interrupt`]: the slot's line through the platform's interrupt controller on
+//! virtio-mmio, an MSI-X message on virtio-pci.
 
 use super::dma::DmaRegion;
+use super::interrupts::{self, DeviceEvents, Handler};
 use super::{
     Deadline, DeviceId, DeviceNode, DmaCoherence, DriverDescriptor, Identity, Match, Probe,
     ProbeError, ProbePass,
@@ -12,9 +15,11 @@ use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
+use eggos_drivers::pci::msix::MsixTable;
 use eggos_drivers::virtio::mmio::MmioTransport;
 use eggos_drivers::virtio::pci::{self as virtio_pci, PciTransport, VirtioPciCapability};
 use eggos_drivers::virtio::{self, QueueAddresses, Transport};
+use eggos_hal::PhysicalRange;
 
 /// Transports the bus drivers can hold for their devices' drivers.
 pub const MAX_TRANSPORTS: usize = 8;
@@ -243,6 +248,109 @@ fn add_device(
     Ok(())
 }
 
+/// Has the virtio device `id`, whose transport is `transport`, interrupt: its interrupt's handler
+/// acknowledges it and raises `events`. On virtio-mmio, the slot's device-tree interrupt routed
+/// through the platform's controller; on virtio-pci, MSI-X entry 0 for its configuration and
+/// every queue the driver enabled, so call it once the queues are set up. The driver then asks
+/// the device for interrupts ([`eggos_drivers::virtio::queue::SplitQueue`]'s notifications) and
+/// looks at it once, for what came before. Marks the device as [`super::Delivery::Interrupts`].
+pub fn connect_interrupt(
+    probe: &mut dyn Probe,
+    id: DeviceId,
+    transport: &AnyTransport,
+    events: &'static DeviceEvents,
+) -> Result<(), ProbeError> {
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
+    let parent_id = node.parent.ok_or(ProbeError::Refused(
+        "the virtio device has no transport device",
+    ))?;
+    let parent = *probe
+        .table()
+        .get(parent_id)
+        .ok_or(ProbeError::Refused("no such device"))?;
+    let handler = match transport {
+        AnyTransport::Mmio(_) => {
+            let specifier = node.interrupts[0].ok_or(ProbeError::Refused(
+                "the virtio-mmio slot names no interrupt",
+            ))?;
+            let region = parent
+                .regions()
+                .next()
+                .ok_or(ProbeError::Refused("the slot has no registers"))?;
+            let base = probe.map_window(region)?;
+            let line = probe.route_interrupt(&specifier)?;
+            (
+                line,
+                Handler {
+                    acknowledge: acknowledge_mmio,
+                    context: base,
+                    events,
+                },
+            )
+        }
+        AnyTransport::Pci(pci_transport) => {
+            let Identity::Pci(function) = parent.identity else {
+                return Err(ProbeError::Refused("the transport is not a PCI function"));
+            };
+            let config = probe
+                .pci_config()
+                .ok_or(ProbeError::Refused("no PCI configuration space"))?;
+            let msix = pci::msix::find(config, function.address)
+                .ok_or(ProbeError::Refused("the function has no MSI-X"))?;
+            let bar = parent.regions[usize::from(msix.bar)];
+            let table_end = u64::from(msix.table_offset) + msix.table_bytes() as u64;
+            if bar.is_empty() || table_end > bar.len() {
+                return Err(ProbeError::Refused("the MSI-X table lies outside its BAR"));
+            }
+            let table = probe.map_window(PhysicalRange::from_start_length(
+                bar.start + u64::from(msix.table_offset),
+                msix.table_bytes() as u64,
+            ))?;
+            let (line, message) = probe.message_interrupt()?;
+            // SAFETY: `map_window` mapped the table as device memory for good, inside the BAR the
+            // capability names; only this driver reaches it.
+            let table = MsixTable::new(
+                unsafe { Mmio::new(table, msix.table_bytes()) },
+                msix.entries,
+            );
+            table.set(0, message.address, message.data);
+            let config = probe
+                .pci_config()
+                .ok_or(ProbeError::Refused("no PCI configuration space"))?;
+            msix.enable(config, function.address);
+            if !pci_transport.route_interrupts_to(0) {
+                return Err(ProbeError::Refused("the device took no MSI-X vector"));
+            }
+            (
+                line,
+                Handler {
+                    acknowledge: acknowledge_nothing,
+                    context: 0,
+                    events,
+                },
+            )
+        }
+    };
+    interrupts::connect(handler.0, handler.1).map_err(ProbeError::Refused)?;
+    if let Some(node) = probe.table().get_mut(id) {
+        node.delivery = super::Delivery::Interrupts;
+    }
+    Ok(())
+}
+
+fn acknowledge_mmio(base: usize) {
+    // SAFETY: `base` is a virtio-mmio slot's registers, which its bus driver mapped as device
+    // memory for good; only the interrupt status and acknowledge registers are reached here,
+    // which the device's driver never uses.
+    let regs = unsafe { Mmio::new(base, MMIO_REGISTERS_LENGTH as usize) };
+    virtio::mmio::acknowledge_interrupt(&regs);
+}
+
+fn acknowledge_nothing(_: usize) {}
+
 fn take_transport(identity: &Identity) -> Option<AnyTransport> {
     let Identity::Virtio { transport, .. } = *identity else {
         return None;
@@ -408,8 +516,9 @@ mod input {
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
-    /// The polled virtio input device (virtio 1.2, 5.8): a keyboard, a mouse or a tablet,
-    /// installed as one of the kernel's input devices ([`crate::input`]).
+    /// The virtio input device (virtio 1.2, 5.8): a keyboard, a mouse or a tablet, installed as
+    /// one of the kernel's input devices ([`crate::input`]), on interrupts where the machine
+    /// routes them (D184), polled otherwise.
     pub static INPUT_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-input",
         pass: ProbePass::Device,
@@ -444,7 +553,7 @@ mod input {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let input = match VirtioInput::new(transport, memory, &mut || deadline.keep_waiting()) {
+        let mut input = match VirtioInput::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(input) => input,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {
@@ -462,8 +571,19 @@ mod input {
         } else if !crate::input::has_room() {
             "no room for another input device"
         } else {
-            return crate::input::install(Box::new(VirtioInputDevice(input)))
-                .map_err(|_| ProbeError::Refused("no room for another input device"));
+            let interrupting =
+                connect_interrupt(probe, id, input.transport(), &crate::input::DEVICE_EVENTS)
+                    .is_ok();
+            if interrupting {
+                input.enable_interrupts();
+            }
+            let device = Box::new(VirtioInputDevice(input));
+            let installed = if interrupting {
+                crate::input::install_interrupting(device)
+            } else {
+                crate::input::install(device)
+            };
+            return installed.map_err(|_| ProbeError::Refused("no room for another input device"));
         };
         release(
             input,

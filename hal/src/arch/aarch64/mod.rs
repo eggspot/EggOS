@@ -359,6 +359,14 @@ impl Platform for Aarch64 {
         Ok(())
     }
 
+    fn route_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        let (id, trigger) =
+            eggos_drivers::interrupt::gicv2::shared_interrupt_of_specifier(specifier.cells())?;
+        timer::route_device_interrupt(id, trigger)
+    }
+
     fn exit(_status: ExitStatus) -> ! {
         psci_system_call(PSCI_SYSTEM_OFF);
         Self::halt()

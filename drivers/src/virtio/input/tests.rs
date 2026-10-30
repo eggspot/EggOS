@@ -255,6 +255,21 @@ fn every_buffer_is_posted_before_driver_ok_then_the_device_is_told() {
 }
 
 #[test]
+fn enabling_interrupts_clears_the_no_interrupt_hint() {
+    let mut input = input(FakeInput::keyboard());
+    input.enable_interrupts();
+    assert!(
+        !input
+            .transport()
+            .device
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .used_notifications_disabled()
+    );
+}
+
+#[test]
 fn a_smaller_queue_is_filled_whole() {
     let input = input(FakeInput {
         max_queue_size: 12,

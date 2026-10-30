@@ -19,6 +19,13 @@ fn machine() -> Fake {
             0,
         )
         .with_file("/proc/uptime", 0o444, b"3725.42 0.00\n", 0)
+        .with_directory("/proc/driver", 0)
+        .with_file(
+            "/proc/driver/devices",
+            0o444,
+            crate::device::tests::EXAMPLE,
+            0,
+        )
         .with_file(
             "/proc/mounts",
             0o444,

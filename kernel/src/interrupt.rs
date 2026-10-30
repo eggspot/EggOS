@@ -7,15 +7,20 @@
 //! CPUs' reschedule requests (D43), so preemption adds nothing to the interrupt path; a wake-up
 //! only has to end the CPU's wait for an interrupt, and have the CPU serve the TLB shootdowns
 //! asked of it (D94). Console input goes through the line discipline to readers
-//! ([`console::receive_input`], D100).
+//! ([`console::receive_input`], D100); a device's interrupt goes to its line's handler
+//! ([`devices::interrupts::handle`], D184).
 
-use crate::{console, cpu};
+use crate::{console, cpu, devices};
 use eggos_hal::{Interrupt, Platform};
 
 /// Handles `interrupt`, which this CPU has taken; the interrupted code resumes afterwards.
 pub fn handle<P: Platform>(interrupt: Interrupt) {
     if interrupt == Interrupt::ConsoleInput {
         console::receive_input::<P>();
+        return;
+    }
+    if let Interrupt::Device(line) = interrupt {
+        devices::interrupts::handle::<P>(line);
         return;
     }
     cpu::current::<P>().count(interrupt);

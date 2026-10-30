@@ -209,7 +209,9 @@ fn the_tools_are_listed_once_initialized() {
             "settings_list",
             "settings_get",
             "settings_set",
-            "ln"
+            "ln",
+            "df",
+            "device_list"
         ]
     );
 }

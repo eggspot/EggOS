@@ -24,6 +24,8 @@ const QUEUE_NUM_MAX: usize = 0x034;
 const QUEUE_NUM: usize = 0x038;
 const QUEUE_READY: usize = 0x044;
 const QUEUE_NOTIFY: usize = 0x050;
+const INTERRUPT_STATUS: usize = 0x060;
+const INTERRUPT_ACK: usize = 0x064;
 const STATUS: usize = 0x070;
 const QUEUE_DESC_LOW: usize = 0x080;
 const QUEUE_DESC_HIGH: usize = 0x084;
@@ -32,6 +34,30 @@ const QUEUE_DRIVER_HIGH: usize = 0x094;
 const QUEUE_DEVICE_LOW: usize = 0x0a0;
 const QUEUE_DEVICE_HIGH: usize = 0x0a4;
 const CONFIG: usize = 0x100;
+
+/// `InterruptStatus` bit 0: the device used buffers in one of its queues.
+pub const INTERRUPT_USED_BUFFER: u32 = 1;
+/// `InterruptStatus` bit 1: the device's configuration changed.
+pub const INTERRUPT_CONFIGURATION_CHANGE: u32 = 2;
+
+/// Reads which interrupts the device whose registers `regs` reaches raised, and acknowledges
+/// them until it reads none, which lowers its interrupt line (an edge-triggered line rises again
+/// only once it was lowered); returns them ([`INTERRUPT_USED_BUFFER`],
+/// [`INTERRUPT_CONFIGURATION_CHANGE`]). An interrupt handler needs nothing but the slot's
+/// registers for it.
+pub fn acknowledge_interrupt<R: RegisterIo + ?Sized>(regs: &R) -> u32 {
+    const MAX_ROUNDS: usize = 4;
+    let mut raised = 0;
+    for _ in 0..MAX_ROUNDS {
+        let status = regs.read32(INTERRUPT_STATUS);
+        if status == 0 {
+            break;
+        }
+        regs.write32(INTERRUPT_ACK, status);
+        raised |= status;
+    }
+    raised
+}
 
 /// A version 2 virtio-mmio device.
 #[derive(Debug)]
@@ -130,5 +156,24 @@ impl<R: RegisterIo> Transport for MmioTransport<R> {
 
     fn read_config32(&self, offset: usize) -> u32 {
         self.regs.read32(CONFIG + offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::fake::FakeRegs;
+
+    #[test]
+    fn an_interrupt_is_acknowledged_with_the_bits_it_raised() {
+        let regs = FakeRegs::default();
+        regs.script_reads(INTERRUPT_STATUS, &[3, 0]);
+        assert_eq!(
+            acknowledge_interrupt(&regs),
+            INTERRUPT_USED_BUFFER | INTERRUPT_CONFIGURATION_CHANGE
+        );
+        assert_eq!(regs.writes(), vec![(INTERRUPT_ACK, 3)]);
+        assert_eq!(acknowledge_interrupt(&regs), 0);
+        assert_eq!(regs.writes().len(), 1);
     }
 }

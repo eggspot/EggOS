@@ -9,6 +9,7 @@ pub mod ecam;
 #[cfg(test)]
 pub(crate) mod fake;
 pub mod mcfg;
+pub mod msix;
 
 pub use bar::{Bar, BarKind, bars};
 

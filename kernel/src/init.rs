@@ -53,10 +53,14 @@ pub fn run<P: Platform, W: Write>(
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();
-    let polled = match input::start_polling::<P>() {
-        Ok(polled) => polled,
+    let polled = match input::start::<P>() {
+        Ok(Some(watching)) => {
+            writeln!(console, "{}", input_line(watching))?;
+            watching == input::Watching::Polling
+        }
+        Ok(None) => false,
         Err(error) => {
-            writeln!(console, "input: not polled: {error:?}")?;
+            writeln!(console, "input: not started: {error:?}")?;
             false
         }
     };
@@ -88,6 +92,18 @@ pub fn run<P: Platform, W: Write>(
     cpu::stop_others::<P>();
     Ok(outcome)
 }
+
+/// The boot line that says how the input thread hears from the devices: QEMU checks look for
+/// [`INPUT_ON_INTERRUPTS_LINE`].
+fn input_line(watching: input::Watching) -> &'static str {
+    match watching {
+        input::Watching::Interrupts => INPUT_ON_INTERRUPTS_LINE,
+        input::Watching::Polling => "input: polled",
+    }
+}
+
+/// What the boot log says when every input device interrupts and nothing polls them (D184).
+pub const INPUT_ON_INTERRUPTS_LINE: &str = "input: on interrupts";
 
 fn start_cpus<P: Platform>(memory: &Memory<P>) -> usize {
     // SAFETY: these are the kernel's page tables, active since `paging::enable`, whose frames

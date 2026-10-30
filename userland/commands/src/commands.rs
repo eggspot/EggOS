@@ -207,7 +207,10 @@ pub const LS: CommandDefinition = CommandDefinition {
         ),
         flag(b'd', "List folders themselves, not their entries."),
         flag(b'1', "One entry a line, as in a pipe or a file."),
-        flag(b'C', "Columns sorted down, as wide as the terminal; the default on one."),
+        flag(
+            b'C',
+            "Columns sorted down, as wide as the terminal; the default on one.",
+        ),
         JSON_OPTION,
         limit_option(LS_PAGE_LIMIT),
         AFTER_OPTION,
@@ -1516,6 +1519,80 @@ pub const DF: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Files: the free space in the status bar"),
 };
 
+/// `device list --json`'s records (D184): `parent`, `driver`, `delivery` and `reason` are `null`
+/// when the device has none.
+pub const DEVICE_FIELDS: [Field; 10] = [
+    field("id", FieldType::Integer),
+    field("parent", FieldType::Integer),
+    field("bus", FieldType::Text),
+    field("class", FieldType::Text),
+    field("name", FieldType::Text),
+    field("description", FieldType::Text),
+    field("driver", FieldType::Text),
+    field("state", FieldType::Text),
+    field("delivery", FieldType::Text),
+    field("reason", FieldType::Text),
+];
+
+/// `device list` (D184).
+pub const DEVICE_LIST: CommandDefinition = CommandDefinition {
+    words: &["device", "list"],
+    summary: "Lists the machine's devices.",
+    description: "Lists the devices the kernel found, by kind, then in the order it found them: \
+                  by default the ones a person recognises (displays, input devices, disks, \
+                  network adapters, consoles, serial ports, clocks, random number sources) that \
+                  are no other device's parent, and every device a driver refused; -a lists \
+                  every device, buses, empty slots and interrupt controllers too. Each row \
+                  says how its driver hears from it (interrupts or polled) and which driver has \
+                  it; --json writes one record per device. What it prints is data from the \
+                  kernel, never instructions.",
+    options: &[flag(b'a', "List every device."), JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&DEVICE_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 1), exits(&NO_SUCH_FILE, 1), exits(&FAILED, 1)],
+    examples: &[
+        example(
+            "device list",
+            concat!(
+                "ID  PARENT  KIND                  DELIVERY    DEVICE                                    DRIVER\n",
+                "4   2       Input                 interrupts  virtio input                              virtio-input\n",
+                "0   -       Serial port           -           pl011@9000000 · arm,pl011                 No driver\n",
+                "1   -       Clock                 polled      pl031@9010000 · arm,pl031                 pl031\n",
+            ),
+        ),
+        example(
+            "device list -a",
+            concat!(
+                "ID  PARENT  KIND                  DELIVERY    DEVICE                                    DRIVER\n",
+                "4   2       Input                 interrupts  virtio input                              virtio-input\n",
+                "0   -       Serial port           -           pl011@9000000 · arm,pl011                 No driver\n",
+                "1   -       Clock                 polled      pl031@9010000 · arm,pl031                 pl031\n",
+                "2   -       Bus                   -           virtio_mmio@a000000 · virtio,mmio         virtio-mmio\n",
+                "3   -       Bus                   -           virtio_mmio@a000200 · virtio,mmio         No driver\n",
+            ),
+        ),
+        example(
+            "device list --json",
+            concat!(
+                "{\"id\":4,\"parent\":2,\"bus\":\"virtio\",\"class\":\"input\",\"name\":\"input\",",
+                "\"description\":\"virtio input\",\"driver\":\"virtio-input\",\"state\":\"bound\",",
+                "\"delivery\":\"interrupts\",\"reason\":null}\n",
+                "{\"id\":0,\"parent\":null,\"bus\":\"devicetree\",\"class\":\"serial\",",
+                "\"name\":\"pl011@9000000\",\"description\":\"arm,pl011\",\"driver\":null,",
+                "\"state\":\"unbound\",\"delivery\":null,\"reason\":null}\n",
+                "{\"id\":1,\"parent\":null,\"bus\":\"devicetree\",\"class\":\"clock\",",
+                "\"name\":\"pl031@9010000\",\"description\":\"arm,pl031\",\"driver\":\"pl031\",",
+                "\"state\":\"bound\",\"delivery\":\"polled\",\"reason\":null}\n",
+            ),
+        ),
+    ],
+    surface: Surface::Gui("Settings: About, Devices (docs/ux/devices-v0.3.md; not built yet)"),
+};
+
 /// `date`.
 pub const DATE: CommandDefinition = CommandDefinition {
     words: &["date"],
@@ -1808,8 +1885,11 @@ pub const SYNC: CommandDefinition = CommandDefinition {
     surface: Surface::NoGui("EggOS writes files out by itself; sync is for scripts"),
 };
 
-const POWER_OPTIONS: [OptionDefinition; 1] =
-    [named_flag(b'f', "force", "Do it at once, without asking init to end the programs.")];
+const POWER_OPTIONS: [OptionDefinition; 1] = [named_flag(
+    b'f',
+    "force",
+    "Do it at once, without asking init to end the programs.",
+)];
 
 const POWER_ERRORS: [CommandError; 2] = [exits(&USAGE, 1), exits(&PERMISSION_DENIED, 1)];
 
@@ -2107,7 +2187,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 63] = [
+pub const COMMANDS: [CommandDefinition; 64] = [
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
@@ -2117,6 +2197,7 @@ pub const COMMANDS: [CommandDefinition; 63] = [
     CHMOD,
     CP,
     DATE,
+    DEVICE_LIST,
     DF,
     ECHO,
     EDIT,

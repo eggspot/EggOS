@@ -15,11 +15,15 @@
 //!   children (a virtio transport adds the virtio device), which the later passes probe; a
 //!   driver that finds nothing there ([`ProbeError::Absent`], an empty virtio-mmio slot)
 //!   leaves the device unbound.
-//! - **The `devices` capability** ([`for_each`]) lists them all with their binding, for the
-//!   CLI and MCP front-ends (D22), which come with the MCP server (M10).
+//! - **The `devices` capability** ([`for_each`]) lists them all with their binding;
+//!   `/proc/driver/devices` ([`devices_text`]) is what its front-ends read (D22, D184): `device
+//!   list`, the MCP tool `device_list` and Settings' About.
+//! - **Interrupts** ([`interrupts`], D184): a driver connects its device's line, whose handler
+//!   quiets the device and wakes the driver's thread.
 
 pub mod dma;
 mod fdt_bus;
+pub mod interrupts;
 mod pci_bus;
 #[cfg(any(test, feature = "rtc"))]
 pub mod rtc;
@@ -35,7 +39,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_drivers::pci::{self, ConfigSpace};
 use eggos_hal::fdt::InterruptSpecifier;
-use eggos_hal::{PhysicalRange, Platform};
+use eggos_hal::{DeviceLine, InterruptMessage, PhysicalRange, Platform};
 
 /// Register ranges a device records: a PCI function's six BARs, by BAR number.
 pub const MAX_REGIONS: usize = 6;
@@ -141,6 +145,19 @@ pub trait Probe {
     fn pci_config(&self) -> Option<&dyn ConfigSpace>;
     /// A deadline `milliseconds` from now, for polling a device.
     fn deadline(&self, milliseconds: u64) -> Deadline;
+    /// Routes the device-tree interrupt `specifier` to the boot CPU
+    /// ([`Platform::route_device_interrupt`]). None by default.
+    fn route_interrupt(
+        &mut self,
+        _specifier: &InterruptSpecifier,
+    ) -> Result<DeviceLine, ProbeError> {
+        Err(ProbeError::Refused("no device interrupts"))
+    }
+    /// Takes a message-signalled interrupt for a device ([`Platform::message_interrupt`]). None
+    /// by default.
+    fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
+        Err(ProbeError::Refused("no message-signalled interrupts"))
+    }
 }
 
 /// A driver built into the kernel.
@@ -227,6 +244,15 @@ pub enum DmaCoherence {
     NonCoherent,
 }
 
+/// How a device's driver hears from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The driver looks at the device when it needs to: at intervals, or until an answer came.
+    Polled,
+    /// The device interrupts the driver ([`interrupts`], D184).
+    Interrupts,
+}
+
 /// Which driver, if any, has a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binding {
@@ -248,6 +274,8 @@ pub struct DeviceNode {
     pub interrupts: [Option<InterruptSpecifier>; MAX_INTERRUPTS],
     pub dma: DmaCoherence,
     pub binding: Binding,
+    /// How its driver hears from it, once bound.
+    pub delivery: Delivery,
 }
 
 impl DeviceNode {
@@ -260,6 +288,7 @@ impl DeviceNode {
             interrupts: [None; MAX_INTERRUPTS],
             dma: DmaCoherence::Coherent,
             binding: Binding::Unbound,
+            delivery: Delivery::Polled,
         }
     }
 
@@ -394,6 +423,17 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     fn deadline(&self, milliseconds: u64) -> Deadline {
         Deadline::after::<P>(milliseconds)
     }
+
+    fn route_interrupt(
+        &mut self,
+        specifier: &InterruptSpecifier,
+    ) -> Result<DeviceLine, ProbeError> {
+        P::route_device_interrupt(specifier).map_err(ProbeError::Refused)
+    }
+
+    fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
+        P::message_interrupt().map_err(ProbeError::Refused)
+    }
 }
 
 /// Discovers the devices the firmware describes and probes [`BUILTIN`]'s drivers on them, once,
@@ -474,6 +514,152 @@ pub fn for_each(device: &mut dyn FnMut(DeviceId, &DeviceNode)) {
             device(id, node);
         }
     }
+}
+
+/// What a device is to a person, as `/proc/driver/devices`, `device list` and Settings' About
+/// say it (docs/ux/devices-v0.3.md): `display`, `input`, `disk`, `network`, `console`, `entropy`,
+/// `clock`, `serial`, `interrupt-controller`, `bus` or `other`.
+pub fn class(identity: &Identity) -> &'static str {
+    match *identity {
+        Identity::Virtio { device_type, .. } => match device_type {
+            eggos_drivers::virtio::device_type::GPU => "display",
+            eggos_drivers::virtio::device_type::INPUT => "input",
+            eggos_drivers::virtio::device_type::BLOCK => "disk",
+            eggos_drivers::virtio::device_type::NETWORK => "network",
+            eggos_drivers::virtio::device_type::CONSOLE => "console",
+            eggos_drivers::virtio::device_type::ENTROPY => "entropy",
+            _ => "other",
+        },
+        Identity::Pci(function) => match (function.class, function.subclass) {
+            (0x01, _) => "disk",
+            (0x02, _) => "network",
+            (0x03, _) => "display",
+            (0x06, _) | (0x0c, 0x03) => "bus",
+            (0x07, 0x00) => "serial",
+            (0x08, 0x00) => "interrupt-controller",
+            (0x08, 0x03) => "clock",
+            (0x09, _) => "input",
+            (0x10, _) => "entropy",
+            _ => "other",
+        },
+        Identity::DeviceTree { compatible, .. } => device_tree_class(compatible),
+    }
+}
+
+fn device_tree_class(compatible: &[u8]) -> &'static str {
+    const CLASSES: [(&[u8], &str); 13] = [
+        (b"virtio,mmio", "bus"),
+        (b"pci-host", "bus"),
+        (b"simple-bus", "bus"),
+        (b"gic", "interrupt-controller"),
+        (b"plic", "interrupt-controller"),
+        (b"clint", "interrupt-controller"),
+        (b"pl011", "serial"),
+        (b"ns16550", "serial"),
+        (b"uart", "serial"),
+        (b"pl031", "clock"),
+        (b"rtc", "clock"),
+        (b"framebuffer", "display"),
+        (b"keyboard", "input"),
+    ];
+    let contains = |string: &[u8], part: &[u8]| string.windows(part.len()).any(|at| at == part);
+    compatible
+        .split(|&byte| byte == 0)
+        .filter(|string| !string.is_empty())
+        .find_map(|string| {
+            CLASSES
+                .iter()
+                .find(|(part, _)| contains(string, part))
+                .map(|&(_, class)| class)
+        })
+        .unwrap_or("other")
+}
+
+/// `/proc/driver/devices` (D184): one line per device, in discovery order, its fields separated
+/// by tabs: its id, its parent's id or `-`, its bus (`devicetree`, `pci`, `virtio`), its
+/// [`class`], its name (the node's name, the PCI address, the virtio type), its description (the
+/// first `compatible` string, `vendor:device class cccc`, `virtio <type>`), its driver or `-`,
+/// its state (`bound`, `unbound`, `refused`), how its driver hears from it (`interrupts`,
+/// `polled`, or `-` when unbound or a bus) and why it was refused or `-`. Text that is not
+/// printable ASCII shows as `?`.
+pub fn devices_text() -> Option<Vec<u8>> {
+    let mut text = TextBuffer(Vec::new());
+    for_each(&mut |id, node| {
+        let _ = write_device_line(&mut text, id, node);
+    });
+    Some(text.0)
+}
+
+struct TextBuffer(Vec<u8>);
+
+impl Write for TextBuffer {
+    fn write_str(&mut self, string: &str) -> core::fmt::Result {
+        self.0
+            .try_reserve(string.len())
+            .map_err(|_| core::fmt::Error)?;
+        self.0.extend_from_slice(string.as_bytes());
+        Ok(())
+    }
+}
+
+/// Writes `node`'s line of [`devices_text`].
+pub fn write_device_line(
+    text: &mut dyn Write,
+    id: DeviceId,
+    node: &DeviceNode,
+) -> core::fmt::Result {
+    let class = class(&node.identity);
+    write!(text, "{}\t", id.index())?;
+    match node.parent {
+        Some(parent) => write!(text, "{}\t", parent.index())?,
+        None => text.write_str("-\t")?,
+    }
+    match node.identity {
+        Identity::DeviceTree { name, compatible } => {
+            write!(text, "devicetree\t{class}\t")?;
+            write_printable(text, name)?;
+            text.write_str("\t")?;
+            write_printable(
+                text,
+                compatible.split(|&byte| byte == 0).next().unwrap_or(&[]),
+            )?;
+        }
+        Identity::Pci(function) => write!(
+            text,
+            "pci\t{class}\t{}\t{:04x}:{:04x} class {:02x}{:02x}",
+            function.address,
+            function.vendor_id,
+            function.device_id,
+            function.class,
+            function.subclass
+        )?,
+        Identity::Virtio { device_type, .. } => {
+            let name = eggos_drivers::virtio::device_type_name(device_type);
+            write!(text, "virtio\t{class}\t{name}\tvirtio {name}")?;
+        }
+    }
+    let delivery = match (node.binding, node.delivery) {
+        (Binding::Bound(_), _) if matches!(class, "bus" | "interrupt-controller") => "-",
+        (Binding::Bound(_), Delivery::Interrupts) => "interrupts",
+        (Binding::Bound(_), Delivery::Polled) => "polled",
+        _ => "-",
+    };
+    match node.binding {
+        Binding::Unbound => writeln!(text, "\t-\tunbound\t-\t-"),
+        Binding::Bound(driver) => writeln!(text, "\t{driver}\tbound\t{delivery}\t-"),
+        Binding::Refused(driver, reason) => {
+            write!(text, "\t{driver}\trefused\t-\t")?;
+            write_printable(text, reason.as_bytes())?;
+            text.write_str("\n")
+        }
+    }
+}
+
+fn write_printable(text: &mut dyn Write, bytes: &[u8]) -> core::fmt::Result {
+    bytes.iter().try_for_each(|&byte| {
+        let printable = byte.is_ascii_graphic() || byte == b' ';
+        text.write_char(if printable { char::from(byte) } else { '?' })
+    })
 }
 
 impl core::fmt::Display for DeviceNode {

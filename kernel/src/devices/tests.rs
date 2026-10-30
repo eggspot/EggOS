@@ -311,3 +311,65 @@ fn a_device_prints_its_identity_registers_and_driver() {
         "pci 00:03.0 1af4:1044 class ff00: virtio-pci refused: no capabilities"
     );
 }
+
+fn line_of(id: u16, node: &DeviceNode) -> String {
+    let mut text = String::new();
+    write_device_line(&mut text, DeviceId(id), node).unwrap();
+    text
+}
+
+#[test]
+fn devices_have_the_classes_a_person_recognises() {
+    assert_eq!(class(&tree_device(b"arm,pl011\0arm,primecell\0")), "serial");
+    assert_eq!(class(&tree_device(b"arm,pl031\0arm,primecell\0")), "clock");
+    assert_eq!(class(&tree_device(b"google,goldfish-rtc\0")), "clock");
+    assert_eq!(class(&tree_device(b"virtio,mmio\0")), "bus");
+    assert_eq!(
+        class(&tree_device(b"sifive,plic-1.0.0\0riscv,plic0\0")),
+        "interrupt-controller"
+    );
+    assert_eq!(
+        class(&tree_device(b"arm,cortex-a15-gic\0")),
+        "interrupt-controller"
+    );
+    assert_eq!(class(&tree_device(b"qemu,fw-cfg-mmio\0")), "other");
+    assert_eq!(class(&pci_device(0x8086, 0x2922, 0x01, 0x06)), "disk");
+    assert_eq!(class(&pci_device(0x8086, 0x29c0, 0x06, 0x00)), "bus");
+    let gpu = Identity::Virtio {
+        device_type: eggos_drivers::virtio::device_type::GPU,
+        transport: 0,
+    };
+    assert_eq!(class(&gpu), "display");
+}
+
+#[test]
+fn a_device_s_line_has_ten_tab_separated_fields() {
+    let mut gpu = DeviceNode::new(Identity::Virtio {
+        device_type: eggos_drivers::virtio::device_type::GPU,
+        transport: 0,
+    });
+    gpu.parent = Some(DeviceId(3));
+    gpu.binding = Binding::Bound("virtio-gpu");
+    assert_eq!(
+        line_of(4, &gpu),
+        "4\t3\tvirtio\tdisplay\tgpu\tvirtio gpu\tvirtio-gpu\tbound\tpolled\t-\n"
+    );
+    gpu.delivery = Delivery::Interrupts;
+    assert!(line_of(4, &gpu).ends_with("\tbound\tinterrupts\t-\n"));
+    let disk = DeviceNode::new(pci_device(0x8086, 0x2922, 0x01, 0x06));
+    assert_eq!(
+        line_of(1, &disk),
+        "1\t-\tpci\tdisk\t00:03.0\t8086:2922 class 0106\t-\tunbound\t-\t-\n"
+    );
+    let mut slot = DeviceNode::new(Identity::DeviceTree {
+        name: b"virtio_mmio@a000000",
+        compatible: b"virtio,mmio\0",
+    });
+    slot.binding = Binding::Refused("virtio-mmio", "a legacy\tdevice");
+    assert_eq!(
+        line_of(0, &slot),
+        "0\t-\tdevicetree\tbus\tvirtio_mmio@a000000\tvirtio,mmio\tvirtio-mmio\trefused\t-\ta legacy?device\n"
+    );
+    slot.binding = Binding::Bound("virtio-mmio");
+    assert!(line_of(0, &slot).ends_with("\tvirtio-mmio\tbound\t-\t-\n"));
+}

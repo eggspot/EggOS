@@ -1,7 +1,8 @@
-//! The console's receive interrupt: UART0's line through the PLIC to the boot hart's
-//! supervisor-mode context, which the device tree names.
+//! The PLIC's sources for the boot hart's supervisor-mode context, which the device tree names:
+//! the console's receive interrupt (UART0's line) and the devices' lines the kernel routes.
 
 use super::DIRECT_MAP_OFFSET;
+use crate::interrupt::SourceLines;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{Plic, plic};
@@ -19,8 +20,15 @@ const MAPPED_CONTEXTS: usize = 32;
 const SIE_SEIE: u64 = 1 << 9;
 const NO_CONTEXT: usize = usize::MAX;
 
-/// The boot hart's supervisor-mode context, once [`enable`] has routed UART0 there.
+/// Devices' sources wait for the console's input.
+const DEVICE_PRIORITY: u32 = 1;
+
+/// The boot hart's supervisor-mode context, once [`enable`] or [`route_device`] has routed a
+/// source there.
 static CONTEXT: AtomicUsize = AtomicUsize::new(NO_CONTEXT);
+
+/// The sources routed for devices, by line.
+static DEVICE_LINES: SourceLines = SourceLines::new();
 
 /// The PLIC pages the kernel maps: the source priorities and the enables up to the last mapped
 /// context's, then the mapped contexts' threshold and claim pages.
@@ -52,27 +60,53 @@ fn plic(context: usize) -> Plic<Mmio> {
     Plic::new(sources, context_regs, context)
 }
 
-/// Routes UART0's source to `context`, the calling hart's supervisor-mode context, and lets the
-/// hart take supervisor external interrupts.
-pub(super) fn enable(context: Option<usize>) -> Result<(), &'static str> {
+/// The PLIC as `context`, the calling hart's supervisor-mode context, sees it; the first call
+/// lets the context take every source with a priority and the hart take supervisor external
+/// interrupts.
+fn context_plic(context: Option<usize>) -> Result<Plic<Mmio>, &'static str> {
     let context = context.ok_or("the device tree names no PLIC context for the boot hart")?;
     if context >= MAPPED_CONTEXTS {
         return Err("the boot hart's PLIC context is beyond the ones the kernel maps");
     }
     let plic = plic(context);
-    plic.set_threshold(EVERY_PRIORITY_ABOVE_ZERO);
-    plic.enable(UART0_SOURCE, UART0_PRIORITY);
-    CONTEXT.store(context, Ordering::Relaxed);
-    // SAFETY: setting `sie.SEIE` only lets this hart take the external interrupts its PLIC
-    // context now routes to it, which `interrupt` handles.
-    unsafe { core::arch::asm!("csrs sie, {}", in(reg) SIE_SEIE, options(nomem, nostack)) };
+    if CONTEXT.swap(context, Ordering::Relaxed) != context {
+        plic.set_threshold(EVERY_PRIORITY_ABOVE_ZERO);
+        // SAFETY: setting `sie.SEIE` only lets this hart take the external interrupts its PLIC
+        // context routes to it, which `interrupt` handles.
+        unsafe { core::arch::asm!("csrs sie, {}", in(reg) SIE_SEIE, options(nomem, nostack)) };
+    }
+    Ok(plic)
+}
+
+/// Routes UART0's source to `context`, the calling hart's supervisor-mode context.
+pub(super) fn enable(context: Option<usize>) -> Result<(), &'static str> {
+    context_plic(context)?.enable(UART0_SOURCE, UART0_PRIORITY);
     Ok(())
 }
 
-/// Claims the pending external interrupt and handles it: UART0's goes to the kernel, which reads
-/// the UART before the claim is completed; any other source is reported as an unexpected
-/// interrupt at `pc`. Out of line and called last, as a tail call, so the trap paths keep their
-/// length.
+/// Routes the device source `source` to `context`, the calling hart's supervisor-mode context,
+/// as a device's line; a source routed before keeps its line.
+pub(super) fn route_device(
+    context: Option<usize>,
+    source: u32,
+) -> Result<crate::DeviceLine, &'static str> {
+    if source == UART0_SOURCE {
+        return Err("the interrupt is the console's");
+    }
+    let plic = context_plic(context)?;
+    let (line, new) = DEVICE_LINES
+        .claim(source)
+        .ok_or("every device interrupt line is taken")?;
+    if new {
+        plic.enable(source, DEVICE_PRIORITY);
+    }
+    Ok(line)
+}
+
+/// Claims the pending external interrupt and handles it: UART0's goes to the kernel as console
+/// input, a routed device's as its line, and the kernel quiets the device before the claim is
+/// completed; any other source is reported as an unexpected interrupt at `pc`. Out of line and
+/// called last, as a tail call, so the trap paths keep their length.
 #[cold]
 #[inline(never)]
 pub(super) fn interrupt(pc: u64) {
@@ -84,11 +118,16 @@ pub(super) fn interrupt(pc: u64) {
     let Some(source) = plic.claim() else {
         return;
     };
-    if source == UART0_SOURCE {
-        crate::interrupt::deliver(crate::Interrupt::ConsoleInput);
+    let delivered = if source == UART0_SOURCE {
+        Some(crate::Interrupt::ConsoleInput)
+    } else {
+        DEVICE_LINES.line_of(source).map(crate::Interrupt::Device)
+    };
+    if let Some(delivered) = delivered {
+        crate::interrupt::deliver(delivered);
     }
     plic.complete(source);
-    if source != UART0_SOURCE {
+    if delivered.is_none() {
         crate::exception::deliver(&crate::Exception {
             kind: crate::ExceptionKind::Interrupt,
             name: "unexpected PLIC source",

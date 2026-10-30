@@ -127,6 +127,8 @@ pub enum Kind {
     Ln,
     /// `df`: how full the file system holding a path is (D171).
     Df,
+    /// `device_list`: the machine's devices (D184).
+    DeviceList,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -505,6 +507,11 @@ pub const TOOLS: [Tool; 41] = [
                 ..READ_PATH
             }),
         ),
+    ),
+    tool(
+        &registry::DEVICE_LIST,
+        Kind::DeviceList,
+        twin("/bin/device", &["list", "--json"], Operand::None),
     ),
 ];
 

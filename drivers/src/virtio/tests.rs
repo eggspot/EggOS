@@ -769,3 +769,28 @@ fn every_device_type_has_a_name() {
     assert_eq!(device_type_name(device_type::GPU), "gpu");
     assert_eq!(device_type_name(99), "unknown");
 }
+
+#[test]
+fn pci_interrupts_go_to_one_msix_entry_for_the_configuration_and_each_enabled_queue() {
+    let common = FakeRegs::default();
+    let notify = FakeRegs::default();
+    let transport = PciTransport::new(4, Shared(&common), Shared(&notify), 0x1000, 4, None);
+    common.script_reads(0x10, &[0]);
+    common.script_reads(0x12, &[2]);
+    common.script_reads(0x1c, &[1, 0]);
+    common.script_reads(0x1a, &[0]);
+    assert!(transport.route_interrupts_to(0));
+    let writes = common.writes();
+    assert!(writes.contains(&(0x10, 0)));
+    assert!(writes.contains(&(0x1a, 0)));
+    assert_eq!(writes.iter().filter(|&&(at, _)| at == 0x1a).count(), 1);
+}
+
+#[test]
+fn a_pci_device_that_reads_back_no_vector_is_not_routed() {
+    let common = FakeRegs::default();
+    let notify = FakeRegs::default();
+    let transport = PciTransport::new(4, Shared(&common), Shared(&notify), 0x1000, 4, None);
+    common.script_reads(0x10, &[u32::from(crate::virtio::pci::NO_VECTOR)]);
+    assert!(!transport.route_interrupts_to(0));
+}

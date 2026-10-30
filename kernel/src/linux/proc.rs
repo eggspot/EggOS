@@ -1,5 +1,6 @@
 //! `/proc` (D125, D168): `cmdline` (D137), `meminfo`, `uptime`, `ps`, `net/unix` (D138),
-//! `net/interfaces`, `net/route` and `net/arp` (D157), `driver/rtc` (D150), `version` and
+//! `net/interfaces`, `net/route` and `net/arp` (D157), `driver/rtc` (D150), `driver/devices`
+//! (D184), `version` and
 //! `sys/kernel/{hostname,osrelease,ostype}`, and a directory per process with `self` naming the
 //! caller's (D168): read-only regular files made when they are opened, and links, mounted on
 //! `/proc` at boot when the root file system has that directory.
@@ -25,6 +26,9 @@
 //!   opened (at most once a second, [`crate::wall_clock::read_clock`]), in Linux's layout
 //!   (`rtc_time`, `rtc_date`, `24hr`), only on a machine with one; `hwclock` reads it. Opening
 //!   it fails with `EIO` when the clock cannot be read.
+//! - `driver/devices`: EggOS's own, one line per device the driver model knows, in discovery
+//!   order ([`crate::devices::devices_text`]); `device list`, `device_list` and Settings' About
+//!   read it.
 //! - `version`, `sys/kernel/osrelease`, `sys/kernel/ostype` and `sys/kernel/hostname`: what
 //!   `uname` reports ([`super::identity`]), each a line as Linux writes it.
 //! - `self`: a link to the directory of the process that reads it.
@@ -95,6 +99,8 @@ const HOSTNAME: u64 = 19;
 
 const MOUNTS: u64 = 20;
 
+const DRIVER_DEVICES: u64 = 21;
+
 const FILES: [(&[u8], u64); 10] = [
     (b"cmdline", CMDLINE),
     (b"driver", DRIVER),
@@ -115,7 +121,9 @@ const NET_FILES: [(&[u8], u64); 4] = [
     (b"route", NET_ROUTE),
 ];
 
-const DRIVER_FILES: [(&[u8], u64); 1] = [(b"rtc", DRIVER_RTC)];
+const DRIVER_FILES: [(&[u8], u64); 2] = [(b"devices", DRIVER_DEVICES), (b"rtc", DRIVER_RTC)];
+
+const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 1] = [(b"devices", DRIVER_DEVICES)];
 
 const SYS_FILES: [(&[u8], u64); 1] = [(b"kernel", SYS_KERNEL)];
 
@@ -199,6 +207,7 @@ fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
         ROOT => &FILES,
         NET => &NET_FILES,
         DRIVER if crate::wall_clock::has_clock() => &DRIVER_FILES,
+        DRIVER => &DRIVER_FILES_WITHOUT_CLOCK,
         SYS => &SYS_FILES,
         SYS_KERNEL => &SYS_KERNEL_FILES,
         _ => &[],
@@ -843,6 +852,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             NET_INTERFACES => crate::net::interfaces_text::<P>(),
             NET_ROUTE => crate::net::routes_text::<P>(),
             NET_ARP => crate::net::neighbours_text::<P>(),
+            DRIVER_DEVICES => crate::devices::devices_text(),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
                 Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
                 _ => return Err(StorageError),
@@ -1085,6 +1095,9 @@ mod tests {
         assert_eq!(proc.parent(DRIVER_RTC), DRIVER);
         assert_eq!(proc.parent(DRIVER), ROOT);
         assert_eq!(proc.name(DRIVER_RTC).as_bytes(), b"rtc");
+        assert_eq!(proc.parent(DRIVER_DEVICES), DRIVER);
+        assert_eq!(proc.lookup(DRIVER, b"devices"), Some(DRIVER_DEVICES));
+        assert_eq!(proc.kind(DRIVER_DEVICES), NodeKind::Regular);
         assert_eq!(proc.lookup(NET, b"unix"), Some(NET_UNIX));
         assert_eq!(proc.lookup(ROOT, b"unix"), None);
         assert_eq!(proc.parent(NET_UNIX), NET);

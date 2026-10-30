@@ -23,7 +23,7 @@ pub mod time;
 pub mod user;
 
 pub use exception::{Exception, ExceptionKind};
-pub use interrupt::Interrupt;
+pub use interrupt::{DeviceLine, Interrupt, InterruptMessage};
 pub use memory::{MemoryMap, PhysicalRange};
 
 /// How a run ends, as reported to whoever started the machine (in tests: the QEMU runner).
@@ -55,6 +55,26 @@ pub trait Platform: 'static {
     /// may be lost. Called once, on the boot CPU, once the kernel's page tables are active. Fails
     /// when the machine's description gives no way to route it.
     fn enable_console_input() -> Result<(), &'static str>;
+
+    /// Routes the device interrupt `specifier` names (a device-tree interrupt of the machine's
+    /// interrupt controller: a GIC shared peripheral interrupt, a PLIC source) to the boot CPU and
+    /// enables it: from then on it raises [`Interrupt::Device`] with the line returned. A
+    /// specifier routed before gets its line again. Called on the boot CPU once the kernel's page
+    /// tables are active. Fails on a machine without device-tree interrupts (the default), for a
+    /// specifier the HAL cannot route, or when every line is taken.
+    fn route_device_interrupt(
+        _specifier: &fdt::InterruptSpecifier,
+    ) -> Result<DeviceLine, &'static str> {
+        Err("this machine routes no device-tree interrupts")
+    }
+
+    /// Takes a message-signalled interrupt for a device (PCI MSI-X): the message the device
+    /// writes raises [`Interrupt::Device`] with the line returned, on the boot CPU. Called on the
+    /// boot CPU. Fails on a machine without message-signalled interrupts (the default) or when
+    /// every line is taken.
+    fn message_interrupt() -> Result<(DeviceLine, InterruptMessage), &'static str> {
+        Err("this machine has no message-signalled interrupts")
+    }
 
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;

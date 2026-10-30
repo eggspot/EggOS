@@ -325,6 +325,17 @@ impl Platform for Riscv64 {
         Ok(())
     }
 
+    fn route_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        let source = eggos_drivers::interrupt::plic::source_of_specifier(specifier.cells())?;
+        let hart = BOOT_HART.load(Ordering::Relaxed);
+        // SAFETY: as in `memory_map`.
+        let context =
+            unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
+        console_input::route_device(context, source)
+    }
+
     fn exit(status: ExitStatus) -> ! {
         let reason = match status {
             ExitStatus::Success => SBI_SRST_REASON_NONE,

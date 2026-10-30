@@ -1,18 +1,21 @@
-//! Input (D113): the keyboards and pointers drivers install ([`install`]), polled until devices
-//! interrupt (issue #97). A keyboard's keys become bytes through the US keymap
+//! Input (D113): the keyboards and pointers drivers install ([`install`], or
+//! [`install_interrupting`] for one whose interrupts raise [`DEVICE_EVENTS`], D184). A keyboard's
+//! keys become bytes through the US keymap
 //! ([`eggos_drivers::input::keymap`]) and enter the console's line discipline as the UART's do
 //! ([`console::receive_from_keyboard`]); every key, pointer motion, button and wheel notch also
 //! goes into the input event queue ([`next_event`]) once a reader subscribed ([`subscribe`]),
 //! and the scrollback keys and the wheel move the graphical terminal's view
 //! ([`crate::terminal`]).
 //!
-//! Polling costs nothing without an input device. With one, the release kernel's poller thread
-//! ([`start_polling`]) polls every [`ACTIVE_POLL_MS`] while a key or button is held and for
-//! [`ACTIVE_WINDOW_MS`] after the last event, every [`IDLE_POLL_MS`] otherwise, and at each key
-//! repeat ([`REPEAT_DELAY_MS`], then every [`REPEAT_INTERVAL_MS`]). An idle device costs one load
-//! of its used ring's index per poll.
+//! Nothing runs without an input device. With them, the release kernel's input thread
+//! ([`start`]) takes their events: when every device interrupts, it sleeps until one does or the
+//! held key's next repeat ([`REPEAT_DELAY_MS`], then every [`REPEAT_INTERVAL_MS`]), so an idle
+//! machine never wakes it; otherwise it polls every [`ACTIVE_POLL_MS`] while a key or button is
+//! held and for [`ACTIVE_WINDOW_MS`] after the last event, every [`IDLE_POLL_MS`] otherwise, and
+//! at each repeat, an idle device costing one load of its used ring's index per poll.
 
 use crate::console;
+use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
@@ -319,6 +322,7 @@ struct Source {
     device: Box<dyn InputDevice>,
     capabilities: Capabilities,
     report: PendingReport,
+    interrupting: bool,
 }
 
 /// What the input layer keeps across polls, apart from its devices: the keyboard, the key
@@ -600,9 +604,25 @@ struct Input {
 
 static INPUT: LeafSpinLock<Option<Box<Input>>> = LeafSpinLock::new_leaf(None);
 
-/// Makes `device` one of the kernel's input devices. Refused, and handed back, when
-/// [`MAX_DEVICES`] are installed already.
+/// What the input devices' interrupts raise: the input thread waits on it ([`start`]).
+pub static DEVICE_EVENTS: DeviceEvents = DeviceEvents::new();
+
+/// Makes `device`, which the input thread polls, one of the kernel's input devices. Refused, and
+/// handed back, when [`MAX_DEVICES`] are installed already.
 pub fn install(device: Box<dyn InputDevice>) -> Result<(), Box<dyn InputDevice>> {
+    install_source(device, false)
+}
+
+/// Makes `device`, whose interrupts raise [`DEVICE_EVENTS`], one of the kernel's input devices.
+/// Refused, and handed back, when [`MAX_DEVICES`] are installed already.
+pub fn install_interrupting(device: Box<dyn InputDevice>) -> Result<(), Box<dyn InputDevice>> {
+    install_source(device, true)
+}
+
+fn install_source(
+    device: Box<dyn InputDevice>,
+    interrupting: bool,
+) -> Result<(), Box<dyn InputDevice>> {
     let capabilities = device.capabilities();
     let fresh = INPUT.lock().is_none().then(|| {
         Box::new(Input {
@@ -635,6 +655,7 @@ pub fn install(device: Box<dyn InputDevice>) -> Result<(), Box<dyn InputDevice>>
         device,
         capabilities,
         report: PendingReport::default(),
+        interrupting,
     });
     Ok(())
 }
@@ -772,6 +793,7 @@ fn poll_devices<P: Platform>(
                     device,
                     capabilities,
                     report,
+                    ..
                 } = source;
                 let state = &mut input.state;
                 let taken = device.poll(budget, &mut |event| {
@@ -810,18 +832,50 @@ pub fn next_poll(state: &InputState, now: u64, frequency: u64) -> u64 {
     state.next_repeat().map_or(next, |repeat| next.min(repeat))
 }
 
-/// Starts the thread that polls the input devices if there are any; `Ok(false)` when there are
-/// none, so nothing needs polling.
-pub fn start_polling<P: Platform>() -> Result<bool, crate::thread::SpawnError> {
-    if INPUT.lock().is_none() {
-        return Ok(false);
-    }
-    crate::thread::spawn::<P, _>(|| {
+/// How the input thread hears from the devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watching {
+    /// Every device interrupts: the thread sleeps until one does or a held key repeats.
+    Interrupts,
+    /// A device must be polled: the thread looks at them all at intervals.
+    Polling,
+}
+
+/// How the input thread would hear from the devices installed now; `None` without any.
+pub fn watching() -> Option<Watching> {
+    let input = INPUT.lock();
+    let mut sources = input.as_ref()?.sources.iter().flatten().peekable();
+    sources.peek()?;
+    Some(if sources.all(|source| source.interrupting) {
+        Watching::Interrupts
+    } else {
+        Watching::Polling
+    })
+}
+
+/// When the held key repeats next, if one is held.
+fn next_repeat() -> Option<u64> {
+    INPUT.lock().as_ref()?.state.next_repeat()
+}
+
+/// Starts the input thread if there are input devices, and says how it hears from them;
+/// `Ok(None)` without any, so nothing runs.
+pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnError> {
+    let Some(watching) = watching() else {
+        return Ok(None);
+    };
+    crate::thread::spawn::<P, _>(move || {
+        let mut seen = DEVICE_EVENTS.raised();
         while let Some(next) = poll::<P>() {
-            crate::thread::sleep_until::<P>(next);
+            match watching {
+                Watching::Polling => crate::thread::sleep_until::<P>(next),
+                Watching::Interrupts => {
+                    seen = DEVICE_EVENTS.wait::<P>(seen, next_repeat().unwrap_or(u64::MAX));
+                }
+            }
         }
     })
-    .map(|_| true)
+    .map(|_| Some(watching))
 }
 
 #[cfg(test)]

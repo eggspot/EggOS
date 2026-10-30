@@ -682,6 +682,7 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
             }),
             capabilities: Device::mouse().capabilities,
             report: PendingReport::default(),
+            interrupting: false,
         });
     }
     let next = poll_devices::<TestPlatform>(&devices, None, SCREEN, timing(1000));

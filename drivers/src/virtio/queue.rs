@@ -165,6 +165,15 @@ impl SplitQueue {
         unsafe { self.ring.avail(0).write_volatile(AVAIL_NO_INTERRUPT) };
     }
 
+    /// Asks the device to notify the driver (an interrupt) when it uses buffers again: for a
+    /// driver that waits for interrupts. Buffers used before the flag reached the device raise
+    /// none, so the driver looks at the used ring once after.
+    pub fn enable_used_notifications(&mut self) {
+        // SAFETY: the available ring's flags field, which only the driver writes.
+        unsafe { self.ring.avail(0).write_volatile(0) };
+        fence(Ordering::SeqCst);
+    }
+
     /// Where the device finds the queue's three areas.
     pub fn addresses(&self) -> QueueAddresses {
         let at = |offset: usize| DmaAddr::new(self.dma.get().wrapping_add(offset as u64));

@@ -899,7 +899,14 @@ fn objc_program_output() -> [Vec<Line>; 6] {
     language.extend(OBJC_LANGUAGE_LINES.iter().map(|line| whole(line)));
     let mut uncaught: Vec<Line> = loads().collect();
     uncaught.extend(OBJC_UNCAUGHT_LINES.iter().map(|line| whole(line)));
-    [program, unrecognized, unimplemented, bench, language, uncaught]
+    [
+        program,
+        unrecognized,
+        unimplemented,
+        bench,
+        language,
+        uncaught,
+    ]
 }
 
 fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] {
@@ -1370,6 +1377,9 @@ const MOUSE_MOTION: (i32, i32) = (7, -5);
 const DEVICE_PAUSE: Duration = Duration::from_millis(100);
 
 const BOOT_INPUT_LINE: &str = "boot: input keyboard pointer";
+/// What the release kernel prints when every input device interrupts and no thread polls them
+/// (D184): `init::INPUT_ON_INTERRUPTS_LINE`.
+const INPUT_ON_INTERRUPTS_LINE: &str = "input: on interrupts";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Line {
@@ -1400,7 +1410,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     [
         whole(&["Applications  bin  dev  etc  home  init  media  proc  run  tmp  usr  var  work"]),
         vec![
-            Line::Around("-rwxr-xr-x 30 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 40 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -2375,6 +2385,12 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     if !lines.contains(&BOOT_INPUT_LINE) {
         return Err(format!(
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
+        ));
+    }
+    if !lines.contains(&INPUT_ON_INTERRUPTS_LINE) {
+        return Err(format!(
+            "{arch}: no `{INPUT_ON_INTERRUPTS_LINE}`: the input devices are polled, not on \
+             interrupts"
         ));
     }
     if !lines.contains(&DISPLAY_LINE_1280X800) {
@@ -4198,7 +4214,7 @@ mod tests {
 
     fn prompt_console(arch: &str) -> String {
         let mut console = format!(
-            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{INPUT_ON_INTERRUPTS_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
         for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
             let command = shown_command(&PROMPT_SESSION, index);
@@ -4235,7 +4251,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 30 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 40 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
@@ -4243,6 +4259,8 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &panicked).is_err());
         let no_input = ok.replace(BOOT_INPUT_LINE, "boot: no input");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_input).is_err());
+        let polled = ok.replace(INPUT_ON_INTERRUPTS_LINE, "input: polled");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &polled).is_err());
         let unshifted = ok.replace("Typed_On+Virtio:OK\r\n", "typed-on=virtio;ok\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
         let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");

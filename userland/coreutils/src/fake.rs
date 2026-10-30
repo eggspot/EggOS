@@ -1169,7 +1169,8 @@ impl System for Fake {
     }
 
     fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {
-        self.terminal_width.filter(|_| descriptor == STANDARD_OUTPUT)
+        self.terminal_width
+            .filter(|_| descriptor == STANDARD_OUTPUT)
     }
 }
 

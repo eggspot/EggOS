@@ -41,11 +41,8 @@ const COUNT: [OperandDefinition; 1] = [operand(
     Count::ZeroOrOne,
 )];
 
-const EXPRESSION: [OperandDefinition; 1] = [operand(
-    "expression",
-    ValueType::Text,
-    Count::ZeroOrMore,
-)];
+const EXPRESSION: [OperandDefinition; 1] =
+    [operand("expression", ValueType::Text, Count::ZeroOrMore)];
 
 const READ_ERRORS: [CommandError; 1] = [exits(&FAILED, 1)];
 

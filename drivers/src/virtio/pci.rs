@@ -40,6 +40,11 @@ const QUEUE_NOTIFY_OFF: usize = 0x1e;
 const QUEUE_DESC: usize = 0x20;
 const QUEUE_DRIVER: usize = 0x28;
 const QUEUE_DEVICE: usize = 0x30;
+const CONFIG_MSIX_VECTOR: usize = 0x10;
+const QUEUE_MSIX_VECTOR: usize = 0x1a;
+
+/// The vector number that means none: the device signals nothing for that source.
+pub const NO_VECTOR: u16 = 0xffff;
 
 const REMEMBERED_QUEUES: usize = 8;
 
@@ -131,6 +136,24 @@ impl<R: RegisterIo> PciTransport<R> {
     fn write64(&self, offset: usize, value: u64) {
         self.common.write32(offset, value as u32);
         self.common.write32(offset + 4, (value >> 32) as u32);
+    }
+
+    /// Has the device signal its configuration changes and every queue the driver enabled
+    /// through MSI-X table entry `entry` (virtio 1.2, 4.1.4.3, 4.1.5.1.2); false when it read
+    /// back another vector for any of them ([`NO_VECTOR`]: it had no room for it). The function's
+    /// MSI-X must be on, or the device signals nothing.
+    pub fn route_interrupts_to(&self, entry: u16) -> bool {
+        self.common.write16(CONFIG_MSIX_VECTOR, entry);
+        let mut routed = self.common.read16(CONFIG_MSIX_VECTOR) == entry;
+        for queue in 0..self.common.read16(NUM_QUEUES) {
+            self.common.write16(QUEUE_SELECT, queue);
+            if self.common.read16(QUEUE_ENABLE) == 0 {
+                continue;
+            }
+            self.common.write16(QUEUE_MSIX_VECTOR, entry);
+            routed &= self.common.read16(QUEUE_MSIX_VECTOR) == entry;
+        }
+        routed
     }
 
     fn notify_offset(&self, queue: u16) -> Option<usize> {

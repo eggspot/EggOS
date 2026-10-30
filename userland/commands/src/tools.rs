@@ -778,6 +778,31 @@ pub const DF: ToolDefinition = reading(
     &DF_ARGUMENTS,
 );
 
+const DEVICE_LIST_ARGUMENTS: [Argument; 1] = [defaulting(
+    described(
+        optional("all", JsonType::Boolean, Mapping::Option("-a")),
+        "Set to true for every device: buses, empty slots and interrupt controllers too.",
+    ),
+    DefaultValue::Boolean(false),
+)];
+
+/// `device_list` (D184).
+pub const DEVICE_LIST: ToolDefinition = reading(
+    "device_list",
+    "List the machine's devices",
+    "Lists the devices the kernel found, as `device list --json` writes them: one JSON record a \
+         line with the device's id, its parent's id (null for none), its bus (devicetree, pci \
+         or virtio), its class (display, input, disk, network, console, serial, clock, entropy, \
+         bus, interrupt-controller or other), name, description, driver (null when none has \
+         it), state (bound, unbound or refused), how the driver hears from it (interrupts or \
+         polled, null when unbound) and why a driver refused it (null otherwise). By default \
+         the devices a person recognises that are no other device's parent, and every refused \
+         one, sorted by class, then id; all: true lists every device.",
+    &["device", "list"],
+    &["--json"],
+    &DEVICE_LIST_ARGUMENTS,
+);
+
 /// `tee`.
 pub const TEE: ToolDefinition = ToolDefinition {
     name: "tee",
@@ -1477,7 +1502,7 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's and D170's.
-pub const TOOLS: [ToolDefinition; 41] = [
+pub const TOOLS: [ToolDefinition; 42] = [
     LS,
     CAT,
     PS,
@@ -1519,6 +1544,7 @@ pub const TOOLS: [ToolDefinition; 41] = [
     SETTINGS_SET,
     LN,
     DF,
+    DEVICE_LIST,
 ];
 
 impl ToolDefinition {

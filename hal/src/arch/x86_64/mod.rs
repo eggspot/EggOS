@@ -13,6 +13,7 @@
 mod console_input;
 mod exception;
 mod fp;
+mod message_interrupts;
 mod port;
 mod random;
 mod thread;
@@ -539,6 +540,10 @@ impl Platform for X86_64 {
         console_input::enable()?;
         com1().enable_receive_interrupt();
         Ok(())
+    }
+
+    fn message_interrupt() -> Result<(crate::DeviceLine, crate::InterruptMessage), &'static str> {
+        message_interrupts::take()
     }
 
     fn exit(_status: ExitStatus) -> ! {

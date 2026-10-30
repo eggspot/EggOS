@@ -1,4 +1,5 @@
-//! The virtio input device (virtio 1.2, 5.8), polled: keyboards, mice and tablets. The device
+//! The virtio input device (virtio 1.2, 5.8), polled or interrupting: keyboards, mice and
+//! tablets. The device
 //! writes one event (type, code, value: the Linux input event codes) into each buffer of its
 //! event queue; the driver keeps every buffer posted and takes the events back as they come.
 //! What the device reports is read from its configuration ([`Capabilities`]). The status queue
@@ -129,6 +130,12 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
     /// What the device reports.
     pub fn capabilities(&self) -> Capabilities {
         self.capabilities
+    }
+
+    /// Has the device interrupt when it writes events, for a driver that waits for interrupts
+    /// instead of polling; the driver polls once after, for events written before.
+    pub fn enable_interrupts(&mut self) {
+        self.queue.enable_used_notifications();
     }
 
     /// Hands `event` each event the device has written, oldest first, at most `budget` of them,
