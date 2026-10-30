@@ -3,7 +3,8 @@
 //! of their own. Every block starts with a 16-byte header holding its class and the size asked
 //! for, so blocks stay 16-byte aligned as Windows' are, and a pointer the heap did not hand out
 //! is refused instead of corrupting it. No system call on the common path. Its size classes
-//! make it what `HeapQueryInformation` calls a low-fragmentation heap (D178).
+//! make it what `HeapQueryInformation` calls a low-fragmentation heap (D178). On aarch64 it is
+//! also the layer's own allocator, which the translator of x64 programs needs (D191).
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail};
 use crate::library::Export;
@@ -356,3 +357,39 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GlobalSize" => global_size,
     b"LocalSize" => global_size,
 ];
+
+#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+mod layer_allocator {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    const BLOCK_ALIGNMENT: usize = 16;
+
+    struct ProcessHeap;
+
+    // SAFETY: every block comes from the process heap, aligned to 16 bytes, and is handed out
+    // once until it is given back; larger alignments are refused with null.
+    unsafe impl GlobalAlloc for ProcessHeap {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            match layout.align() <= BLOCK_ALIGNMENT {
+                true => super::allocate_with(layout.size(), false),
+                false => core::ptr::null_mut(),
+            }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            match layout.align() <= BLOCK_ALIGNMENT {
+                true => super::allocate(layout.size()),
+                false => core::ptr::null_mut(),
+            }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, _layout: Layout) {
+            // SAFETY: `GlobalAlloc`'s contract: a block this allocator returned, which nothing
+            // uses any more.
+            unsafe { super::free(pointer) }
+        }
+    }
+
+    #[global_allocator]
+    static LAYER_HEAP: ProcessHeap = ProcessHeap;
+}

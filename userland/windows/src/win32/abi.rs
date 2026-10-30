@@ -239,6 +239,11 @@ pub unsafe fn call_program(address: usize, arguments: [usize; 4]) -> usize {
 /// arguments, called with values it accepts, on a thread whose TEB register is set.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn call_program(address: usize, arguments: [usize; 4]) -> usize {
+    // SAFETY: the caller's duty, as for a native call; an x64 program's function on ARM64 runs
+    // through the translation's entry trampoline (D191).
+    if let Some(result) = unsafe { crate::translation::call_guest(address, arguments) } {
+        return result;
+    }
     let result: usize;
     // SAFETY: the caller's duty; the program's function keeps the registers the Arm64
     // procedure call standard says a callee keeps, and `x18` is declared clobbered.

@@ -39,11 +39,21 @@ The x86_64 and aarch64 release images carry the Windows layer at `/usr/lib/eggos
 
 | Program | x86_64 | aarch64 | riscv64 |
 |---------|--------|---------|---------|
-| x64 (machine `0x8664`) | runs | refused by the layer, status 126 | `Exec format error`, 126 |
+| x64 (machine `0x8664`) | runs | runs translated (D191) | `Exec format error`, 126 |
 | ARM64 (machine `0xAA64`) | refused by the layer, status 126 | runs | `Exec format error`, 126 |
 
-The layer names the reason for the other CPU's program (`windows: /bin/x.exe: an x64 program,
-and this computer runs ARM64 programs (EggOS does not translate x64 programs for Arm yet)`).
+The layer names the reason for an ARM64 program on x86_64 (`windows: /bin/x.exe: an ARM64
+program, and this computer runs x64 programs`). On aarch64 an x64 program runs translated
+ahead of time into AArch64 code (D191, [Translation](translation.md)): the first launch
+translates it and keeps the result in `/var/cache/eggos/translate/<key>.tx`, later launches
+map it from there. Its calls into Windows go through generated bridges to the layer's own
+functions, and the layer's callbacks (window procedures, thread start routines, TLS
+callbacks) come back through the translation's entry trampoline. An instruction EggOS does
+not translate, or a jump to code the translator did not find, ends the program with a line
+that names its address (`the program uses an instruction EggOS does not translate yet, at
+...`); a fault in translated code ends it too, with the exception's status, since its own
+exception handlers do not run yet.
+
 On riscv64, whose image carries no Windows layer, a Windows program is refused with `Exec
 format error` and status 126.
 

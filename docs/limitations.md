@@ -230,9 +230,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   from it runs, which also writes its files into the terminal's current folder.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
-  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, from the host
-  folder or installed as apps; the layer is in the base of those images until the component
-  manager makes it optional (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
+  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, and x64
+  programs on aarch64 run translated ahead of time (D191; a fault in translated code ends the
+  program instead of reaching its exception handlers, and functions found with
+  `GetProcAddress` cannot be called from it yet), from the host folder or installed as apps;
+  the layer is in the base of those images until the component manager makes it optional
+  (D152) ([Windows programs](windows-programs.md), D118, D121, D124, D129):
   threads, waits, locks, directory listing and UTF-16 strings work, GUI programs open
   windows, paint them with GDI, get the mouse and keyboard and show message boxes, and C
   programs built by MSVC on its C runtime (`/MD`) run (D146), ANSI programs and classic Win32
@@ -277,8 +280,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   classes other than `Scripting.Dictionary`, a registry with keys (it is empty and read-only),
   global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178),
   printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
-  and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and riscv64 do
-  not run yet; the clipboard is each program's own until the shared one comes; names are
+  and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the clipboard is each program's own until the shared one comes; names are
   case-sensitive and local time is UTC.
 - **Android: console programs only, on aarch64 and x86_64.** Programs built with the Android
   NDK, linked statically against bionic or dynamically (Android's `linker64` with the runtime

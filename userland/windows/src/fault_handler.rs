@@ -5,7 +5,9 @@
 //! exception its cause stands for (`fault::delivery`), which the program's vectored and frame
 //! handlers get (`win32::deliver_fault`); `__fastfail` ends the program at once. A fault in the
 //! layer's own code, or one no handler took, is written to standard error with its address as
-//! the program's module and offset, and ends the process by the signal's default action.
+//! the program's module and offset, and ends the process by the signal's default action. A
+//! trap or fault in the translated code of an x64 program on ARM64 (D191) ends the program with
+//! a line that names its guest address, and the Windows status of its cause.
 
 use crate::fault::{self, Delivery, Fault, Image, Signalled};
 use crate::linux;
@@ -160,6 +162,14 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     // SAFETY: and with its `ucontext_t` for the signal, which holds the interrupted `pc`.
     let pc = unsafe { word(context, UCONTEXT_PC).read() };
     let from_the_processor = code > 0;
+    #[cfg(target_arch = "aarch64")]
+    if from_the_processor {
+        // SAFETY: the `ucontext_t` holds `x0` to `x30`; `x16` is the ninth pair's first.
+        let x16 = unsafe { word(context, UCONTEXT_REGISTERS + 16 * 8).read() };
+        if let Some((cause, guest)) = crate::translation::guest_fault(signal, pc, x16) {
+            end_translated(signal, cause, guest);
+        }
+    }
     if from_the_processor && signal == fault::SIGILL && completed_current_el_read(pc, context) {
         return;
     }
@@ -233,4 +243,18 @@ fn end_fail_fast(pc: u64) -> ! {
     let line = fault::report_fail_fast(program(), image(), pc);
     let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
     linux::exit(fault::status::STACK_BUFFER_OVERRUN)
+}
+
+/// Ends an x64 program on ARM64 whose translated code trapped (`cause`) or faulted at guest
+/// address `guest` (D191): the line that names the place, then the Windows status as the
+/// process's status. Exceptions in translated code do not reach the program's handlers yet.
+#[cfg(target_arch = "aarch64")]
+fn end_translated(signal: i32, cause: Option<crate::translated::TrapCause>, guest: u64) -> ! {
+    let line = crate::translated::report(program(), image(), cause, guest);
+    let _ = linux::write_all(STANDARD_ERROR, line.as_bytes());
+    let status = cause.map_or(
+        crate::translated::fault_status(signal),
+        crate::translated::TrapCause::status,
+    );
+    linux::exit(status)
 }

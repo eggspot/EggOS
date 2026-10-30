@@ -17,5 +17,8 @@ eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
 eggos-windows-gui = { path = "../windows-gui" }
 
+[target.'cfg(any(target_arch = "aarch64", not(target_env = "musl")))'.dependencies]
+eggos-translate = { path = "../../translate" }
+
 [lints]
 workspace = true

@@ -553,6 +553,11 @@ pub fn br(n: Reg) -> u32 {
     0xD61F_0000 | rn(n)
 }
 
+/// `blr`: a call to the address in `n`, with the return address in `x30`.
+pub fn blr(n: Reg) -> u32 {
+    0xD63F_0000 | rn(n)
+}
+
 /// `ret`: a return to the address in `n` (`x30` normally).
 pub fn ret(n: Reg) -> u32 {
     0xD65F_0000 | rn(n)

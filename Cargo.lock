@@ -339,6 +339,7 @@ dependencies = [
  "eggos-net",
  "eggos-png",
  "eggos-runtime",
+ "eggos-translate",
  "eggos-windows-gui",
 ]
 

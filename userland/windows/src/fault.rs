@@ -248,7 +248,7 @@ impl Line {
         self.length += taken;
     }
 
-    fn push_hex(&mut self, value: u64) {
+    pub fn push_hex(&mut self, value: u64) {
         let mut digits = [0u8; 16];
         let mut first = digits.len();
         let mut rest = value;
@@ -280,7 +280,7 @@ fn what(signal: i32) -> &'static [u8] {
     }
 }
 
-fn push_place(line: &mut Line, program: &[u8], image: Image, pc: u64) {
+pub fn push_place(line: &mut Line, program: &[u8], image: Image, pc: u64) {
     match pc.checked_sub(image.base) {
         Some(offset) if offset < image.size => {
             line.push(b" (");

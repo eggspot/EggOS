@@ -5,7 +5,10 @@
 //! program's faults (D151), builds the TEB and PEB, points the thread's TEB register at the TEB
 //! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
 //! calls the entry point, whose return value is the exit code. Exception handling (D177) learns
-//! where the image's exception directory is and where the layer's own code lies.
+//! where the image's exception directory is and where the layer's own code lies. An x64
+//! program on aarch64 runs translated (D191): its translation comes from the cache or is made
+//! before relocation, and is mapped after its imports are bound; its own sections are not
+//! executable.
 
 use crate::fault::{self, Image};
 use crate::fault_handler;
@@ -34,6 +37,8 @@ enum Failure {
     Invalid(InvalidPe),
     Unresolved(BindError),
     Memory,
+    #[cfg(target_arch = "aarch64")]
+    Translation(&'static str),
 }
 
 pub fn run(startup: &Startup) -> i32 {
@@ -82,6 +87,8 @@ fn report(program: &[u8], failure: Failure) {
             message.push(b", which EggOS does not provide yet");
         }
         Failure::Memory => message.push(b"out of memory"),
+        #[cfg(target_arch = "aarch64")]
+        Failure::Translation(reason) => message.push(reason.as_bytes()),
     }
     message.push(b"\n");
     message.write();
@@ -133,6 +140,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     if let Some(refusal) = pe.machine.refusal_on(THIS_COMPUTER) {
         return Err(Failure::Invalid(refusal));
     }
+    let translated = pe.machine.translated_on(THIS_COMPUTER);
     if pe.subsystem == Subsystem::Gui {
         win32::set_gui_program();
     }
@@ -146,12 +154,25 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // until the program runs.
     let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
     image::copy_sections(&pe, image);
+    #[cfg(target_arch = "aarch64")]
+    let translation = match translated {
+        true => {
+            let capabilities = startup.auxiliary_value(auxv::HWCAP).unwrap_or(0) as u64;
+            let prepared = crate::translation::prepare(file, &pe, image, capabilities);
+            Some(prepared.map_err(Failure::Translation)?)
+        }
+        false => None,
+    };
     image::relocate(&pe, image, base as u64).map_err(Failure::Invalid)?;
     image::bind_imports(&pe, image, |library, import| match import {
         image::Import::Name(function) => win32::resolve(library, function),
         image::Import::Ordinal(ordinal) => win32::resolve_ordinal(library, ordinal),
     })
     .map_err(Failure::Unresolved)?;
+    #[cfg(target_arch = "aarch64")]
+    if let Some(translation) = translation {
+        crate::translation::install(&pe, image, base, translation).map_err(Failure::Translation)?;
+    }
     let tls = image::thread_local_storage(&pe, image, base as u64).map_err(Failure::Invalid)?;
     let heap = win32::process_heap();
     win32::set_process(startup, base as u64).ok_or(Failure::Memory)?;
@@ -186,7 +207,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         unsafe { thread_environment::set_thread_local_storage(teb, slots) };
     }
     let entry = base + pe.entry as usize;
-    protect(&pe, base)?;
+    protect(&pe, base, translated)?;
     share_user_data(startup);
     let exceptions = pe.directory(directory::EXCEPTION);
     win32::set_exception_image(
@@ -277,15 +298,17 @@ fn stack_top() -> usize {
     (&raw const marker as usize).next_multiple_of(linux::PAGE_SIZE)
 }
 
-fn protect(pe: &Pe<'_>, base: usize) -> Result<(), Failure> {
+fn protect(pe: &Pe<'_>, base: usize, translated: bool) -> Result<(), Failure> {
     let headers = (pe.headers_size as usize).next_multiple_of(linux::PAGE_SIZE);
     // SAFETY: the headers are read-only from now on, as on Windows.
     unsafe { linux::protect(base, headers, PROT_READ) }.map_err(|_| Failure::Memory)?;
     for (start, end, protection) in image::section_protections(pe) {
         let flags = if protection.read { PROT_READ } else { 0 }
             | if protection.write { PROT_WRITE } else { 0 }
-            | if protection.execute {
+            | if protection.execute && !translated {
                 PROT_EXEC | PROT_READ
+            } else if protection.execute {
+                PROT_READ
             } else {
                 0
             };

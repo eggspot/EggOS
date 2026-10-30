@@ -26,6 +26,8 @@ pub mod section_flags {
 }
 
 pub mod directory {
+    #[cfg(any(test, target_arch = "aarch64"))]
+    pub const EXPORT: usize = 0;
     pub const IMPORT: usize = 1;
     pub const EXCEPTION: usize = 3;
     pub const BASE_RELOCATION: usize = 5;
@@ -95,18 +97,21 @@ impl Machine {
     }
 
     /// Why a program for this CPU cannot run on a computer whose CPU is `computer`, if it
-    /// cannot: the layer runs each program's code directly, never emulated (D17).
+    /// cannot: the layer runs each program's code directly, never emulated (D17), and an x64
+    /// program on an ARM64 computer runs translated ahead of time (D191).
     pub fn refusal_on(self, computer: Machine) -> Option<InvalidPe> {
         match (self, computer) {
-            (Self::X64, Self::X64) | (Self::Arm64, Self::Arm64) => None,
-            (Self::X64, Self::Arm64) => Some(InvalidPe(
-                "an x64 program, and this computer runs ARM64 programs \
-                 (EggOS does not translate x64 programs for Arm yet)",
-            )),
             (Self::Arm64, Self::X64) => Some(InvalidPe(
                 "an ARM64 program, and this computer runs x64 programs",
             )),
+            _ => None,
         }
+    }
+
+    /// Whether a program for this CPU runs translated on a computer whose CPU is `computer`:
+    /// an x64 program on ARM64 (D191).
+    pub fn translated_on(self, computer: Machine) -> bool {
+        matches!((self, computer), (Self::X64, Self::Arm64))
     }
 }
 
@@ -480,7 +485,7 @@ pub mod tests {
     }
 
     #[test]
-    fn x64_and_arm64_programs_are_read_and_run_only_on_their_own_cpu() {
+    fn x64_programs_run_on_both_cpus_and_arm64_programs_only_on_arm64() {
         let x64 = Builder::new();
         let arm64 = Builder::new().with(|f| put(f, PE_OFFSET + 4, &MACHINE_ARM64.to_le_bytes()));
         let x64 = Pe::parse(&x64.file).unwrap().machine;
@@ -488,9 +493,10 @@ pub mod tests {
         assert_eq!((x64, arm64), (Machine::X64, Machine::Arm64));
         assert_eq!(x64.refusal_on(Machine::X64), None);
         assert_eq!(arm64.refusal_on(Machine::Arm64), None);
-        let x64_on_arm = x64.refusal_on(Machine::Arm64).unwrap().0;
-        assert!(x64_on_arm.starts_with("an x64 program, and this computer runs ARM64 programs"));
-        assert!(x64_on_arm.contains("does not translate"));
+        assert_eq!(x64.refusal_on(Machine::Arm64), None);
+        assert!(x64.translated_on(Machine::Arm64));
+        assert!(!x64.translated_on(Machine::X64));
+        assert!(!arm64.translated_on(Machine::Arm64));
         let arm64_on_x64 = arm64.refusal_on(Machine::X64).unwrap().0;
         assert_eq!(
             arm64_on_x64,

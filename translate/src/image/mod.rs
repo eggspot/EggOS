@@ -2,11 +2,13 @@
 //! ([`discover`]), flag liveness across its blocks, and the image builder
 //! ([`translate_image`]) that lowers every block, lays the code out, links the exits into
 //! branches, and builds the entries table, the back-map, the refused-site list and the runtime
-//! routines (the indirect dispatch and the entry trampoline of [`runtime`]).
+//! routines (the indirect dispatch and the entry trampoline of [`runtime`]). The [`bridge`]
+//! module generates the calling-convention bridges between translated and native code.
 //!
 //! Everything here is pure: the caller (the Windows or macOS layer) hands in the image's
 //! sections and its known entry points; nothing reads files or maps memory.
 
+pub mod bridge;
 mod discover;
 mod entries;
 mod link;

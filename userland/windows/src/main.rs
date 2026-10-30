@@ -9,6 +9,9 @@
 //! D189), and the table of named objects shared between processes and the rules of file
 //! mappings' views (`named_objects.rs`, `mapping_views.rs`, D189) are pure logic with host
 //! tests;
+//! an x64 program on aarch64 runs translated ahead of time (D191): `translated.rs` turns its
+//! image into the translator's input and handles the cache directory as pure logic, and
+//! `translation.rs` maps the translated code and calls into it;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
@@ -17,6 +20,9 @@
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
+
+#[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
+extern crate alloc;
 
 #[cfg(any(test, runs_windows_programs))]
 mod calendar;
@@ -88,6 +94,10 @@ mod start;
 mod stream;
 #[cfg(any(test, runs_windows_programs))]
 mod text;
+#[cfg(any(test, all(runs_windows_programs, target_arch = "aarch64")))]
+mod translated;
+#[cfg(all(runs_windows_programs, target_arch = "aarch64"))]
+mod translation;
 #[cfg(any(test, runs_windows_programs))]
 mod trash;
 #[cfg(any(test, runs_windows_programs))]

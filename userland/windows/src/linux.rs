@@ -985,6 +985,22 @@ pub fn change_mode(path: &[u8], mode: u32) -> Result<usize, Errno> {
     }
 }
 
+/// Sets the access and modification times of the file at the NUL-terminated `path` to now.
+#[cfg(target_arch = "aarch64")]
+pub fn touch(path: &[u8]) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `utimensat` with null times reads the NUL-terminated path and sets both of the
+    // file's times to now.
+    unsafe {
+        syscall(
+            number::UTIMENSAT,
+            [AT_FDCWD, path.as_ptr() as usize, 0, 0, 0, 0],
+        )
+    }
+}
+
 /// Sets file `fd`'s access and modification times, each seconds and nanoseconds since 1970
 /// ([`UTIME_OMIT`] as the nanoseconds leaves one as it is).
 pub fn set_file_times(fd: usize, times: &[[i64; 2]; 2]) -> Result<usize, Errno> {

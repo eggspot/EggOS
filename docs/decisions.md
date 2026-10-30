@@ -15111,6 +15111,84 @@ the license, by an explicit instruction recorded here.
   rather than the input itself; temporaries count as stale after an hour; the image builder
   reports a `NotLowered` site rather than failing the install; `brk #0xE006` is now `UNDISCOVERED`, so the transcendental
   hook 39c2 mentions would take `0xE007`.
+- **Slice 39d2: x64 Windows programs run translated in the Windows layer on aarch64.** The
+  layer no longer refuses an x64 program on ARM64 (`Machine::translated_on`); it depends on
+  `eggos-translate` on aarch64 (and in host tests), whose allocations come from the process
+  heap (the layer's `#[global_allocator]` on aarch64). `userland/windows/src/translated.rs`
+  (pure, host-tested) builds the translator's input from the laid-out, unrelocated image:
+  every section (executable ones translated), and seeds from the entry point, the export
+  table (forwarders skipped), the TLS callbacks, `.pdata` and the `DIR64` relocation targets
+  that land in code; it lists the import address table's slots with their library and
+  function, picks the code generation mode from `AT_HWCAP` (atomics, LRCPC, FlagM), reads a
+  trap's cause from its `brk` immediate, finds a host offset's guest instruction in the
+  back-map, writes the report, and reads and stores the cache over a `CacheFiles` directory:
+  `load` checks the key and touches the file (a damaged one is removed), `store` evicts what
+  the cap asks for, writes `.<key>.<pid>.tmp` with `O_EXCL` and renames it over `<key>.tx`.
+  `translation.rs` (aarch64) does it on the disk: at launch the translation comes from
+  `/var/cache/eggos/translate` or is made then (and stored; a cache that cannot be written
+  only costs the next launch the translation). The new `image::bridge` module of the
+  translator: `add_import_stubs` appends a 16-byte stub (`ldr x17, #8; br x17; .quad`) per
+  import slot to the code and maps the slot's relative address to it in the entries table,
+  growing the table (and rewriting the dispatch, whose length does not depend on the size)
+  when it needs room, so stubs are in the cache file; the loader writes each slot's own guest
+  address into it, so a guest `call [rip+slot]` (or a thunk's `jmp`) reaches the stub through
+  the dispatch, and a program that passes an import as a callback (`DefWindowProcW` as a
+  window procedure) works too. `forward_bridge` generates, at launch, one bridge per import
+  with the native function's and the dispatch's addresses in its literal pool: it saves `rbx`,
+  `rsp`, `rbp`, `rsi`, `rdi`, `r12`-`r15` (`x3`-`x7`, `x12`-`x15`, which AAPCS64 does not
+  keep), `xmm6`-`xmm15` whole and FPCR, records the guest `rsp` and `x20` in the thread block
+  (`bridge::thread`, after the state block), clears FPCR, moves the arguments by
+  `argument_moves` (Win64 positions to AAPCS64's separate integer and floating-point counts,
+  then the native stack; every import is taken as 14 integers, which covers the layer's
+  exports and its variadic ones since Win64 and Windows on Arm both pass variadic values in
+  integer registers, except `sqrtf`), calls the layer's export entry (which keeps `x18` as
+  for an ARM64 program), restores everything, reloads `x18` from the state block and returns
+  to the guest as a translated `ret` does (shadow stack pair, else the dispatch). The layer
+  calls guest functions through `win32::call_program`, which on aarch64 now goes through
+  `translation::call_guest` when the address is in the translated image: a context on the
+  native stack (`rcx`, `rdx`, `r8`, `r9`, `rip`, `x18` the TEB, `x19` the entries table, `x20`
+  and the guest `rsp` below where the thread last called native code, the guest base pushed
+  as the return address under 32 bytes of home space), the entry trampoline, and FPCR saved
+  and restored around it; so the entry point, TLS callbacks, window and dialog procedures,
+  thread start routines and every other callback the layer makes reach translated code. Each
+  thread gets, on its first call into the program, a block (state block with MXCSR `0x1F80`
+  and the x87 control word `0x037F`, then the bridge fields; its address in the TEB at
+  `0x1e38`), a 64 KiB shadow ring aligned to 64 KiB and an 8 MiB guest stack (the TEB's stack
+  base and limit describe it). `install` maps the code and the bridges together, adds the
+  load difference at every `guest_address_literals` offset, writes each stub's bridge
+  address, cleans the data cache and invalidates the instruction cache (`dc cvau`/`ic ivau`
+  by `CTR_EL0`'s line sizes), makes them read-only and executable, and writes the entries
+  table where `x19` points (read-only); the guest image's own sections are never
+  executable. The fault handler ends a program whose translated code trapped or faulted with a
+  line naming the guest address (from `x16` for refused sites and undiscovered targets, from
+  the back-map otherwise) and the Windows status of the cause (`STATUS_ILLEGAL_INSTRUCTION`
+  for refused, invalid and undiscovered code, `STATUS_INTEGER_DIVIDE_BY_ZERO`,
+  `STATUS_BREAKPOINT`, `STATUS_ACCESS_VIOLATION`, fast fail as `__fastfail`). Host tests:
+  argument plans, the bridge's shape and literals, stubs and the grown table, the image input
+  (sections, `.pdata`, TLS callbacks, relocations into code), import slots, the mode, traps,
+  the back-map, the report, and the cache's store, load, damage, failed rename and eviction
+  over a fake directory.
+- **Slice 39d2's choices made without research.** Every import is bridged as 14 integer
+  arguments unless listed (copying unused stack words costs a few loads and is always safe
+  because the guest stack keeps 256 bytes of headroom above its first frame); stubs go into
+  the cached code rather than being made at launch, so the entries table's size is settled at
+  install; bridges are made at launch (they hold native addresses, which change with every
+  build of the layer); the guest stack is a separate 8 MiB mapping per thread, never freed
+  while the process runs; a fault in translated code ends the program instead of reaching
+  its handlers; a launch whose cache entry is missing translates and stores it (with the
+  process id as the temporary file's writer); the cache files are written with mode 0666.
+- **Not yet** (slice 39e and later): exceptions in translated code (a fault or `brk` becomes
+  a Windows exception with an x64 `CONTEXT` built from the host registers and the back-map,
+  delivered to vectored and frame handlers, with unwinding over translated frames by `.pdata`
+  and the shadow stack, D177); `GetProcAddress` returning bridges (it returns native
+  addresses, which a translated indirect call misses: the program ends with the undiscovered
+  report); COM objects the layer makes, called by the program through their vtables, and
+  program COM objects the layer calls (`com::call_method` calls natively); functions that
+  return structures through a hidden pointer (Win64 `rcx`, AAPCS64 `x8`) and 16-byte
+  structures passed by value; callbacks with more than four arguments; callbacks run with the
+  default rounding rather than the guest's MXCSR; freeing a thread's guest stack and block
+  when it ends; the `app install` translation, the QEMU check (the aarch64 Windows session's
+  `other-cpu.exe` line still expects the old refusal) and the benchmarks (39e).
 - **Not yet** (slices 39d2 to 39e): `fiadd`/`fimul`/`fisub`/`fisubr`/`fidiv`/`fidivr`/
   `ficom`, `fprem`/`fprem1`, `fscale`, `fxtract`, `ftst`, `fxam`, the transcendentals
   (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`) and
@@ -15118,14 +15196,10 @@ the license, by an explicit instruction recorded here.
   `rdrand`/`rdseed` (FEAT_RNG), `maskmovdqu`, `syscall` (all reported `Unhandled`), the wide
   `rep movs`/`rep stos` fast path, a test-only AArch64 evaluator comparing lowered code (and
   the dispatch and trampoline) with x86 semantics on random inputs; the one-entry inline cache
-  per indirect `call`/`jmp` site (every indirect branch goes through the hash for now); calls
-  between images (an indirect branch into another module misses this image's table and traps:
-  the loader must give each import a bridge or switch `x19`); the trampoline does not set the
-  guest's FPCR (MXCSR rounding) or restore the host's; Mach-O rebases and symbols as seeds
-  (the reader takes them, the macOS layer must supply them); the bridges (which also restore
-  the default FPCR around native calls), writing and reading cache files on disk (atomic
-  write, cap enforcement, launch touching the file) and the Windows layer's loader mapping a
-  translated image (39d2); the macOS layer, `app install` and launch, the refused-site report
-  and the benchmarks, including `translate_install_bytes` (39e).
+  per indirect `call`/`jmp` site (every indirect branch goes through the hash for now); the
+  trampoline does not set the guest's FPCR from its MXCSR (the layer's caller restores the
+  host's since 39d2); Mach-O rebases and symbols as seeds (the reader takes them, the macOS
+  layer must supply them); the macOS layer, `app install` and launch translating at install,
+  the refused-site report and the benchmarks, including `translate_install_bytes` (39e).
   Later: SSE3, SSSE3 and SSE4.1/4.2 (Windows 11 24H2's baseline), AVX, 80-bit x87, arm64
   programs on x86_64.
