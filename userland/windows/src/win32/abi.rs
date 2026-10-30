@@ -9,10 +9,68 @@
 //! `six_stack_arguments` copies that many of the caller's stack words for the function, whose
 //! arguments past the eighth are there; `direct` exports are assembly that never writes `x18`,
 //! called as they are); the layer keeps each thread's TEB in `tpidr_el0` for its own use, and
-//! every call into the program loads `x18` from there first.
+//! every call into the program loads `x18` from there first. A variadic export (the old C
+//! runtime's `printf` family, D189) is an entry marked `variadic_after_one`, `_two` or
+//! `_three`: on both CPUs Windows passes variadic arguments in the integer registers, then on
+//! the stack, so the entry stores the registers next to the caller's stack arguments and gives
+//! the function, after its fixed arguments, a pointer to the first variadic one: a `va_list`.
 
 #[cfg(target_arch = "x86_64")]
 macro_rules! export_entry {
+    ($function:path, variadic_after_one) => {{
+        #[unsafe(naked)]
+        unsafe extern "C" fn entry() {
+            core::arch::naked_asm!(
+                "mov [rsp + 8], rcx",
+                "mov [rsp + 16], rdx",
+                "mov [rsp + 24], r8",
+                "mov [rsp + 32], r9",
+                "sub rsp, 40",
+                "lea rdx, [rsp + 56]",
+                "call {function}",
+                "add rsp, 40",
+                "ret",
+                function = sym $function,
+            )
+        }
+        entry as *const ()
+    }};
+    ($function:path, variadic_after_two) => {{
+        #[unsafe(naked)]
+        unsafe extern "C" fn entry() {
+            core::arch::naked_asm!(
+                "mov [rsp + 8], rcx",
+                "mov [rsp + 16], rdx",
+                "mov [rsp + 24], r8",
+                "mov [rsp + 32], r9",
+                "sub rsp, 40",
+                "lea r8, [rsp + 64]",
+                "call {function}",
+                "add rsp, 40",
+                "ret",
+                function = sym $function,
+            )
+        }
+        entry as *const ()
+    }};
+    ($function:path, variadic_after_three) => {{
+        #[unsafe(naked)]
+        unsafe extern "C" fn entry() {
+            core::arch::naked_asm!(
+                "mov [rsp + 8], rcx",
+                "mov [rsp + 16], rdx",
+                "mov [rsp + 24], r8",
+                "mov [rsp + 32], r9",
+                "sub rsp, 40",
+                "lea r9, [rsp + 72]",
+                "call {function}",
+                "add rsp, 40",
+                "ret",
+                function = sym $function,
+            )
+        }
+        entry as *const ()
+    }};
     ($function:path $(, $entry_kind:ident)?) => {
         $function as *const ()
     };
@@ -30,6 +88,66 @@ macro_rules! export_entry {
                 "stp x18, x30, [sp, #-16]!",
                 "bl {function}",
                 "ldp x18, x30, [sp], #16",
+                "ret",
+                function = sym $function,
+            )
+        }
+        entry as *const ()
+    }};
+    ($function:path, variadic_after_one) => {{
+        #[unsafe(naked)]
+        unsafe extern "C" fn entry() {
+            core::arch::naked_asm!(
+                "sub sp, sp, #80",
+                "stp x18, x30, [sp]",
+                "stp x0, x1, [sp, #16]",
+                "stp x2, x3, [sp, #32]",
+                "stp x4, x5, [sp, #48]",
+                "stp x6, x7, [sp, #64]",
+                "add x1, sp, #24",
+                "bl {function}",
+                "ldp x18, x30, [sp]",
+                "add sp, sp, #80",
+                "ret",
+                function = sym $function,
+            )
+        }
+        entry as *const ()
+    }};
+    ($function:path, variadic_after_two) => {{
+        #[unsafe(naked)]
+        unsafe extern "C" fn entry() {
+            core::arch::naked_asm!(
+                "sub sp, sp, #80",
+                "stp x18, x30, [sp]",
+                "stp x0, x1, [sp, #16]",
+                "stp x2, x3, [sp, #32]",
+                "stp x4, x5, [sp, #48]",
+                "stp x6, x7, [sp, #64]",
+                "add x2, sp, #32",
+                "bl {function}",
+                "ldp x18, x30, [sp]",
+                "add sp, sp, #80",
+                "ret",
+                function = sym $function,
+            )
+        }
+        entry as *const ()
+    }};
+    ($function:path, variadic_after_three) => {{
+        #[unsafe(naked)]
+        unsafe extern "C" fn entry() {
+            core::arch::naked_asm!(
+                "sub sp, sp, #80",
+                "stp x18, x30, [sp]",
+                "stp x0, x1, [sp, #16]",
+                "stp x2, x3, [sp, #32]",
+                "stp x4, x5, [sp, #48]",
+                "stp x6, x7, [sp, #64]",
+                "add x3, sp, #40",
+                "bl {function}",
+                "ldp x18, x30, [sp]",
+                "add sp, sp, #80",
                 "ret",
                 function = sym $function,
             )

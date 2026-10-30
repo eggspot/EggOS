@@ -8,7 +8,8 @@
 //! programs is `vcruntime140` and the Universal C Runtime, `ucrtbase`, which programs import
 //! through the API sets `api-ms-win-crt-*` (D146); GDI+, COM (`ole32`, `oleaut32`) and the
 //! smaller system libraries a real app imports (D178) are the layer's too; programs built
-//! on Rust's standard library also import `bcryptprimitives` and `userenv` (D189).
+//! on Rust's standard library also import `bcryptprimitives` and `userenv`, and MinGW's programs
+//! the old C runtime, `msvcrt` (D189).
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -38,11 +39,12 @@ pub enum Library {
     Dwmapi,
     BcryptPrimitives,
     Userenv,
+    Msvcrt,
 }
 
 impl Library {
     /// Every library, in a fixed order (a module handle is its place in it).
-    pub const ALL: [Library; 23] = [
+    pub const ALL: [Library; 24] = [
         Library::Kernel32,
         Library::Ntdll,
         Library::Shell32,
@@ -66,6 +68,7 @@ impl Library {
         Library::Dwmapi,
         Library::BcryptPrimitives,
         Library::Userenv,
+        Library::Msvcrt,
     ];
 
     /// Its name, as [`library`] finds it.
@@ -94,11 +97,12 @@ impl Library {
             Library::Dwmapi => b"dwmapi",
             Library::BcryptPrimitives => b"bcryptprimitives",
             Library::Userenv => b"userenv",
+            Library::Msvcrt => b"msvcrt",
         }
     }
 }
 
-const SMALLER_LIBRARIES: usize = 14;
+const SMALLER_LIBRARIES: usize = 15;
 
 /// One function a library exports: its name and its address in the layer.
 #[derive(Debug, Clone, Copy)]
@@ -199,6 +203,8 @@ mod tests {
             Some(Library::BcryptPrimitives)
         );
         assert_eq!(library(b"USERENV.dll"), Some(Library::Userenv));
+        assert_eq!(library(b"MSVCRT.dll"), Some(Library::Msvcrt));
+        assert_eq!(library(b"msvcrt"), Some(Library::Msvcrt));
         assert_eq!(
             library(b"api-ms-win-core-synch-l1-2-0.dll"),
             Some(Library::Kernel32)
@@ -213,7 +219,7 @@ mod tests {
             b".dll",
             b"api-ms-win-crt",
             b"vcruntime",
-            b"msvcrt.dll",
+            b"msvcr100.dll",
         ] {
             assert_eq!(library(name), None);
         }

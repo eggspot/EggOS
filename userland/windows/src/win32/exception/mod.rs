@@ -234,3 +234,6 @@ pub(super) const CXX_UCRT_EXPORTS: &[Export] = cxx::UCRT_EXPORTS;
 
 /// The Universal C Runtime's `signal`, `raise` and the startup's exception filter.
 pub(super) const SIGNAL_EXPORTS: &[Export] = signal::EXPORTS;
+
+/// The old C runtime's `_XcptFilter`, the same filter as `_seh_filter_exe` (D189).
+pub(super) const MSVCRT_SIGNAL_EXPORTS: &[Export] = signal::MSVCRT_EXPORTS;

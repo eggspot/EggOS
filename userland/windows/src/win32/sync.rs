@@ -737,7 +737,7 @@ unsafe fn critical(section: *mut u8) -> CriticalSection {
     }
 }
 
-unsafe extern "efiapi" fn enter_critical_section(section: *mut u8) {
+pub(super) unsafe extern "efiapi" fn enter_critical_section(section: *mut u8) {
     // SAFETY: `EnterCriticalSection`'s contract: an initialized `CRITICAL_SECTION`.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());
@@ -774,7 +774,7 @@ unsafe extern "efiapi" fn try_enter_critical_section(section: *mut u8) -> Bool {
     TRUE
 }
 
-unsafe extern "efiapi" fn leave_critical_section(section: *mut u8) {
+pub(super) unsafe extern "efiapi" fn leave_critical_section(section: *mut u8) {
     // SAFETY: `LeaveCriticalSection`'s contract: a `CRITICAL_SECTION` the caller entered.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());

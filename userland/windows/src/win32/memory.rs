@@ -1,11 +1,14 @@
 //! Virtual memory (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`) on Linux's `mmap`,
-//! `mprotect`, `madvise` and `munmap`, `FlushInstructionCache` for code a program writes, and
+//! `mprotect`, `madvise` and `munmap`, `VirtualQuery` from `/proc/self/maps` (D189),
+//! `FlushInstructionCache` for code a program writes, and
 //! the memory functions and stack probe (`__chkstk`)
 //! that ntdll exports and compilers call.
 
+use super::heap as process_heap;
 use super::{Bool, FALSE, SpinLock, TRUE, error, error_for, fail};
 use crate::library::Export;
 use crate::linux::{self, PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
+use crate::memory_regions::{self, Region};
 use core::ptr;
 
 const MEM_COMMIT: u32 = 0x1000;
@@ -15,6 +18,11 @@ const MEM_RELEASE: u32 = 0x8000;
 const PAGE_SIZE: usize = 4096;
 const PAGE_READWRITE: u32 = 0x04;
 const MAX_RESERVATIONS: usize = 256;
+const MAPS_PATH: &[u8] = b"/proc/self/maps\0";
+const FIRST_MAPS_BYTES: usize = 64 * 1024;
+const LARGEST_MAPS_BYTES: usize = 4 * 1024 * 1024;
+const MEMORY_BASIC_INFORMATION_BYTES: usize = 48;
+const END_OF_USER_SPACE: usize = 0x7fff_ffff_0000;
 
 static RESERVATIONS: SpinLock<[(usize, usize); MAX_RESERVATIONS]> =
     SpinLock::new([(0, 0); MAX_RESERVATIONS]);
@@ -138,6 +146,58 @@ unsafe extern "efiapi" fn virtual_protect(
     }
 }
 
+fn region_of(address: usize) -> Result<Region, u32> {
+    let mut capacity = FIRST_MAPS_BYTES;
+    loop {
+        let block = process_heap::allocate(capacity);
+        if block.is_null() {
+            return Err(error::NOT_ENOUGH_MEMORY);
+        }
+        // SAFETY: a fresh, zeroed block of `capacity` bytes, used only through this slice.
+        let text = unsafe { core::slice::from_raw_parts_mut(block, capacity) };
+        let outcome = match linux::read_file(MAPS_PATH, text) {
+            Ok(length) if length == capacity && capacity < LARGEST_MAPS_BYTES => None,
+            Ok(length) => Some(Ok(memory_regions::region_at(
+                &text[..length],
+                address,
+                END_OF_USER_SPACE,
+            ))),
+            Err(errno) => Some(Err(error_for(errno))),
+        };
+        // SAFETY: the block this call allocated, which nothing holds any more.
+        unsafe { process_heap::free(block) };
+        match outcome {
+            Some(outcome) => return outcome,
+            None => capacity *= 2,
+        }
+    }
+}
+
+unsafe extern "efiapi" fn virtual_query(address: usize, out: *mut u8, length: usize) -> usize {
+    if out.is_null() || length < MEMORY_BASIC_INFORMATION_BYTES {
+        return fail(error::BAD_LENGTH, 0);
+    }
+    if address >= END_OF_USER_SPACE {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    let region = match region_of(address) {
+        Ok(region) => region,
+        Err(code) => return fail(code, 0),
+    };
+    let mut information = [0u8; MEMORY_BASIC_INFORMATION_BYTES];
+    information[0..8].copy_from_slice(&(region.base as u64).to_le_bytes());
+    information[8..16].copy_from_slice(&(region.allocation_base as u64).to_le_bytes());
+    information[16..20].copy_from_slice(&region.allocation_protect.to_le_bytes());
+    information[24..32].copy_from_slice(&(region.size as u64).to_le_bytes());
+    information[32..36].copy_from_slice(&region.state.to_le_bytes());
+    information[36..40].copy_from_slice(&region.protect.to_le_bytes());
+    information[40..44].copy_from_slice(&region.kind.to_le_bytes());
+    // SAFETY: `VirtualQuery`'s contract: `length` writable bytes, at least one
+    // `MEMORY_BASIC_INFORMATION`.
+    unsafe { ptr::copy_nonoverlapping(information.as_ptr(), out, information.len()) };
+    MEMORY_BASIC_INFORMATION_BYTES
+}
+
 unsafe extern "efiapi" fn memcpy(
     destination: *mut u8,
     source: *const u8,
@@ -232,6 +292,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"VirtualAlloc" => virtual_alloc,
     b"VirtualFree" => virtual_free,
     b"VirtualProtect" => virtual_protect,
+    b"VirtualQuery" => virtual_query,
     b"FlushInstructionCache" => flush_instruction_cache,
 ];
 

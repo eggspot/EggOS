@@ -2,7 +2,8 @@
 //! `_close`, `_read`, `_write`, `_lseek` and `_lseeki64` on the Linux descriptors the streams
 //! and handles use, so `_fileno`, `_fdopen` and `_open_osfhandle` name the same descriptors.
 //! Paths are Windows paths, as `fopen`'s. The flags are `crate::low_level_io`'s. Bytes are read
-//! and written as they are, in text mode too: line endings are not translated.
+//! and written as they are, in text mode too: line endings are not translated, so `_setmode`
+//! (D189) only records a descriptor's mode and reports the one it had.
 
 use super::runtime::{errno, errno_for_linux, errno_value, set_errno};
 use crate::library::Export;
@@ -10,6 +11,7 @@ use crate::linux;
 use crate::low_level_io::{is_sharing_mode, open_flags, whence};
 use crate::text;
 use core::ffi::CStr;
+use core::sync::atomic::{AtomicI32, Ordering};
 
 const FAILED: i32 = -1;
 
@@ -224,6 +226,31 @@ extern "efiapi" fn lseeki64(fd: i32, offset: i64, origin: i32) -> i64 {
     seek(fd, offset, origin)
 }
 
+const TEXT_MODE: i32 = 0x4000;
+const TRANSLATION_MODES: [i32; 5] = [TEXT_MODE, 0x8000, 0x1_0000, 0x2_0000, 0x4_0000];
+const TRACKED_DESCRIPTORS: usize = 64;
+
+static TRANSLATION: [AtomicI32; TRACKED_DESCRIPTORS] =
+    [const { AtomicI32::new(TEXT_MODE) }; TRACKED_DESCRIPTORS];
+
+extern "efiapi" fn set_mode(fd: i32, mode: i32) -> i32 {
+    if !TRANSLATION_MODES.contains(&mode) {
+        set_errno(errno::EINVAL);
+        return FAILED;
+    }
+    let Ok(descriptor) = usize::try_from(fd) else {
+        set_errno(errno::EBADF);
+        return FAILED;
+    };
+    if let Err(error) = linux::fstat(descriptor) {
+        return refused(error.0);
+    }
+    match TRANSLATION.get(descriptor) {
+        Some(slot) => slot.swap(mode, Ordering::AcqRel),
+        None => TEXT_MODE,
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"_open" => open,
     b"_wopen" => wopen,
@@ -234,4 +261,5 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"_write" => write,
     b"_lseek" => lseek,
     b"_lseeki64" => lseeki64,
+    b"_setmode" => set_mode,
 ];

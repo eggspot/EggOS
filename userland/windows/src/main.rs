@@ -4,7 +4,9 @@
 //! relocations and imports, UTF-16 text, the command line, the GUI's tables (`gui/`) and the C
 //! runtime's streams, numbers and counted `printf` endings (`stream.rs`, `c_text.rs`,
 //! `counted_print.rs`) and handle flags and peeked pipe bytes (`handle_flags.rs`,
-//! `peeked_pipes.rs`, D189) are pure logic with host tests;
+//! `peeked_pipes.rs`, D189), the old C runtime's `FILE` layout, `errno` texts and
+//! `VirtualQuery`'s regions (`msvcrt_layout.rs`, `error_messages.rs`, `memory_regions.rs`,
+//! D189) are pure logic with host tests;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
@@ -26,6 +28,8 @@ mod command_line;
 mod counted_print;
 #[cfg(any(test, runs_windows_programs))]
 mod cxx_data;
+#[cfg(any(test, runs_windows_programs))]
+mod error_messages;
 #[cfg(any(test, runs_windows_programs))]
 mod errors;
 #[cfg(any(test, runs_windows_programs))]
@@ -55,9 +59,13 @@ mod locale;
 #[cfg(any(test, runs_windows_programs))]
 mod low_level_io;
 #[cfg(any(test, runs_windows_programs))]
-mod pe;
+mod memory_regions;
+#[cfg(any(test, runs_windows_programs))]
+mod msvcrt_layout;
 #[cfg(any(test, runs_windows_programs))]
 mod nt_status;
+#[cfg(any(test, runs_windows_programs))]
+mod pe;
 #[cfg(any(test, runs_windows_programs))]
 mod peeked_pipes;
 #[cfg(any(test, runs_windows_programs))]

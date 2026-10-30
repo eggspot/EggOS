@@ -7,12 +7,15 @@
 //! (`string.rs`), streams and `printf` (`stdio.rs`), low-level I/O on descriptors
 //! (`low_level.rs`, D179), and the utility and time functions (`utility.rs`). Exception
 //! handling, C's and C++'s, and `signal` are in `win32/exception` (D177); both runtimes' lists
-//! include their functions.
+//! include their functions. MinGW-w64's programs import the old C runtime, `msvcrt.dll` (D189):
+//! the same functions, its own names where they differ (`msvcrt.rs`), its `FILE` array and its
+//! variadic `printf` family (`stdio.rs`), and its variables as data.
 
 pub(super) use runtime::{end_abnormally, errno, set_errno};
 
 mod heap;
 mod low_level;
+mod msvcrt;
 mod runtime;
 mod startup;
 mod stdio;
@@ -51,6 +54,26 @@ pub(super) const UCRT: &[&[Export]] = &[
     stdio::EXPORTS,
     low_level::EXPORTS,
     utility::EXPORTS,
+    super::exception::CXX_UCRT_EXPORTS,
+    super::exception::SIGNAL_EXPORTS,
+];
+
+/// The old C runtime's (`msvcrt.dll`) functions and variables: its own names first, then the
+/// Universal C Runtime's functions it shares.
+pub(super) const MSVCRT: &[&[Export]] = &[
+    msvcrt::EXPORTS,
+    msvcrt::DATA,
+    stdio::MSVCRT_EXPORTS,
+    super::exception::MSVCRT_SIGNAL_EXPORTS,
+    super::memory::NTDLL_EXPORTS,
+    runtime::EXPORTS,
+    heap::EXPORTS,
+    string::EXPORTS,
+    stdio::EXPORTS,
+    low_level::EXPORTS,
+    utility::EXPORTS,
+    super::exception::C_SPECIFIC_EXPORTS,
+    super::exception::CXX_EXPORTS,
     super::exception::CXX_UCRT_EXPORTS,
     super::exception::SIGNAL_EXPORTS,
 ];

@@ -881,7 +881,16 @@ jobs:
       - name: Install pinned toolchain (rust-toolchain.toml)
         if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
-      - name: Build the C runtime test programs with MSVC
+      - name: Install llvm-mingw's msvcrt toolchain (test data only, never shipped)
+        if: steps.changes.outputs.code == 'true'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          Invoke-WebRequest -Uri 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-msvcrt-x86_64.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '52a3e3f584a74c3cde8ceb0c6960549683178e03b36818cb02b7ed109a68ff67') { throw 'llvm-mingw: SHA-256 mismatch' }
+          tar -xf $archive -C $env:RUNNER_TEMP
+          "EGGOS_LLVM_MINGW=$(Join-Path $env:RUNNER_TEMP 'llvm-mingw-20261020-msvcrt-x86_64')" >> $env:GITHUB_ENV
+      - name: Build the C runtime test programs with MSVC and llvm-mingw
         if: steps.changes.outputs.code == 'true'
         run: cargo xtask windows-programs
       - uses: actions/upload-artifact@v7

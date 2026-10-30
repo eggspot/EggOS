@@ -122,3 +122,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"raise" => raise,
     b"_seh_filter_exe" => seh_filter_exe,
 ];
+
+/// The old C runtime's (`msvcrt.dll`, D189) name for the startup's filter.
+pub(super) const MSVCRT_EXPORTS: &[Export] = exports![
+    b"_XcptFilter" => seh_filter_exe,
+];

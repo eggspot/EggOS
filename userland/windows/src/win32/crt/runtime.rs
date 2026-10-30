@@ -199,11 +199,11 @@ unsafe extern "efiapi" fn initterm_e(first: *const usize, last: *const usize) ->
     0
 }
 
-static ARGUMENT_COUNT: AtomicI32 = AtomicI32::new(0);
-static NARROW_ARGUMENTS: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
-static WIDE_ARGUMENTS: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
-static NARROW_ENVIRONMENT: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
-static WIDE_ENVIRONMENT: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
+pub(super) static ARGUMENT_COUNT: AtomicI32 = AtomicI32::new(0);
+pub(super) static NARROW_ARGUMENTS: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
+pub(super) static WIDE_ARGUMENTS: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
+pub(super) static NARROW_ENVIRONMENT: AtomicPtr<*mut u8> = AtomicPtr::new(ptr::null_mut());
+pub(super) static WIDE_ENVIRONMENT: AtomicPtr<*mut u16> = AtomicPtr::new(ptr::null_mut());
 
 fn program_arguments() -> impl Iterator<Item = &'static CStr> {
     process().startup.arguments().skip(2)
@@ -271,13 +271,13 @@ fn configured<T>(list: *mut *mut T, count: usize, into: &AtomicPtr<*mut T>) -> i
     0
 }
 
-extern "efiapi" fn configure_narrow_argv(_mode: i32) -> i32 {
+pub(super) extern "efiapi" fn configure_narrow_argv(_mode: i32) -> i32 {
     let count = program_arguments().count();
     let list = narrow_list(program_arguments(), count);
     configured(list, count, &NARROW_ARGUMENTS)
 }
 
-extern "efiapi" fn configure_wide_argv(_mode: i32) -> i32 {
+pub(super) extern "efiapi" fn configure_wide_argv(_mode: i32) -> i32 {
     let count = program_arguments().count();
     let list = wide_list(program_arguments(), count);
     configured(list, count, &WIDE_ARGUMENTS)
@@ -295,7 +295,7 @@ extern "efiapi" fn wide_arguments() -> *mut *mut *mut u16 {
     WIDE_ARGUMENTS.as_ptr()
 }
 
-fn narrow_environment() -> *mut *mut u8 {
+pub(super) fn narrow_environment() -> *mut *mut u8 {
     let current = NARROW_ENVIRONMENT.load(Ordering::Acquire);
     if !current.is_null() {
         return current;
@@ -305,7 +305,7 @@ fn narrow_environment() -> *mut *mut u8 {
     list
 }
 
-fn wide_environment() -> *mut *mut u16 {
+pub(super) fn wide_environment() -> *mut *mut u16 {
     let current = WIDE_ENVIRONMENT.load(Ordering::Acquire);
     if !current.is_null() {
         return current;
@@ -362,7 +362,7 @@ extern "efiapi" fn get_wide_winmain_command_line() -> *mut u16 {
     after_program_name(process().command_line_wide)
 }
 
-extern "efiapi" fn set_app_type(_kind: i32) {}
+pub(super) extern "efiapi" fn set_app_type(_kind: i32) {}
 
 extern "efiapi" fn set_user_math_error(_handler: usize) {}
 
@@ -371,10 +371,10 @@ extern "efiapi" fn configure_thread_locale(_flag: i32) -> i32 {
 }
 
 static NEW_MODE: AtomicI32 = AtomicI32::new(0);
-static COMMIT_MODE: AtomicI32 = AtomicI32::new(0);
-static FILE_MODE: AtomicI32 = AtomicI32::new(TEXT_MODE);
+pub(super) static COMMIT_MODE: AtomicI32 = AtomicI32::new(0);
+pub(super) static FILE_MODE: AtomicI32 = AtomicI32::new(TEXT_MODE);
 
-extern "efiapi" fn set_new_mode(mode: i32) -> i32 {
+pub(super) extern "efiapi" fn set_new_mode(mode: i32) -> i32 {
     NEW_MODE.swap(mode, Ordering::AcqRel)
 }
 
@@ -418,7 +418,7 @@ extern "efiapi" fn register_thread_local_exe_atexit_callback(callback: usize) {
     THREAD_LOCAL_EXIT_CALLBACK.store(callback, Ordering::Release);
 }
 
-extern "efiapi" fn crt_atexit(function: usize) -> i32 {
+pub(super) extern "efiapi" fn crt_atexit(function: usize) -> i32 {
     // SAFETY: the process's own table.
     unsafe { register(AT_EXIT.0.get(), function) }
 }

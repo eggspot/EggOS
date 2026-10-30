@@ -235,7 +235,11 @@ pub enum Expect {
     /// written, rewritten, cut and removed, four threads shared a `Mutex` and a `Condvar`
     /// with their own thread-locals, `thread::sleep` and the clocks worked and a `HashMap` was
     /// seeded; then its status 0; and `eggrust.exe panic` prints the panic on standard error
-    /// and ends with status 101.
+    /// and ends with status 101. Then `eggmingw.exe`, our own C program built by llvm-mingw on
+    /// MinGW's `msvcrt.dll` (D189): its lines say it got its arguments and environment through
+    /// `__getmainargs`, printed through MinGW's own `printf` and the old runtime's, sorted with
+    /// `qsort`, grew a heap block, raised a signal its handler took, named an `errno` and wrote
+    /// to standard error; its `atexit` handler ran and its status is 3.
     WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
@@ -573,7 +577,7 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 10] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 11] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
@@ -583,6 +587,7 @@ const WINDOWS_CRT_SESSION: [&[u8]; 10] = [
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
     b"eggrust.exe; echo EGGRUST status $?\r",
     b"eggrust.exe panic; echo EGGRUST panic status $?\r",
+    b"GREETING=hi eggmingw.exe one 'two words'; echo EGGMINGW status $?\r",
     b"exit 7\r",
 ];
 
@@ -631,6 +636,19 @@ const EGGRUST_LINES: [&str; 9] = [
     "EGGRUST status 0",
 ];
 
+const EGGMINGW_LINES: [&str; 10] = [
+    "EGGMINGW hello from msvcrt.dll, arguments 2: one|two words",
+    "EGGMINGW greeting hi",
+    "EGGMINGW sorted 3 7 19 25 42",
+    "EGGMINGW heap grown to 10 bytes",
+    "EGGMINGW msvcrt formatted 1234567890123|ms  | 2.50, counted 9",
+    "EGGMINGW signal 2",
+    "EGGMINGW strerror No such file or directory",
+    "EGGMINGW stderr -77",
+    "EGGMINGW atexit ran",
+    "EGGMINGW status 3",
+];
+
 const EGGPAD_LINES: [&str; 5] = [
     "EGGPAD arguments 2 C:\\tmp\\note.txt",
     "EGGPAD opened 21 bytes",
@@ -670,6 +688,7 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
             Line::Around("note: run with `RUST_BACKTRACE=1`", "backtrace"),
             Line::Whole("EGGRUST panic status 101".to_owned()),
         ],
+        whole(&EGGMINGW_LINES),
         whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
     ]
 }
@@ -4111,6 +4130,18 @@ mod tests {
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &leaked).is_err());
         let failed = ok.replace("EGGSPAWN status 0", "EGGSPAWN status 1");
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_the_mingw_program_on_msvcrt() {
+        let ok = windows_crt_console();
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &ok).is_ok());
+        let unformatted = ok.replace("1234567890123|ms  | 2.50", "123|ms  | 2.50");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &unformatted).is_err());
+        let no_exit_work = ok.replace("EGGMINGW atexit ran\r\n", "");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &no_exit_work).is_err());
+        let failed = ok.replace("EGGMINGW status 3", "EGGMINGW status 1");
+        assert!(verdict("aarch64", Expect::WindowsCrt, true, &failed).is_err());
     }
 
     #[test]

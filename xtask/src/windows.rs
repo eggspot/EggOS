@@ -7,7 +7,10 @@
 //! itself through `CreateProcessW` and `CreateProcessA` and reads one's output through a pipe
 //! (D189), builds as a console program for both. `tests/windows-rust`, our own Rust program
 //! on Rust's standard library (`eggrust`, D189), builds with `cargo` for
-//! `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by MSVC's linker. Only a
+//! `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, linked by MSVC's linker; and
+//! `tests/windows-mingw/eggmingw.c`, our own C program on MinGW's `msvcrt.dll` (D189), builds
+//! with llvm-mingw's msvcrt toolchain (`x86_64-w64-mingw32-clang`, `aarch64-w64-mingw32-clang`,
+//! on `PATH` or in `EGGOS_LLVM_MINGW`). Only a
 //! Windows host with Visual Studio's C++ tools can build them, found through `vswhere`; CI
 //! builds them on its Windows runner and hands them to the Linux job through
 //! `EGGOS_WINDOWS_PROGRAMS`. They are never shipped.
@@ -18,6 +21,13 @@ pub const PROGRAMS_VARIABLE: &str = "EGGOS_WINDOWS_PROGRAMS";
 pub const PROGRAMS: [&str; 4] = ["eggpad", "eggcpp", "eggcpp-fh3", "eggspawn"];
 /// The test programs built from our own Rust source on Rust's standard library (D189).
 pub const RUST_PROGRAMS: [&str; 1] = ["eggrust"];
+/// The test programs built from our own C source by llvm-mingw against MinGW's `msvcrt.dll`
+/// (D189).
+pub const MINGW_PROGRAMS: [&str; 1] = ["eggmingw"];
+/// The folder of the llvm-mingw toolchain that builds [`MINGW_PROGRAMS`], when its compilers are
+/// not on `PATH`.
+pub const LLVM_MINGW_VARIABLE: &str = "EGGOS_LLVM_MINGW";
+const MINGW_SOURCE_FOLDER: &str = "windows-mingw";
 const RUST_PACKAGE: &str = "windows-rust";
 const TARGETS: [&str; 2] = ["x64", "arm64"];
 const VISUAL_STUDIO_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
@@ -59,7 +69,7 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
             directory: PathBuf::from(directory),
         };
         crate::ci_artifact::fetch_when_built("windows-programs", &programs.directory)?;
-        for program in PROGRAMS.iter().chain(RUST_PROGRAMS.iter()) {
+        for program in PROGRAMS.iter().chain(&RUST_PROGRAMS).chain(&MINGW_PROGRAMS) {
             for target in TARGETS {
                 let path = programs.path(program, target);
                 if !path.is_file() {
@@ -112,6 +122,7 @@ fn build_programs(target_directory: &Path) -> Result<Option<Programs>, String> {
             }
         }
         build_rust_programs(target, target_directory, &directory)?;
+        build_mingw_programs(target, &directory)?;
     }
     Ok(Some(Programs { directory }))
 }
@@ -142,6 +153,66 @@ fn build_rust_programs(
             .map_err(|e| format!("{} -> {}: {e}", built.display(), output.display()))?;
     }
     Ok(())
+}
+
+fn build_mingw_programs(target: &str, directory: &Path) -> Result<(), String> {
+    let toolchain = std::env::var_os(LLVM_MINGW_VARIABLE).map(PathBuf::from);
+    let compiler = mingw_compiler(target, toolchain.as_deref());
+    for program in MINGW_PROGRAMS {
+        let source = crate::workspace_root()
+            .join("tests")
+            .join(MINGW_SOURCE_FOLDER)
+            .join(format!("{program}.c"));
+        let output = Programs {
+            directory: directory.to_owned(),
+        }
+        .path(program, target);
+        let status = std::process::Command::new(&compiler)
+            .args(mingw_compiler_arguments(&source, &output))
+            .status()
+            .map_err(|e| {
+                format!(
+                    "{}: {e}: install llvm-mingw's msvcrt toolchain and put its bin folder on \
+                     PATH, or set {LLVM_MINGW_VARIABLE} to its folder",
+                    compiler.display()
+                )
+            })?;
+        if !status.success() {
+            return Err(format!(
+                "{}: {}: {status}",
+                compiler.display(),
+                source.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// llvm-mingw's C compiler for MSVC's `target` (`x64`, `arm64`): in `toolchain`'s `bin` folder
+/// when one is given, else found on `PATH`.
+pub fn mingw_compiler(target: &str, toolchain: Option<&Path>) -> PathBuf {
+    let triple = match target {
+        "arm64" => "aarch64-w64-mingw32",
+        _ => "x86_64-w64-mingw32",
+    };
+    let name = format!("{triple}-clang{}", std::env::consts::EXE_SUFFIX);
+    match toolchain {
+        Some(folder) => folder.join("bin").join(name),
+        None => PathBuf::from(name),
+    }
+}
+
+/// The arguments that build the console program at `source` into `output`, optimized, with
+/// warnings as errors, against MinGW's default C runtime, `msvcrt.dll`.
+pub fn mingw_compiler_arguments(source: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "-O2".to_owned(),
+        "-Wall".to_owned(),
+        "-Werror".to_owned(),
+        "-o".to_owned(),
+        output.display().to_string(),
+        source.display().to_string(),
+    ]
 }
 
 /// Rust's target for MSVC's `target` (`x64`, `arm64`).
@@ -334,6 +405,33 @@ mod tests {
         assert!(arguments.contains(&manifest.display().to_string()));
         assert_eq!(rust_target("x64"), "x86_64-pc-windows-msvc");
         assert_eq!(RUST_PROGRAMS, ["eggrust"]);
+    }
+
+    #[test]
+    fn the_mingw_programs_build_with_llvm_mingw_for_each_target() {
+        assert_eq!(MINGW_PROGRAMS, ["eggmingw"]);
+        let suffix = std::env::consts::EXE_SUFFIX;
+        assert_eq!(
+            mingw_compiler("x64", None),
+            PathBuf::from(format!("x86_64-w64-mingw32-clang{suffix}"))
+        );
+        let toolchain = Path::new("llvm-mingw");
+        assert_eq!(
+            mingw_compiler("arm64", Some(toolchain)),
+            toolchain
+                .join("bin")
+                .join(format!("aarch64-w64-mingw32-clang{suffix}"))
+        );
+        let arguments =
+            mingw_compiler_arguments(Path::new("eggmingw.c"), Path::new("eggmingw-x64.exe"));
+        assert!(arguments.contains(&"-O2".to_owned()));
+        assert!(arguments.contains(&"-Werror".to_owned()));
+        let output = arguments.iter().position(|argument| argument == "-o");
+        assert_eq!(
+            output.map(|at| arguments[at + 1].as_str()),
+            Some("eggmingw-x64.exe")
+        );
+        assert_eq!(arguments.last().map(String::as_str), Some("eggmingw.c"));
     }
 
     #[test]

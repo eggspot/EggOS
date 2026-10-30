@@ -8,6 +8,10 @@
 //! Windows dialect over the `va_list`, which on x64 and ARM64 alike is a pointer to 8-byte
 //! slots; the wide functions format UTF-8, which `swprintf`'s family converts to UTF-16 in the
 //! caller's buffer and `fwprintf`'s writes to the stream as it is (streams are byte streams).
+//! For the old C runtime (`msvcrt.dll`, D189), an entry of the `FILE` array `__iob_func` returns
+//! names standard input, output or error, every stream starts with the old runtime's `FILE`
+//! and the critical section MinGW's `printf` enters after it, and the `printf` family is also
+//! variadic.
 
 use super::super::SpinLock;
 use super::super::console::standard_handle;
@@ -17,8 +21,10 @@ use super::runtime::{binary_by_default, errno, errno_for_linux, set_errno};
 use crate::counted_print::{self, Convention, Fault};
 use crate::library::Export;
 use crate::linux;
+use crate::msvcrt_layout;
 use crate::stream::{Backing, Buffering, Mode, Origin, Stream};
 use crate::text;
+use core::cell::UnsafeCell;
 use core::ptr;
 use eggos_c_format::{self as c_format, Arguments, Dialect, Output};
 
@@ -60,7 +66,23 @@ impl Backing for Descriptor {
     }
 }
 
-type File = Stream<Descriptor>;
+type Buffered = Stream<Descriptor>;
+
+#[repr(C)]
+struct File {
+    #[allow(dead_code, reason = "MinGW programs reach into it")]
+    msvcrt_fields: [u64; msvcrt_layout::FILE_WITH_LOCK_WORDS],
+    stream: Buffered,
+}
+
+#[repr(C, align(16))]
+struct Iob(UnsafeCell<[u64; msvcrt_layout::IOB_WORDS]>);
+
+// SAFETY: the program writes its entries (MinGW's `_lock_file` sets a flag in them); the layer
+// only takes their addresses.
+unsafe impl Sync for Iob {}
+
+static IOB: Iob = Iob(UnsafeCell::new([0; msvcrt_layout::IOB_WORDS]));
 
 struct Streams {
     open: [*mut File; MAX_STREAMS],
@@ -85,10 +107,17 @@ impl Streams {
         }
     }
 
-    fn each_open(&mut self, mut work: impl FnMut(&mut File)) {
+    fn resolve(&mut self, stream: *mut File) -> *mut File {
+        match msvcrt_layout::iob_index(IOB.0.get() as usize, stream as usize) {
+            Some(index) if index < STANDARD_STREAMS => standard_stream(self, index),
+            _ => stream,
+        }
+    }
+
+    fn each_open(&mut self, mut work: impl FnMut(&mut Buffered)) {
         for &stream in self.open.iter().filter(|stream| !stream.is_null()) {
             // SAFETY: an open stream of the table, used only under its lock.
-            work(unsafe { &mut *stream });
+            work(unsafe { &mut (*stream).stream });
         }
     }
 }
@@ -107,11 +136,15 @@ fn letters(text: &[u8]) -> impl Iterator<Item = u32> + Clone + '_ {
     text.iter().map(|&byte| u32::from(byte))
 }
 
-fn new_stream(stream: File) -> *mut File {
+fn new_stream(stream: Buffered) -> *mut File {
     let block = process_heap::allocate_with(core::mem::size_of::<File>(), false).cast::<File>();
     if !block.is_null() {
+        let file = File {
+            msvcrt_fields: [0; msvcrt_layout::FILE_WITH_LOCK_WORDS],
+            stream,
+        };
         // SAFETY: a fresh heap block, 16-byte aligned, for one stream.
-        unsafe { block.write(stream) };
+        unsafe { block.write(file) };
     }
     block
 }
@@ -133,8 +166,9 @@ fn standard_stream(streams: &mut Streams, index: usize) -> *mut File {
     streams.open[index]
 }
 
-fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut File) -> R) -> R {
+fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut Buffered) -> R) -> R {
     STREAMS.with(|streams| {
+        let stream = streams.resolve(stream);
         if !streams.holds(stream) {
             set_errno(if stream.is_null() {
                 errno::EINVAL
@@ -144,7 +178,7 @@ fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut File) ->
             return refused;
         }
         // SAFETY: an open stream of the table, used only under its lock.
-        work(unsafe { &mut *stream })
+        work(unsafe { &mut (*stream).stream })
     })
 }
 
@@ -322,6 +356,7 @@ unsafe extern "efiapi" fn wfopen_s(out: *mut *mut File, path: *const u16, mode: 
 
 unsafe extern "efiapi" fn fclose(stream: *mut File) -> i32 {
     let closed = STREAMS.with(|streams| {
+        let stream = streams.resolve(stream);
         let index = streams
             .open
             .iter()
@@ -331,12 +366,12 @@ unsafe extern "efiapi" fn fclose(stream: *mut File) -> i32 {
             *closed = true;
         }
         // SAFETY: an open stream of the table, which is now out of it.
-        let file = unsafe { &mut *stream };
+        let file = unsafe { &mut (*stream).stream };
         let flushed = file.flush();
         let descriptor = *file.backing();
-        Some((flushed, descriptor))
+        Some((flushed, descriptor, stream))
     });
-    let Some((flushed, descriptor)) = closed else {
+    let Some((flushed, descriptor, stream)) = closed else {
         set_errno(errno::EBADF);
         return END_OF_FILE;
     };
@@ -667,7 +702,7 @@ impl Arguments for VaList {
 }
 
 struct StreamOutput<'a> {
-    file: &'a mut File,
+    file: &'a mut Buffered,
     failed: bool,
     units: usize,
 }
@@ -1226,8 +1261,183 @@ unsafe extern "efiapi" fn stdio_common_vsscanf(
     })
 }
 
+const STANDARD_OUTPUT: usize = 1;
+const FULL_BUFFERING: i32 = 0x0000;
+const LINE_BUFFERING: i32 = 0x0040;
+const NO_BUFFERING: i32 = 0x0004;
+
+unsafe extern "efiapi" fn putchar(character: i32) -> i32 {
+    // SAFETY: standard output is the table's own stream, or null, which `fputc` refuses.
+    unsafe { fputc(character, standard(STANDARD_OUTPUT)) }
+}
+
+unsafe extern "efiapi" fn setvbuf(
+    stream: *mut File,
+    _buffer: *mut u8,
+    mode: i32,
+    size: usize,
+) -> i32 {
+    let buffering = match mode {
+        FULL_BUFFERING | LINE_BUFFERING => Buffering::Full,
+        NO_BUFFERING => Buffering::None,
+        _ => {
+            set_errno(errno::EINVAL);
+            return -1;
+        }
+    };
+    if buffering == Buffering::Full && !(2..=i32::MAX as usize).contains(&size) {
+        set_errno(errno::EINVAL);
+        return -1;
+    }
+    with_stream(stream, -1, |file| match file.set_buffering(buffering) {
+        Ok(()) => 0,
+        Err(error) => {
+            set_errno(errno_for_linux(error));
+            -1
+        }
+    })
+}
+
+extern "efiapi" fn iob_func() -> *mut u64 {
+    IOB.0.get().cast()
+}
+
+unsafe extern "efiapi" fn print(format: *const u8, arguments: *const u64) -> i32 {
+    // SAFETY: `printf`'s contract: a NUL-terminated format and an argument for each conversion.
+    unsafe { vfprintf(0, standard(STANDARD_OUTPUT), format, 0, arguments) }
+}
+
+unsafe extern "efiapi" fn print_to_file(
+    stream: *mut File,
+    format: *const u8,
+    arguments: *const u64,
+) -> i32 {
+    // SAFETY: `fprintf`'s contract: an open stream, a NUL-terminated format and an argument for
+    // each conversion.
+    unsafe { vfprintf(0, stream, format, 0, arguments) }
+}
+
+unsafe extern "efiapi" fn print_into(
+    buffer: *mut u8,
+    format: *const u8,
+    arguments: *const u64,
+) -> i32 {
+    // SAFETY: `sprintf`'s contract: room for the whole output, a NUL-terminated format and an
+    // argument for each conversion.
+    unsafe {
+        vsprintf(
+            counted_print::LEGACY_VSPRINTF_NULL_TERMINATION,
+            buffer,
+            usize::MAX,
+            format,
+            0,
+            arguments,
+        )
+    }
+}
+
+unsafe extern "efiapi" fn print_into_counted_legacy(
+    buffer: *mut u8,
+    count: usize,
+    format: *const u8,
+    arguments: *const u64,
+) -> i32 {
+    // SAFETY: `_snprintf`'s contract: `count` writable bytes, a NUL-terminated format and an
+    // argument for each conversion.
+    unsafe {
+        vsprintf(
+            counted_print::LEGACY_VSPRINTF_NULL_TERMINATION,
+            buffer,
+            count,
+            format,
+            0,
+            arguments,
+        )
+    }
+}
+
+unsafe extern "efiapi" fn print_into_counted(
+    buffer: *mut u8,
+    count: usize,
+    format: *const u8,
+    arguments: *const u64,
+) -> i32 {
+    // SAFETY: `snprintf`'s contract: `count` writable bytes, a NUL-terminated format and an
+    // argument for each conversion.
+    unsafe {
+        vsprintf(
+            counted_print::STANDARD_SNPRINTF_BEHAVIOR,
+            buffer,
+            count,
+            format,
+            0,
+            arguments,
+        )
+    }
+}
+
+unsafe extern "efiapi" fn count_print(format: *const u8, arguments: *const u64) -> i32 {
+    // SAFETY: `_scprintf`'s contract: a NUL-terminated format and an argument for each
+    // conversion; nothing is written.
+    unsafe {
+        vsprintf(
+            counted_print::STANDARD_SNPRINTF_BEHAVIOR,
+            ptr::null_mut(),
+            0,
+            format,
+            0,
+            arguments,
+        )
+    }
+}
+
+unsafe extern "efiapi" fn print_wide(format: *const u16, arguments: *const u64) -> i32 {
+    // SAFETY: `wprintf`'s contract: a NUL-terminated format and an argument for each conversion.
+    unsafe {
+        vfwprintf(
+            LEGACY_WIDE_SPECIFIERS,
+            standard(STANDARD_OUTPUT),
+            format,
+            0,
+            arguments,
+        )
+    }
+}
+
+unsafe extern "efiapi" fn print_wide_to_file(
+    stream: *mut File,
+    format: *const u16,
+    arguments: *const u64,
+) -> i32 {
+    // SAFETY: `fwprintf`'s contract: an open stream, a NUL-terminated format and an argument for
+    // each conversion.
+    unsafe { vfwprintf(LEGACY_WIDE_SPECIFIERS, stream, format, 0, arguments) }
+}
+
+unsafe extern "efiapi" fn print_wide_into_counted_legacy(
+    buffer: *mut u16,
+    count: usize,
+    format: *const u16,
+    arguments: *const u64,
+) -> i32 {
+    // SAFETY: `_snwprintf`'s contract: `count` writable units, a NUL-terminated format and an
+    // argument for each conversion.
+    unsafe {
+        vswprintf(
+            LEGACY_WIDE_SPECIFIERS | counted_print::LEGACY_VSPRINTF_NULL_TERMINATION,
+            buffer,
+            count,
+            format,
+            0,
+            arguments,
+        )
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"_fdopen" => fdopen,
+    b"putchar" => putchar,
+    b"setvbuf" => setvbuf,
     b"_open_osfhandle" => open_os_handle,
     b"__stdio_common_vsscanf" => stdio_common_vsscanf,
     b"__acrt_iob_func" => standard_stream_at,
@@ -1270,4 +1480,29 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"__stdio_common_vswprintf" => vswprintf,
     b"__stdio_common_vswprintf_s" => vswprintf_s,
     b"__stdio_common_vsnwprintf_s" => vsnwprintf_s,
+];
+
+/// The old C runtime's (`msvcrt.dll`, D189) stream functions: its `FILE` array, and the
+/// `printf` family as functions of their own, variadic or taking a `va_list`, where the
+/// Universal C Runtime has `__stdio_common_*`.
+pub(super) const MSVCRT_EXPORTS: &[Export] = exports![
+    b"__iob_func" => iob_func,
+    b"printf" => print [variadic_after_one],
+    b"vprintf" => print,
+    b"fprintf" => print_to_file [variadic_after_two],
+    b"vfprintf" => print_to_file,
+    b"sprintf" => print_into [variadic_after_two],
+    b"vsprintf" => print_into,
+    b"_snprintf" => print_into_counted_legacy [variadic_after_three],
+    b"_vsnprintf" => print_into_counted_legacy,
+    b"snprintf" => print_into_counted [variadic_after_three],
+    b"vsnprintf" => print_into_counted,
+    b"_scprintf" => count_print [variadic_after_one],
+    b"_vscprintf" => count_print,
+    b"wprintf" => print_wide [variadic_after_one],
+    b"vwprintf" => print_wide,
+    b"fwprintf" => print_wide_to_file [variadic_after_two],
+    b"vfwprintf" => print_wide_to_file,
+    b"_snwprintf" => print_wide_into_counted_legacy [variadic_after_three],
+    b"_vsnwprintf" => print_wide_into_counted_legacy,
 ];

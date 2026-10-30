@@ -57,10 +57,10 @@ mod native_files;
 mod nls;
 mod overlapped;
 mod paint;
+mod pipe;
 mod placement;
 mod private_profile;
 mod process;
-mod pipe;
 mod processes;
 mod psapi;
 mod random;
@@ -326,6 +326,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Dwmapi => DWMAPI,
         Library::BcryptPrimitives => BCRYPTPRIMITIVES,
         Library::Userenv => USERENV,
+        Library::Msvcrt => crt::MSVCRT,
     }
 }
 

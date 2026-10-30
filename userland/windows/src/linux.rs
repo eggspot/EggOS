@@ -283,7 +283,12 @@ pub fn pipe() -> Result<(usize, usize), Errno> {
 pub fn pipe_with(flags: usize) -> Result<(usize, usize), Errno> {
     let mut ends = [0i32; 2];
     // SAFETY: `pipe2` writes two descriptors into the borrowed array.
-    unsafe { syscall(number::PIPE2, [ends.as_mut_ptr() as usize, flags, 0, 0, 0, 0]) }?;
+    unsafe {
+        syscall(
+            number::PIPE2,
+            [ends.as_mut_ptr() as usize, flags, 0, 0, 0, 0],
+        )
+    }?;
     Ok((ends[0] as usize, ends[1] as usize))
 }
 
