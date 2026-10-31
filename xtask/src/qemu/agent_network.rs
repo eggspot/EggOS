@@ -25,6 +25,9 @@ const TURNED_ON_LINE: &str = "agents on the network can connect on port 8443";
 const PAIR_COMMAND: &str =
     "cat /var/lib/eggos/agent-network.pem; agent pair --name Laptop laptop\r";
 const CODE_AFTER: &str = "8443/pair";
+const LEASE_COMMAND: &str = "sleep 1; ip addr\r";
+const LEASED_ADDRESS: &str = "inet 10.0.2.15/24";
+const LEASE_CHECKS: usize = 30;
 const FIRST_SESSION: [&str; 2] = ["agent network on\r", "poweroff\r"];
 const LOG_COMMAND: &str = "agentlog --agent laptop; echo EGGOS-AGENT-NETWORK log $?\r";
 const LOG_DONE: &str = "EGGOS-AGENT-NETWORK log 0";
@@ -255,6 +258,22 @@ impl Machine {
         )
     }
 
+    fn wait_for_lease(&mut self, prompts: usize) -> Result<usize, String> {
+        let mut prompts = prompts;
+        for _ in 0..LEASE_CHECKS {
+            self.type_line(LEASE_COMMAND)?;
+            prompts += 1;
+            self.wait_for_prompt(prompts)?;
+            if self.text().contains(LEASED_ADDRESS) {
+                return Ok(prompts);
+            }
+        }
+        Err(format!(
+            "{}: the network agents test never saw the DHCP lease",
+            self.arch
+        ))
+    }
+
     fn type_line(&mut self, line: &str) -> Result<(), String> {
         self.keyboard
             .write_all(line.as_bytes())
@@ -278,6 +297,15 @@ impl Machine {
         match status.success() {
             true => Ok(self.text()),
             false => Err(format!("{}: QEMU did not exit cleanly", self.arch)),
+        }
+    }
+}
+
+impl Drop for Machine {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
         }
     }
 }
@@ -313,10 +341,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
         STARTED_LINE,
     )?;
     second.wait_for_prompt(1)?;
-    second.wait_for(
-        &|console: &str| console.contains("net: eth0") && console.contains("10.0.2.15"),
-        "the DHCP lease",
-    )?;
+    let prompts = second.wait_for_lease(1)?;
     second.type_line(PAIR_COMMAND)?;
     second.wait_for(
         &|console: &str| code_from(console).is_some(),
@@ -397,7 +422,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
         ));
     }
 
-    second.wait_for_prompt(2)?;
+    second.wait_for_prompt(prompts + 1)?;
     second.type_line(LOG_COMMAND)?;
     second.wait_for(&|console: &str| console.contains(LOG_DONE), LOG_DONE)?;
     let log = second.text();
@@ -410,7 +435,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
             arch.name
         ));
     }
-    second.wait_for_prompt(3)?;
+    second.wait_for_prompt(prompts + 2)?;
     second.type_line("poweroff\r")?;
     second.power_off()?;
     eprintln!("xtask: {}: network agents boot test passed", arch.name);
