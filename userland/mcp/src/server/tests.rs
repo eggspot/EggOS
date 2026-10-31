@@ -3522,3 +3522,59 @@ fn a_transport_without_requests_of_its_own_never_asks_through_elicitation() {
     assert!(!lines[0].contains("elicitation/create"), "{}", lines[0]);
     assert_eq!(harness.server.waiting_until(), None);
 }
+
+#[test]
+fn prompts_and_resources_are_listed_and_given() {
+    let mut harness = Harness::granted(Grants::ALL, "{}");
+    let initialized = harness
+        .send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}"#)
+        .unwrap();
+    let capabilities = parsed(&initialized)
+        .get("result")
+        .unwrap()
+        .get("capabilities")
+        .unwrap();
+    assert!(capabilities.get("prompts").is_some());
+    assert_eq!(
+        capabilities.get("resources").unwrap().get("subscribe"),
+        Some(Value::Bool(false))
+    );
+    let listed = harness
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#)
+        .unwrap();
+    assert!(listed.contains("\"name\":\"look-at-window\""), "{listed}");
+    let got = harness
+        .send(r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"look-at-window","arguments":{"window":"3"}}}"#)
+        .unwrap();
+    assert!(got.contains("Show me window 3"), "{got}");
+    let missing = harness
+        .send(r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"look-at-window"}}"#)
+        .unwrap();
+    assert!(missing.contains("-32602") && missing.contains("window"), "{missing}");
+    let unknown = harness
+        .send(r#"{"jsonrpc":"2.0","id":5,"method":"prompts/get","params":{"name":"x"}}"#)
+        .unwrap();
+    assert!(unknown.contains("no such prompt"), "{unknown}");
+
+    let resources = harness
+        .send(r#"{"jsonrpc":"2.0","id":6,"method":"resources/list"}"#)
+        .unwrap();
+    assert!(resources.contains("eggos://instructions") && resources.contains("eggos://grants"));
+    let grants = harness
+        .send(r#"{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"eggos://grants"}}"#)
+        .unwrap();
+    assert!(grants.contains("\"uri\":\"eggos://grants\""), "{grants}");
+    assert!(grants.contains("\\\"agent\\\":\\\"local\\\""), "{grants}");
+    let instructions = harness
+        .send(r#"{"jsonrpc":"2.0","id":8,"method":"resources/read","params":{"uri":"eggos://instructions"}}"#)
+        .unwrap();
+    assert!(instructions.contains("EggOS's built-in MCP server"), "{instructions}");
+    let nothing = harness
+        .send(r#"{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"eggos://nothing"}}"#)
+        .unwrap();
+    assert!(nothing.contains("-32002"), "{nothing}");
+    let templates = harness
+        .send(r#"{"jsonrpc":"2.0","id":10,"method":"resources/templates/list"}"#)
+        .unwrap();
+    assert!(templates.contains("\"resourceTemplates\":[]"), "{templates}");
+}

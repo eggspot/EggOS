@@ -32,6 +32,7 @@ use crate::grants::{
 };
 use crate::json::{Base64Carry, JsonWriter, Object, Value};
 use crate::paths::{self, MAX_PATH_BYTES, PathRefusal};
+use crate::prompts;
 use crate::rpc::{
     self, Answer, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, MAX_ID_BYTES, METHOD_NOT_FOUND,
     Message,
@@ -505,7 +506,17 @@ impl Server {
             }
         };
         reply.id = IdCopy::of(id);
-        let known = ["initialize", "ping", "tools/list", "tools/call"];
+        let known = [
+            "initialize",
+            "ping",
+            "tools/list",
+            "tools/call",
+            "prompts/list",
+            "prompts/get",
+            "resources/list",
+            "resources/read",
+            "resources/templates/list",
+        ];
         let Some(&name) = known.iter().find(|name| method.equals(name)) else {
             rpc::write_error(out, Some(id), METHOD_NOT_FOUND, "method not found");
             return reply;
@@ -554,9 +565,113 @@ impl Server {
                     _ => rpc::write_result(out, id, tools::write_list),
                 }
             }
+            "prompts/list" => rpc::write_result(out, id, prompts::write_list),
+            "prompts/get" => self.prompt(id, params, out),
+            "resources/list" => rpc::write_result(out, id, write_resources),
+            "resources/templates/list" => rpc::write_result(out, id, |out| {
+                out.begin_object();
+                out.key("resourceTemplates");
+                out.begin_array();
+                out.end_array();
+                out.end_object();
+            }),
+            "resources/read" => self.read_resource(id, params, system, out),
             _ => self.call(id, params, nested_duplicate, system, scratch, out),
         }
         reply
+    }
+
+    fn prompt(&mut self, id: &[u8], params: Option<Object<'_>>, out: &mut JsonWriter<'_>) {
+        let mut name = [0u8; 64];
+        let asked = params
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str);
+        let prompt = match asked {
+            Some(text) => prompts::find(text.decode_prefix_into(&mut name).0),
+            None => None,
+        };
+        let Some(prompt) = prompt else {
+            rpc::write_error(out, Some(id), INVALID_PARAMS, "no such prompt");
+            return;
+        };
+        let arguments = params
+            .and_then(|params| params.get("arguments"))
+            .and_then(Value::as_object);
+        let mark = out.mark();
+        let mut written = Ok(());
+        rpc::write_result(out, id, |out| {
+            written = prompts::write_get(prompt, arguments, out)
+        });
+        if let Err(prompts::PromptError::Argument(argument)) = written {
+            out.rewind(mark);
+            let mut message = [0u8; 96];
+            let mut text = Text::new(&mut message);
+            text.put("the prompt needs the argument ");
+            text.put(argument);
+            text.put(" as text of at most 256 bytes");
+            let length = text.length;
+            rpc::write_error(out, Some(id), INVALID_PARAMS, text_prefix(&message, length));
+        }
+    }
+
+    fn read_resource(
+        &mut self,
+        id: &[u8],
+        params: Option<Object<'_>>,
+        system: &mut impl System,
+        out: &mut JsonWriter<'_>,
+    ) {
+        let mut uri_text = [0u8; 64];
+        let asked = params
+            .and_then(|params| params.get("uri"))
+            .and_then(Value::as_str);
+        let uri = match asked {
+            Some(text) => text.decode_prefix_into(&mut uri_text).0,
+            None => "",
+        };
+        match uri {
+            INSTRUCTIONS_RESOURCE => {
+                let mut grants = [0u8; 192];
+                let length = self.grants_text(system, &mut grants);
+                let grants = text_prefix(&grants, length);
+                rpc::write_result(out, id, |out| {
+                    write_resource_contents(out, INSTRUCTIONS_RESOURCE, "text/plain", |out| {
+                        write_instructions(out, grants)
+                    })
+                });
+            }
+            GRANTS_RESOURCE => {
+                let now = self.refresh_policy(system);
+                let allowed = self.policy.allowed(&self.agent, now);
+                let mut described = [0u8; 64];
+                let length = allowed.describe(&mut described);
+                let agent = self.agent;
+                let mut json = [0u8; 256];
+                let mut writer = JsonWriter::new(&mut json);
+                writer.begin_object();
+                writer.key("agent");
+                writer.string_lossy(agent.as_bytes());
+                writer.key("grants");
+                writer.string(text_prefix(&described, length));
+                writer.end_object();
+                let json_length = writer.len();
+                let json = text_prefix(&json, json_length);
+                rpc::write_result(out, id, |out| {
+                    write_resource_contents(out, GRANTS_RESOURCE, "application/json", |out| {
+                        out.string(json)
+                    })
+                });
+            }
+            _ => rpc::write_error(out, Some(id), RESOURCE_NOT_FOUND, "Resource not found"),
+        }
+    }
+
+    fn grants_text(&mut self, system: &mut impl System, out: &mut [u8]) -> usize {
+        let now = self.refresh_policy(system);
+        match self.policy.check(&self.agent, None, now) {
+            Decision::Deny(_) => how_to_grant(&self.agent, out),
+            _ => self.policy.allowed(&self.agent, now).describe(out),
+        }
     }
 
     fn initialize(
@@ -666,13 +781,7 @@ impl Server {
             out.key("protocolVersion");
             out.string(chosen);
             out.key("capabilities");
-            out.begin_object();
-            out.key("tools");
-            out.begin_object();
-            out.key("listChanged");
-            out.bool(false);
-            out.end_object();
-            out.end_object();
+            write_capabilities(out);
             out.key("serverInfo");
             out.begin_object();
             out.key("name");
@@ -3175,6 +3284,94 @@ fn write_no_tools(out: &mut JsonWriter<'_>) {
     out.begin_object();
     out.key("tools");
     out.begin_array();
+    out.end_array();
+    out.end_object();
+}
+
+/// The resource holding the server's instructions and the reading agent's grants.
+pub const INSTRUCTIONS_RESOURCE: &str = "eggos://instructions";
+/// The resource holding the reading agent's own grants, as JSON.
+pub const GRANTS_RESOURCE: &str = "eggos://grants";
+/// MCP 2025's error for a resource that does not exist.
+pub const RESOURCE_NOT_FOUND: i64 = -32002;
+
+fn write_capabilities(out: &mut JsonWriter<'_>) {
+    out.begin_object();
+    out.key("tools");
+    out.begin_object();
+    out.key("listChanged");
+    out.bool(false);
+    out.end_object();
+    out.key("prompts");
+    out.begin_object();
+    out.key("listChanged");
+    out.bool(false);
+    out.end_object();
+    out.key("resources");
+    out.begin_object();
+    out.key("listChanged");
+    out.bool(false);
+    out.key("subscribe");
+    out.bool(false);
+    out.end_object();
+    out.end_object();
+}
+
+fn write_resources(out: &mut JsonWriter<'_>) {
+    let listed = [
+        (
+            INSTRUCTIONS_RESOURCE,
+            "instructions",
+            "How to use EggOS's tools",
+            "The server's instructions, as initialize gives them, with your grants.",
+            "text/plain",
+        ),
+        (
+            GRANTS_RESOURCE,
+            "grants",
+            "Your grants",
+            "What this agent may do without asking, as JSON.",
+            "application/json",
+        ),
+    ];
+    out.begin_object();
+    out.key("resources");
+    out.begin_array();
+    for (uri, name, title, description, mime_type) in listed {
+        out.begin_object();
+        out.key("uri");
+        out.string(uri);
+        out.key("name");
+        out.string(name);
+        out.key("title");
+        out.string(title);
+        out.key("description");
+        out.string(description);
+        out.key("mimeType");
+        out.string(mime_type);
+        out.end_object();
+    }
+    out.end_array();
+    out.end_object();
+}
+
+fn write_resource_contents(
+    out: &mut JsonWriter<'_>,
+    uri: &str,
+    mime_type: &str,
+    text: impl FnOnce(&mut JsonWriter<'_>),
+) {
+    out.begin_object();
+    out.key("contents");
+    out.begin_array();
+    out.begin_object();
+    out.key("uri");
+    out.string(uri);
+    out.key("mimeType");
+    out.string(mime_type);
+    out.key("text");
+    text(out);
+    out.end_object();
     out.end_array();
     out.end_object();
 }

@@ -23,6 +23,7 @@ pub mod json;
 pub mod linux;
 pub mod pairing;
 pub mod paths;
+pub mod prompts;
 pub mod rpc;
 pub mod server;
 pub mod session;
