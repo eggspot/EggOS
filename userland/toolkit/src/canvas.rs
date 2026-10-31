@@ -10,6 +10,8 @@ use eggos_font::egg_sans::{self, HEIGHT as GLYPH_HEIGHT};
 pub const INSET_R6: [i32; 6] = [4, 2, 1, 1, 0, 0];
 /// The corner of radius 4.
 pub const INSET_R4: [i32; 4] = [2, 1, 0, 0];
+/// A 4 px tall bar's rounded ends: the slider's track (docs/ux/toolkit-v0.4.md section 1).
+pub const INSET_R2: [i32; 2] = [1, 0];
 /// The circle of diameter 16 (the radio button), top half.
 pub const INSET_R8: [i32; 8] = [5, 3, 2, 1, 1, 0, 0, 0];
 /// The circle of diameter 6 (the radio button's dot), top half.

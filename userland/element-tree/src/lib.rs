@@ -150,12 +150,16 @@ pub enum Role {
     Graphic,
     /// Text the app drew (a Windows program's `TextOut` or `DrawText`).
     Text,
+    /// A slider: its value is `<value> <min>..<max> by <step>` (D199).
+    Slider,
+    /// A dropdown: its value is the chosen option's text, its options its children (D199).
+    ComboBox,
     /// A role this version does not know.
     Unknown,
 }
 
 impl Role {
-    const ALL: [Role; 13] = [
+    const ALL: [Role; 15] = [
         Role::Window,
         Role::Group,
         Role::Label,
@@ -169,6 +173,8 @@ impl Role {
         Role::Progress,
         Role::Graphic,
         Role::Text,
+        Role::Slider,
+        Role::ComboBox,
     ];
 
     /// Its number on the wire.
@@ -200,6 +206,8 @@ impl Role {
             Role::Progress => "progress",
             Role::Graphic => "graphic",
             Role::Text => "text",
+            Role::Slider => "slider",
+            Role::ComboBox => "combo-box",
             Role::Unknown => "unknown",
         }
     }

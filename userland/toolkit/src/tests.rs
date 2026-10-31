@@ -799,3 +799,122 @@ fn acting_on_an_element_does_what_a_person_s_input_does() {
         );
     }
 }
+
+fn slider_tree(value: i32) -> (WidgetTree<4>, WidgetId) {
+    let mut tree = WidgetTree::<4>::new();
+    let root = tree
+        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .unwrap();
+    let slider = tree
+        .add(
+            Some(root),
+            Place::at(16, 16, Length::Px(216), Length::Px(28)),
+            Kind::slider("Speed", 1, 10, 1, value, ""),
+        )
+        .unwrap();
+    tree.resize(320, 300);
+    (tree, slider)
+}
+
+fn left(tree: &mut WidgetTree<4>, x: i32, y: i32, pressed: bool) -> Response {
+    tree.handle(
+        Input::Button {
+            x,
+            y,
+            button: MouseButton::Left,
+            pressed,
+        },
+        0,
+    )
+}
+
+#[test]
+fn a_slider_jumps_to_a_click_and_follows_a_drag_by_whole_steps() {
+    let (mut tree, slider) = slider_tree(5);
+    assert_eq!(
+        left(&mut tree, 150, 30, true),
+        Response::Adjusted(slider, 9)
+    );
+    assert_eq!(left(&mut tree, 150, 30, false), Response::Nothing);
+    assert_eq!(left(&mut tree, 20, 30, true), Response::Adjusted(slider, 1));
+    assert_eq!(
+        tree.handle(Input::PointerMove { x: 300, y: 30 }, 0),
+        Response::Adjusted(slider, 10)
+    );
+    assert_eq!(left(&mut tree, 300, 30, false), Response::Nothing);
+    tree.set_value(slider, 5);
+    assert_eq!(left(&mut tree, 88, 30, true), Response::Nothing);
+    let moved = |tree: &mut WidgetTree<4>, x| tree.handle(Input::PointerMove { x, y: 30 }, 0);
+    assert_eq!(moved(&mut tree, 104), Response::Adjusted(slider, 6));
+    assert_eq!(moved(&mut tree, 108), Response::Nothing);
+    assert_eq!(moved(&mut tree, 112), Response::Adjusted(slider, 7));
+    left(&mut tree, 112, 30, false);
+    tree.set_value(slider, 5);
+    assert_eq!(left(&mut tree, 92, 30, true), Response::Nothing);
+    assert_eq!(moved(&mut tree, 108), Response::Adjusted(slider, 6));
+}
+
+#[test]
+fn a_focused_slider_steps_by_its_keys_and_stays_in_its_range() {
+    let (mut tree, slider) = slider_tree(5);
+    tree.set_focus(Some(slider), 0);
+    let mut key = |code| {
+        tree.handle(
+            Input::Key {
+                code,
+                pressed: true,
+                modifiers: Modifiers::default(),
+                character: 0,
+            },
+            0,
+        )
+    };
+    for (code, expected) in [
+        (key::RIGHT, Response::Adjusted(slider, 6)),
+        (key::UP, Response::Adjusted(slider, 7)),
+        (key::LEFT, Response::Adjusted(slider, 6)),
+        (key::END, Response::Adjusted(slider, 10)),
+        (key::RIGHT, Response::Nothing),
+        (key::HOME, Response::Adjusted(slider, 1)),
+        (key::PAGE_UP, Response::Adjusted(slider, 10)),
+        (key::PAGE_DOWN, Response::Adjusted(slider, 1)),
+    ] {
+        assert_eq!(key(code), expected, "{code}");
+    }
+}
+
+#[test]
+fn a_slider_s_range_is_snapped_and_set_text_takes_a_number() {
+    let Kind::Slider(odd) = Kind::slider("Odd", 0, 95, 10, 95, "") else {
+        panic!("a slider");
+    };
+    assert_eq!((odd.max, odd.value), (90, 90));
+    let (mut tree, slider) = slider_tree(5);
+    let element = element_of(slider);
+    assert_eq!(
+        tree.act(element, Action::SetText, "7", 0),
+        (Outcome::Done, Response::Adjusted(slider, 7))
+    );
+    assert_eq!(
+        tree.act(element, Action::SetText, "x", 0),
+        (Outcome::NotSupported, Response::Nothing)
+    );
+    let mut buffer = vec![0u8; MAX_TREE_BYTES];
+    let mut writer = TreeWriter::new(&mut buffer);
+    tree.describe(&mut writer);
+    let found = elements(writer.bytes())
+        .map(|each| each.unwrap())
+        .find(|each| each.id == element)
+        .map(|each| {
+            (
+                each.role,
+                each.value.to_vec(),
+                each.flags & flags::FOCUSABLE,
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        found,
+        (Role::Slider, b"7 1..10 by 1".to_vec(), flags::FOCUSABLE)
+    );
+}

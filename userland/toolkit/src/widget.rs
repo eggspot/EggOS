@@ -1,7 +1,7 @@
 //! The widgets (docs/ux/toolkit-v0.3.md sections 4 to 8): what each holds, the size it asks
 //! for, where its parts are, and how it is drawn in each state.
 
-use crate::canvas::{Canvas, INSET_R3, INSET_R4, INSET_R6, INSET_R8, SQUARE};
+use crate::canvas::{Canvas, INSET_R2, INSET_R3, INSET_R4, INSET_R6, INSET_R8, SQUARE};
 use crate::colour;
 use crate::geometry::Rect;
 use crate::input::key;
@@ -39,6 +39,18 @@ pub const MAX_ROWS: usize = 32;
 pub const PROGRESS_HEIGHT: i32 = 8;
 /// A progress bar's value when it is all done.
 pub const PROGRESS_DONE: u16 = 1000;
+/// A slider's track bar's height (docs/ux/toolkit-v0.4.md section 2).
+pub const SLIDER_TRACK_HEIGHT: i32 = 4;
+/// A slider's thumb's diameter.
+pub const SLIDER_THUMB: i32 = 16;
+/// The shortest track a slider takes by its content.
+pub const SLIDER_MIN_TRACK: i32 = 128;
+/// The width of a slider's value, drawn at its right.
+pub const SLIDER_READOUT: i32 = 48;
+/// The gap between a slider's track and its value.
+pub const SLIDER_GAP: i32 = 8;
+/// How many steps PageUp and PageDown move a slider.
+pub const SLIDER_PAGE_STEPS: i32 = 10;
 
 /// Where a widget's left edge goes in its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +233,8 @@ pub enum Kind {
     TextField(Field),
     /// A progress bar, `permille` of it done (docs/ux/desktop-v0.3-gui.md section 9).
     Progress { permille: u16 },
+    /// A slider setting a number in a range (docs/ux/toolkit-v0.4.md section 2).
+    Slider(Slider),
     /// Something the program draws itself, with a word of its own data.
     Custom { painter: Painter, data: u32 },
 }
@@ -336,11 +350,38 @@ impl Kind {
         })
     }
 
+    /// A slider named `name` for agents, from `min` to `max` by `step`, at `value`, its value
+    /// drawn with `unit` after it; `max` lowered to the last value a step reaches and `value`
+    /// snapped to one.
+    pub fn slider(
+        name: &'static str,
+        min: i32,
+        max: i32,
+        step: i32,
+        value: i32,
+        unit: &'static str,
+    ) -> Self {
+        let step = step.max(1);
+        let max = min + (max.max(min) - min) / step * step;
+        let mut slider = Slider {
+            name,
+            value: min,
+            min,
+            max,
+            step,
+            unit,
+            readout: true,
+        };
+        slider.value = slider.snapped(value);
+        Self::Slider(slider)
+    }
+
     /// Whether Tab stops on it.
     pub fn is_focusable(&self) -> bool {
         matches!(
             self,
             Self::Button { .. }
+                | Self::Slider(_)
                 | Self::Checkbox { .. }
                 | Self::Radios { .. }
                 | Self::Cards { .. }
@@ -401,6 +442,13 @@ impl Kind {
             Self::List(list) => (0, list.content_height()),
             Self::TextField(_) => (BUTTON_MIN_WIDTH, CONTROL_HEIGHT),
             Self::Progress { .. } => (BUTTON_MIN_WIDTH, PROGRESS_HEIGHT),
+            Self::Slider(slider) => match slider.readout {
+                true => (
+                    SLIDER_MIN_TRACK + SLIDER_GAP + SLIDER_READOUT,
+                    CONTROL_HEIGHT,
+                ),
+                false => (SLIDER_MIN_TRACK, CONTROL_HEIGHT),
+            },
             Self::Panel { .. }
             | Self::Column { .. }
             | Self::ScrollView { .. }
@@ -938,6 +986,128 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
     }
 }
 
+/// A slider's number and range (docs/ux/toolkit-v0.4.md section 2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slider {
+    /// Its name for agents: the words of the label before it.
+    pub name: &'static str,
+    pub value: i32,
+    pub min: i32,
+    pub max: i32,
+    pub step: i32,
+    /// Drawn after the number: `""`, `" ms"`, `"/s"`.
+    pub unit: &'static str,
+    /// Whether the number is drawn at the right.
+    pub readout: bool,
+}
+
+impl Slider {
+    /// `value` clamped to the range and moved to the nearest step, a half rounding up.
+    pub fn snapped(&self, value: i32) -> i32 {
+        let value = value.clamp(self.min, self.max);
+        let steps = (value - self.min + self.step / 2) / self.step;
+        (self.min + steps * self.step).min(self.max)
+    }
+
+    /// Where its track is in a control at `rect`: all of it but the value and its gap.
+    pub fn track(&self, rect: Rect) -> Rect {
+        let width = match self.readout {
+            true => rect.width - SLIDER_GAP - SLIDER_READOUT,
+            false => rect.width,
+        };
+        Rect::new(rect.x, rect.y, width.max(SLIDER_THUMB), rect.height)
+    }
+
+    /// The thumb's centre's x in a control at `rect`.
+    pub fn thumb_x(&self, rect: Rect) -> i32 {
+        let track = self.track(rect);
+        let travel = track.width - SLIDER_THUMB;
+        let span = self.max - self.min;
+        let moved = match span {
+            0 => 0,
+            span => (i64::from(self.value - self.min) * i64::from(travel) / i64::from(span)) as i32,
+        };
+        track.x + SLIDER_THUMB / 2 + moved
+    }
+
+    /// The value the thumb's centre at `x` stands for, in a control at `rect`.
+    pub fn value_at(&self, rect: Rect, x: i32) -> i32 {
+        let track = self.track(rect);
+        let travel = i64::from((track.width - SLIDER_THUMB).max(1));
+        let moved = i64::from((x - track.x - SLIDER_THUMB / 2).clamp(0, travel as i32));
+        let span = i64::from(self.max - self.min);
+        let raw = (moved * span * 2 + travel) / (2 * travel);
+        self.snapped(self.min + raw as i32)
+    }
+}
+
+fn paint_slider(canvas: &mut Canvas<'_>, slider: &Slider, rect: Rect, look: Look) {
+    let track = slider.track(rect);
+    let bar = Rect::new(
+        track.x,
+        rect.y + (rect.height - SLIDER_TRACK_HEIGHT) / 2,
+        track.width,
+        SLIDER_TRACK_HEIGHT,
+    );
+    canvas.rounded(bar, &INSET_R2, colour::PROGRESS_TRACK);
+    let thumb_x = slider.thumb_x(rect);
+    if look.enabled && thumb_x > bar.x {
+        let previous = canvas.narrow(Rect::new(bar.x, bar.y, thumb_x - bar.x, bar.height));
+        canvas.rounded(bar, &INSET_R2, colour::ACCENT);
+        canvas.restore(previous);
+    }
+    let thumb = Rect::new(
+        thumb_x - SLIDER_THUMB / 2,
+        rect.y + (rect.height - SLIDER_THUMB) / 2,
+        SLIDER_THUMB,
+        SLIDER_THUMB,
+    );
+    match look.enabled {
+        true => {
+            let fill = match (look.pressed, look.hovered) {
+                (Some(_), _) => colour::BUTTON_PRIMARY_PRESSED,
+                (None, Some(_)) => colour::BUTTON_PRIMARY_HOVER,
+                (None, None) => colour::BUTTON_PRIMARY,
+            };
+            canvas.rounded(thumb, &INSET_R8, fill);
+        }
+        false => {
+            canvas.rounded(thumb, &INSET_R8, colour::BUTTON);
+            canvas.outline(thumb, &INSET_R8, 1, colour::TEXT_DIM);
+        }
+    }
+    if look.focused {
+        ring(
+            canvas,
+            Rect::new(thumb_x - 13, rect.y + (rect.height - 26) / 2, 26, 26),
+            2,
+            colour::FOCUS_RING,
+        );
+    }
+    if slider.readout {
+        let mut words = crate::text::Text::<32>::new();
+        let _ = core::fmt::Write::write_fmt(
+            &mut words,
+            format_args!("{}{}", slider.value, slider.unit),
+        );
+        let ink = match look.enabled {
+            true => colour::TEXT,
+            false => colour::TEXT_DIM,
+        };
+        let width = text::width(words.as_str());
+        let y = rect.y + (rect.height - LINE_HEIGHT) / 2;
+        line(
+            canvas,
+            rect.right() - width,
+            y,
+            width,
+            words.as_str(),
+            ink,
+            1,
+        );
+    }
+}
+
 fn paint_progress(canvas: &mut Canvas<'_>, rect: Rect, permille: u16) {
     canvas.rounded(rect, &INSET_R4, colour::PROGRESS_TRACK);
     let permille = i32::from(permille.min(PROGRESS_DONE));
@@ -1033,6 +1203,7 @@ pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
         Kind::List(list) => paint_list(canvas, list, rect, look),
         Kind::TextField(field) => paint_field(canvas, field, rect, look),
         Kind::Progress { permille } => paint_progress(canvas, rect, *permille),
+        Kind::Slider(slider) => paint_slider(canvas, slider, rect, look),
         Kind::Custom { painter, data } => painter(canvas, rect, *data),
     }
 }

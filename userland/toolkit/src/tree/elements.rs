@@ -80,6 +80,7 @@ impl<const N: usize> WidgetTree<N> {
             let here = Element::new(element_of(id), parent, Role::Group, bounds(node.rect))
                 .flagged(self.flags_of(id));
             let mut digits = [0u8; 10];
+            let mut range = crate::text::Text::<48>::new();
             let element = match &node.kind {
                 Kind::Panel { .. } | Kind::Column { .. } | Kind::ScrollView { .. } => here,
                 Kind::Label { text, .. } => Element {
@@ -117,6 +118,21 @@ impl<const N: usize> WidgetTree<N> {
                     role: Role::Progress,
                     ..here.valued(decimal(u32::from(*permille), &mut digits))
                 },
+                Kind::Slider(slider) => {
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut range,
+                        format_args!(
+                            "{} {}..{} by {}",
+                            slider.value, slider.min, slider.max, slider.step
+                        ),
+                    );
+                    Element {
+                        role: Role::Slider,
+                        ..here
+                            .named(slider.name.as_bytes())
+                            .valued(range.as_str().as_bytes())
+                    }
+                }
                 Kind::Custom { .. } => Element {
                     role: Role::Graphic,
                     ..here
@@ -254,6 +270,10 @@ impl<const N: usize> WidgetTree<N> {
                 self.set_selected(id, item);
                 (Outcome::Done, Response::Opened(id, item))
             }
+            (Action::SetText, Kind::Slider(_), None) => match text.trim().parse::<i32>() {
+                Ok(wanted) => (Outcome::Done, self.adjust(id, wanted)),
+                Err(_) => (Outcome::NotSupported, Response::Nothing),
+            },
             (Action::SetText, Kind::TextField(_), None) => {
                 self.set_text(id, text);
                 (Outcome::Done, Response::Edited(id))

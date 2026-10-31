@@ -39,6 +39,8 @@ pub enum Response {
     Opened(WidgetId, usize),
     /// A text field's text changed.
     Edited(WidgetId),
+    /// A slider's value changed to this, by a key, a click or a step of a drag (D199).
+    Adjusted(WidgetId, i32),
     /// A key no widget used, for the window: its code and modifiers.
     Unused { code: u16, shift: bool },
 }
@@ -99,6 +101,7 @@ pub struct WidgetTree<const N: usize> {
     pressed_inside: bool,
     key_pressed: Option<WidgetId>,
     drag: Option<Drag>,
+    slide: Option<(WidgetId, i32)>,
     window_focused: bool,
     caret_epoch_ms: u32,
     caret_shown: bool,
@@ -127,6 +130,7 @@ impl<const N: usize> WidgetTree<N> {
             pressed_inside: false,
             key_pressed: None,
             drag: None,
+            slide: None,
             window_focused: true,
             caret_epoch_ms: 0,
             caret_shown: true,
@@ -537,7 +541,8 @@ impl<const N: usize> WidgetTree<N> {
             (_, Some(widget)) if widget == id => Some(0),
             _ => None,
         };
-        let drag = self.drag.is_some_and(|drag| drag.widget == id);
+        let drag = self.drag.is_some_and(|drag| drag.widget == id)
+            || self.slide.is_some_and(|(widget, _)| widget == id);
         Look {
             hovered,
             pressed: if drag { Some(THUMB) } else { pressed },
@@ -738,6 +743,9 @@ impl<const N: usize> WidgetTree<N> {
     pub fn handle(&mut self, input: Input, time_ms: u32) -> Response {
         match input {
             Input::PointerMove { x, y } => {
+                if let Some((id, grab)) = self.slide {
+                    return self.slide_to(id, x - grab);
+                }
                 self.pointer_moved(x, y);
                 Response::Nothing
             }
@@ -893,6 +901,16 @@ impl<const N: usize> WidgetTree<N> {
         if target.part == THUMB {
             return self.thumb_pressed(id, y);
         }
+        if let (Some(Kind::Slider(slider)), Some(rect)) = (self.kind(id).copied(), self.rect(id)) {
+            let thumb_x = slider.thumb_x(rect);
+            let grab = match (x - thumb_x).abs() <= widget::SLIDER_THUMB / 2 {
+                true => x - thumb_x,
+                false => 0,
+            };
+            self.slide = Some((id, grab));
+            self.damage_widget(id);
+            return self.slide_to(id, x - grab);
+        }
         let double = self.last_click.is_some_and(|(last, at)| {
             last == target && time_ms.wrapping_sub(at) <= DOUBLE_CLICK_MS
         });
@@ -958,7 +976,53 @@ impl<const N: usize> WidgetTree<N> {
         });
     }
 
+    fn slide_to(&mut self, id: WidgetId, thumb_x: i32) -> Response {
+        let (Some(Kind::Slider(slider)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
+        else {
+            return Response::Nothing;
+        };
+        self.adjust(id, slider.value_at(rect, thumb_x))
+    }
+
+    pub(crate) fn adjust(&mut self, id: WidgetId, wanted: i32) -> Response {
+        let Some(Kind::Slider(slider)) = self.kind(id).copied() else {
+            return Response::Nothing;
+        };
+        let value = slider.snapped(wanted);
+        if value == slider.value {
+            return Response::Nothing;
+        }
+        self.set_value(id, value);
+        Response::Adjusted(id, value)
+    }
+
+    /// A slider's value.
+    pub fn value(&self, id: WidgetId) -> Option<i32> {
+        match self.kind(id)? {
+            Kind::Slider(slider) => Some(slider.value),
+            _ => None,
+        }
+    }
+
+    /// Sets slider `id` to `value`, snapped to its steps and clamped to its range, without a
+    /// response.
+    pub fn set_value(&mut self, id: WidgetId, value: i32) {
+        if !matches!(self.kind(id), Some(Kind::Slider(_))) {
+            return;
+        }
+        self.change(id, |kind| {
+            if let Kind::Slider(slider) = kind {
+                slider.value = slider.snapped(value);
+            }
+        });
+    }
+
     fn left_released(&mut self, x: i32, y: i32) -> Response {
+        if let Some((id, _)) = self.slide.take() {
+            self.damage_widget(id);
+            self.set_hover(self.hit(x, y));
+            return Response::Nothing;
+        }
         if let Some(drag) = self.drag.take() {
             self.damage_widget(drag.widget);
             self.set_hover(self.hit(x, y));
@@ -1044,6 +1108,19 @@ impl<const N: usize> WidgetTree<N> {
                 _ => unused,
             },
             Kind::Checkbox { .. } if code == key::SPACE => self.activate(id, 0),
+            Kind::Slider(slider) => {
+                let page = slider.step * widget::SLIDER_PAGE_STEPS;
+                let wanted = match code {
+                    key::RIGHT | key::UP => slider.value.saturating_add(slider.step),
+                    key::LEFT | key::DOWN => slider.value.saturating_sub(slider.step),
+                    key::HOME => slider.min,
+                    key::END => slider.max,
+                    key::PAGE_UP => slider.value.saturating_add(page),
+                    key::PAGE_DOWN => slider.value.saturating_sub(page),
+                    _ => return self.default_or(code, unused),
+                };
+                self.adjust(id, wanted)
+            }
             Kind::Radios {
                 count, selected, ..
             } => {
