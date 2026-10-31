@@ -11418,7 +11418,12 @@ the license, by an explicit instruction recorded here.
   `MADV_WIPEONFORK`'s zeros). The `MADV_DONTFORK` child touches the page with Rust std's own
   `SIGSEGV` handler still in place, as on Linux: the handler runs on the alternate stack the
   child inherited, sees the fault is not a stack overflow, resets itself to the default and
-  returns, and the repeated fault ends the child with `SIGSEGV`.
+  returns, and the repeated fault ends the child with `SIGSEGV`. That holds on RISC-V only
+  since the return trampoline went to the bottom of the gap below the stack, where `mmap`
+  never places anything (superseding D64's placement): mapped where `mmap` would put it, the
+  first handler's trampoline filled the very hole `MADV_DONTFORK` left in the child, so the
+  repeated read found the trampoline's code instead of faulting. Linux's vDSO, mapped at
+  exec, cannot.
 - **Decided without research.** Shared file pages read in full when a mapping is made rather
   than when touched, and past the end read as zeros rather than `SIGBUS`, to reuse the lent
   frames that memory files already use (their limits come with them: no `mremap`,

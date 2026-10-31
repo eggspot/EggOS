@@ -4,9 +4,12 @@
 //! no vDSO yet, so it maps a page of its own with just this code. x86_64 has none: a handler
 //! without `SA_RESTORER` cannot return, and Linux sends `SIGSEGV` instead of running it.
 //!
-//! The page is the process's own, read-only and executable, mapped where `mmap` would put it
-//! the first time a handler needs it: a process that never runs one pays nothing, not even at
-//! exec. It holds a `nop` and then the call, and handlers return to the call: unwinders and
+//! The page is the process's own, read-only and executable, mapped the first time a handler
+//! needs it: a process that never runs one pays nothing, not even at exec. It goes at the
+//! bottom of the gap kept below the stack, where `mmap` never places anything, so it never
+//! lands in a hole the program made and may still touch (a range it unmapped, or one a
+//! `fork` left out for `MADV_DONTFORK`), as Linux's vDSO, mapped at exec, never does; only if
+//! the program mapped something there itself does it go where `mmap` would put it. It holds a `nop` and then the call, and handlers return to the call: unwinders and
 //! debuggers recognise these exact instructions as a signal trampoline, and some look one
 //! byte before the return address, which the `nop` keeps inside it. The real vDSO, shared and
 //! mapped at exec, will take it over.
@@ -45,12 +48,19 @@ pub fn address<P: Platform>(process: &Process<P>) -> Option<u64> {
     if mapped != 0 {
         return Some(mapped + ENTRY);
     }
-    let placement = Placement::Anywhere {
+    let stack_gap_bottom = super::memory::mmap_top::<P>();
+    let anywhere = Placement::Anywhere {
         hint: None,
         floor: MINIMUM_ADDRESS,
-        top: super::memory::mmap_top::<P>(),
+        top: stack_gap_bottom,
     };
-    let page = process.map_filled_page(placement, Attributes::USER_TEXT, code)?;
+    let page = process
+        .map_filled_page(
+            Placement::Exactly(stack_gap_bottom),
+            Attributes::USER_TEXT,
+            code,
+        )
+        .or_else(|| process.map_filled_page(anywhere, Attributes::USER_TEXT, code))?;
     process.signals().lock().set_trampoline(page);
     Some(page + ENTRY)
 }

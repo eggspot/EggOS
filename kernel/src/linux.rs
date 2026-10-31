@@ -4223,6 +4223,31 @@ mod tests {
         handle_first(process, context, UserExit::Syscall)
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
+    #[test]
+    fn the_return_trampoline_never_fills_a_hole_the_program_made() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let anywhere = crate::process::Placement::Anywhere {
+            hint: None,
+            floor: super::exec::MINIMUM_ADDRESS,
+            top: super::memory::mmap_top::<P>(),
+        };
+        let hole = process
+            .map_region(anywhere, FRAME_SIZE, Some(Attributes::USER_READ_WRITE))
+            .unwrap();
+        process.unmap_range(hole, hole + FRAME_SIZE).unwrap();
+        let entry = super::trampoline::address(&process).unwrap();
+        let stack_gap_bottom = super::memory::mmap_top::<P>();
+        assert_eq!(entry, stack_gap_bottom + 4);
+        assert_eq!(
+            process.region(stack_gap_bottom).unwrap().attributes,
+            Some(Attributes::USER_TEXT)
+        );
+        assert!(process.region(hole).is_none());
+    }
+
     #[test]
     fn handlers_run_on_linux_s_frames_and_return_with_rt_sigreturn() {
         let _frames = frames_for_test();
