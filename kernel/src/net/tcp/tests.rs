@@ -83,6 +83,30 @@ fn a_full_backlog_drops_syns_and_a_closed_listener_resets_what_waits() {
 }
 
 #[test]
+fn a_syn_from_the_network_makes_a_connection_without_the_adapter_lock_its_receive_path_holds() {
+    let listener = Listener::listen((Ipv4Address::UNSPECIFIED, 47_041), 4).unwrap();
+    let syn = Segment {
+        header: tcp::Header {
+            source_port: 47_042,
+            destination_port: 47_041,
+            sequence: 1_000,
+            flags: flags::SYN,
+            window: 65_535,
+            mss: Some(1_460),
+            ..tcp::Header::default()
+        },
+        data: &[],
+    };
+    let remote = Ipv4Address::new(10, 0, 2, 2);
+    let local = Ipv4Address::new(10, 0, 2, 15);
+    let held = crate::net::ADAPTER.lock();
+    assert!(deliver::<P>(remote, local, &syn, 1_460));
+    drop(held);
+    assert_eq!(listener.state.lock().pending, 1);
+    listener.close();
+}
+
+#[test]
 fn closing_with_unread_bytes_resets_the_connection() {
     let listener = Listener::listen((LOOPBACK, 47_031), 4).unwrap();
     let client = Stream::connect::<P>((LOOPBACK, 47_032), (LOOPBACK, 47_031)).unwrap();

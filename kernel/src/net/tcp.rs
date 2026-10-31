@@ -527,13 +527,15 @@ fn take_outgoing() -> Option<Outgoing> {
     TABLE.lock().as_mut()?.outbox.pop_front()
 }
 
-/// Takes in `segment`, which came from `source` to `destination`, this machine: hands it to
-/// its connection, or makes a connection for a listener's SYN, or answers it with a reset.
-/// Whether a connection took it.
+/// Takes in `segment`, which came from `source` to `destination`, this machine, over a link
+/// that carries segments of at most `link_mss` bytes: hands it to its connection, or makes a
+/// connection for a listener's SYN, or answers it with a reset. Whether a connection took it.
+/// It takes no lock of the adapter, whose receive path calls it.
 pub fn deliver<P: Platform>(
     source: Ipv4Address,
     destination: Ipv4Address,
     segment: &Segment<'_>,
+    link_mss: u16,
 ) -> bool {
     let now = now_ms::<P>();
     let local = (destination, segment.header.destination_port);
@@ -576,7 +578,7 @@ pub fn deliver<P: Platform>(
     }
     let syn = segment.has(flags::SYN) && !segment.has(flags::ACK) && !segment.has(flags::RST);
     if syn && let Some(listener) = find_listener(destination, local.1) {
-        return accept_syn::<P>(&listener, local, remote, segment);
+        return accept_syn::<P>(&listener, local, remote, segment, link_mss);
     }
     let mut reset = [0u8; tcp::HEADER_BYTES];
     if let Some(length) = tcp::write_reset_for(&mut reset, source, destination, segment) {
@@ -590,14 +592,12 @@ fn accept_syn<P: Platform>(
     local: (Ipv4Address, u16),
     remote: (Ipv4Address, u16),
     segment: &Segment<'_>,
+    link_mss: u16,
 ) -> bool {
     if !listener.has_room() || !crate::heap::may_grow_for_user(core::mem::size_of::<Stream>()) {
         return false;
     }
-    let mss = match is_local(remote.0) {
-        true => MSS,
-        false => super::tcp_mss().min(MSS),
-    };
+    let mss = link_mss.min(MSS);
     let Some(connection) = Connection::accept(local, remote, segment, initial_sequence::<P>(), mss)
     else {
         return false;
@@ -705,7 +705,7 @@ fn run_once<P: Platform>() -> bool {
             if let Some(arrived) =
                 tcp::parse(outgoing.source, outgoing.destination, &outgoing.bytes)
             {
-                deliver::<P>(outgoing.source, outgoing.destination, &arrived);
+                deliver::<P>(outgoing.source, outgoing.destination, &arrived, MSS);
                 delivered = true;
             }
         }

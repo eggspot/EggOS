@@ -176,6 +176,7 @@ pub fn poll<P: Platform>() -> bool {
             frame,
         } = &mut **adapter;
         interface.set_link(device.is_link_up(), now);
+        let link_mss = interface.tcp_mss();
         for _ in 0..FRAMES_PER_POLL {
             let Some(length) = device.receive(frame) else {
                 break;
@@ -187,7 +188,7 @@ pub fn poll<P: Platform>() -> bool {
                 &mut |bytes| {
                     let _ = device.transmit(bytes);
                 },
-                &mut |delivery| delivered |= deliver::<P>(delivery),
+                &mut |delivery| delivered |= deliver::<P>(delivery, link_mss),
             );
         }
         interface.poll(now, &mut |bytes| {
@@ -204,13 +205,13 @@ pub fn poll<P: Platform>() -> bool {
     delivered
 }
 
-fn deliver<P: Platform>(delivery: Delivery<'_>) -> bool {
+fn deliver<P: Platform>(delivery: Delivery<'_>, link_mss: u16) -> bool {
     match delivery {
         Delivery::Tcp {
             source,
             destination,
             segment,
-        } => tcp::deliver::<P>(source, destination, &segment),
+        } => tcp::deliver::<P>(source, destination, &segment, link_mss),
         other => endpoints::deliver(other),
     }
 }
