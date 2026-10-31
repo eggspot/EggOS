@@ -16330,3 +16330,33 @@ the license, by an explicit instruction recorded here.
   paths it copies as text, AppKit's `NSPasteboard`, Wayland's `wl_data_device` and the primary
   selection bridged to it, `CF_TEXT` and other formats, a QEMU check that copies from the Text
   Editor into a Windows edit.
+
+## D198 CPU time and CPU affinity: ticks counted at every switch, `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`, `getrusage`, `times`, `sched_setaffinity` and `taskset` (batch part 51; M4's SMP follow-ups; extends D43, D44, D73, D117) — Decided by the build loop
+
+- CPU time: each thread keeps the clock ticks it has run (`ran`) and when its turn began
+  (`since`); a switch reads the clock once, stamps the next thread and charges the previous
+  one, and a user thread also adds its turn to its process's account, an `AtomicU64` behind an
+  `Arc` that the process's memory holds (out of line: `Process` stays in its size class), which
+  the threads sharing that memory share. `clock_gettime` and `clock_getres` answer
+  `CLOCK_PROCESS_CPUTIME_ID` (the account plus the caller's running turn) and
+  `CLOCK_THREAD_CPUTIME_ID`; `getrusage` reports `RUSAGE_SELF` and `RUSAGE_THREAD` as user
+  time (`RUSAGE_CHILDREN` reads 0); `times` reports the process's user time in `USER_HZ` (100)
+  ticks and returns the ticks since boot. Kernel time is not told apart from user time yet: all
+  of it counts as user time.
+- Affinity: each thread has a set of CPUs it may run on (a bit per CPU index, all at first).
+  `sched_setaffinity` for the calling thread keeps the online CPUs of the mask, and if the
+  thread is not on one, switches away and makes it ready on the first allowed CPU whose
+  scheduler runs, waking that CPU; stealing (D44) never takes a thread to a CPU its set
+  excludes; a new thread takes the spawning thread's set and is placed on an allowed CPU.
+  `sched_getaffinity` reports the set. `taskset <mask>|-c <list> <command>...` sets the set,
+  then runs the command from `/bin` with the program's environment.
+- Choices made without research: the account follows the memory, not the process id, so a
+  `vfork`ed child's time until `execve` counts to its parent; CPUs past the first 64 are always
+  allowed; only the calling thread's affinity can be set (another id is `ESRCH`).
+- Cost: the switch path gains one clock read, two stores and, for a user thread, one atomic
+  add; the switch benchmarks measure it in the build phase.
+- Check. Host tests: the CPU clocks, `getrusage` with each `who` and a bad address, `times`;
+  `taskset`'s masks and lists, the command run from `/bin` and refusals.
+- Not yet: system time apart from user time, children's times in `getrusage` and `times`,
+  `pthread_getcpuclockid`'s per-thread clock ids, another thread's or process's affinity, the
+  CPU column in `ps` and the task manager, the invariant-TSC check, per-CPU run-queue locks.
