@@ -1,3 +1,4 @@
+use crate::certificate;
 use crate::chain::{self, CertificateError, NoRoots, TrustAnchors};
 use crate::client::{
     self, Buffers, CipherSuite, Error, Protection, RANDOMNESS_BYTES, Settings, Stopped, Transport,
@@ -406,5 +407,132 @@ fn errors_describe_themselves() {
         CertificateError::Expired
             .description()
             .contains("date --sync")
+    );
+}
+
+const SERVER_KEY: [u8; 32] = [
+    0xc9, 0xaf, 0xa9, 0xd8, 0x45, 0xba, 0x75, 0x16, 0x6b, 0x5c, 0x21, 0x57, 0x67, 0xb1, 0xd6, 0x93,
+    0x4e, 0x50, 0xc3, 0xdb, 0x36, 0xe8, 0x9b, 0x12, 0x7b, 0x8a, 0x62, 0x2b, 0x12, 0x0f, 0x67, 0x21,
+];
+const OCTOBER_2026: i64 = 1_793_000_000;
+
+fn own_certificate(names: &[certificate::Name<'_>]) -> Vec<u8> {
+    let request = certificate::Request {
+        private_key: &SERVER_KEY,
+        names,
+        serial: [0x9a; certificate::SERIAL_BYTES],
+        not_before: OCTOBER_2026,
+        not_after: OCTOBER_2026 + 10 * 365 * 86_400,
+    };
+    let mut out = [0u8; certificate::MAX_CERTIFICATE_BYTES];
+    let length = certificate::self_signed(&request, &mut out).unwrap();
+    out[..length].to_vec()
+}
+
+#[test]
+fn eggos_signs_its_own_certificate_and_a_client_pinning_it_accepts_it() {
+    let names = [
+        certificate::Name::Host(b"eggos.local"),
+        certificate::Name::Ipv4([10, 0, 2, 15]),
+    ];
+    let der = own_certificate(&names);
+    let parsed = Certificate::parse(&der).unwrap();
+    assert!(parsed.is_valid_at(OCTOBER_2026 + 86_400));
+    assert!(!parsed.is_valid_at(OCTOBER_2026 - 1));
+    assert!(parsed.names_host(b"eggos.local"));
+    assert!(parsed.names_host(b"10.0.2.15"));
+    assert!(!parsed.names_host(b"other.local"));
+    assert!(parsed.is_signed_by(&parsed.public_key));
+    let mut pinned = Roots(vec![der.clone()]);
+    for host in [&b"eggos.local"[..], b"10.0.2.15"] {
+        assert!(chain::verify(&[&der], host, OCTOBER_2026 + 60, &mut pinned).is_ok());
+    }
+    assert_eq!(
+        chain::verify(
+            &[&der],
+            b"eggos.local",
+            OCTOBER_2026 + 60,
+            &mut Roots(vec![root()])
+        )
+        .err(),
+        Some(CertificateError::UntrustedIssuer)
+    );
+    assert_eq!(der, own_certificate(&names));
+}
+
+#[test]
+fn eggos_certificates_cross_2050_in_generalized_time_and_refuse_bad_requests() {
+    let names = [certificate::Name::Host(b"eggos.local")];
+    let request = certificate::Request {
+        private_key: &SERVER_KEY,
+        names: &names,
+        serial: [1; certificate::SERIAL_BYTES],
+        not_before: OCTOBER_2026,
+        not_after: 2_556_143_999,
+    };
+    let mut out = [0u8; certificate::MAX_CERTIFICATE_BYTES];
+    let length = certificate::self_signed(&request, &mut out).unwrap();
+    let parsed = Certificate::parse(&out[..length]).unwrap();
+    assert!(parsed.is_valid_at(2_556_143_999));
+    assert!(!parsed.is_valid_at(2_556_144_000));
+    for bad in [
+        certificate::Request {
+            names: &[],
+            ..request
+        },
+        certificate::Request {
+            names: &[certificate::Name::Host(b"bad name")],
+            ..request
+        },
+    ] {
+        assert_eq!(
+            certificate::self_signed(&bad, &mut out),
+            Err(certificate::BuildError::BadNames)
+        );
+    }
+    assert_eq!(
+        certificate::self_signed(
+            &certificate::Request {
+                not_after: OCTOBER_2026 - 1,
+                ..request
+            },
+            &mut out
+        ),
+        Err(certificate::BuildError::BadValidity)
+    );
+    assert_eq!(
+        certificate::self_signed(
+            &certificate::Request {
+                private_key: &[0; 32],
+                ..request
+            },
+            &mut out
+        ),
+        Err(certificate::BuildError::InvalidKey)
+    );
+    assert_eq!(
+        certificate::self_signed(&request, &mut out[..100]),
+        Err(certificate::BuildError::TooLarge)
+    );
+}
+
+#[test]
+fn eggos_certificates_read_back_from_their_pem_and_show_their_fingerprint() {
+    let der = own_certificate(&[certificate::Name::Ipv4([192, 168, 1, 20])]);
+    let mut text = vec![0u8; certificate::pem_bytes(der.len())];
+    let length = certificate::pem(&der, &mut text).unwrap();
+    assert_eq!(length, text.len());
+    assert!(certificate::pem(&der, &mut text[..length - 1]).is_none());
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.lines().all(|line| line.len() <= 64));
+    assert_eq!(decode(&text, 13), vec![der.clone()]);
+    let shown = certificate::fingerprint_text(&certificate::fingerprint(&der));
+    let shown = core::str::from_utf8(&shown).unwrap();
+    assert_eq!(shown.len(), 95);
+    assert_eq!(shown.split(':').count(), 32);
+    assert!(
+        shown
+            .split(':')
+            .all(|pair| pair.len() == 2 && pair.bytes().all(|byte| byte.is_ascii_hexdigit()))
     );
 }
