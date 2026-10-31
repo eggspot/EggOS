@@ -260,8 +260,11 @@ unsafe extern "efiapi" fn nt_read_file(
         return nt_status::INVALID_HANDLE;
     };
     let length = length as usize;
-    // SAFETY: `NtReadFile`'s contract: `buffer` holds `length` writable bytes.
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buffer, length) };
+    let buffer = match length {
+        0 => &mut [][..],
+        // SAFETY: `NtReadFile`'s contract: `buffer` holds `length` writable bytes.
+        _ => unsafe { core::slice::from_raw_parts_mut(buffer, length) },
+    };
     // SAFETY: `NtReadFile`'s contract: null or a readable offset.
     let result = match unsafe { offset(byte_offset) } {
         Some(at) => linux::read_at(fd, buffer, at),
@@ -297,8 +300,11 @@ unsafe extern "efiapi" fn nt_write_file(
     let Some(fd) = fd_of(handle) else {
         return nt_status::INVALID_HANDLE;
     };
-    // SAFETY: `NtWriteFile`'s contract: `buffer` holds `length` readable bytes.
-    let bytes = unsafe { core::slice::from_raw_parts(buffer, length as usize) };
+    let bytes = match length {
+        0 => &[][..],
+        // SAFETY: `NtWriteFile`'s contract: `buffer` holds `length` readable bytes.
+        _ => unsafe { core::slice::from_raw_parts(buffer, length as usize) },
+    };
     // SAFETY: `NtWriteFile`'s contract: null or a readable offset.
     let result = match unsafe { offset(byte_offset) } {
         Some(at) => linux::write_all_at(fd, bytes, at),

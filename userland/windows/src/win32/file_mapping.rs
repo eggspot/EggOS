@@ -354,9 +354,9 @@ extern "efiapi" fn flush_view_of_file(address: usize, bytes: usize) -> Bool {
         let start = address & !(linux::PAGE_SIZE - 1);
         let end = match bytes {
             0 => view.base + view.length,
-            _ => (address + bytes).min(view.base + view.length),
+            _ => address.saturating_add(bytes).min(view.base + view.length),
         };
-        Some((start, end - start))
+        Some((start, end.checked_sub(start)?))
     });
     let Some((start, length)) = range else {
         return fail(error::INVALID_ADDRESS, FALSE);

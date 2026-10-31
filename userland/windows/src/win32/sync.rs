@@ -404,6 +404,12 @@ fn acquire(kind: &mut Kind, caller: u32, shared: Option<&mut Shared>) -> bool {
     false
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObjectIdentity {
+    Local(usize),
+    Named(usize),
+}
+
 enum Check {
     Done(u32),
     Sleep { sequence: u32, polling: bool },
@@ -413,10 +419,18 @@ const PROCESS_POLL_NANOSECONDS: u64 = 10_000_000;
 
 fn check(handles: &[usize], wait_all: bool, caller: u32) -> Result<Check, u32> {
     TABLE.with(|table| {
+        let mut identities = [ObjectIdentity::Local(0); MAXIMUM_WAIT_OBJECTS];
         for (index, handle) in handles.iter().enumerate() {
-            object(table, *handle).ok_or(error::INVALID_HANDLE)?;
-            if wait_all && handles[..index].contains(handle) {
-                return Err(error::INVALID_PARAMETER);
+            let found = object(table, *handle).ok_or(error::INVALID_HANDLE)?;
+            let identity = match &found.kind {
+                Kind::Named(reference) => ObjectIdentity::Named(reference.index()),
+                _ => ObjectIdentity::Local(core::ptr::from_mut(found) as usize),
+            };
+            if index < identities.len() {
+                if wait_all && identities[..index].contains(&identity) {
+                    return Err(error::INVALID_PARAMETER);
+                }
+                identities[index] = identity;
             }
         }
         let mut any_named = false;

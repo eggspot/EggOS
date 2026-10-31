@@ -112,11 +112,10 @@ pub(super) fn finish_ready_reads(handles: &[usize]) -> bool {
         let Some(read) = PENDING.with(|reads| reads.take_with_event(*handle)) else {
             continue;
         };
-        if readable(read.fd) {
+        if readable(read.fd) || !keep(read) {
             finish_pending(&read);
         } else {
             waiting = true;
-            keep(read);
         }
     }
     refresh_any_pending();
