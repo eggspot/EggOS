@@ -283,6 +283,7 @@ pub trait System {
     ) -> Result<Option<usize>, Errno>;
     fn random(&mut self, out: &mut [u8]) -> Result<(), Errno>;
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno>;
+    fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno>;
     fn terminal_columns(&mut self, descriptor: usize) -> Option<u16>;
 }
 
@@ -502,6 +503,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
         (**self).signal_init(signal)
+    }
+
+    fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno> {
+        (**self).send_signal(pid, signal)
     }
 
     fn terminal_columns(&mut self, descriptor: usize) -> Option<u16> {

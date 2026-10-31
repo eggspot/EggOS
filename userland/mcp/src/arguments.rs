@@ -85,6 +85,11 @@ pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
 /// Why a call's arguments are refused.
+/// The signals MCP's `kill` sends, `TERM` its default (D200).
+pub const SIGNAL_NAMES: [&str; 9] = [
+    "TERM", "KILL", "INT", "HUP", "QUIT", "STOP", "CONT", "USR1", "USR2",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentProblem {
     /// `arguments` is not an object.
@@ -176,6 +181,10 @@ pub enum ArgumentProblem {
     BadLogTag,
     /// `limit` is not a whole number from 1 to the tool's page size (D164).
     BadLimit,
+    /// `kill`'s `pid` is not a whole number from 1 (D200).
+    BadPid,
+    /// `kill`'s `signal` is not one of [`SIGNAL_NAMES`] (D200).
+    BadSignal,
     /// `after` is not a cursor a page ended with (D164).
     BadCursor,
     /// `ln`'s `target` is empty, longer than [`MAX_LINK_TARGET_BYTES`], holds a NUL or starts
@@ -311,6 +320,10 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadLogTag => {
                 "tag must be 1 to 64 bytes without spaces, control characters, : and *"
+            }
+            ArgumentProblem::BadPid => "pid must be a process id from ps, a whole number from 1",
+            ArgumentProblem::BadSignal => {
+                "signal must be one of TERM, KILL, INT, HUP, QUIT, STOP, CONT, USR1 and USR2"
             }
             ArgumentProblem::BadLimit => {
                 "limit must be a whole number from 1 to the most a page holds: 500 for ls, 100 \
@@ -544,6 +557,10 @@ pub struct Checked {
     pub host: Option<usize>,
     /// `net_ping`'s count of echo requests.
     pub count: Option<u32>,
+    /// `kill`'s process id (D200).
+    pub pid: Option<u32>,
+    /// `kill`'s signal: its index in [`SIGNAL_NAMES`].
+    pub signal: Option<usize>,
     /// `fetch`'s URL's length, in the content buffer.
     pub url: Option<usize>,
     /// `wm_act`'s element id (D161).
@@ -827,6 +844,27 @@ pub fn check(
         if !is_disk_device(device) {
             return Err(ArgumentProblem::BadDevice);
         }
+    }
+    if tool.kind == Kind::Kill {
+        checked.pid = Some(
+            whole(get("pid"), i32::MAX as u64, ArgumentProblem::BadPid)?
+                .filter(|&pid| pid > 0)
+                .ok_or(ArgumentProblem::BadPid)? as u32,
+        );
+        checked.signal = Some(match get("signal") {
+            None => 0,
+            Some(Value::Str(text)) => {
+                let mut bytes = [0u8; 8];
+                let decoded = text
+                    .decode_into(&mut bytes)
+                    .ok_or(ArgumentProblem::BadSignal)?;
+                SIGNAL_NAMES
+                    .iter()
+                    .position(|name| name.eq_ignore_ascii_case(decoded))
+                    .ok_or(ArgumentProblem::BadSignal)?
+            }
+            Some(_) => return Err(ArgumentProblem::BadSignal),
+        });
     }
     if tool.kind == Kind::DiskFormat {
         checked.label = match get("label") {

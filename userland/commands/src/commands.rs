@@ -6,9 +6,10 @@
 use crate::errors::{
     ALREADY_EXISTS, APP_EXISTS, BAD_CURSOR, DAMAGED, DIALOG_OPEN, ELEMENT_CANNOT, ELEMENT_DISABLED,
     FAILED, INVALID_VALUE, IS_A_FOLDER, NO_SPACE, NO_SUCH_APP, NO_SUCH_COMMAND, NO_SUCH_ELEMENT,
-    NO_SUCH_FILE, NO_SUCH_MENU_ITEM, NO_SUCH_SETTING, NO_SUCH_WINDOW, NO_WINDOW_SERVER,
-    NOT_A_FOLDER, NOT_A_LINK, NOT_AN_APP, NOT_APPLIED, NOT_IN_TRASH, PERMISSION_DENIED,
-    PERSON_ACTIVE, PIXELS_ONLY, READ_ONLY, SETTING_READ_ONLY, TIMED_OUT, TOO_MANY_ENTRIES, USAGE,
+    NO_SUCH_FILE, NO_SUCH_MENU_ITEM, NO_SUCH_PROCESS, NO_SUCH_SETTING, NO_SUCH_WINDOW,
+    NO_WINDOW_SERVER, NOT_A_FOLDER, NOT_A_LINK, NOT_AN_APP, NOT_APPLIED, NOT_IN_TRASH,
+    PERMISSION_DENIED, PERSON_ACTIVE, PIXELS_ONLY, READ_ONLY, SETTING_READ_ONLY, TIMED_OUT,
+    TOO_MANY_ENTRIES, USAGE,
 };
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
@@ -1281,6 +1282,40 @@ pub const CLIP_SET: CommandDefinition = CommandDefinition {
     ],
     examples: &[],
     surface: Surface::Gui("Edit > Copy, Ctrl+C or Cmd+C in any app"),
+};
+
+/// `kill` (D200).
+pub const KILL: CommandDefinition = CommandDefinition {
+    words: &["kill"],
+    summary: "Sends a signal to processes.",
+    description: "Sends the signal, TERM by default, to each process id ps shows; -s or -<name> \
+                  chooses another (KILL, INT, HUP, QUIT, STOP, CONT, USR1, USR2, a name with or \
+                  without SIG, or a number). -l lists the signals' names. Silent on success.",
+    options: &[valued(
+        Some(b's'),
+        None,
+        "signal",
+        ValueType::Text,
+        "The signal to send instead of TERM.",
+    )],
+    operands: &[operand(
+        "pid",
+        ValueType::Integer {
+            minimum: i64::MIN,
+            maximum: i64::MAX,
+        },
+        Count::OneOrMore,
+    )],
+    outputs: NOTHING,
+    max_effect: Effect::Destroy,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_SUCH_PROCESS, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&INVALID_VALUE, 2),
+    ],
+    examples: &[],
+    surface: Surface::Gui("the Task Manager's End task"),
 };
 
 /// `taskset` (D198).
@@ -2943,7 +2978,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 84] = [
+pub const COMMANDS: [CommandDefinition; 85] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -2982,6 +3017,7 @@ pub const COMMANDS: [CommandDefinition; 84] = [
     HELP,
     HWCLOCK,
     IP,
+    KILL,
     LN,
     LOGCAT,
     LS,

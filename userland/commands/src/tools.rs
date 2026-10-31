@@ -752,6 +752,36 @@ pub const APP_ICON: ToolDefinition = ToolDefinition {
     result: ToolResult::Image,
 };
 
+/// `kill` (D200).
+pub const KILL: ToolDefinition = ToolDefinition {
+    name: "kill",
+    title: "Stop a process",
+    description: "Sends a signal to a process, as `kill -s <signal> -- <pid>` does: TERM by \
+                  default, which asks it to end; KILL ends it at once, losing what it has not \
+                  saved; STOP and CONT pause and resume it. pid is an id ps lists. Ending a \
+                  window's program is kinder with wm_close first. Asks the user first, or needs \
+                  confirm: true when the client cannot ask. Needs the run grant.",
+    command: &["kill"],
+    fixed: &[],
+    arguments: &[
+        required(described(
+            optional("pid", JsonType::Integer, Mapping::Operand),
+            "The process id, as ps lists it.",
+        )),
+        described(
+            optional("signal", JsonType::String, Mapping::Option("-s")),
+            "TERM (the default), KILL, INT, HUP, QUIT, STOP, CONT, USR1 or USR2.",
+        ),
+        confirm(GUARD),
+    ],
+    max_effect: Effect::Destroy,
+    grant: Some(Grant::Run),
+    idempotent: false,
+    open_world: false,
+    confirm: Confirmation::Always,
+    result: ToolResult::Text,
+};
+
 /// `clipboard_get` (D197).
 pub const CLIPBOARD_GET: ToolDefinition = ToolDefinition {
     name: "clipboard_get",
@@ -1802,7 +1832,7 @@ pub const AGENT_SHOW: ToolDefinition = reading(
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's and D193's.
-pub const TOOLS: [ToolDefinition; 55] = [
+pub const TOOLS: [ToolDefinition; 56] = [
     LS,
     CAT,
     PS,
@@ -1858,6 +1888,7 @@ pub const TOOLS: [ToolDefinition; 55] = [
     APP_ICON,
     CLIPBOARD_GET,
     CLIPBOARD_SET,
+    KILL,
 ];
 
 impl ToolDefinition {

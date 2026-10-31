@@ -14,6 +14,7 @@ use crate::head::{head, tail};
 use crate::help::help;
 use crate::hwclock::hwclock;
 use crate::ip::ip;
+use crate::kill::kill;
 use crate::links::{ln, readlink};
 use crate::logcat::logcat;
 use crate::ls::{Listing, ls};
@@ -61,6 +62,7 @@ pub enum Utility {
     Help,
     Hwclock,
     Ip,
+    Kill,
     Ln,
     Logcat,
     Ls,
@@ -89,7 +91,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 46] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -110,6 +112,7 @@ impl Utility {
         Self::Help,
         Self::Hwclock,
         Self::Ip,
+        Self::Kill,
         Self::Ln,
         Self::Logcat,
         Self::Ls,
@@ -159,6 +162,7 @@ impl Utility {
             Self::Help => b"help",
             Self::Hwclock => b"hwclock",
             Self::Ip => b"ip",
+            Self::Kill => b"kill",
             Self::Ln => b"ln",
             Self::Logcat => b"logcat",
             Self::Ls => b"ls",
@@ -213,6 +217,7 @@ impl Utility {
             Self::Help => help(output, arguments),
             Self::Hwclock => hwclock(output, arguments),
             Self::Ip => ip(output, arguments),
+            Self::Kill => kill(output, arguments),
             Self::Ln => ln(output, arguments),
             Self::Logcat => logcat(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),

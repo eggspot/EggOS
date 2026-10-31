@@ -143,6 +143,8 @@ pub enum Kind {
     ClipboardGet,
     /// `clipboard_set`: copies text to it (D197).
     ClipboardSet,
+    /// `kill`: sends a signal to a process (D200).
+    Kill,
     /// `disk_list`: the disks (D192).
     DiskList,
     /// `disk_check`: checks an unmounted disk (D192).
@@ -360,7 +362,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 55] = [
+pub const TOOLS: [Tool; 56] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -635,6 +637,11 @@ pub const TOOLS: [Tool; 55] = [
             stdin: Stdin::Content,
             output: Output::Discarded,
         },
+    ),
+    tool(
+        &registry::KILL,
+        Kind::Kill,
+        twin("/bin/kill", &[], Operand::None),
     ),
 ];
 

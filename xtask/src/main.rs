@@ -453,11 +453,11 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 45] = [
+const COREUTILS: [&str; 46] = [
     "agent", "agentlog", "cat", "chmod", "clip", "cp", "date", "device", "df", "echo", "false",
-    "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "ln", "logcat",
-    "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink", "reboot", "rm",
-    "setprop", "sleep", "sync", "tail", "taskset", "tee", "touch", "trash", "true", "uname",
+    "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "kill", "ln",
+    "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink", "reboot",
+    "rm", "setprop", "sleep", "sync", "tail", "taskset", "tee", "touch", "trash", "true", "uname",
     "uptime", "wc", "wm",
 ];
 

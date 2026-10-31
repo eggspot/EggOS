@@ -870,6 +870,14 @@ impl System for Linux {
         Ok(())
     }
 
+    fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno> {
+        call(
+            number::KILL,
+            [pid as isize as usize, signal as usize, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {
         let default_action = [0usize; 4];
         call(

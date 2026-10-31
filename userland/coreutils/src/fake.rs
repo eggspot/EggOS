@@ -199,6 +199,7 @@ pub struct Fake {
     pub capture_calls: usize,
     pub clipboard: Vec<u8>,
     pub affinity: Option<u64>,
+    pub signals_sent: Vec<(i32, u32)>,
     pub executed: Vec<Vec<u8>>,
     pub clipboard_serial: u32,
     pub capture_fails_at: Option<(usize, Errno)>,
@@ -264,6 +265,7 @@ impl Default for Fake {
             capture_calls: 0,
             clipboard: Vec::new(),
             affinity: None,
+            signals_sent: Vec::new(),
             executed: Vec::new(),
             clipboard_serial: 0,
             capture_fails_at: None,
@@ -1265,6 +1267,17 @@ impl System for Fake {
             *byte = self.network.random_counter;
         }
         Ok(())
+    }
+
+    fn send_signal(&mut self, pid: i32, signal: u32) -> Result<(), Errno> {
+        match pid {
+            1 => Err(Errno::EPERM),
+            42 | 43 | 0 | -1 => {
+                self.signals_sent.push((pid, signal));
+                Ok(())
+            }
+            _ => Err(Errno::ESRCH),
+        }
     }
 
     fn signal_init(&mut self, signal: u32) -> Result<(), Errno> {

@@ -1975,6 +1975,7 @@ impl Server {
             text.number(i64::from(limit));
             text.length
         });
+        let mut pid_digits = [0u8; 10];
         let mut words: [&str; MAX_COMMAND_WORDS] = [""; MAX_COMMAND_WORDS];
         let mut count = 0;
         for word in tool.twin.words {
@@ -2007,6 +2008,19 @@ impl Server {
         }
         if let Some(time) = prepared.checked.time.as_ref() {
             push_word(&mut words, &mut count, time.as_str());
+        }
+        if let (Some(pid), Some(signal)) = (prepared.checked.pid, prepared.checked.signal) {
+            push_word(&mut words, &mut count, "-s");
+            push_word(
+                &mut words,
+                &mut count,
+                arguments::SIGNAL_NAMES
+                    .get(signal)
+                    .copied()
+                    .unwrap_or("TERM"),
+            );
+            push_word(&mut words, &mut count, "--");
+            push_word(&mut words, &mut count, decimal_text(pid, &mut pid_digits));
         }
         if let Some(pings) = prepared.checked.count {
             let shown = PING_COUNTS.get(pings as usize).copied().unwrap_or("1");
@@ -4033,6 +4047,20 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
         out.bool(failed);
         out.end_object();
     });
+}
+
+fn decimal_text(value: u32, digits: &mut [u8; 10]) -> &str {
+    let mut at = digits.len();
+    let mut rest = value;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    core::str::from_utf8(&digits[at..]).unwrap_or("0")
 }
 
 #[cfg(test)]

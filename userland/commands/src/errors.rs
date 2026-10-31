@@ -45,6 +45,13 @@ pub const ALREADY_EXISTS: ErrorDefinition = error(
     "Choose another name, or remove what is there first.",
     None,
 );
+/// No process has that id (D200).
+pub const NO_SUCH_PROCESS: ErrorDefinition = error(
+    "no_such_process",
+    Category::NotFound,
+    "The process has ended, or the id is wrong: ps lists the processes.",
+    Some("ps"),
+);
 /// A folder where a file was wanted.
 pub const IS_A_FOLDER: ErrorDefinition = error(
     "is_a_folder",
@@ -393,7 +400,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 53] = [
+pub const ALL: [&ErrorDefinition; 54] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -427,6 +434,7 @@ pub const ALL: [&ErrorDefinition; 53] = [
     &NO_SUCH_SETTING,
     &SETTING_READ_ONLY,
     &INVALID_VALUE,
+    &NO_SUCH_PROCESS,
     &NOT_APPLIED,
     &NO_SUCH_DISK,
     &NO_SUCH_AGENT,
