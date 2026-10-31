@@ -934,14 +934,26 @@ fn a_caps_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
         interrupting: false,
     });
     let mut keyboard = Device::keyboard();
-    send(&mut input.state, &mut keyboard, &tap(key::CAPS_LOCK), SCREEN, 0);
+    send(
+        &mut input.state,
+        &mut keyboard,
+        &tap(key::CAPS_LOCK),
+        SCREEN,
+        0,
+    );
     assert!(input.state.caps_lock());
     input.show_caps_lock();
     assert!(!input.caps_lock_shown);
     input.show_caps_lock();
     assert!(input.caps_lock_shown);
     input.show_caps_lock();
-    send(&mut input.state, &mut keyboard, &tap(key::CAPS_LOCK), SCREEN, 0);
+    send(
+        &mut input.state,
+        &mut keyboard,
+        &tap(key::CAPS_LOCK),
+        SCREEN,
+        0,
+    );
     input.show_caps_lock();
     assert!(!input.caps_lock_shown);
     assert_eq!(*asked.lock().unwrap(), [true, true, false]);

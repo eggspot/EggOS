@@ -373,10 +373,7 @@ pub fn described_file<P: Platform>(
     running.files.file(link.fd).map(Ok)
 }
 
-pub(super) fn may_reach_descriptors<P: Platform>(
-    reader: &Process<P>,
-    target: &Process<P>,
-) -> bool {
+pub(super) fn may_reach_descriptors<P: Platform>(reader: &Process<P>, target: &Process<P>) -> bool {
     use super::credentials::{Ids, Kind};
     if core::ptr::eq(reader, target) {
         return true;
