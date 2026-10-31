@@ -283,3 +283,13 @@ pub unsafe fn call_guest(address: usize, arguments: [usize; 4]) -> Option<usize>
 pub fn guest_fault(signal: i32, pc: u64, x16: u64) -> Option<(Option<TrapCause>, u64)> {
     current()?.guest_fault(signal == crate::fault::SIGTRAP, pc, x16)
 }
+
+/// Completes the guest access of translated code at `pc` that faulted only because its address
+/// is misaligned, on `registers` (`x0`-`x30` then `sp`); false when `pc` is no such access.
+///
+/// # Safety
+/// `registers` must be the faulting thread's registers at `pc`.
+pub unsafe fn complete_misaligned_access(pc: u64, registers: &mut [u64; 32]) -> bool {
+    // SAFETY: the caller's contract.
+    current().is_some_and(|code| unsafe { code.complete_misaligned_access(pc, registers) })
+}

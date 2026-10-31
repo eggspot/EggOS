@@ -144,6 +144,21 @@ fn dispatches(pc: u64) -> bool {
     in_image(pc) || !win32::in_layer_code(pc)
 }
 
+#[cfg(target_arch = "aarch64")]
+fn completed_misaligned_access(pc: u64, context: *mut u8) -> bool {
+    let registers = word(context, UCONTEXT_REGISTERS).cast::<[u64; 32]>();
+    // SAFETY: the kernel's `ucontext_t` for this signal holds `x0` to `x30` and then `sp`,
+    // 8-byte aligned, which `rt_sigreturn` loads back; nothing else uses them meanwhile.
+    let registers = unsafe { &mut *registers };
+    // SAFETY: they are the faulting thread's registers at `pc`.
+    if !unsafe { crate::translation::complete_misaligned_access(pc, registers) } {
+        return false;
+    }
+    // SAFETY: as above, for the `pc` it holds: the program resumes at the next instruction.
+    unsafe { word(context, UCONTEXT_PC).write(pc + INSTRUCTION_SIZE) };
+    true
+}
+
 extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     // SAFETY: the kernel calls this handler (`SA_SIGINFO`) with its `siginfo_t`, whose
     // `si_code` is the third 32-bit word.
@@ -153,6 +168,10 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     // SAFETY: and with its `ucontext_t` for the signal, which holds the interrupted `pc`.
     let pc = unsafe { word(context, UCONTEXT_PC).read() };
     let from_the_processor = code > 0;
+    #[cfg(target_arch = "aarch64")]
+    if from_the_processor && signal == fault::SIGBUS && completed_misaligned_access(pc, context) {
+        return;
+    }
     #[cfg(target_arch = "aarch64")]
     if from_the_processor {
         // SAFETY: the `ucontext_t` holds `x0` to `x30`; `x16` is the ninth pair's first.

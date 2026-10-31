@@ -2,11 +2,13 @@
 //! per import stub and, for the Windows layer, the procedure trampolines, made read-only and
 //! executable once written, with the entries table beside them. [`InstalledCode::call_guest`]
 //! calls translated code from native code through the entry trampoline, on a thread whose
-//! guest state [`new_guest_thread`] made, and [`InstalledCode::guest_fault`] tells a fault
-//! handler where in the guest a trap or fault in translated code happened.
+//! guest state [`new_guest_thread`] made, [`InstalledCode::guest_fault`] tells a fault
+//! handler where in the guest a trap or fault in translated code happened, and
+//! [`InstalledCode::complete_misaligned_access`] completes a guest access that faulted only for
+//! its alignment.
 
 use crate::callback_thunks;
-use crate::trap::{self, TrapCause};
+use crate::trap::{self, OrderedAccess, TrapCause};
 use alloc::vec::Vec;
 use eggos_runtime::syscall::call;
 use eggos_translate::codegen::state;
@@ -380,6 +382,34 @@ impl InstalledCode {
             saved_shadow,
         );
         frame.get(general(RAX))
+    }
+
+    /// Completes the ordered access of translated code at `pc` that raised an alignment fault
+    /// (`SIGBUS`, `BUS_ADRALN`), as x86-64 allows any alignment, on `registers` (`x0`-`x30`
+    /// then `sp`, from the signal's context), and returns true; the handler then resumes after
+    /// it. False when `pc` is not such an access, which leaves the fault to the handler.
+    ///
+    /// # Safety
+    /// `registers` must be the faulting thread's registers at `pc`, so the access's address
+    /// is one the guest itself used.
+    pub unsafe fn complete_misaligned_access(&self, pc: u64, registers: &mut [u64; 32]) -> bool {
+        let inside = pc
+            .checked_sub(self.code as u64)
+            .is_some_and(|offset| offset < self.code_bytes as u64);
+        if !inside || !pc.is_multiple_of(4) {
+            return false;
+        }
+        // SAFETY: `pc` is inside the translated code's mapping, which is readable.
+        let Some(access) = OrderedAccess::of(unsafe { (pc as *const u32).read() }) else {
+            return false;
+        };
+        let address = registers[usize::from(access.base)];
+        if address.is_multiple_of(u64::from(access.bytes)) {
+            return false;
+        }
+        // SAFETY: the caller's contract: the guest made this access to this address.
+        unsafe { access.complete(registers) };
+        true
     }
 
     /// Where in the guest a fault at host `pc` happened when `pc` is in the translated code,

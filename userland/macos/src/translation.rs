@@ -389,6 +389,21 @@ fn word(context: *mut u8, offset: usize) -> u64 {
     unsafe { context.wrapping_add(offset).cast::<u64>().read() }
 }
 
+fn completed_misaligned_access(code: &InstalledCode, pc: u64, context: *mut u8) -> bool {
+    let registers = context.wrapping_add(UCONTEXT_REGISTERS).cast::<[u64; 32]>();
+    // SAFETY: the kernel's `ucontext_t` for this signal holds `x0` to `x30` and then `sp`,
+    // 8-byte aligned, which `rt_sigreturn` loads back; nothing else uses them meanwhile.
+    let registers = unsafe { &mut *registers };
+    // SAFETY: they are the faulting thread's registers at `pc`.
+    if !unsafe { code.complete_misaligned_access(pc, registers) } {
+        return false;
+    }
+    let resume = context.wrapping_add(UCONTEXT_PC).cast::<u64>();
+    // SAFETY: as above, for the `pc` it holds: the program resumes at the next instruction.
+    unsafe { resume.write(pc + 4) };
+    true
+}
+
 extern "C" fn on_fault(signal: c_int, info: *const u8, context: *mut u8) {
     // SAFETY: the kernel calls this handler (`SA_SIGINFO`) with its `siginfo_t`, whose
     // `si_code` is the third 32-bit word.
@@ -400,6 +415,10 @@ extern "C" fn on_fault(signal: c_int, info: *const u8, context: *mut u8) {
     if let Some(translation) = current()
         && code > 0
     {
+        if signal == SIGBUS as c_int && completed_misaligned_access(&translation.code, pc, context)
+        {
+            return;
+        }
         let image = (translation.code.guest_base, translation.code.guest_size);
         let trapped = signal == SIGTRAP as c_int;
         let ended = match translation.code.guest_fault(trapped, pc, x16) {

@@ -16558,3 +16558,22 @@ the license, by an explicit instruction recorded here.
 - **Follow-up.** The translator's `rdtsc`/`rdtscp` lowering (slice 39c) reads `cntvct_el0` and
   `cntfrq_el0`, which still trap under D49; it needs another time source before a program that
   runs `rdtsc` can be translated.
+
+## D207 Translated code's misaligned guest accesses complete in the layers' fault handler — Decided by the build loop (engineering; extends slice 39c's memory order and D191)
+- **Why.** Translated code keeps x86-64's memory order with `ldar`/`ldapr` loads and `stlr`
+  stores (slice 39c). Arm requires those to be naturally aligned (before FEAT_LSE2) and raises
+  an alignment fault otherwise, where x86-64 allows any address. MSVC code makes such accesses
+  routinely (`mov qword [rsp+0xc4], 0` in `other-cpu.exe`'s `main`), so the program ended with
+  an access violation at its first misaligned stack store.
+- **Decision.** On `SIGBUS` at an `ldar`, `ldapr` or `stlr` in translated code whose address is
+  not a multiple of its size, the Windows and macOS layers' handlers complete the access with
+  plain unaligned loads or stores between two full barriers (`dmb ish`), write a load's value
+  into the context's register and resume after the instruction
+  (`eggos_translation_loader::trap::OrderedAccess`,
+  `InstalledCode::complete_misaligned_access`). The order is the ordered instruction's or
+  stronger, and the common, aligned case costs nothing. Exclusive pairs and LSE atomics on a
+  misaligned address (x86's split locks) still fault, as do misaligned accesses to unmapped
+  memory, which now fault inside the handler instead of reporting the guest address.
+- **Follow-up.** A misaligned access costs a signal each time; when a benchmark shows hot ones,
+  patch the faulting instruction into a branch to a barrier-plain-access stub, or use LSE2's
+  relaxed alignment where the CPU has it.
