@@ -13,12 +13,9 @@ use eggos_settings_file::InputPreferences;
 use eggos_toolkit::colour;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
-use eggos_toolkit::widget::{Align, Horizontal, Kind, Length, Place};
+use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
 
 const PADDING: i32 = 16;
-const STEPPER_BUTTON: i32 = 28;
-const STEPPER_VALUE: (i32, i32) = (48, 16);
-const STEPPER_GAP: i32 = 8;
 const STATUS_LINE: i32 = 316;
 
 const SCALES: [&str; 2] = ["1x", "2x"];
@@ -78,44 +75,24 @@ fn show_status(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, text: Option<(&str
     }
 }
 
-/// How a number is stepped and shown.
+/// A preference's range, as its slider sets it (docs/ux/toolkit-v0.4.md section 2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Range {
+    /// What an agent calls it, the words of the label before it.
+    pub name: &'static str,
     /// The smallest value.
     pub low: u32,
     /// The largest value.
     pub high: u32,
-    /// How far one press moves it; the stepper lands on multiples of it and on the ends.
+    /// How far a key moves it.
     pub step: u32,
     /// What follows the number: `""`, `" ms"`, `"/s"`.
     pub unit: &'static str,
 }
 
-impl Range {
-    /// The value one press of `-` gives from `value`.
-    pub const fn down(self, value: u32) -> u32 {
-        let below = match value % self.step {
-            0 => value.saturating_sub(self.step),
-            rest => value - rest,
-        };
-        if below < self.low { self.low } else { below }
-    }
-
-    /// The value one press of `+` gives from `value`.
-    pub const fn up(self, value: u32) -> u32 {
-        let above = (value / self.step + 1) * self.step;
-        if above > self.high { self.high } else { above }
-    }
-
-    fn text(self, value: u32) -> Text<16> {
-        let mut text = Text::new();
-        let _ = write!(text, "{value}{}", self.unit);
-        text
-    }
-}
-
 /// The pointer speed's range.
 pub const SPEED: Range = Range {
+    name: "Pointer speed",
     low: 1,
     high: 10,
     step: 1,
@@ -123,6 +100,7 @@ pub const SPEED: Range = Range {
 };
 /// The repeat delay's range.
 pub const DELAY: Range = Range {
+    name: "Repeat delay",
     low: 150,
     high: 2000,
     step: 50,
@@ -130,78 +108,35 @@ pub const DELAY: Range = Range {
 };
 /// The repeat rate's range.
 pub const RATE: Range = Range {
+    name: "Repeat rate",
     low: 2,
     high: 60,
-    step: 5,
+    step: 1,
     unit: "/s",
 };
 
-#[derive(Debug, Clone, Copy)]
-struct Stepper {
-    minus: WidgetId,
-    value: WidgetId,
-    plus: WidgetId,
+const SLIDER_WIDTH: i32 = 216;
+
+fn slider(
+    tree: &mut WidgetTree<CAPACITY>,
+    pane: WidgetId,
+    y: i32,
     range: Range,
-}
-
-impl Stepper {
-    fn build(
-        tree: &mut WidgetTree<CAPACITY>,
-        pane: WidgetId,
-        y: i32,
-        range: Range,
-        value: u32,
-    ) -> Self {
-        let plus_margin = PADDING;
-        let value_margin = plus_margin + STEPPER_BUTTON + STEPPER_GAP;
-        let minus_margin = value_margin + STEPPER_VALUE.0 + STEPPER_GAP;
-        let minus = add(
-            tree,
-            pane,
-            from_right(minus_margin, y - 6, STEPPER_BUTTON, STEPPER_BUTTON),
-            Kind::button("-", false),
-        );
-        let shown = add(
-            tree,
-            pane,
-            from_right(value_margin, y, STEPPER_VALUE.0, STEPPER_VALUE.1),
-            Kind::Label {
-                text: Text::from(""),
-                colour: colour::TEXT,
-                size: 1,
-                align: Align::Centre,
-            },
-        );
-        let plus = add(
-            tree,
-            pane,
-            from_right(plus_margin, y - 6, STEPPER_BUTTON, STEPPER_BUTTON),
-            Kind::button("+", false),
-        );
-        let stepper = Self {
-            minus,
-            value: shown,
-            plus,
-            range,
-        };
-        stepper.show(tree, value);
-        stepper
-    }
-
-    fn show(&self, tree: &mut WidgetTree<CAPACITY>, value: u32) {
-        tree.set_text(self.value, self.range.text(value).as_str());
-        tree.set_enabled(self.minus, value > self.range.low);
-        tree.set_enabled(self.plus, value < self.range.high);
-    }
-
-    fn pressed(&self, id: WidgetId, value: u32) -> Option<u32> {
-        let next = match id {
-            id if id == self.minus => self.range.down(value),
-            id if id == self.plus => self.range.up(value),
-            _ => return None,
-        };
-        (next != value).then_some(next)
-    }
+    value: u32,
+) -> WidgetId {
+    add(
+        tree,
+        pane,
+        from_right(PADDING, y - 6, SLIDER_WIDTH, CONTROL_HEIGHT),
+        Kind::slider(
+            range.name,
+            range.low as i32,
+            range.high as i32,
+            range.step as i32,
+            value as i32,
+            range.unit,
+        ),
+    )
 }
 
 /// The scale the device's size allows: 2 needs both sides even.
@@ -360,10 +295,10 @@ impl DisplayPane {
 pub struct InputPanes {
     hands: WidgetId,
     scrolling: WidgetId,
-    speed: Stepper,
+    speed: WidgetId,
     mouse_status: WidgetId,
-    delay: Stepper,
-    rate: Stepper,
+    delay: WidgetId,
+    rate: WidgetId,
     keyboard_status: WidgetId,
 }
 
@@ -392,12 +327,12 @@ impl InputPanes {
             Kind::radios(&SCROLLING, 0, true),
         );
         label(tree, mouse, PADDING, 156, "Pointer speed");
-        let speed = Stepper::build(tree, mouse, 156, SPEED, input.pointer_speed);
+        let speed = slider(tree, mouse, 156, SPEED, input.pointer_speed);
         let mouse_status = label(tree, mouse, PADDING, STATUS_LINE, "");
         label(tree, keyboard, 240, 188, "Repeat delay");
-        let delay = Stepper::build(tree, keyboard, 188, DELAY, input.repeat_delay_ms);
+        let delay = slider(tree, keyboard, 188, DELAY, input.repeat_delay_ms);
         label(tree, keyboard, 240, 228, "Repeat rate");
-        let rate = Stepper::build(tree, keyboard, 228, RATE, input.repeat_rate);
+        let rate = slider(tree, keyboard, 228, RATE, input.repeat_rate);
         let panes = Self {
             hands,
             scrolling,
@@ -416,9 +351,9 @@ impl InputPanes {
     pub fn show(&self, tree: &mut WidgetTree<CAPACITY>, input: InputPreferences) {
         tree.set_selected(self.hands, usize::from(input.left_handed));
         tree.set_selected(self.scrolling, usize::from(input.natural_scrolling));
-        self.speed.show(tree, input.pointer_speed);
-        self.delay.show(tree, input.repeat_delay_ms);
-        self.rate.show(tree, input.repeat_rate);
+        tree.set_value(self.speed, input.pointer_speed as i32);
+        tree.set_value(self.delay, input.repeat_delay_ms as i32);
+        tree.set_value(self.rate, input.repeat_rate as i32);
     }
 
     /// Shows the panes afresh: the controls at `facts`, the status lines at their "shown" state.
@@ -472,9 +407,9 @@ impl InputPanes {
             .flatten()
     }
 
-    /// The three steppers' values as shown: speed, delay, rate.
-    pub fn values<'a>(&self, tree: &'a WidgetTree<CAPACITY>) -> [Option<&'a str>; 3] {
-        [self.speed, self.delay, self.rate].map(|stepper| tree.text_of(stepper.value))
+    /// The three sliders' values as shown: speed, delay, rate.
+    pub fn values(&self, tree: &WidgetTree<CAPACITY>) -> [Option<i32>; 3] {
+        [self.speed, self.delay, self.rate].map(|slider| tree.value(slider))
     }
 
     /// Acts on a response, the preferences in force being `input`.
@@ -486,16 +421,14 @@ impl InputPanes {
             Response::Chosen(id, choice) if id == self.scrolling => {
                 InputChange::NaturalScrolling(choice == 1)
             }
-            Response::Activated(id) => {
-                if let Some(speed) = self.speed.pressed(id, input.pointer_speed) {
-                    InputChange::PointerSpeed(speed)
-                } else if let Some(delay) = self.delay.pressed(id, input.repeat_delay_ms) {
-                    InputChange::RepeatDelayMs(delay)
-                } else if let Some(rate) = self.rate.pressed(id, input.repeat_rate) {
-                    InputChange::RepeatRate(rate)
-                } else {
-                    return Reply::NotMine;
-                }
+            Response::Adjusted(id, value) if id == self.speed => {
+                InputChange::PointerSpeed(value as u32)
+            }
+            Response::Adjusted(id, value) if id == self.delay => {
+                InputChange::RepeatDelayMs(value as u32)
+            }
+            Response::Adjusted(id, value) if id == self.rate => {
+                InputChange::RepeatRate(value as u32)
             }
             _ => return Reply::NotMine,
         };
@@ -507,18 +440,6 @@ impl InputPanes {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_stepper_lands_on_multiples_of_its_step_and_on_its_ends() {
-        assert_eq!((DELAY.down(437), DELAY.up(437)), (400, 450));
-        assert_eq!((DELAY.down(150), DELAY.up(2000)), (150, 2000));
-        assert_eq!((RATE.up(2), RATE.down(5)), (5, 2));
-        assert_eq!((RATE.down(23), RATE.up(23)), (20, 25));
-        assert_eq!((RATE.down(25), RATE.up(60)), (20, 60));
-        assert_eq!((SPEED.down(1), SPEED.up(5)), (1, 6));
-        assert_eq!(DELAY.text(400).as_str(), "400 ms");
-        assert_eq!(RATE.text(25).as_str(), "25/s");
-    }
 
     #[test]
     fn the_scale_line_says_what_the_next_restart_brings() {

@@ -1799,11 +1799,11 @@ mod tests {
             Some(Request::ChangeInput(InputChange::NaturalScrolling(true)))
         );
         assert_eq!(
-            click(&mut window, 610, 164),
+            click(&mut window, 496, 164),
             Some(Request::ChangeInput(InputChange::PointerSpeed(6)))
         );
         window.input_changed(InputChange::PointerSpeed(6), Ok(()), Err(Errno::ENODEV));
-        assert_eq!(window.input_panes().values(window.widgets())[0], Some("6"));
+        assert_eq!(window.input_panes().values(window.widgets())[0], Some(6));
         assert_eq!(
             window.input_panes().mouse_status(window.widgets()),
             Some("Saved for the next boot, but the window server did not take it.")
@@ -1816,7 +1816,7 @@ mod tests {
             ..Facts::example()
         });
         click(&mut fastest, 40, MOUSE_ROW);
-        assert_eq!(click(&mut fastest, 610, 164), None);
+        assert_eq!(click(&mut fastest, 560, 164), None);
     }
 
     #[test]
@@ -1832,20 +1832,17 @@ mod tests {
         click(&mut window, 40, KEYBOARD_ROW);
         assert_eq!(
             window.input_panes().values(window.widgets()),
-            [Some("5"), Some("437 ms"), Some("23/s")]
+            [Some(5), Some(450), Some(23)]
         );
         assert_eq!(
-            click(&mut window, 610, 196),
-            Some(Request::ChangeInput(InputChange::RepeatDelayMs(450)))
+            click(&mut window, 443, 196),
+            Some(Request::ChangeInput(InputChange::RepeatDelayMs(500)))
         );
         assert_eq!(
-            click(&mut window, 518, 236),
+            click(&mut window, 460, 236),
             Some(Request::ChangeInput(InputChange::RepeatRate(20)))
         );
         window.input_changed(InputChange::RepeatRate(20), Ok(()), Ok(()));
-        assert_eq!(
-            window.input_panes().values(window.widgets())[2],
-            Some("20/s")
-        );
+        assert_eq!(window.input_panes().values(window.widgets())[2], Some(20));
     }
 }
