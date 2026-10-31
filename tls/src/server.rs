@@ -502,6 +502,9 @@ pub fn accept<'b>(
         return Err(Error::BadFinished);
     }
     state.consume(buffers, length);
+    if state.filled != 0 {
+        return Err(Error::Malformed);
+    }
 
     Ok(Session {
         incoming: state.incoming,
