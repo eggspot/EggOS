@@ -16543,3 +16543,18 @@ the license, by an explicit instruction recorded here.
 - Not yet: first run (`settings --first-run` with its three pages), high contrast (the palette
   of every token), reduce motion, the sticky keys chips in the bar and Shift five times,
   latched modifiers for pointer clicks, Ctrl+Alt+Tab to the bar and the dock.
+
+## D206 User mode reads the cache type and maintains the caches on AArch64 (`SCTLR_EL1.UCT`, `UCI`), as on Linux — Decided by the build loop (engineering; extends D49)
+- **Why.** The translation loader writes translated x86-64 code and makes it runnable with
+  `mrs ctr_el0`, `dc cvau`, `ic ivau` and `isb` from user mode (slice 39d), as Linux programs
+  that write code do (JIT compilers, `__clear_cache`). D49's `SCTLR_EL1` set only M, C and I,
+  so with UCT and UCI clear these trapped (EC 0x18) and the program ended with `SIGILL`: the
+  first QEMU run of `other-cpu.exe` on aarch64 stopped at `mrs x8, ctr_el0` before its
+  first instruction ran.
+- **Decision.** Every CPU's boot path also sets `SCTLR_EL1.UCT` (bit 15) and `UCI` (bit 26),
+  the Linux arm64 ABI. They expose no state and reach only memory the program can already
+  read; `DZE` (`dc zva`) stays clear, and `CNTKCTL_EL1` stays 0 (D49), so the counters are
+  still closed to user mode.
+- **Follow-up.** The translator's `rdtsc`/`rdtscp` lowering (slice 39c) reads `cntvct_el0` and
+  `cntfrq_el0`, which still trap under D49; it needs another time source before a program that
+  runs `rdtsc` can be translated.
