@@ -21,6 +21,7 @@ const FLAG_PACKED: u32 = 1;
 const FLAG_PACKED_FRAGMENT: u32 = 2;
 const SMALL_FRAME: u64 = 512;
 const ONE_ALLOCATION: u64 = 4080;
+const MAX_SAVE_NEXT: u8 = 16;
 
 /// A thread's registers as an unwind step reads and changes them: `x0` to `x30` (`x29` is
 /// the frame pointer, `x30` the link register), `sp`, `pc` and `d8` to `d15`, the floating-point
@@ -221,7 +222,7 @@ fn resolve_save_next(codes: &[u8], mut at: usize) -> Result<Op, UnwindError> {
     loop {
         let (op, length) = decode(codes, at)?;
         match op {
-            Op::SaveNext => {
+            Op::SaveNext if steps < MAX_SAVE_NEXT => {
                 steps += 1;
                 at += length;
             }
@@ -232,13 +233,16 @@ fn resolve_save_next(codes: &[u8], mut at: usize) -> Result<Op, UnwindError> {
                 offset,
                 increment,
             } if registers[1] == registers[0] + 1 => {
+                let first = registers[0] + 2 * steps;
+                let last_pair_start = match kind {
+                    Kind::Integer => LINK_REGISTER - 1,
+                    Kind::Float => FIRST_SAVED_FLOAT + 6,
+                };
+                if first > last_pair_start {
+                    return Err(UnwindError::UnknownCode);
+                }
                 let base_offset = if increment != 0 { 0 } else { offset };
-                return Ok(pair(
-                    kind,
-                    registers[0] + 2 * steps,
-                    base_offset + 16 * u64::from(steps),
-                    0,
-                ));
+                return Ok(pair(kind, first, base_offset + 16 * u64::from(steps), 0));
             }
             _ => return Err(UnwindError::UnknownCode),
         }
@@ -481,13 +485,12 @@ impl Packed {
                 packed.push(Op::SetFp, false);
             }
             2 | 3 => {
-                let first_part = local_size.min(ONE_ALLOCATION);
-                packed.push(Op::Allocate(first_part), true);
-                packed.push(frame_pair(0, 0), true);
-                packed.push(Op::SetFp, false);
+                packed.push(Op::Allocate(local_size.min(ONE_ALLOCATION)), true);
                 if local_size > ONE_ALLOCATION {
                     packed.push(Op::Allocate(local_size - ONE_ALLOCATION), true);
                 }
+                packed.push(frame_pair(0, 0), true);
+                packed.push(Op::SetFp, false);
             }
             _ if local_size > ONE_ALLOCATION => {
                 packed.push(Op::Allocate(ONE_ALLOCATION), true);
@@ -809,6 +812,53 @@ mod tests {
         before_ret.x[30] = BASE + 0x1111;
         virtual_unwind(&image, function, BOTH, &mut before_ret, &memory).unwrap();
         assert_eq!((before_ret.sp, before_ret.pc), (STACK + 64, BASE + 0x1111));
+    }
+
+    #[test]
+    fn a_chained_packed_frame_over_4080_bytes_allocates_both_parts_before_the_frame_pair() {
+        let length = 0x80u32 / 4;
+        let word = 1 | length << 2 | 2 << 16 | 3 << 21 | 0x1ff << 23;
+        let bytes = image_with(&[(0x1000, word)], &[]);
+        let image = Image {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let function = lookup(&image, PDATA as u32, 8, 0x1040).unwrap();
+        let mut words = vec![0u64; 8176 / 8];
+        words[0] = STACK + 0x9000;
+        words[1] = BASE + 0x9999;
+        words[8160 / 8] = 0x1919;
+        words[8160 / 8 + 1] = 0x2020;
+        let memory = stack(&words);
+        let mut registers = registers_at(0x1040);
+        registers.x[29] = STACK;
+        let unwound = virtual_unwind(&image, function, BOTH, &mut registers, &memory).unwrap();
+        assert_eq!(registers.pc, BASE + 0x9999);
+        assert_eq!(registers.x[29], STACK + 0x9000);
+        assert_eq!((registers.x[19], registers.x[20]), (0x1919, 0x2020));
+        assert_eq!(registers.sp, STACK + 8176);
+        assert_eq!(unwound.establisher, STACK + 8176);
+        let mut after_first_allocation = registers_at(0x1008);
+        after_first_allocation.sp = STACK + 8176 - 16 - 4080;
+        after_first_allocation.x[30] = BASE + 0xabcd;
+        virtual_unwind(&image, function, BOTH, &mut after_first_allocation, &memory).unwrap();
+        assert_eq!(after_first_allocation.sp, STACK + 8176);
+        assert_eq!(after_first_allocation.x[19], 0x1919);
+        assert_eq!(after_first_allocation.pc, BASE + 0xabcd);
+    }
+
+    #[test]
+    fn a_save_next_run_past_the_last_register_pair_is_an_unknown_code() {
+        let mut codes = vec![0xe6u8; 40];
+        codes.extend([0xc8, 0x00, 0xe4]);
+        assert_eq!(resolve_save_next(&codes, 0), Err(UnwindError::UnknownCode));
+        let mut long = vec![0xe6u8; 200];
+        long.extend([0xd8, 0x00, 0xe4]);
+        assert_eq!(resolve_save_next(&long, 0), Err(UnwindError::UnknownCode));
+        assert_eq!(
+            resolve_save_next(&[0xe6, 0xc8, 0x00], 0),
+            Ok(pair(Kind::Integer, 21, 16, 0))
+        );
     }
 
     #[test]
