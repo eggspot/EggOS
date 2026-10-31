@@ -16515,3 +16515,31 @@ the license, by an explicit instruction recorded here.
   cycling an app's windows, `wm list`'s `DESKTOP` column, MCP's `wm_desktop_switch`,
   `wm_desktop_close` and `wm_desktop_move`, screenshots (`screenshot`, the region picker, the
   keys, `screen_capture`, `CAPTURE_SCREEN`, `SHOW_NOTICE`).
+
+## D205 Accessibility, first slice: sticky keys, slow keys and the Accessibility pane (batch part 50; UX README principles 2-4) — Decided by the build loop (the design is Claude Fable's, docs/ux/first-run-accessibility-v0.3.md)
+
+- Sticky keys, in the kernel's input layer so the console, the window server's shortcuts and
+  every app see ordinary modifiers: a modifier tapped alone (pressed and released with no key
+  between) latches for the next key and is released with that key's release; tapped again
+  while latched it locks until tapped once more; several latch together. Slow keys: a key
+  press counts only once the key has been held `accessibility.slow_keys_ms` (100 to 1000,
+  300 by default), a release before that drops it, and repeat counts from the acceptance; the
+  input thread's next deadline includes the pending acceptance.
+- Settings keys `accessibility.sticky_keys`, `accessibility.slow_keys` (`true` or `false`;
+  `settings set` also takes on, off, yes, no, 1 and 0) and `accessibility.slow_keys_ms`, and
+  the fact `accessibility.keyboard_navigation=always`; the kernel reads them at boot and
+  `SET_KEY_ACCESSIBILITY` (0x400c_7724, a settings change) applies them live from `settings
+  set`, MCP's `settings_set` and the pane.
+- The Accessibility pane, fifth in the sidebar (Storage, Date & time, Agents, Components and
+  About move down a row): `Sticky keys` and `Slow keys` checkboxes with their meanings, the
+  `Hold a key for` slider (disabled while slow keys are off), `Full keyboard navigation`
+  `Always on`, and a status line; the Settings tree's `CAPACITY` is 176.
+- Built differently from the design: the keyboard navigation line reads `Tab reaches every
+  control; Ctrl+Alt+Tab reaches the bar.` (a label holds 64 bytes); the high contrast and
+  reduce motion rows are not there yet.
+- Check. Host tests: sticky keys latching, being used, locking and staying locked; the slow
+  delay's range; `settings set` with boolean words and a delay out of range; the pane's
+  checkboxes, the slider following slow keys, a refused save.
+- Not yet: first run (`settings --first-run` with its three pages), high contrast (the palette
+  of every token), reduce motion, the sticky keys chips in the bar and Shift five times,
+  latched modifiers for pointer clicks, Ctrl+Alt+Tab to the bar and the dock.
