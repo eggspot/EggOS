@@ -429,6 +429,8 @@ const FILES_PATH: &str = "bin/files";
 
 const TEXT_EDITOR_PATH: &str = "bin/text-editor";
 
+const TASK_MANAGER_PATH: &str = "bin/task-manager";
+
 const EDIT_PATH: &str = "bin/edit";
 
 const DISK_PATH: &str = "bin/disk";
@@ -1601,6 +1603,10 @@ fn release_initramfs(
         (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (DISK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (TERMINAL_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (
+            TASK_MANAGER_PATH,
+            initramfs::Content::HardLink(SETTINGS_PATH),
+        ),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (

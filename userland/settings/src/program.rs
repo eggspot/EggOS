@@ -28,6 +28,9 @@ use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
 };
+use eggos_settings::task_manager::{
+    self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
+};
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, InputPreferences, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
 };
@@ -67,6 +70,15 @@ const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
 const FILES_PROGRAM_NAME: &[u8] = b"files";
 const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
+const TASK_MANAGER_PROGRAM_NAME: &[u8] = b"task-manager";
+const APPS_OPTION: &[u8] = b"--apps";
+const WINDOW_DEVICE: &str = "/dev/window";
+const O_RDWR_CLOEXEC: usize = 0o2_000_002;
+const LIST_WINDOW: usize = 0xc060_770b;
+const MANAGE_WINDOW: usize = 0x4010_770c;
+const LIST_SIZE: usize = 96;
+const CLOSE_ACTION: u32 = 4;
+const TASK_LIST_CAPACITY: usize = 16 * 1024;
 const TERMINAL_PROGRAM_NAME: &[u8] = b"terminal";
 const EDIT_COMMAND_NAME: &[u8] = b"edit";
 const DISK_COMMAND_NAME: &[u8] = b"disk";
@@ -1106,6 +1118,208 @@ fn open_window() -> i32 {
     }
 }
 
+struct TaskManagerProgram {
+    window: TaskManager,
+    device: Option<usize>,
+}
+
+fn word_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+}
+
+fn task_snapshot(device: Option<usize>) -> Snapshot {
+    let mut ps = alloc::vec![0u8; TASK_LIST_CAPACITY];
+    let processes = read_file("/proc/ps", &mut ps).ok().map(|length| {
+        ps[..length]
+            .split(|&byte| byte == b'\n')
+            .filter_map(|line| {
+                let mut fields = line.splitn(7, |&byte| byte == b' ');
+                let mut number = || {
+                    core::str::from_utf8(fields.next()?)
+                        .ok()?
+                        .parse::<u64>()
+                        .ok()
+                };
+                let pid = number()? as u32;
+                let parent = number()? as u32;
+                let _group = number()?;
+                let _session = number()?;
+                let state = *fields.next()?.first()?;
+                let cpu_ms = core::str::from_utf8(fields.next()?)
+                    .ok()?
+                    .parse::<u64>()
+                    .ok();
+                let name = core::str::from_utf8(fields.next()?).unwrap_or("?");
+                Some(ProcessFact {
+                    pid,
+                    parent,
+                    state,
+                    cpu_ms,
+                    name: Text::from(name),
+                })
+            })
+            .collect::<alloc::vec::Vec<_>>()
+    });
+    let windows = device.map(|device| {
+        let mut windows = alloc::vec::Vec::new();
+        for index in 0u32.. {
+            let mut entry = [0u8; LIST_SIZE];
+            entry[..4].copy_from_slice(&index.to_ne_bytes());
+            if syscall(
+                number::IOCTL,
+                [device, LIST_WINDOW, entry.as_mut_ptr() as usize, 0, 0, 0],
+            )
+            .is_err()
+            {
+                break;
+            }
+            let length = (word_at(&entry, 28) as usize).min(LIST_SIZE - 32);
+            windows.push(WindowFact {
+                id: word_at(&entry, 0),
+                client_pid: word_at(&entry, 24),
+                title: Text::from(core::str::from_utf8(&entry[32..32 + length]).unwrap_or("")),
+            });
+        }
+        windows
+    });
+    let mut meminfo = [0u8; 512];
+    let memory = read_file("/proc/meminfo", &mut meminfo)
+        .ok()
+        .and_then(|length| {
+            let field = |name: &[u8]| {
+                meminfo[..length]
+                    .split(|&byte| byte == b'\n')
+                    .find(|line| line.starts_with(name))
+                    .and_then(first_number)
+            };
+            Some((field(b"MemTotal:")? * 1024, field(b"MemFree:")? * 1024))
+        });
+    let mut uptime = [0u8; 64];
+    let uptime_s = read_file("/proc/uptime", &mut uptime)
+        .ok()
+        .and_then(|length| first_number(&uptime[..length]));
+    Snapshot {
+        processes,
+        windows,
+        cpus: cpus(),
+        memory,
+        uptime_s,
+        now_ms: u64::from(now_ms()),
+    }
+}
+
+impl TaskManagerProgram {
+    fn act(&mut self, request: Option<TaskRequest>) {
+        match request {
+            None => {}
+            Some(TaskRequest::Refresh) => {
+                let more = self.window.refreshed(task_snapshot(self.device));
+                self.act(more);
+            }
+            Some(TaskRequest::CloseWindowsOf(pid)) => {
+                for window in self.window.windows_of(pid) {
+                    let mut request = [0u8; 16];
+                    request[..4].copy_from_slice(&window.to_ne_bytes());
+                    request[4..8].copy_from_slice(&CLOSE_ACTION.to_ne_bytes());
+                    if let Some(device) = self.device {
+                        let _ = syscall(
+                            number::IOCTL,
+                            [
+                                device,
+                                MANAGE_WINDOW,
+                                request.as_mut_ptr() as usize,
+                                0,
+                                0,
+                                0,
+                            ],
+                        );
+                    }
+                }
+            }
+            Some(TaskRequest::Signal { pid, signal }) => {
+                let stopped = self.window.is_stopped(pid);
+                let sent =
+                    syscall(number::KILL, [pid as usize, signal as usize, 0, 0, 0, 0]).map(|_| ());
+                if sent.is_ok() && stopped && signal == task_manager::TERMINATE {
+                    let _ = syscall(
+                        number::KILL,
+                        [pid as usize, task_manager::CONTINUE as usize, 0, 0, 0, 0],
+                    );
+                }
+                self.window.signal_sent(pid, sent);
+            }
+        }
+    }
+}
+
+impl Application<{ task_manager::CAPACITY }> for TaskManagerProgram {
+    fn tree(&mut self) -> &mut WidgetTree<{ task_manager::CAPACITY }> {
+        self.window.tree()
+    }
+
+    fn respond(&mut self, response: Response, now_ms: u32) {
+        let request = self.window.respond(response, u64::from(now_ms));
+        self.act(request);
+    }
+
+    fn deadline(&self, now_ms: u32) -> Option<u32> {
+        Some(now_ms.wrapping_add(task_manager::REFRESH_MS))
+    }
+
+    fn tick(&mut self, _now_ms: u32) {
+        self.act(Some(TaskRequest::Refresh));
+    }
+}
+
+fn run_task_manager(startup: &Startup) -> i32 {
+    let apps_only = startup
+        .arguments()
+        .skip(1)
+        .any(|argument| argument.to_bytes() == APPS_OPTION);
+    let (width, height) = task_manager::DEFAULT_SIZE;
+    let mut window = match Window::create(
+        task_manager::TITLE,
+        width,
+        height,
+        task_manager::MINIMUM_SIZE,
+    ) {
+        Ok(window) => window,
+        Err(error) => {
+            write_all(STANDARD_ERROR, b"task-manager: cannot open its window: ");
+            write_all(STANDARD_ERROR, error.message());
+            write_all(STANDARD_ERROR, b"\n");
+            return 1;
+        }
+    };
+    let device = syscall(
+        number::OPENAT,
+        [
+            AT_FDCWD,
+            CPath::new(WINDOW_DEVICE).pointer(),
+            O_RDWR_CLOEXEC,
+            0,
+            0,
+            0,
+        ],
+    )
+    .ok();
+    let own_pid = syscall(number::GETPID, [0; 6]).unwrap_or(0) as u32;
+    let mut program = TaskManagerProgram {
+        window: TaskManager::new(own_pid, apps_only),
+        device,
+    };
+    program.act(Some(TaskRequest::Refresh));
+    match application::run(&mut window, &mut program) {
+        Ok(()) => 0,
+        Err(error) => {
+            write_all(STANDARD_ERROR, b"task-manager: its window: ");
+            write_all(STANDARD_ERROR, error.message());
+            write_all(STANDARD_ERROR, b"\n");
+            1
+        }
+    }
+}
+
 /// The program: see the crate's documentation. Started as `app-window`, it is the
 /// installer's window instead (D134); as `files` the Files window (D135); as `text-editor` the
 /// Text Editor and as `edit` its command (D149); as `disk` the `disk` command (D192).
@@ -1118,6 +1332,7 @@ pub fn run(startup: &Startup) -> i32 {
         EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
         DISK_COMMAND_NAME => return crate::disk_system::run(startup),
         TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
+        TASK_MANAGER_PROGRAM_NAME => return run_task_manager(startup),
         _ => {}
     }
     let mut options = startup.arguments().skip(1).map(CStr::to_bytes);

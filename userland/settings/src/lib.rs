@@ -19,4 +19,5 @@ pub mod keys;
 pub mod network_view;
 pub mod settings_window;
 pub mod storage_pane;
+pub mod task_manager;
 pub mod zone_picker;
