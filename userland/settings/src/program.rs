@@ -396,7 +396,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
                 area.rect.bottom().max(0) as u32,
             )
         }),
-        scale: area.map_or(1, |area| area.scale),
+        scale: settings_file::display_scale(&file[..length])
+            .unwrap_or_else(|| area.map_or(1, |area| area.scale)),
         profile,
         on_disk: home_is_on_a_disk(),
         now_s: wall_clock().0,
@@ -534,6 +535,14 @@ impl command::Machine for Machine {
 
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
         save_time_zone(index).map_err(Errno::message)
+    }
+
+    fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
+        let value = match scale {
+            2 => "2",
+            _ => "1",
+        };
+        save_through_a_temporary_file(settings_file::DISPLAY_SCALE, value).map_err(Errno::message)
     }
 
     fn write_output(&mut self, bytes: &[u8]) {

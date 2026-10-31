@@ -2595,7 +2595,7 @@ pub const SETTINGS_GET: CommandDefinition = CommandDefinition {
         example("settings get shell.profile", "macos\n"),
         example(
             "settings get --json display.scale",
-            "{\"key\":\"display.scale\",\"value\":\"1\",\"settable\":false}\n",
+            "{\"key\":\"display.scale\",\"value\":\"1\",\"settable\":true}\n",
         ),
     ],
     surface: Surface::Gui("Settings' panes"),
@@ -2610,7 +2610,8 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
                   keyboard.layout takes a keyboard layout's name (us, us-intl, gb, us-dvorak, \
                   us-colemak, dk, fi, fr, de, it, no, br, es or se); time.zone takes an IANA \
                   zone such as Europe/Paris, or UTC, which date, ls and the other programs show \
-                  times in unless TZ says another. The other keys report facts and cannot be \
+                  times in unless TZ says another; display.scale takes 1 or 2, which the \
+                  display shows at from the next boot. The other keys report facts and cannot be \
                   set. --dry-run checks the key and the value \
                   and says what would change, and changes nothing.",
     options: &[DRY_RUN_OPTION],

@@ -46,6 +46,8 @@ pub enum Change {
     KeyboardLayout(usize),
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     TimeZone(usize),
+    /// The display's scale, 1 or 2, from the next boot (D195).
+    DisplayScale(u32),
 }
 
 /// The names `shell.profile` takes, as the refusal of another one lists them.
@@ -96,7 +98,7 @@ impl Key {
     pub const fn is_settable(self) -> bool {
         matches!(
             self,
-            Self::ShellProfile | Self::KeyboardLayout | Self::TimeZone
+            Self::ShellProfile | Self::DisplayScale | Self::KeyboardLayout | Self::TimeZone
         )
     }
 
@@ -117,6 +119,9 @@ impl Key {
             }
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
+            }
+            Self::DisplayScale => {
+                let _ = choices.write_str("1 or 2");
             }
             _ => {
                 let _ = choices.write_str(PROFILE_CHOICES);
@@ -166,6 +171,11 @@ impl Key {
             Self::TimeZone => crate::facts::zone_index(value)
                 .map(Change::TimeZone)
                 .ok_or(Refusal::InvalidValue),
+            Self::DisplayScale => match value {
+                "1" => Ok(Change::DisplayScale(1)),
+                "2" => Ok(Change::DisplayScale(2)),
+                _ => Err(Refusal::InvalidValue),
+            },
             _ => Err(Refusal::ReadOnly),
         }
     }
@@ -222,7 +232,11 @@ mod tests {
             Err(Refusal::InvalidValue)
         );
         assert_eq!(change("system.version", "9"), Err(Refusal::ReadOnly));
-        assert_eq!(change("display.scale", "2"), Err(Refusal::ReadOnly));
+        assert_eq!(
+            change("display.scale", "2"),
+            Ok((Key::DisplayScale, Change::DisplayScale(2)))
+        );
+        assert_eq!(change("display.scale", "3"), Err(Refusal::InvalidValue));
         assert_eq!(
             change("keyboard.layout", "de"),
             Ok((Key::KeyboardLayout, Change::KeyboardLayout(8)))

@@ -1483,7 +1483,8 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
     "Lists every setting and its value, as `settings list` shows them: key=value, one a line. \
      shell.profile (windows, macos or linux: the desktop's layout) and keyboard.layout (us, \
      us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) and time.zone \
-     (an IANA zone such as Europe/Paris, or UTC) can be set with settings_set; the others report facts: the display's scale, resolution and pointer, the \
+     (an IANA zone such as Europe/Paris, or UTC) and display.scale (1 or 2) can be set with \
+     settings_set; the others report facts: the display's resolution and pointer, the \
      version, architecture, CPUs, memory and uptime.",
     &["settings", "list"],
     &[],
@@ -1511,8 +1512,9 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   for the person at once. keyboard.layout takes a keyboard layout's name (us, \
                   us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se): \
                   what every key types changes at once. time.zone takes an IANA zone such as \
-                  Europe/Paris, or UTC: the zone programs show times in. The other keys report \
-                  facts and fail with setting_read_only. dry_run: true checks the key and the value and says what \
+                  Europe/Paris, or UTC: the zone programs show times in. display.scale takes 1 \
+                  or 2: the display shows at it from the next boot. The other keys report facts \
+                  and fail with setting_read_only. dry_run: true checks the key and the value and says what \
                   would change, and changes nothing. Needs the run grant: a setting changes how \
                   the machine behaves for its user.",
     command: &["settings", "set"],

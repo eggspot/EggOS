@@ -12,6 +12,11 @@
 //! stages ([`light_boot_stages`]) until the desktop replaces it ([`Framebuffer::end_boot_screen`]).
 //! A display that draws the pointer itself, a GPU's cursor, shows the desktop's pointer through
 //! [`show_pointer`], so moving it redraws nothing.
+//!
+//! At scale 2 (`display.scale`, D195, set at boot before the desktop starts: [`set_scale`]) the
+//! kernel and every program draw into a framebuffer of half the device's width and height, and
+//! a flush doubles each damaged pixel onto the device, so the desktop, its apps and the terminal
+//! show twice as large, as every 2x rule in the designs asks.
 
 use crate::devices::Deadline;
 use crate::sync::LeafSpinLock;
@@ -96,7 +101,12 @@ pub struct Display {
     flushes: u64,
     boot: Option<BootScreen>,
     pointer: Option<(u32, u32, PointerShape)>,
+    scale: u32,
+    logical: Vec<u32>,
 }
+
+/// The largest scale a display takes.
+pub const MAX_SCALE: u32 = 2;
 
 impl Display {
     /// The display `scanout` shows, nothing damaged yet.
@@ -107,7 +117,41 @@ impl Display {
             flushes: 0,
             boot: None,
             pointer: None,
+            scale: 1,
+            logical: Vec::new(),
         }
+    }
+
+    /// Makes the display show at `scale` (1 or 2), drawn at its device's size divided by it;
+    /// whether it could (the device's size must divide, and memory for the smaller
+    /// framebuffer be found). The framebuffer is new and blank: call it before the desktop
+    /// starts.
+    pub fn set_scale(&mut self, scale: u32) -> bool {
+        let device = self.scanout.mode();
+        if scale == 1 {
+            self.scale = 1;
+            self.logical = Vec::new();
+            return true;
+        }
+        if scale != MAX_SCALE || device.width % scale != 0 || device.height % scale != 0 {
+            return false;
+        }
+        let pixels = (device.width / scale) as usize * (device.height / scale) as usize;
+        let mut logical = Vec::new();
+        if logical.try_reserve_exact(pixels).is_err() {
+            return false;
+        }
+        logical.resize(pixels, 0);
+        self.logical = logical;
+        self.scale = scale;
+        self.boot = None;
+        self.damage.add(self.mode().rect());
+        true
+    }
+
+    /// The scale the display shows at.
+    pub fn scale(&self) -> u32 {
+        self.scale
     }
 
     /// Whether the display draws the pointer itself ([`Scanout::draws_pointer`]).
@@ -134,7 +178,8 @@ impl Display {
                 }
             }
             Some((x, y, shape)) if shown == Some(shape) => {
-                self.scanout.move_pointer((x, y), deadline)?;
+                self.scanout
+                    .move_pointer((x * self.scale, y * self.scale), deadline)?;
             }
             Some((x, y, shape)) => {
                 let image = self
@@ -143,7 +188,8 @@ impl Display {
                     .ok_or("the display draws no pointer")?;
                 let hotspot =
                     write_cursor_image(shape, image).ok_or("the pointer's image is too small")?;
-                self.scanout.show_pointer(hotspot, (x, y), deadline)?;
+                self.scanout
+                    .show_pointer(hotspot, (x * self.scale, y * self.scale), deadline)?;
             }
         }
         self.pointer = wanted;
@@ -166,9 +212,11 @@ impl Display {
         Some(hash)
     }
 
-    /// The framebuffer's mode.
+    /// The framebuffer's mode, as the kernel and programs draw in it: the device's divided by
+    /// the scale.
     pub fn mode(&self) -> Mode {
-        self.scanout.mode()
+        let device = self.scanout.mode();
+        Mode::new(device.width / self.scale, device.height / self.scale)
     }
 
     /// How many flushes have shown something.
@@ -178,9 +226,13 @@ impl Display {
 
     /// Lends `draw` the framebuffer and returns what it returns.
     pub fn draw<R>(&mut self, draw: impl FnOnce(&mut Framebuffer<'_>) -> R) -> R {
-        let mode = self.scanout.mode();
+        let mode = self.mode();
+        let pixels = match self.scale {
+            1 => self.scanout.pixels(),
+            _ => &mut self.logical[..],
+        };
         let mut framebuffer = Framebuffer {
-            pixels: self.scanout.pixels(),
+            pixels,
             mode,
             damage: &mut self.damage,
             boot: &mut self.boot,
@@ -195,10 +247,72 @@ impl Display {
         if self.damage.is_empty() {
             return Ok(0);
         }
+        if self.scale > 1 {
+            return self.flush_scaled(deadline);
+        }
         let shown = self.scanout.flush(self.damage.rects(), deadline)?;
         self.damage.clear();
         self.flushes += 1;
         Ok(shown)
+    }
+}
+
+impl Display {
+    fn flush_scaled(&mut self, deadline: &mut Deadline) -> Result<usize, &'static str> {
+        let scale = self.scale;
+        let logical_width = self.mode().width as usize;
+        let device_width = self.scanout.mode().width as usize;
+        let mut device_damage = Damage::new();
+        let device = self.scanout.pixels();
+        for rect in self.damage.rects() {
+            double_into(
+                &self.logical,
+                logical_width,
+                device,
+                device_width,
+                *rect,
+                scale,
+            );
+            device_damage.add(Rect::new(
+                rect.x * scale,
+                rect.y * scale,
+                rect.width * scale,
+                rect.height * scale,
+            ));
+        }
+        let shown = self.scanout.flush(device_damage.rects(), deadline)?;
+        self.damage.clear();
+        self.flushes += 1;
+        Ok(shown)
+    }
+}
+
+/// Copies `rect` of `logical` (rows of `logical_width`) into `device` (rows of
+/// `device_width`), each pixel as a `scale` by `scale` square.
+pub fn double_into(
+    logical: &[u32],
+    logical_width: usize,
+    device: &mut [u32],
+    device_width: usize,
+    rect: Rect,
+    scale: u32,
+) {
+    let scale = scale as usize;
+    for y in rect.y as usize..rect.bottom() as usize {
+        let Some(source) = logical
+            .get(y * logical_width + rect.x as usize..y * logical_width + rect.right() as usize)
+        else {
+            continue;
+        };
+        for row in 0..scale {
+            let start = (y * scale + row) * device_width + rect.x as usize * scale;
+            let Some(target) = device.get_mut(start..start + source.len() * scale) else {
+                continue;
+            };
+            for (pair, &pixel) in target.chunks_exact_mut(scale).zip(source) {
+                pair.fill(pixel);
+            }
+        }
     }
 }
 
@@ -222,6 +336,19 @@ pub fn install<S: Scanout + 'static>(scanout: S) -> Result<(), S> {
     }
     *display = Some(Box::new(Display::new(Box::new(scanout))));
     Ok(())
+}
+
+/// Makes the display show at `scale` ([`Display::set_scale`]); whether it could.
+pub fn set_scale(scale: u32) -> bool {
+    DISPLAY
+        .lock()
+        .as_mut()
+        .is_some_and(|display| display.set_scale(scale))
+}
+
+/// The scale the display shows at; 1 without a display.
+pub fn scale() -> u32 {
+    DISPLAY.lock().as_ref().map_or(1, |display| display.scale())
 }
 
 /// The display's mode; `None` without a display.

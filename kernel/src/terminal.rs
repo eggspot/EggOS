@@ -314,6 +314,11 @@ pub fn load_saved_settings() {
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
+    if let Some(scale) = eggos_settings_file::display_scale(&file[..length])
+        && scale != crate::display::scale()
+    {
+        crate::display::set_scale(scale);
+    }
 }
 
 /// Whether key `code` pressed with `modifiers` is a shortcut the desktop takes from the

@@ -47,6 +47,9 @@ pub trait Machine {
     /// Saves the time zone `index` (of `eggos_calendar::zone::ZONES`) to the settings file;
     /// programs read it each time they show a time.
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves the display's scale to the settings file; the kernel shows at it from its next
+    /// boot.
+    fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]>;
     /// Writes to standard output.
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
@@ -215,6 +218,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Profile(index) => machine.save_profile(index),
         Change::KeyboardLayout(index) => machine.save_keyboard_layout(index),
         Change::TimeZone(index) => machine.save_time_zone(index),
+        Change::DisplayScale(scale) => machine.save_display_scale(scale),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -224,7 +228,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     let applied = match change {
         Change::Profile(index) => machine.apply_profile(index),
         Change::KeyboardLayout(index) => machine.apply_keyboard_layout(index),
-        Change::TimeZone(_) => Ok(()),
+        Change::TimeZone(_) | Change::DisplayScale(_) => Ok(()),
     };
     if let Err(why) = applied {
         let mut message = Message::new();
@@ -255,6 +259,7 @@ mod tests {
         layout_saved: Option<usize>,
         layout_applied: Option<usize>,
         zone_saved: Option<usize>,
+        scale_saved: Option<u32>,
         save_fails: bool,
         apply_fails: bool,
     }
@@ -287,6 +292,11 @@ mod tests {
 
         fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
             self.zone_saved = Some(index);
+            Ok(())
+        }
+
+        fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
+            self.scale_saved = Some(scale);
             Ok(())
         }
 

@@ -88,6 +88,16 @@ pub const DISPLAY_SCALE: &str = "display.scale";
 /// `GET_PROFILE` and `SET_PROFILE` (docs/windows.md).
 pub const PROFILES: [&str; 3] = ["windows", "macos", "linux"];
 
+/// The scale `display.scale` holds, 1 or 2, if the file holds one (D195): what the kernel
+/// shows at from its next boot.
+pub fn display_scale(file: &[u8]) -> Option<u32> {
+    match value(file, DISPLAY_SCALE)? {
+        b"1" => Some(1),
+        b"2" => Some(2),
+        _ => None,
+    }
+}
+
 /// The keyboard layout: the name of one of [`KEYBOARD_LAYOUTS`] (D185).
 pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
 

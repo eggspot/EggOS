@@ -221,3 +221,40 @@ fn a_display_that_draws_the_pointer_gets_an_image_per_shape_and_moves_otherwise(
         ]
     );
 }
+
+#[test]
+fn at_scale_two_programs_draw_half_the_size_and_a_flush_doubles_each_pixel() {
+    let (mut display, shown) = display(8, 4);
+    assert!(!display.set_scale(3));
+    assert!(display.set_scale(2));
+    assert_eq!(display.scale(), 2);
+    assert_eq!(display.mode(), Mode::new(4, 2));
+    display.flush(&mut deadline()).unwrap();
+    display.draw(|framebuffer| framebuffer.fill(Rect::new(1, 1, 1, 1), 0x0012_3456));
+    assert_eq!(display.flush(&mut deadline()), Ok(1));
+    assert_eq!(
+        shown.lock().unwrap().flushed.last().unwrap(),
+        &vec![Rect::new(2, 2, 2, 2)]
+    );
+    assert!(display.set_scale(1));
+    assert_eq!(display.mode(), Mode::new(8, 4));
+    let (mut odd, _) = display_of_odd_size();
+    assert!(!odd.set_scale(2));
+}
+
+fn display_of_odd_size() -> (Display, Arc<Mutex<Shown>>) {
+    display(7, 4)
+}
+
+#[test]
+fn doubling_copies_a_rect_as_squares() {
+    let logical = [1, 2, 3, 4, 5, 6];
+    let mut device = [0u32; 24];
+    double_into(&logical, 3, &mut device, 6, Rect::new(1, 0, 2, 2), 2);
+    assert_eq!(
+        device,
+        [
+            0, 0, 2, 2, 3, 3, 0, 0, 2, 2, 3, 3, 0, 0, 5, 5, 6, 6, 0, 0, 5, 5, 6, 6,
+        ]
+    );
+}
