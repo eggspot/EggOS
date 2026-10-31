@@ -364,6 +364,69 @@ impl Rule {
     pub fn has_daylight(&self) -> bool {
         self.daylight.is_some()
     }
+
+    /// Standard time's offset, seconds east of UTC.
+    pub fn standard_offset(&self) -> i64 {
+        -self.west
+    }
+
+    /// Standard time's abbreviation.
+    pub fn standard_abbreviation(&self) -> Abbreviation {
+        self.abbreviation
+    }
+
+    /// Its daylight saving time as a rule of months, weeks and weekdays, the form Windows's
+    /// `TIME_ZONE_INFORMATION` holds; `None` without daylight saving time or when a change is
+    /// given as a day of the year.
+    pub fn month_rules(&self) -> Option<MonthRules> {
+        let daylight = self.daylight?;
+        let month_rule = |transition: Transition| match transition.day {
+            Day::Month {
+                month,
+                week,
+                weekday,
+            } => Some(MonthRule {
+                month,
+                week,
+                weekday,
+                seconds: transition.seconds,
+            }),
+            _ => None,
+        };
+        Some(MonthRules {
+            start: month_rule(daylight.start)?,
+            end: month_rule(daylight.end)?,
+            daylight_offset: -daylight.west,
+            daylight_abbreviation: daylight.abbreviation,
+        })
+    }
+}
+
+/// A change between standard and daylight saving time: the `weekday` (0 is Sunday) of `week`
+/// (1 to 5, 5 the last) of `month` (1 to 12), at `seconds` past midnight local time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonthRule {
+    /// The month, 1 to 12.
+    pub month: u8,
+    /// The week of the month, 1 to 5; 5 is the last.
+    pub week: u8,
+    /// The day of the week, 0 (Sunday) to 6.
+    pub weekday: u8,
+    /// Seconds past midnight, local time; may be negative or past a day.
+    pub seconds: i64,
+}
+
+/// Daylight saving time as month rules ([`Rule::month_rules`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonthRules {
+    /// When daylight saving time starts, in standard time.
+    pub start: MonthRule,
+    /// When it ends, in daylight saving time.
+    pub end: MonthRule,
+    /// Its offset, seconds east of UTC.
+    pub daylight_offset: i64,
+    /// Its abbreviation.
+    pub daylight_abbreviation: Abbreviation,
 }
 
 #[cfg(test)]

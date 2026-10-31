@@ -11,9 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 eggos-c-format = { path = "../c-format" }
+eggos-calendar = { path = "../../calendar" }
 eggos-element-tree = { path = "../element-tree" }
 eggos-macos-gui = { path = "../macos-gui" }
 eggos-runtime = { path = "../runtime" }
+eggos-settings-file = { path = "../../settings-file" }
 eggos-toolkit = { path = "../toolkit" }
 
 [target.'cfg(any(target_arch = "aarch64", not(target_env = "musl")))'.dependencies]

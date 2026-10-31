@@ -112,3 +112,36 @@ fn local_times_turn_back_into_instants() {
         b"-0230"
     );
 }
+
+#[test]
+fn month_rules_are_what_windows_keeps() {
+    let paris = zone("Europe/Paris").unwrap();
+    let rules = paris.month_rules().unwrap();
+    assert_eq!(
+        rules.start,
+        MonthRule {
+            month: 3,
+            week: 5,
+            weekday: 0,
+            seconds: 7200
+        }
+    );
+    assert_eq!(
+        rules.end,
+        MonthRule {
+            month: 10,
+            week: 5,
+            weekday: 0,
+            seconds: 10_800
+        }
+    );
+    assert_eq!(rules.daylight_offset, 7200);
+    assert_eq!(paris.standard_offset(), 3600);
+    assert!(zone("Asia/Kolkata").unwrap().month_rules().is_none());
+    assert!(
+        parse("XXX3YYY,J60/0,J300/0")
+            .unwrap()
+            .month_rules()
+            .is_none()
+    );
+}

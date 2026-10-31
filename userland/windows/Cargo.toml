@@ -11,10 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 eggos-c-format = { path = "../c-format" }
+eggos-calendar = { path = "../../calendar" }
 eggos-element-tree = { path = "../element-tree" }
 eggos-net = { path = "../../net" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
+eggos-settings-file = { path = "../../settings-file" }
 eggos-translation-loader = { path = "../translation-loader" }
 eggos-windows-gui = { path = "../windows-gui" }
 
