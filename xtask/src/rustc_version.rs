@@ -281,10 +281,7 @@ pub fn copy_libraries(
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
-        if path.is_file()
-            && name.is_some_and(|name| name.contains(".so"))
-            && is_elf_file(&path)?
-        {
+        if path.is_file() && name.is_some_and(|name| name.contains(".so")) && is_elf_file(&path)? {
             waiting.push(path);
         }
     }
@@ -511,7 +508,11 @@ mod tests {
         let programs = work.join("rustc").join("bin");
         std::fs::create_dir_all(&libraries).unwrap();
         std::fs::create_dir_all(&programs).unwrap();
-        std::fs::write(programs.join("rustc"), library_needing(&["libLLVM.so.23.1"])).unwrap();
+        std::fs::write(
+            programs.join("rustc"),
+            library_needing(&["libLLVM.so.23.1"]),
+        )
+        .unwrap();
         std::fs::write(libraries.join("libLLVM.so.23.1"), library_needing(&[])).unwrap();
         std::fs::write(
             libraries.join("libLLVM-23-rust-1.99.1-stable.so"),

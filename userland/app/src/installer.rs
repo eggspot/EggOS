@@ -943,7 +943,10 @@ impl LibraryFolders {
     }
 
     fn add(&mut self, folder: &[u8]) -> Result<(), Problem> {
-        let known = self.listed().iter().any(|listed| listed.as_bytes() == folder);
+        let known = self
+            .listed()
+            .iter()
+            .any(|listed| listed.as_bytes() == folder);
         if !known && self.count < MAX_LIBRARY_FOLDERS {
             self.folders[self.count] = Path::from(folder).ok_or(Problem::PathTooLong)?;
             self.count += 1;

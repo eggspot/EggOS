@@ -612,7 +612,10 @@ pub fn members(arch: &str, packages: &Path) -> Result<Vec<Member>, String> {
             mode: FILE_MODE,
         });
     }
-    members.extend(zip::folder_members(&packages.join(XKB_IN_PACKAGE), XKB_FOLDER)?);
+    members.extend(zip::folder_members(
+        &packages.join(XKB_IN_PACKAGE),
+        XKB_FOLDER,
+    )?);
     members.extend([folder("share"), folder("share/glib-2.0")]);
     members.extend(zip::folder_members(
         &packages.join(SCHEMAS_IN_PACKAGE),
@@ -747,7 +750,11 @@ mod tests {
         for font in FONTS {
             std::fs::write(packages.join(FONTS_IN_PACKAGE).join(font), b"font").unwrap();
         }
-        std::fs::write(packages.join(XKB_IN_PACKAGE).join("rules/evdev"), b"! model").unwrap();
+        std::fs::write(
+            packages.join(XKB_IN_PACKAGE).join("rules/evdev"),
+            b"! model",
+        )
+        .unwrap();
         let members = members("aarch64", &packages).unwrap();
         std::fs::remove_dir_all(&scratch).unwrap();
         let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();

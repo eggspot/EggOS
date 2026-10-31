@@ -1214,8 +1214,14 @@ fn plugin_folders_stay_off_the_library_path_when_the_zip_holds_versioned_librari
             b"plugin",
         ),
         stored("plugins/platforms/libqwayland.so", b"plugin"),
-        stored("plugins/wayland-decoration-client/libbradient.so", b"plugin"),
-        stored("plugins/wayland-shell-integration/libxdg-shell.so", b"plugin"),
+        stored(
+            "plugins/wayland-decoration-client/libbradient.so",
+            b"plugin",
+        ),
+        stored(
+            "plugins/wayland-shell-integration/libxdg-shell.so",
+            b"plugin",
+        ),
     ]);
     let mut files = host_with("/media/host/corepad.zip", &archive);
     let plan = planned(&mut files, "/media/host/corepad.zip", X86_64);
