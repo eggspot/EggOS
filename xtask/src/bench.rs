@@ -15,8 +15,9 @@
 //! Two more results per architecture come from the release kernel (D116): `boot_to_prompt`,
 //! the guest time from the kernel's entry to the shell waiting at its first prompt, read by a
 //! kernel built with `qemu-boot-clock` and booted serial-only under the same `-icount`; and
-//! `release_image_bytes`, the size of the image `cargo xtask release` ships, which may not grow
-//! at all without a baseline update (CLAUDE.md, note 8).
+//! `release_image_bytes`, the size of the image `cargo xtask release` ships, and
+//! `idle_memory_bytes`, the memory in use when the shell first waits at its prompt (D203),
+//! neither of which may grow at all without a baseline update (CLAUDE.md, note 8).
 
 use crate::{Arch, qemu};
 use std::collections::BTreeMap;
@@ -46,10 +47,15 @@ const REPORT_FILES: [&str; 2] = ["report.md", "report.json"];
 const BLOCK_FACTOR: f64 = 2.0;
 
 const RELEASE_IMAGE_BYTES: &str = "release_image_bytes";
+const IDLE_MEMORY_BYTES: &str = "idle_memory_bytes";
 const TRANSLATE_INSTALL_BYTES: &str = "translate_install_bytes";
 
 /// Results that are sizes, gated exactly: any growth fails.
-const SIZES: &[&str] = &[RELEASE_IMAGE_BYTES, TRANSLATE_INSTALL_BYTES];
+const SIZES: &[&str] = &[
+    RELEASE_IMAGE_BYTES,
+    TRANSLATE_INSTALL_BYTES,
+    IDLE_MEMORY_BYTES,
+];
 
 const TRANSLATE_IMAGE_BASE: u64 = 0x1_4000_0000;
 const TRANSLATE_TEXT_RVA: u32 = 0x1000;
