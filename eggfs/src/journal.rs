@@ -101,7 +101,7 @@ pub fn format_with<D: Disk + ?Sized>(
         return Err(FormatError::LargerThanDisk);
     }
     let label = options.label.as_bytes();
-    if label.len() > MAX_LABEL || label.contains(&0) {
+    if label.len() > MAX_LABEL || label.iter().any(u8::is_ascii_control) {
         return Err(FormatError::BadLabel);
     }
     let mut geometry = Geometry::for_disk(blocks, now).ok_or(FormatError::TooSmall)?;

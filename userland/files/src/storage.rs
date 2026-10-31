@@ -145,8 +145,10 @@ pub enum StorageError {
     NotAllowed,
     /// It holds no EggFS file system.
     NotEggFs,
-    /// The label is longer than [`MAX_LABEL`] bytes or holds NUL.
+    /// The label is longer than [`MAX_LABEL`] bytes.
     LabelTooLong,
+    /// The label holds a control character, which a terminal could take as a command.
+    LabelNotPlain,
     /// The disk is smaller than 1 MiB.
     TooSmall,
     /// Another transfer has the disk.
@@ -166,6 +168,9 @@ impl StorageError {
             StorageError::NotEggFs => String::from("No EggFS file system on the disk."),
             StorageError::LabelTooLong => {
                 format!("The label is too long: {MAX_LABEL} bytes at most.")
+            }
+            StorageError::LabelNotPlain => {
+                String::from("The label may not hold control characters.")
             }
             StorageError::TooSmall => String::from("The disk is smaller than 1 MiB."),
             StorageError::Busy => String::from("The disk is busy: try again in a moment."),
@@ -329,7 +334,7 @@ fn record(disks: &mut (impl WholeDisks + ?Sized), line: Line) -> DiskRecord {
             if let Ok((volume, _)) = Volume::mount(disk) {
                 let (blocks, free) = volume.space();
                 let block = BLOCK_SIZE as u64;
-                record.label = Some(String::from_utf8_lossy(volume.label()).into_owned());
+                record.label = Some(shown_label(volume.label()));
                 record.used_bytes = Some(blocks.saturating_sub(free).saturating_mul(block));
                 record.available_bytes = Some(free.saturating_mul(block));
             }
@@ -425,9 +430,7 @@ pub fn format(
     device: &str,
     label: &str,
 ) -> Result<(), StorageError> {
-    if label.len() > MAX_LABEL || label.contains('\0') {
-        return Err(StorageError::LabelTooLong);
-    }
+    check_label(label)?;
     let line = unmounted(disks, device, true)?;
     let now = disks.now();
     let handle = disks.open(line.device, true).map_err(StorageError::of)?;
@@ -455,9 +458,31 @@ pub fn format(
     }
 }
 
-/// Whether `label` fits: at most [`MAX_LABEL`] bytes, no NUL.
+/// Whether `label` fits: at most [`MAX_LABEL`] bytes, no control character.
 pub fn label_fits(label: &str) -> bool {
-    label.len() <= MAX_LABEL && !label.contains('\0')
+    check_label(label).is_ok()
+}
+
+/// Why `label` cannot be a disk's label, if it cannot: longer than [`MAX_LABEL`] bytes or
+/// holding a control character.
+pub fn check_label(label: &str) -> Result<(), StorageError> {
+    if label.chars().any(char::is_control) {
+        return Err(StorageError::LabelNotPlain);
+    }
+    match label.len() > MAX_LABEL {
+        true => Err(StorageError::LabelTooLong),
+        false => Ok(()),
+    }
+}
+
+fn shown_label(stored: &[u8]) -> String {
+    String::from_utf8_lossy(stored)
+        .chars()
+        .map(|character| match character.is_control() {
+            true => char::REPLACEMENT_CHARACTER,
+            false => character,
+        })
+        .collect()
 }
 
 /// The contents line: `EggFS "Photos"`, `EggFS, no label`, `EggFS` (label unknown),
@@ -1048,6 +1073,13 @@ mod tests {
             Err(StorageError::LabelTooLong)
         );
         assert_eq!(disks.disk("vdc").writes, 0);
+        assert_eq!(
+            format(&mut disks, "/dev/vdc", "a\u{1b}[2Jb"),
+            Err(StorageError::LabelNotPlain)
+        );
+        assert_eq!(disks.disk("vdc").writes, 0);
+        assert!(!label_fits("tab\there") && label_fits("Fotos \u{e9}t\u{e9}"));
+        assert_eq!(shown_label(b"a\x1b[31mb\x85"), "a\u{fffd}[31mb\u{fffd}");
         format(&mut disks, "/dev/vdc", "scratch").unwrap();
         let record = find(&mut disks, "vdc").unwrap();
         assert_eq!(contents_text(&record), "EggFS \"scratch\"");

@@ -524,6 +524,7 @@ fn format_with_writes_a_label_and_uses_only_the_blocks_asked_for() {
         (Some(2048), "", FormatError::LargerThanDisk),
         (None, too_long.as_str(), FormatError::BadLabel),
         (None, "a\0b", FormatError::BadLabel),
+        (None, "a\x1b[2Jb", FormatError::BadLabel),
         (Some(100), "", FormatError::TooSmall),
     ];
     for (blocks, label, error) in refused {

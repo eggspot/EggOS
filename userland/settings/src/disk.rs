@@ -133,6 +133,7 @@ pub fn error_of(error: &StorageError) -> &'static ErrorDefinition {
         StorageError::NotAllowed => &errors::PERMISSION_DENIED,
         StorageError::NotEggFs => &errors::NOT_EGGFS,
         StorageError::LabelTooLong => &errors::LABEL_TOO_LONG,
+        StorageError::LabelNotPlain => &errors::INVALID_VALUE,
         StorageError::TooSmall | StorageError::Failed => &errors::FAILED,
     }
 }
@@ -141,7 +142,7 @@ fn refuse(console: &mut impl Console, json: bool, device: &str, error: &StorageE
     let message = format!("{device}: {}", error.sentence());
     report(console, json, error_of(error), &message);
     match error {
-        StorageError::LabelTooLong => USAGE_STATUS,
+        StorageError::LabelTooLong | StorageError::LabelNotPlain => USAGE_STATUS,
         _ => FAILURE,
     }
 }
@@ -316,8 +317,8 @@ fn format_disk(
     options: &Options<'_>,
 ) -> i32 {
     let label = options.label.unwrap_or("");
-    if !storage::label_fits(label) {
-        return refuse(console, false, device, &StorageError::LabelTooLong);
+    if let Err(error) = storage::check_label(label) {
+        return refuse(console, false, device, &error);
     }
     let record = match storage::find(disks, device) {
         Ok(record) => record,
