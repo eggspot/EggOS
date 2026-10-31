@@ -140,13 +140,23 @@ pub(super) extern "efiapi" fn close_handle(handle: usize) -> Bool {
     let Some(fd) = fd_of(handle) else {
         return fail(error::INVALID_HANDLE, FALSE);
     };
-    if !super::pipe::closing(fd) {
-        return fail(error::INVALID_HANDLE, FALSE);
-    }
-    match linux::close(fd) {
+    match close_descriptor(fd) {
         Ok(_) => TRUE,
         Err(_) => fail(error::INVALID_HANDLE, FALSE),
     }
+}
+
+const EBADF: Errno = Errno(9);
+
+/// Closes `fd`, the descriptor of a handle, a C runtime descriptor or a socket, once the layer
+/// dropped what it keeps for that number (`pipe::closing`): bytes `PeekNamedPipe` kept,
+/// overlapped reads in progress, the unclaimed end of a native pipe. `EBADF`, with nothing
+/// done, when its handle is protected from closing.
+pub(super) fn close_descriptor(fd: usize) -> Result<usize, Errno> {
+    if !super::pipe::closing(fd) {
+        return Err(EBADF);
+    }
+    linux::close(fd)
 }
 
 fn open_flags(access: u32, disposition: u32) -> Option<usize> {

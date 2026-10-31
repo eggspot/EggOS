@@ -293,7 +293,7 @@ extern "efiapi" fn socket(family: i32, kind: i32, protocol: i32) -> usize {
 
 extern "efiapi" fn close_socket(socket: usize) -> i32 {
     match socket_fd(socket) {
-        Ok(fd) => count_or_error(linux::close(fd)).min(0),
+        Ok(fd) => count_or_error(super::file::close_descriptor(fd)).min(0),
         Err(error) => fail(error, SOCKET_ERROR),
     }
 }

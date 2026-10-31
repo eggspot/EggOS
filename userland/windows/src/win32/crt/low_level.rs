@@ -154,7 +154,7 @@ extern "efiapi" fn close(fd: i32) -> i32 {
     let Some(fd) = descriptor(fd) else {
         return FAILED;
     };
-    match linux::close(fd) {
+    match super::super::file::close_descriptor(fd) {
         Ok(_) => 0,
         Err(error) => refused(error.0),
     }
@@ -175,6 +175,10 @@ unsafe extern "efiapi" fn read(fd: i32, buffer: *mut u8, count: u32) -> i32 {
         // SAFETY: `_read`'s contract: `count` writable bytes at `buffer`.
         _ => unsafe { core::slice::from_raw_parts_mut(buffer, count) },
     };
+    let peeked = super::super::pipe::take_peeked(fd, bytes);
+    if peeked != 0 {
+        return peeked as i32;
+    }
     match linux::read(fd, bytes) {
         Ok(read) => read as i32,
         Err(error) => refused(error.0),

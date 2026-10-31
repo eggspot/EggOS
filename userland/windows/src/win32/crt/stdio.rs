@@ -45,6 +45,10 @@ struct Descriptor {
 impl Backing for Descriptor {
     fn read(&mut self, buffer: &mut [u8]) -> Result<usize, u16> {
         let fd = self.fd.ok_or(LINUX_EBADF)?;
+        let peeked = super::super::pipe::take_peeked(fd, buffer);
+        if peeked != 0 {
+            return Ok(peeked);
+        }
         linux::read(fd, buffer).map_err(|errno| errno.0)
     }
 
@@ -377,7 +381,9 @@ unsafe extern "efiapi" fn fclose(stream: *mut File) -> i32 {
     };
     // SAFETY: the stream's block, out of the table, which nothing else holds.
     unsafe { process_heap::free(stream.cast()) };
-    let closed = descriptor.fd.map_or(Ok(0), linux::close);
+    let closed = descriptor
+        .fd
+        .map_or(Ok(0), super::super::file::close_descriptor);
     match (flushed, closed) {
         (Ok(()), Ok(_)) => 0,
         (Err(error), _) | (_, Err(eggos_runtime::errno::Errno(error))) => {
