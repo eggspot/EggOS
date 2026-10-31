@@ -766,7 +766,7 @@ fn unpack_into(
     let mut unpacked = Unpacked::default();
     let mut buffer = vec![0u8; COPY_CHUNK_BYTES];
     let mut first_names: HashMap<u64, PathBuf> = HashMap::new();
-    let mut links = Vec::new();
+    let mut symbolic_links = Vec::new();
     let mut pending = vec![(out.to_path_buf(), top)];
     while let Some((folder, directory)) = pending.pop() {
         let mut position = 0;
@@ -811,7 +811,7 @@ fn unpack_into(
                         first_names.insert(entry.node, path);
                     }
                 }
-                Kind::SymbolicLink => links.push(PendingLink {
+                Kind::SymbolicLink => symbolic_links.push(PendingLink {
                     path,
                     directory,
                     node: entry.node,
@@ -819,7 +819,7 @@ fn unpack_into(
             }
         }
     }
-    for link in links {
+    for link in symbolic_links {
         let path = &link.path;
         let target = volume
             .link_target(link.node)
@@ -857,12 +857,13 @@ fn reserved_on_windows(name: &str) -> bool {
         return true;
     }
     let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
-    let is = |reserved: &str| stem.eq_ignore_ascii_case(reserved);
-    DEVICES.iter().any(|device| is(device))
+    DEVICES
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
         || NUMBERED.iter().any(|prefix| {
-            NUMBERS
-                .iter()
-                .any(|number| is(&format!("{prefix}{number}")))
+            stem.get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+                && NUMBERS.contains(&&stem[prefix.len()..])
         })
 }
 
