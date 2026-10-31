@@ -345,7 +345,14 @@ fn open<P: Platform>(
         }
         Err(error) => {
             let magic_allowed = links == Links::All;
-            return reopen_described(process, thread, (root, start, path), flags, error, magic_allowed);
+            return reopen_described(
+                process,
+                thread,
+                (root, start, path),
+                flags,
+                error,
+                magic_allowed,
+            );
         }
     };
     let directory = node.is_directory();

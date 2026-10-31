@@ -3486,7 +3486,11 @@ mod tests {
                     }
                     Err(error) => {
                         assert_eq!(error, NewChildError::OutOfMemory);
-                        assert_eq!(free(), before, "a failed fork frees no frame it did not take");
+                        assert_eq!(
+                            free(),
+                            before,
+                            "a failed fork frees no frame it did not take"
+                        );
                         failures += 1;
                     }
                 }
@@ -3502,9 +3506,16 @@ mod tests {
             }
             drop(frames);
             drop(lent);
-            assert_eq!(drops.load(Ordering::Relaxed), 0, "the parent still maps them");
             assert_eq!(
-                process.address_space().translate(DATA).map(|(phys, _)| phys),
+                drops.load(Ordering::Relaxed),
+                0,
+                "the parent still maps them"
+            );
+            assert_eq!(
+                process
+                    .address_space()
+                    .translate(DATA)
+                    .map(|(phys, _)| phys),
                 Some(physical)
             );
         }

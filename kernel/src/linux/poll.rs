@@ -1143,9 +1143,7 @@ fn select_fds<P: Platform>(
         }
         let mut word = [0u8; 8];
         for index in 0..words {
-            let at = address
-                .checked_add(8 * index as u64)
-                .ok_or(Errno::EFAULT)?;
+            let at = address.checked_add(8 * index as u64).ok_or(Errno::EFAULT)?;
             process
                 .read_user_memory(at, &mut word)
                 .map_err(|_| Errno::EFAULT)?;
@@ -1204,9 +1202,7 @@ fn select_fds<P: Platform>(
             continue;
         }
         for index in 0..words {
-            let at = address
-                .checked_add(8 * index as u64)
-                .ok_or(Errno::EFAULT)?;
+            let at = address.checked_add(8 * index as u64).ok_or(Errno::EFAULT)?;
             process
                 .write_user_memory(at, &bits[set * words + index].to_ne_bytes())
                 .map_err(|_| Errno::EFAULT)?;
