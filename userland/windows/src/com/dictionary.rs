@@ -122,6 +122,7 @@ pub struct Dictionary {
     live: u32,
     slots: *mut u32,
     slot_mask: u32,
+    removed_slots: u32,
 }
 
 /// `DISPPARAMS`: the arguments, last first, the named ones' identifiers and the counts.
@@ -279,6 +280,7 @@ pub fn create(tables: Tables) -> *mut Dictionary {
         live: 0,
         slots: ptr::null_mut(),
         slot_mask: 0,
+        removed_slots: 0,
     };
     // SAFETY: a fresh, aligned block for one dictionary.
     unsafe { object.write(dictionary) };
@@ -322,7 +324,7 @@ impl Dictionary {
         }
         let entries = self.entries();
         let mut at = hash & self.slot_mask;
-        loop {
+        for _ in 0..=self.slot_mask {
             // SAFETY: `at` is masked into the slots block.
             let slot = unsafe { self.slots.wrapping_add(at as usize).read() };
             if slot == EMPTY_SLOT {
@@ -341,6 +343,7 @@ impl Dictionary {
             }
             at = (at + 1) & self.slot_mask;
         }
+        None
     }
 
     fn place(&mut self, number: u32, hash: u32) {
@@ -350,24 +353,40 @@ impl Dictionary {
         while slots[at as usize] != EMPTY_SLOT && slots[at as usize] != REMOVED_SLOT {
             at = (at + 1) & mask;
         }
+        let reused = slots[at as usize] == REMOVED_SLOT;
         slots[at as usize] = number + 1;
+        if reused {
+            self.removed_slots -= 1;
+        }
     }
 
     fn unplace(&mut self, number: u32, hash: u32) {
         let mask = self.slot_mask;
         let slots = self.slots_mut();
         let mut at = hash & mask;
-        while slots[at as usize] != EMPTY_SLOT {
-            if slots[at as usize] == number + 1 {
-                slots[at as usize] = REMOVED_SLOT;
-                return;
+        for _ in 0..=mask {
+            match slots[at as usize] {
+                EMPTY_SLOT => return,
+                slot if slot == number + 1 => {
+                    slots[at as usize] = REMOVED_SLOT;
+                    self.removed_slots += 1;
+                    return;
+                }
+                _ => at = (at + 1) & mask,
             }
-            at = (at + 1) & mask;
+        }
+    }
+
+    fn tidy_slots(&mut self) {
+        let slot_count = u64::from(self.slot_mask) + 1;
+        if u64::from(self.removed_slots) > slot_count / 4 {
+            self.rebuild_slots();
         }
     }
 
     fn rebuild_slots(&mut self) {
         self.slots_mut().fill(EMPTY_SLOT);
+        self.removed_slots = 0;
         for number in 0..self.used {
             let entry = self.entries()[number as usize];
             if entry.live {
@@ -466,6 +485,7 @@ impl Dictionary {
         self.unplace(number, hash);
         Self::release_entry(&mut self.entries_mut()[number as usize]);
         self.live -= 1;
+        self.tidy_slots();
     }
 
     fn clear(&mut self) {
@@ -476,6 +496,7 @@ impl Dictionary {
         }
         self.used = 0;
         self.live = 0;
+        self.removed_slots = 0;
         self.slots_mut().fill(EMPTY_SLOT);
     }
 
@@ -598,6 +619,7 @@ impl Dictionary {
         // SAFETY: the old key was the entry's.
         unsafe { variant::release(&old) };
         self.place(number, new_hash);
+        self.tidy_slots();
         S_OK
     }
 
@@ -1585,6 +1607,46 @@ mod tests {
         for value in [first, second, third] {
             free(value);
         }
+        // SAFETY: the last reference.
+        assert_eq!(unsafe { release(dictionary) }, 0);
+    }
+
+    #[test]
+    fn renaming_one_key_many_times_never_fills_the_slots_with_removed_marks() {
+        let dictionary = new_dictionary();
+        let first = text("k0");
+        assert_eq!(
+            method(dictionary, "Add", &[first, Variant::long(1)]).code,
+            S_OK
+        );
+        free(first);
+        for number in 0..400 {
+            let (old, new) = (
+                text(&format!("k{number}")),
+                text(&format!("k{}", number + 1)),
+            );
+            let renamed = call(dictionary, "Key", DISPATCH_PROPERTYPUT, &[old, new]);
+            assert_eq!(renamed.code, S_OK, "{number}");
+            free(old);
+            free(new);
+        }
+        let missing = text("missing");
+        assert_eq!(
+            method(dictionary, "Exists", &[missing]).result,
+            Variant::boolean(false)
+        );
+        free(missing);
+        let last = text("k400");
+        assert_eq!(
+            property(dictionary, "Item", &[last]).result,
+            Variant::long(1)
+        );
+        free(last);
+        // SAFETY: the dictionary is live.
+        let removed = unsafe { (*dictionary).removed_slots };
+        // SAFETY: as above.
+        let slot_count = unsafe { (*dictionary).slot_mask } + 1;
+        assert!(removed <= slot_count / 4);
         // SAFETY: the last reference.
         assert_eq!(unsafe { release(dictionary) }, 0);
     }
