@@ -370,11 +370,8 @@ fn format_disk(
     if let Err(error) = storage::format(disks, record.device, label) {
         return refuse(console, false, record.device, &error);
     }
-    let formatted = match label.is_empty() {
-        true => String::from("EggFS, no label"),
-        false => format!("EggFS \"{label}\""),
-    };
-    let line = format!("Formatted {} as {formatted}.\n", record.device);
+    let mut line = storage::formatted_text(record.device, label);
+    line.push('\n');
     console.write_output(line.as_bytes());
     0
 }

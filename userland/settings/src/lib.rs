@@ -13,3 +13,4 @@ pub mod disk;
 pub mod facts;
 pub mod keys;
 pub mod settings_window;
+pub mod storage_pane;

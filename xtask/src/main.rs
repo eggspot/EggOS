@@ -1135,6 +1135,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     let kernel = build_kernel(arch, None)?;
     qemu::persistent::check(arch, &kernel)?;
     qemu::work_disk::check(arch, &kernel)?;
+    qemu::disks::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;

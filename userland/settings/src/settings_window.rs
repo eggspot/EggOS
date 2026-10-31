@@ -1,14 +1,18 @@
 //! The Settings window (docs/ux/desktop-v0.3-gui.md section 10, docs/ux/toolkit-v0.3.md
 //! section 11): the sidebar with its search and its panes, and the panes: Appearance with the
-//! profile picker, Display, Keyboard (D185, docs/ux/keyboard-v0.3.md), Mouse, Date & time
-//! (D150, docs/ux/date-time-v0.3.md),
+//! profile picker, Display, Keyboard (D185, docs/ux/keyboard-v0.3.md), Mouse, Storage (D192,
+//! docs/ux/storage-v0.3.md), Date & time (D150, docs/ux/date-time-v0.3.md),
 //! Components and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
 use crate::art;
 use crate::facts::Facts;
+use crate::storage_pane::{Reply, StoragePane};
+use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_calendar::{ParseError, parse_setting};
+use eggos_eggfs::{CheckMode, DiskCheck};
+use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_settings_file::KEYBOARD_LAYOUTS;
 use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
@@ -23,7 +27,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 52;
+pub const CAPACITY: usize = 96;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -80,11 +84,12 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 7] = [
+pub const PANES: [&str; 8] = [
     "Appearance",
     "Display",
     "Keyboard",
     "Mouse",
+    "Storage",
     "Date & time",
     "Components",
     "About",
@@ -95,16 +100,18 @@ const DISPLAY: usize = 1;
 /// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
 pub const KEYBOARD: usize = 2;
 const MOUSE: usize = 3;
+/// The `Storage` pane's place in [`PANES`] (D192, docs/ux/storage-v0.3.md).
+pub const STORAGE: usize = 4;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
-pub const DATE_AND_TIME: usize = 4;
-const COMPONENTS: usize = 5;
+pub const DATE_AND_TIME: usize = 5;
+const COMPONENTS: usize = 6;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 6;
+pub const ABOUT: usize = 7;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 7] = [
+const PANE_WORDS: [&[&str]; 8] = [
     &[
         "theme",
         "layout",
@@ -144,6 +151,24 @@ const PANE_WORDS: [&[&str]; 7] = [
     ],
     &["Primary button", "Wheel", "trackpad", "pointer"],
     &[
+        "disks",
+        "drives",
+        "volume",
+        "space",
+        "free space",
+        "format",
+        "erase",
+        "check",
+        "repair",
+        "fsck",
+        "chkdsk",
+        "Disk Utility",
+        "Disk Management",
+        "EggFS",
+        "label",
+        "partition",
+    ],
+    &[
         "clock",
         "time",
         "date",
@@ -180,6 +205,16 @@ pub enum Request {
     /// Make the keyboard layout at this index of the settings file's `KEYBOARD_LAYOUTS` the
     /// keyboard's and save it (D185).
     SetKeyboardLayout(usize),
+    /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
+    ReadDisks,
+    /// Check this disk without writing, read the disks again, then show both
+    /// ([`SettingsWindow::show_disks`], [`SettingsWindow::show_check`]).
+    CheckDisk(&'static str),
+    /// Repair this disk, read the disks again, then show both.
+    RepairDisk(&'static str),
+    /// Format this disk with the label [`SettingsWindow::format_label`], read the disks
+    /// again, then show both ([`SettingsWindow::show_formatted`]).
+    FormatDisk(&'static str),
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -207,7 +242,7 @@ pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 struct Widgets {
     search: WidgetId,
     list: WidgetId,
-    panes: [WidgetId; 7],
+    panes: [WidgetId; PANES.len()],
     cards: WidgetId,
     modifier: WidgetId,
     controls: WidgetId,
@@ -229,6 +264,7 @@ struct Widgets {
 pub struct SettingsWindow {
     tree: WidgetTree<CAPACITY>,
     widgets: Widgets,
+    storage: StoragePane,
     facts: Facts,
     pane: usize,
 }
@@ -401,7 +437,7 @@ impl SettingsWindow {
                 content_height: 0,
             },
         );
-        let panes = [(); 7].map(|()| build.pane(scroll));
+        let panes = [(); PANES.len()].map(|()| build.pane(scroll));
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
 
         let appearance = panes[APPEARANCE];
@@ -620,6 +656,7 @@ impl SettingsWindow {
             colour::TEXT,
         );
 
+        let storage = StoragePane::build(&mut tree, panes[STORAGE], set_button);
         tree.set_enabled(radios, false);
         tree.set_enabled(set_button, false);
         tree.set_default_button(set_button);
@@ -653,6 +690,7 @@ impl SettingsWindow {
                 try_field,
                 keyboard_line,
             },
+            storage,
             facts,
             pane: APPEARANCE,
         };
@@ -687,9 +725,9 @@ impl SettingsWindow {
         self.tree.text_of(self.widgets.resolution)
     }
 
-    fn show_pane(&mut self, pane: usize) {
+    fn show_pane(&mut self, pane: usize) -> Option<Request> {
         if pane == self.pane || pane >= PANES.len() {
-            return;
+            return None;
         }
         self.tree.set_shown(self.widgets.panes[self.pane], false);
         self.tree.set_shown(self.widgets.panes[pane], true);
@@ -700,6 +738,49 @@ impl SettingsWindow {
         if pane == KEYBOARD {
             self.tree.set_text(self.widgets.try_field, "");
         }
+        if pane == STORAGE {
+            self.storage.reset(&mut self.tree);
+            return Some(Request::ReadDisks);
+        }
+        None
+    }
+
+    /// Shows the disks just read on the Storage pane (D192).
+    pub fn show_disks(&mut self, listed: Result<Vec<DiskRecord>, StorageError>) {
+        self.storage.show_disks(&mut self.tree, listed);
+    }
+
+    /// Shows on the Storage pane how checking or repairing `device` went.
+    pub fn show_check(
+        &mut self,
+        device: &'static str,
+        mode: CheckMode,
+        result: Result<DiskCheck, StorageError>,
+    ) {
+        self.storage
+            .show_check(&mut self.tree, device, mode, result);
+    }
+
+    /// Shows on the Storage pane how formatting `device` with `label` went, at `now_ms`.
+    pub fn show_formatted(
+        &mut self,
+        device: &'static str,
+        label: &str,
+        result: Result<(), StorageError>,
+        now_ms: u32,
+    ) {
+        self.storage
+            .show_formatted(&mut self.tree, device, label, result, now_ms);
+    }
+
+    /// The label typed in the Storage pane's format panel.
+    pub fn format_label(&self) -> &str {
+        self.storage.format_label(&self.tree)
+    }
+
+    /// The Storage pane.
+    pub fn storage_pane(&self) -> &StoragePane {
+        &self.storage
     }
 
     /// Shows profile `index` as the chosen one: its card selected, its modifier and control
@@ -843,7 +924,7 @@ impl SettingsWindow {
         &self.facts
     }
 
-    fn filter(&mut self) {
+    fn filter(&mut self) -> Option<Request> {
         let query = Text::<255>::from(self.tree.text_of(self.widgets.search).unwrap_or(""));
         let mut shown = 0u32;
         for pane in 0..PANES.len() {
@@ -852,15 +933,17 @@ impl SettingsWindow {
             }
         }
         self.tree.set_shown_items(self.widgets.list, shown);
-        if shown != 0
-            && let Some(selected) = self.tree.selected(self.widgets.list)
-        {
-            self.show_pane(selected);
+        match self.tree.selected(self.widgets.list) {
+            Some(selected) if shown != 0 => self.show_pane(selected),
+            _ => None,
         }
     }
 
     /// Acts on what an input did at `now_ms`: what the program must do, if anything.
     pub fn respond(&mut self, response: Response, now_ms: u32) -> Option<Request> {
+        if let Reply::Done(request) = self.storage.respond(&mut self.tree, response, now_ms) {
+            return request;
+        }
         let widgets = self.widgets;
         match response {
             Response::Chosen(id, card) if id == widgets.cards => {
@@ -875,13 +958,9 @@ impl SettingsWindow {
                 Some(Request::SetKeyboardLayout(layout))
             }
             Response::Chosen(id, pane) | Response::Opened(id, pane) if id == widgets.list => {
-                self.show_pane(pane);
-                None
+                self.show_pane(pane)
             }
-            Response::Edited(id) if id == widgets.search => {
-                self.filter();
-                None
-            }
+            Response::Edited(id) if id == widgets.search => self.filter(),
             Response::Edited(id) if id == widgets.set_field => {
                 let typed = self
                     .tree
@@ -994,7 +1073,7 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, 44 + 6 * 32 + 10);
+        click(&mut window, 40, 44 + 7 * 32 + 10);
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
@@ -1045,7 +1124,7 @@ mod tests {
         assert_eq!(uptime_text(59).as_str(), "Up 0:00:59");
     }
 
-    const DATE_AND_TIME_ROW: i32 = 44 + 4 * 32 + 10;
+    const DATE_AND_TIME_ROW: i32 = 44 + 5 * 32 + 10;
 
     fn press(window: &mut SettingsWindow, code: u16, character: u32) -> Option<Request> {
         let response = window.tree().handle(

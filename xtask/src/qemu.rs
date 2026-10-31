@@ -5,6 +5,7 @@
 pub mod android_dynamic;
 pub mod autohotkey;
 pub mod cocoa_app;
+pub mod disks;
 pub mod dynamic_linking;
 pub mod files;
 pub mod gtk_app;

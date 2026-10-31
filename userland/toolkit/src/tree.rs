@@ -318,6 +318,11 @@ impl<const N: usize> WidgetTree<N> {
         }
     }
 
+    /// Whether widget `id` is enabled.
+    pub fn is_enabled(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|node| node.enabled)
+    }
+
     /// Makes push button `id` the window's default: Enter reaches it from widgets that do not
     /// use Enter.
     pub fn set_default_button(&mut self, id: WidgetId) {

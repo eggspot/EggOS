@@ -609,6 +609,126 @@ pub fn finding_line(finding: &Finding) -> String {
     )
 }
 
+/// The Storage pane's list when no disk is attached.
+pub const NO_DISKS: &str = "No disks attached.";
+/// The Storage pane's status line when no disk is attached.
+pub const NOTHING_TO_DO: &str = "No disk attached: nothing to check or format.";
+const CHECK_FIRST: &str = "Check reads the disk and changes nothing. Repair is enabled when a \
+                           check finds something to repair.";
+const READ_ONLY_EGGFS: &str = "Read-only disk: it can be checked, not repaired or formatted.";
+const NO_EGGFS: &str =
+    "No EggFS file system on the disk: nothing to check. Format... makes it one.";
+const READ_ONLY_FOREIGN: &str =
+    "Read-only disk with no EggFS file system: nothing can be done to it.";
+/// The text fields' placeholders that ask for each disk's short name, in [`DEVICES`] order.
+pub const CONFIRM_PLACEHOLDERS: [&str; 4] = [
+    "Type vda to confirm",
+    "Type vdb to confirm",
+    "Type vdc to confirm",
+    "Type vdd to confirm",
+];
+
+/// What may be done to a disk: checked, repaired, formatted. The pane enables `Repair` only
+/// after a check of the same disk found something repairable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowed {
+    /// It is an unmounted EggFS disk.
+    pub check: bool,
+    /// It is an unmounted EggFS disk that takes writes.
+    pub repair: bool,
+    /// It is unmounted and takes writes.
+    pub format: bool,
+}
+
+/// What may be done to `record`.
+pub fn allowed(record: &DiskRecord) -> Allowed {
+    let unmounted = record.mounted_on.is_none();
+    let eggfs = record.file_system == FileSystem::EggFs;
+    Allowed {
+        check: unmounted && eggfs,
+        repair: unmounted && eggfs && !record.read_only,
+        format: unmounted && !record.read_only,
+    }
+}
+
+/// The pane's status line while nothing runs: why a button is disabled, or what Check does.
+pub fn idle_text(record: &DiskRecord) -> String {
+    let eggfs = record.file_system == FileSystem::EggFs;
+    match (&record.mounted_on, eggfs, record.read_only) {
+        (Some(place), _, _) => format!(
+            "In use at {place}: a mounted disk cannot be checked, repaired or formatted in this \
+             version."
+        ),
+        (None, true, false) => String::from(CHECK_FIRST),
+        (None, true, true) => String::from(READ_ONLY_EGGFS),
+        (None, false, false) => String::from(NO_EGGFS),
+        (None, false, true) => String::from(READ_ONLY_FOREIGN),
+    }
+}
+
+/// `Checking /dev/vdb...` or `Repairing /dev/vdb...`.
+pub fn running_text(device: &str, mode: CheckMode) -> String {
+    match mode {
+        CheckMode::ReadOnly => format!("Checking {device}..."),
+        CheckMode::Repair => format!("Repairing {device}..."),
+    }
+}
+
+/// `Formatting /dev/vdb...`.
+pub fn formatting_text(device: &str) -> String {
+    format!("Formatting {device}...")
+}
+
+/// `Formatted /dev/vdb as EggFS "Photos".` or `Formatted /dev/vdb as EggFS, no label.`
+pub fn formatted_text(device: &str, label: &str) -> String {
+    match label.is_empty() {
+        true => format!("Formatted {device} as EggFS, no label."),
+        false => format!("Formatted {device} as EggFS \"{label}\"."),
+    }
+}
+
+/// The format question: `Format /dev/vdb?`.
+pub fn format_question(device: &str) -> String {
+    format!("Format {device}?")
+}
+
+/// `Erases everything on it: EggFS "Photos", 1.0 GB.`
+pub fn erases_text(record: &DiskRecord) -> String {
+    format!("Erases everything on it: {}.", erased_text(record))
+}
+
+/// `This cannot be undone. Type vdb to confirm.`
+pub fn confirm_text(record: &DiskRecord) -> String {
+    format!(
+        "This cannot be undone. Type {} to confirm.",
+        record.short_name()
+    )
+}
+
+/// The placeholder of the field that asks for `device`'s short name.
+pub fn confirm_placeholder(device: &str) -> &'static str {
+    DEVICES
+        .iter()
+        .position(|known| *known == device)
+        .map_or(CONFIRM_PLACEHOLDERS[0], |index| CONFIRM_PLACEHOLDERS[index])
+}
+
+/// The last report line when a check found more than the pane shows: `and 4 more: disk check
+/// /dev/vdb lists them all.`
+pub fn more_findings_text(more: usize, device: &str) -> String {
+    format!("and {more} more: disk check {device} lists them all.")
+}
+
+/// The share of the disk in use, in thousandths, when its use is known.
+pub fn used_permille(record: &DiskRecord) -> Option<u16> {
+    let used = record.used_bytes?;
+    if record.size_bytes == 0 {
+        return None;
+    }
+    let permille = u128::from(used) * 1000 / u128::from(record.size_bytes);
+    Some(permille.min(1000) as u16)
+}
+
 /// Disks in memory, for host tests of every front-end.
 #[cfg(any(test, feature = "memory"))]
 pub mod memory {
@@ -951,5 +1071,58 @@ mod tests {
         assert_eq!(grouped(999), "999");
         assert_eq!(grouped(262_144), "262,144");
         assert_eq!(grouped(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn each_disk_says_what_may_be_done_to_it_and_why_not() {
+        let mut disks = machine();
+        disks.disks.push(MemoryWholeDisk {
+            read_only: true,
+            ..MemoryWholeDisk::eggfs("vdd", BLOCKS, "Old")
+        });
+        let records = list(&mut disks).unwrap();
+        let allowed_of = |index: usize| {
+            let allowed = allowed(&records[index]);
+            (allowed.check, allowed.repair, allowed.format)
+        };
+        assert_eq!(allowed_of(0), (false, false, false));
+        assert_eq!(allowed_of(1), (true, true, true));
+        assert_eq!(allowed_of(2), (false, false, true));
+        assert_eq!(allowed_of(3), (true, false, false));
+        assert_eq!(
+            idle_text(&records[0]),
+            "In use at /home: a mounted disk cannot be checked, repaired or formatted in this \
+             version."
+        );
+        assert!(idle_text(&records[1]).starts_with("Check reads the disk and changes nothing."));
+        assert!(idle_text(&records[2]).ends_with("Format... makes it one."));
+        assert!(idle_text(&records[3]).starts_with("Read-only disk: it can be checked"));
+        assert_eq!(used_permille(&records[0]), Some(500));
+        assert_eq!(used_permille(&records[2]), None);
+        assert_eq!(
+            erases_text(&records[2]),
+            "Erases everything on it: Blank, 2.0 MB."
+        );
+        assert_eq!(
+            confirm_text(&records[2]),
+            "This cannot be undone. Type vdc to confirm."
+        );
+        assert_eq!(confirm_placeholder("/dev/vdc"), "Type vdc to confirm");
+        assert_eq!(
+            formatted_text("/dev/vdc", "Photos"),
+            "Formatted /dev/vdc as EggFS \"Photos\"."
+        );
+        assert_eq!(
+            formatted_text("/dev/vdc", ""),
+            "Formatted /dev/vdc as EggFS, no label."
+        );
+        assert_eq!(
+            running_text("/dev/vdb", CheckMode::Repair),
+            "Repairing /dev/vdb..."
+        );
+        assert_eq!(
+            more_findings_text(4, "/dev/vdb"),
+            "and 4 more: disk check /dev/vdb lists them all."
+        );
     }
 }

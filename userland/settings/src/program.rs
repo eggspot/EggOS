@@ -2,8 +2,11 @@
 //! kernel, the settings file it reads and replaces, the profile it sets through `/dev/window`,
 //! and the window's event loop.
 
+use crate::disk_system::LinuxDisks;
 use core::ffi::CStr;
 use core::fmt::Write;
+use eggos_eggfs::CheckMode;
+use eggos_files::storage;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
@@ -505,12 +508,21 @@ impl command::Machine for Machine {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DiskWork {
+    Check(&'static str, CheckMode),
+    Format(&'static str, Text<LABEL_BYTES>),
+}
+
+const LABEL_BYTES: usize = 64;
+
 struct Settings {
     window: SettingsWindow,
     server: Option<WindowServer>,
     uptime_from_ms: u32,
     uptime_at_start: u64,
     unsaved_profile: Option<usize>,
+    disk_work: Option<DiskWork>,
 }
 
 const SECOND_MS: u32 = 1000;
@@ -534,6 +546,17 @@ impl Application<CAPACITY> for Settings {
             Some(Request::SetKeyboardLayout(index)) => {
                 choose_keyboard_layout(index, self.server.as_ref());
             }
+            Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
+            Some(Request::CheckDisk(device)) => {
+                self.disk_work = Some(DiskWork::Check(device, CheckMode::ReadOnly));
+            }
+            Some(Request::RepairDisk(device)) => {
+                self.disk_work = Some(DiskWork::Check(device, CheckMode::Repair));
+            }
+            Some(Request::FormatDisk(device)) => {
+                let label = Text::from(self.window.format_label());
+                self.disk_work = Some(DiskWork::Format(device, label));
+            }
             None => self.show_clock(now_ms),
         }
         if self.window.pane() == KEYBOARD {
@@ -542,7 +565,7 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn deadline(&self, now_ms: u32) -> Option<u32> {
-        if self.unsaved_profile.is_some() {
+        if self.unsaved_profile.is_some() || self.disk_work.is_some() {
             return Some(now_ms);
         }
         match self.window.pane() {
@@ -560,6 +583,7 @@ impl Application<CAPACITY> for Settings {
 
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
+        self.do_disk_work(now_ms);
         self.show_clock(now_ms);
     }
 
@@ -605,6 +629,26 @@ impl Settings {
         }
     }
 
+    fn do_disk_work(&mut self, now_ms: u32) {
+        let Some(work) = self.disk_work.take() else {
+            return;
+        };
+        let mut disks = LinuxDisks;
+        match work {
+            DiskWork::Check(device, mode) => {
+                let result = storage::check(&mut disks, device, mode);
+                self.window.show_disks(storage::list(&mut disks));
+                self.window.show_check(device, mode, result);
+            }
+            DiskWork::Format(device, label) => {
+                let result = storage::format(&mut disks, device, label.as_str());
+                self.window.show_disks(storage::list(&mut disks));
+                self.window
+                    .show_formatted(device, label.as_str(), result, now_ms);
+            }
+        }
+    }
+
     fn show_clock(&mut self, now_ms: u32) {
         match self.window.pane() {
             ABOUT => self.show_uptime(now_ms),
@@ -635,6 +679,7 @@ fn open_window() -> i32 {
         uptime_from_ms: now_ms(),
         uptime_at_start: facts.uptime_s,
         unsaved_profile: None,
+        disk_work: None,
     };
     let served = application::run(&mut window, &mut settings);
     settings.save_unsaved();
