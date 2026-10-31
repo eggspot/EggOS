@@ -325,7 +325,27 @@ pub fn pipe_with(flags: usize) -> Result<(usize, usize), Errno> {
     Ok((ends[0] as usize, ends[1] as usize))
 }
 
-const POLLIN: u16 = 1;
+/// `poll`'s "bytes wait to be read".
+pub const POLLIN: u16 = 1;
+/// `poll`'s "hung up": a pipe's read end with no writer left.
+pub const POLLHUP: u16 = 0x10;
+
+/// The `poll` events `fd` reports at once: `POLLIN` when bytes wait, and the `POLLHUP`,
+/// `POLLERR` and `POLLNVAL` Linux always reports.
+pub fn events_now(fd: usize) -> Result<u16, Errno> {
+    let mut entry = u64::from(fd as u32) | (u64::from(POLLIN) << 32);
+    let time = [0i64; 2];
+    // SAFETY: `ppoll` reads and writes one borrowed `struct pollfd` (an `int` and two
+    // `short`s, as the `u64` lays them out in the machine's little-endian order), reads one
+    // `struct timespec` from the borrowed local and takes no signal mask.
+    unsafe {
+        syscall(
+            number::PPOLL,
+            [&raw mut entry as usize, 1, time.as_ptr() as usize, 0, 0, 0],
+        )
+    }?;
+    Ok((entry >> 48) as u16)
+}
 
 /// Sleeps until one of `fds` can be read (a negative one is left out), a signal, an error or,
 /// with a `timeout` in nanoseconds, the time running out.

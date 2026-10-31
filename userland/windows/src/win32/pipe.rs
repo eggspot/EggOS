@@ -164,8 +164,7 @@ unsafe extern "efiapi" fn peek_named_pipe(
         Ok(counts) => counts,
         Err(code) => return fail(code, FALSE),
     };
-    let ended =
-        total == 0 && linux::wait_readable([fd as i32, -1], Some(0)).is_ok_and(|ready| ready != 0);
+    let ended = total == 0 && linux::events_now(fd).is_ok_and(hung_up_empty);
     if ended {
         return fail(error::BROKEN_PIPE, FALSE);
     }
@@ -177,6 +176,10 @@ unsafe extern "efiapi" fn peek_named_pipe(
         }
     }
     TRUE
+}
+
+fn hung_up_empty(events: u16) -> bool {
+    events & linux::POLLHUP != 0 && events & linux::POLLIN == 0
 }
 
 fn descriptor_of(handle: usize) -> Result<(usize, usize), u32> {
@@ -200,13 +203,16 @@ extern "efiapi" fn set_handle_information(handle: usize, mask: u32, flags: u32) 
     let protected = PROTECTED.with(|protected| protected.contains(fd));
     let current = handle_flags::of_descriptor(descriptor_flags, protected);
     let new = handle_flags::updated(current, mask, flags);
+    let protect = new & handle_flags::PROTECT_FROM_CLOSE != 0;
+    if protect && fd >= ProtectedDescriptors::CAPACITY {
+        return fail(error::NOT_SUPPORTED, FALSE);
+    }
     let changed = handle_flags::descriptor_flags(descriptor_flags, new);
     if changed != descriptor_flags
         && let Err(errno) = linux::control(fd, linux::F_SETFD, changed)
     {
         return fail(error_for(errno), FALSE);
     }
-    let protect = new & handle_flags::PROTECT_FROM_CLOSE != 0;
     if !PROTECTED.with(|protected| protected.set(fd, protect)) {
         return fail(error::NOT_SUPPORTED, FALSE);
     }
@@ -244,3 +250,16 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SetHandleInformation" => set_handle_information,
     b"GetHandleInformation" => get_handle_information,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pipe_ends_only_when_hung_up_with_nothing_left_to_read() {
+        assert!(hung_up_empty(linux::POLLHUP));
+        assert!(!hung_up_empty(linux::POLLHUP | linux::POLLIN));
+        assert!(!hung_up_empty(linux::POLLIN));
+        assert!(!hung_up_empty(0));
+    }
+}
