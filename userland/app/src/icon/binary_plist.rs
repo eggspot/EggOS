@@ -140,11 +140,12 @@ pub fn dictionary_string<'o>(bytes: &[u8], key: &[u8], out: &'o mut [u8]) -> Opt
     let values = keys.checked_add(count.checked_mul(plist.reference_width)?)?;
     let mut scratch = [0u8; 64];
     for index in 0..count {
-        let key_object = plist.reference(keys + index * plist.reference_width)?;
+        let step = index.checked_mul(plist.reference_width)?;
+        let key_object = plist.reference(keys.checked_add(step)?)?;
         if plist.string(key_object, &mut scratch) != Some(key) {
             continue;
         }
-        let value = plist.reference(values + index * plist.reference_width)?;
+        let value = plist.reference(values.checked_add(step)?)?;
         return plist.string(value, out);
     }
     None
@@ -217,6 +218,34 @@ mod tests {
             Some("Ic\u{f4}ne".as_bytes())
         );
         assert_eq!(dictionary_string(&bytes, b"CFBundleName", &mut out), None);
+    }
+
+    #[test]
+    fn a_dictionary_count_that_reaches_the_address_space_s_end_is_none() {
+        let keys_at = MAGIC.len() + 10;
+        let count = (usize::MAX - keys_at) as u64;
+        let mut dictionary = vec![0xdf, 0x13];
+        dictionary.extend_from_slice(&count.to_be_bytes());
+        dictionary.extend_from_slice(&[1, 2]);
+        let mut bytes = MAGIC.to_vec();
+        let mut offsets = Vec::new();
+        for object in [dictionary, ascii("x"), ascii("CFBundleIconFile")] {
+            offsets.push(bytes.len() as u8);
+            bytes.extend_from_slice(&object);
+        }
+        let table = bytes.len();
+        bytes.extend_from_slice(&offsets);
+        let mut trailer = [0u8; 32];
+        trailer[6] = 1;
+        trailer[7] = 1;
+        trailer[8..16].copy_from_slice(&3u64.to_be_bytes());
+        trailer[24..32].copy_from_slice(&(table as u64).to_be_bytes());
+        bytes.extend_from_slice(&trailer);
+        let mut out = [0u8; 64];
+        assert_eq!(
+            dictionary_string(&bytes, b"CFBundleIconFile", &mut out),
+            None
+        );
     }
 
     #[test]
