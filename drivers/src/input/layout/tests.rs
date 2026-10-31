@@ -277,3 +277,19 @@ fn the_dead_keys_each_layout_has() {
     assert_eq!(listed("es"), "´`^¨");
     assert_eq!(listed("se"), "´`^¨~");
 }
+
+#[test]
+fn a_plain_character_is_what_the_press_types() {
+    for number in 0..LAYOUTS.len() {
+        for code in 0..=127u16 {
+            for bits in 0..64u8 {
+                let modifiers = Modifiers::from_bits(bits);
+                let mut typist = Typist::new();
+                typist.set_layout(number);
+                if let Some(character) = typist.plain_character(code, modifiers) {
+                    assert_eq!(typist.press(code, modifiers), Press::typed(character));
+                }
+            }
+        }
+    }
+}

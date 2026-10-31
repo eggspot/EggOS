@@ -26,7 +26,24 @@ const KEYPAD_DOT: u16 = key::KEYPAD_DOT;
 const SPACE: u16 = b' ' as u16;
 
 type Levels = [u16; LEVELS];
-type Keys = [Levels; SLOTS];
+#[derive(Debug)]
+struct Keys([u64; SLOTS]);
+
+const fn packed(levels: Levels) -> u64 {
+    levels[0] as u64
+        | (levels[1] as u64) << 16
+        | (levels[2] as u64) << 32
+        | (levels[3] as u64) << 48
+}
+
+const fn unpacked(word: u64) -> Levels {
+    [
+        word as u16,
+        (word >> 16) as u16,
+        (word >> 32) as u16,
+        (word >> 48) as u16,
+    ]
+}
 
 const fn slot(code: u16) -> Option<usize> {
     let mut row = 0;
@@ -41,6 +58,23 @@ const fn slot(code: u16) -> Option<usize> {
     }
     None
 }
+
+const NO_SLOT: u8 = u8::MAX;
+const SLOT_CODES: usize = 90;
+
+const fn slots_by_code() -> [u8; SLOT_CODES] {
+    let mut slots = [NO_SLOT; SLOT_CODES];
+    let mut code = 0;
+    while code < SLOT_CODES {
+        if let Some(slot) = slot(code as u16) {
+            slots[code] = slot as u8;
+        }
+        code += 1;
+    }
+    slots
+}
+
+static SLOT_OF_CODE: [u8; SLOT_CODES] = slots_by_code();
 
 const fn decode_row(text: &str, count: usize) -> [u16; WIDEST_ROW] {
     let bytes = text.as_bytes();
@@ -104,13 +138,19 @@ const fn keys(rows: [[&str; LEVELS]; 6]) -> Keys {
         first_slot += count;
         row += 1;
     }
-    keys
+    let mut words = [0u64; SLOTS];
+    let mut index = 0;
+    while index < SLOTS {
+        words[index] = packed(keys[index]);
+        index += 1;
+    }
+    Keys(words)
 }
 
 const fn has_third_level(keys: &Keys) -> bool {
     let mut index = 0;
     while index < SLOTS {
-        if keys[index][2] != 0 || keys[index][3] != 0 {
+        if keys.0[index] >> 32 != 0 {
             return true;
         }
         index += 1;
@@ -163,12 +203,17 @@ impl Layout {
         else {
             return false;
         };
-        self.keys.iter().flatten().any(|&symbol| symbol == mark)
+        self.keys
+            .0
+            .iter()
+            .any(|&word| unpacked(word).contains(&mark))
     }
 
+    #[inline(always)]
     fn levels(&self, code: u16) -> Option<Levels> {
-        if let Some(slot) = slot(code) {
-            return Some(self.keys[slot]);
+        let slot = SLOT_OF_CODE.get(usize::from(code)).copied();
+        if let Some(&word) = self.keys.0.get(usize::from(slot.unwrap_or(NO_SLOT))) {
+            return Some(unpacked(word));
         }
         if code == KEYPAD_DOT {
             let decimal = u16::from(self.keypad_decimal);
@@ -181,20 +226,11 @@ impl Layout {
     /// Whether key `code` types characters in this layout (the main block, the space bar and
     /// the keypad's character keys).
     pub fn is_character_key(&self, code: u16) -> bool {
-        self.levels(code)
-            .is_some_and(|levels| levels.iter().any(|&symbol| symbol != 0))
+        self.character_levels(code).is_some()
     }
 
-    fn base_symbol(&self, code: u16, modifiers: Modifiers) -> u16 {
-        self.levels(code)
-            .map_or(0, |levels| pick(levels[0], levels[1], modifiers))
-    }
-
-    fn third_symbol(&self, code: u16, modifiers: Modifiers) -> u16 {
-        self.levels(code).map_or(0, |levels| {
-            let symbol = pick(levels[2], levels[3], modifiers);
-            if symbol == 0 { levels[2] } else { symbol }
-        })
+    fn character_levels(&self, code: u16) -> Option<Levels> {
+        self.levels(code).filter(|levels| *levels != [0; LEVELS])
     }
 
     fn spacing_accent(&self, mark: u16) -> char {
@@ -228,12 +264,30 @@ impl Layout {
     }
 }
 
+#[inline(always)]
+fn base_symbol(levels: Levels, modifiers: Modifiers) -> u16 {
+    pick(levels[0], levels[1], modifiers)
+}
+
+#[inline(always)]
+fn third_symbol(levels: Levels, modifiers: Modifiers) -> u16 {
+    match modifiers.contains(Modifiers::ALT_GRAPH) {
+        true => match pick(levels[2], levels[3], modifiers) {
+            0 => levels[2],
+            symbol => symbol,
+        },
+        false => 0,
+    }
+}
+
+#[inline(always)]
 fn pick(plain: u16, shifted: u16, modifiers: Modifiers) -> u16 {
     let shift = modifiers.contains(Modifiers::SHIFT);
     let caps = modifiers.contains(Modifiers::CAPS_LOCK) && is_letter_pair(plain, shifted);
     if shift != caps { shifted } else { plain }
 }
 
+#[inline(never)]
 fn is_letter_pair(plain: u16, shifted: u16) -> bool {
     let (Some(plain), Some(shifted)) = (
         char::from_u32(u32::from(plain)),
@@ -668,6 +722,8 @@ pub enum Press {
     Other,
 }
 
+const PLAIN_MODIFIERS: u8 = Modifiers::SHIFT.bits() | Modifiers::CAPS_LOCK.bits();
+
 const ENTER_CHARACTER: u32 = 0x0d;
 const TAB_CHARACTER: u32 = 0x09;
 const BACKSPACE_CHARACTER: u32 = 0x08;
@@ -675,6 +731,14 @@ const ESCAPE_CHARACTER: u32 = 0x1b;
 const ESC: u8 = 0x1b;
 
 impl Press {
+    /// A press that typed `character` alone, with no `ESC` before it.
+    pub const fn typed(character: char) -> Self {
+        Press::Typed {
+            typed: Typed::one(character),
+            meta: false,
+        }
+    }
+
     /// The character a desktop window's `Key` record carries for the press of key `code`
     /// with `modifiers`: the last one typed, a letter's control character with Ctrl, Enter,
     /// Tab, Backspace and Esc their control characters, else 0.
@@ -710,6 +774,10 @@ impl Press {
                     bytes.push_byte(ESC);
                 }
                 for &character in typed.characters() {
+                    if character.is_ascii() {
+                        bytes.push_byte(character as u8);
+                        continue;
+                    }
                     let mut encoded = [0u8; 4];
                     for &byte in character.encode_utf8(&mut encoded).as_bytes() {
                         bytes.push_byte(byte);
@@ -783,28 +851,16 @@ impl Typist {
     /// again; Backspace takes the accent back; a modifier or lock key leaves it waiting; any
     /// other key drops it.
     pub fn press(&mut self, code: u16, modifiers: Modifiers) -> Press {
-        if is_modifier_or_lock(code) {
-            return Press::Other;
-        }
         let layout = self.layout();
-        if !layout.is_character_key(code) {
-            let cancelled = code == key::BACKSPACE && self.is_pending();
-            self.pending = 0;
-            return if cancelled {
-                Press::Cancelled
-            } else {
-                Press::Other
-            };
-        }
-        let base = layout.base_symbol(code, modifiers);
+        let Some(levels) = layout.character_levels(code) else {
+            return self.press_other(code);
+        };
+        let base = base_symbol(levels, modifiers);
         if modifiers.contains(Modifiers::CTRL) || modifiers.contains(Modifiers::SUPER) {
             self.pending = 0;
             return Press::Shortcut(spacing_or_nothing(base));
         }
-        let third = match modifiers.contains(Modifiers::ALT_GRAPH) {
-            true => layout.third_symbol(code, modifiers),
-            false => 0,
-        };
+        let third = third_symbol(levels, modifiers);
         let (symbol, from_third_level) = match third {
             0 if modifiers.contains(Modifiers::ALT_GRAPH)
                 && !modifiers.contains(Modifiers::ALT) =>
@@ -842,16 +898,43 @@ impl Typist {
         }
     }
 
+    /// The character pressing key `code` with `modifiers` types when that is all the press
+    /// does ([`Press::typed`]): no accent waits, no modifier but Shift and Caps Lock is held,
+    /// and the key types a character, not an accent. `None` otherwise, and then
+    /// [`Typist::press`] says what the press does.
+    #[inline(always)]
+    pub fn plain_character(&self, code: u16, modifiers: Modifiers) -> Option<char> {
+        if self.pending != 0 || modifiers.bits() & !PLAIN_MODIFIERS != 0 {
+            return None;
+        }
+        let symbol = base_symbol(self.layout().levels(code)?, modifiers);
+        if symbol == 0 || COMBINING_MARKS.contains(&symbol) {
+            return None;
+        }
+        char::from_u32(u32::from(symbol))
+    }
+
+    fn press_other(&mut self, code: u16) -> Press {
+        if is_modifier_or_lock(code) {
+            return Press::Other;
+        }
+        let cancelled = code == key::BACKSPACE && self.is_pending();
+        self.pending = 0;
+        match cancelled {
+            true => Press::Cancelled,
+            false => Press::Other,
+        }
+    }
+
     /// What key `code` types with `modifiers` without the waiting accent, as a key's release
     /// reports it: its character at the level the modifiers reach, 0 for a dead key or none.
+    #[inline(always)]
     pub fn character_of(&self, code: u16, modifiers: Modifiers) -> u32 {
-        let layout = self.layout();
-        let third = match modifiers.contains(Modifiers::ALT_GRAPH) {
-            true => layout.third_symbol(code, modifiers),
-            false => 0,
+        let Some(levels) = self.layout().levels(code) else {
+            return 0;
         };
-        let symbol = match third {
-            0 => layout.base_symbol(code, modifiers),
+        let symbol = match third_symbol(levels, modifiers) {
+            0 => base_symbol(levels, modifiers),
             third => third,
         };
         match COMBINING_MARKS.contains(&symbol) {

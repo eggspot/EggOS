@@ -687,6 +687,7 @@ impl InputState {
         self.cursor_keys = mode;
     }
 
+    #[inline(never)]
     fn key(
         &mut self,
         event: RawEvent,
@@ -709,30 +710,20 @@ impl InputState {
         if event.code >= button::FIRST {
             return;
         }
-        if timing.slow_keys > 0 {
-            match (event.value, self.slow) {
-                (1, _) => {
-                    self.slow = Some((event.code, timing.now + timing.slow_keys));
-                    return;
-                }
-                (2, Some((code, _))) if code == event.code => return,
-                (0, Some((code, _))) if code == event.code => {
-                    self.slow = None;
-                    return;
-                }
-                _ => {}
-            }
+        if timing.slow_keys > 0 && self.held_back_slowly(event, timing) {
+            return;
         }
-        let before = self.keyboard.modifiers();
+        let sticky_keys = STICKY_KEYS.load(Ordering::Relaxed);
+        let before = match sticky_keys {
+            true => self.keyboard.modifiers(),
+            false => Modifiers::NONE,
+        };
         let Some(change) = self.keyboard.key(event.code, event.value) else {
             return;
         };
         let held = self.keyboard.modifiers();
-        let modifiers = match STICKY_KEYS.load(Ordering::Relaxed) {
-            true => {
-                let added = held.bits() & !before.bits() & !Modifiers::CAPS_LOCK.bits();
-                self.sticky.apply(event.code, change, held, added)
-            }
+        let modifiers = match sticky_keys {
+            true => self.sticky_modifiers(event.code, change, before, held),
             false => {
                 self.sticky = Sticky::new();
                 held
@@ -764,6 +755,9 @@ impl InputState {
                 character,
             });
         }
+        if let Some(character) = self.typist.plain_character(code, modifiers) {
+            return self.typed_character(code, modifiers, character, timing, sink);
+        }
         let press = self.typist.press(code, modifiers);
         if press == Press::Cancelled {
             self.taken_back = code;
@@ -772,6 +766,57 @@ impl InputState {
             return;
         }
         self.typed(code, modifiers, press, timing, sink);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn held_back_slowly(&mut self, event: RawEvent, timing: Timing) -> bool {
+        match (event.value, self.slow) {
+            (1, _) => {
+                self.slow = Some((event.code, timing.now + timing.slow_keys));
+                true
+            }
+            (2, Some((code, _))) if code == event.code => true,
+            (0, Some((code, _))) if code == event.code => {
+                self.slow = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sticky_modifiers(
+        &mut self,
+        code: u16,
+        change: KeyChange,
+        before: Modifiers,
+        held: Modifiers,
+    ) -> Modifiers {
+        let added = held.bits() & !before.bits() & !Modifiers::CAPS_LOCK.bits();
+        self.sticky.apply(code, change, held, added)
+    }
+
+    fn typed_character(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        character: char,
+        timing: Timing,
+        sink: &mut dyn InputSink,
+    ) {
+        let mut encoded = [0u8; 4];
+        sink.bytes(character.encode_utf8(&mut encoded).as_bytes());
+        self.repeat_press = (Press::typed(character), modifiers);
+        self.repeat
+            .pressed(code, true, timing.now, timing.repeat_delay);
+        sink.event(InputEvent::Key {
+            code,
+            pressed: true,
+            modifiers,
+            character: u32::from(character),
+        });
     }
 
     #[inline(never)]
@@ -811,6 +856,7 @@ impl InputState {
         });
     }
 
+    #[inline(never)]
     fn end_report(
         &mut self,
         capabilities: &Capabilities,

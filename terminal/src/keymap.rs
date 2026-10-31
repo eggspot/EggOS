@@ -316,6 +316,26 @@ const MODIFIER_KEYS: [(u16, u8); 8] = [
     (key::RIGHT_SUPER, 1 << 7),
 ];
 
+const MODIFIER_OR_CAPS_LOCK_CODES: [u64; 2] = modifier_or_caps_lock_codes();
+
+const fn modifier_or_caps_lock_codes() -> [u64; 2] {
+    let mut codes = [0u64; 2];
+    codes[key::CAPS_LOCK as usize / 64] |= 1 << (key::CAPS_LOCK % 64);
+    let mut index = 0;
+    while index < MODIFIER_KEYS.len() {
+        let code = MODIFIER_KEYS[index].0 as usize;
+        codes[code / 64] |= 1 << (code % 64);
+        index += 1;
+    }
+    codes
+}
+
+const fn is_modifier_or_caps_lock(code: u16) -> bool {
+    let word = code as usize / 64;
+    word < MODIFIER_OR_CAPS_LOCK_CODES.len()
+        && MODIFIER_OR_CAPS_LOCK_CODES[word] >> (code % 64) & 1 != 0
+}
+
 /// Which Alt keys reach a layout's third level ([`Modifiers::ALT_GRAPH`], D185).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThirdLevelKeys {
@@ -338,6 +358,7 @@ pub struct Keyboard {
     modifier_keys: u8,
     caps_lock: bool,
     third_level: ThirdLevelKeys,
+    modifiers: Modifiers,
 }
 
 impl Default for Keyboard {
@@ -354,12 +375,14 @@ impl Keyboard {
             modifier_keys: 0,
             caps_lock: false,
             third_level: ThirdLevelKeys::None,
+            modifiers: Modifiers::NONE,
         }
     }
 
     /// Has `keys` reach the third level from now on.
     pub fn set_third_level_keys(&mut self, keys: ThirdLevelKeys) {
         self.third_level = keys;
+        self.modifiers = self.modifiers_made();
     }
 
     /// Whether Caps Lock is on.
@@ -371,6 +394,7 @@ impl Keyboard {
     /// a press of a key already held (a host's autorepeat), a release of a key not held, a
     /// repeat (`value` 2: repeating is the caller's, [`KeyRepeat`]) and codes above
     /// [`key::MAX`]. Caps Lock toggles when pressed.
+    #[inline]
     pub fn key(&mut self, code: u16, value: i32) -> Option<KeyChange> {
         if code > key::MAX {
             return None;
@@ -383,13 +407,22 @@ impl Keyboard {
             _ => return None,
         };
         self.held[word] ^= bit;
+        if is_modifier_or_caps_lock(code) {
+            self.modifier_key(code, change);
+        }
+        Some(change)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn modifier_key(&mut self, code: u16, change: KeyChange) {
         if let Some(&(_, mask)) = MODIFIER_KEYS.iter().find(|(modifier, _)| *modifier == code) {
             self.modifier_keys ^= mask;
         }
         if code == key::CAPS_LOCK && change == KeyChange::Pressed {
             self.caps_lock = !self.caps_lock;
         }
-        Some(change)
+        self.modifiers = self.modifiers_made();
     }
 
     /// Whether key `code` is held.
@@ -404,6 +437,11 @@ impl Keyboard {
 
     /// The modifiers held and Caps Lock.
     pub const fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    #[inline(never)]
+    const fn modifiers_made(&self) -> Modifiers {
         let keys = self.modifier_keys;
         let mut bits = 0;
         if keys & 0b11 != 0 {
