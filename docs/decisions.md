@@ -11469,7 +11469,8 @@ the license, by an explicit instruction recorded here.
   holds keep a nameless file until its last release; `LINK_BIT` (bit 34) and the generation
   from bit 35. **EggFS in the kernel** forwards all of it; a release may come under a spin lock
   (a mapping's last reference), so it never takes the volume's sleeping lock: it is queued in
-  64 lock-free slots (`RELEASE_SLOTS`) that the next commit applies first. **The initramfs**
+  64 lock-free slots (`RELEASE_SLOTS`), and past them in a list under a leaf lock, that the
+  next commit applies first, so a burst of closes never loses a release. **The initramfs**
   serves cpio symbolic-link members (`0o120000`, the data is the target).
 - **System calls** (`linux::file_changes`, `linux::files`; numbers x86_64 / generic):
   `symlinkat` (266 / 36, `symlink` 88): `EEXIST` for a taken name (a dangling link included),
