@@ -101,7 +101,8 @@ _start:
 
     mov     x0, #{cpacr_fp_el1_only}
     msr     cpacr_el1, x0
-    msr     cntkctl_el1, xzr
+    mov     x0, #{cntkctl_user_virtual_counter}
+    msr     cntkctl_el1, x0
     msr     tpidrro_el0, xzr
 
     // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
@@ -161,7 +162,8 @@ eggos_secondary_start:
     mov     sp, x0
     mov     x0, #{cpacr_fp_el1_only}
     msr     cpacr_el1, x0
-    msr     cntkctl_el1, xzr
+    mov     x0, #{cntkctl_user_virtual_counter}
+    msr     cntkctl_el1, x0
     msr     tpidrro_el0, xzr
     adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
@@ -176,6 +178,7 @@ eggos_secondary_start:
     secondary_main = sym secondary_main,
     start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
     cpacr_fp_el1_only = const fp::CPACR_FP_EL1_ONLY,
+    cntkctl_user_virtual_counter = const timer::CNTKCTL_USER_VIRTUAL_COUNTER,
     init_timer = sym timer::init,
     l0_low = sym BOOT_L0_LOW,
     l1_low = sym BOOT_L1_LOW,

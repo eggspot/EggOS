@@ -10,6 +10,11 @@ pub(super) use eggos_drivers::interrupt::gicv2::Acknowledged;
 use eggos_drivers::interrupt::gicv2::{self, Gicv2CpuInterface, Gicv2Distributor, Trigger};
 use eggos_drivers::io::Mmio;
 
+/// `CNTKCTL_EL1` with only `EL0VCTEN` set: user mode may read the virtual counter and its
+/// frequency (`CNTVCT_EL0`, `CNTFRQ_EL0`), as on Linux, but not the physical counter, and may
+/// not touch either timer (D210).
+pub(super) const CNTKCTL_USER_VIRTUAL_COUNTER: u64 = 1 << 1;
+
 /// QEMU `virt` (`-machine gic-version=2`): GICv2 distributor and CPU interface. Device-tree
 /// discovery replaces these in M5, along with GICv3 support.
 const GICD_BASE: usize = 0x0800_0000;

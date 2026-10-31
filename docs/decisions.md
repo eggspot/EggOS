@@ -16602,3 +16602,16 @@ the license, by an explicit instruction recorded here.
   destination is zero-extended, a memory one gets the element's size) and `pinsrb` is `ins`.
   `cpuid` still reports no SSE3 or SSE4.1, since the rest is missing.
 - **Follow-up.** The rest of SSE3, SSSE3 and SSE4.1/4.2, as translation.md plans.
+
+## D210 User mode reads the virtual counter on AArch64 (`CNTKCTL_EL1.EL0VCTEN`), as on Linux — Decided by the build loop (engineering; supersedes part of D49, follows D206)
+- **Why.** The translator lowers `rdtsc` and `rdtscp` (slice 39c) to `mrs cntvct_el0` and
+  `mrs cntfrq_el0`, so a translated x86-64 program that reads the time stamp counter ended
+  with `SIGILL` while D49 kept `CNTKCTL_EL1` at 0 (D206's follow-up). D49 meant user reads of
+  the virtual counter to come "with a fast clock for programs": a translated `rdtsc` is that
+  clock's first user, and the same read is what a vDSO `clock_gettime` will use.
+- **Decision.** Every CPU's boot path writes `CNTKCTL_EL1` with only `EL0VCTEN` (bit 1) set,
+  as Linux arm64 does: EL0 may read `CNTVCT_EL0` and `CNTFRQ_EL0`. `EL0PCTEN` (the physical
+  counter), `EL0VTEN` and `EL0PTEN` (the timers) and the event stream stay clear, so a
+  program still cannot read the physical counter or reprogram or stop the kernel's timer.
+  The counter gives a program no more than `clock_gettime(CLOCK_MONOTONIC)` already does, at
+  the same resolution; x86_64 user mode already reads `rdtsc` (`CR4.TSD` clear).
