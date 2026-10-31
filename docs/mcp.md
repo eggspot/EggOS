@@ -55,10 +55,14 @@ run-eggos.sh` the script's own path works too.
   QEMU's start on CI's machines, without acceleration), and the server answers soon after; a
   slow or busy host takes longer: raise `MCP_TIMEOUT` if the connection times out.
 - **Protocol versions.** The server speaks the 2025-11-25 and 2025-06-18 versions of MCP (with
-  `initialize`) and answers the client's version when it is one of them, else 2025-11-25. A
-  client that first probes for the newer, stateless 2026-07-28 version with `server/discover`
-  gets "method not found" at once and falls back (that is the normal fallback); if a client does
-  not, set `MCP_PROTOCOL_NEGOTIATION=legacy` for Claude Code (`auto` or `legacy`).
+  `initialize`, answering the client's version when it is one of them, else 2025-11-25) and the
+  stateless 2026-07-28 version (D193): `server/discover` lists all three, and a request whose
+  `params._meta` names 2026-07-28 and the client's capabilities is answered without
+  `initialize`. In that version the server never asks the client a question: a call that needs
+  your yes asks on EggOS's own screen, or needs `confirm: true` without a desktop.
+- **Prompts and resources.** `prompts/list` offers four ready-made requests (check the machine,
+  look at a window, tidy a folder, install an app); `resources/list` offers
+  `eggos://instructions` and `eggos://grants`, the agent's own grants.
 - **Stopping.** The client stops the server by ending the script, which ends QEMU: for EggOS it
   is a power cut. EggFS's journal keeps the disk consistent, and every audit record is synced
   as it is written. `reboot` (through `run`) also ends QEMU in an MCP boot, unlike the
@@ -475,7 +479,7 @@ clock at boot (D150). The log in Settings comes after the release.
 
 ## Not yet
 
-The 2026-07-28 protocol version, resources and prompts; tools for the commands that have none
+Asking the client in the 2026-07-28 version (`input_required`), resources for files and apps, `subscriptions/listen`; tools for the commands that have none
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the

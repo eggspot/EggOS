@@ -16116,3 +16116,42 @@ the license, by an explicit instruction recorded here.
     pinning the certificate the console printed, sends `initialize` (no elicitation offered
     back), `notifications/initialized` (202) and `tools/list`, sees a used code answered 404 and
     another token 401, and reads the session in `agentlog --agent laptop`.
+- **Slice 41e (resources, prompts and the 2026-07-28 protocol).**
+  - Built: prompts (`eggos_mcp::prompts`: `check-the-machine`, `look-at-window`,
+    `tidy-folder`, `install-app`, each a user message naming the tools, arguments required and
+    at most 256 bytes) and resources (`eggos://instructions`, the server's instructions with the
+    reader's grants, and `eggos://grants`, the reader's own grants as JSON; no templates yet),
+    with `prompts` and `resources` (`subscribe` false) in the capabilities; MCP 2026-07-28's
+    stateless requests beside `initialize`'s versions: `server/discover` (versions 2026-07-28,
+    2025-11-25 and 2025-06-18, the capabilities, the instructions, `ttlMs` 0 and `cacheScope`
+    `private`, the server in `_meta`), any request whose `params._meta` names
+    `io.modelcontextprotocol/protocolVersion` is served without `initialize` (it must name the
+    client's capabilities, else -32602; another version is -32022 with the supported list;
+    `initialize` itself is method-not-found), its answer gains `resultType` `complete` and the
+    server in `_meta` (lists and reads also `ttlMs` 0 and `cacheScope` `private`, since what an
+    agent sees depends on its grants), an unknown resource is -32602 with the URI there and
+    -32002 in the older versions, and over HTTPS the `MCP-Protocol-Version`, `Mcp-Method` and
+    `Mcp-Name` headers must match the body (else 400 with -32020; a `=?base64?...?=` name is
+    decoded first), with 404 for an unknown method and 400 for -32022 or -32602.
+  - Decided by research (one sonnet subagent, from the 2026-07-28 changelog, versioning,
+    transport, discover, resources, prompts and pattern pages): serve both eras on one
+    endpoint, telling a stateless request by its `_meta` version; implement `server/discover`;
+    never send a request of our own in the stateless era (no elicitation); leave
+    `subscriptions/listen` out and say `listChanged` and `subscribe` false.
+  - Choices made without research: cache hints of 0 ms and `private` everywhere; a stateless
+    request on the local channel speaks for the channel's agent (its `_meta` cannot name
+    another yet); one stateless request makes the session count as initialized at 2026-07-28
+    (the specification fixes the era per process on stdio, so a client mixing them is wrong
+    anyway); a call waiting for the person's answer on EggOS's screen gets its answer without
+    the stateless marks.
+  - Check. Host tests: the prompts' list, filling and refusals; resources listed and read and an
+    unknown one in both eras; discovery; a stateless `tools/list` with its marks, the session
+    state and the client's name; unknown versions, missing capabilities and `initialize` in
+    the stateless era; the JSON writer reopening an object; HTTP's header checks, the
+    base64 name and the stateless statuses.
+  - Not yet: `input_required` with a signed `requestState` (the stateless era's way to ask the
+    person through the client; until then a call needing a yes asks on EggOS's screen or needs
+    `confirm`), `subscriptions/listen`, resources for files and apps with templates and
+    pagination, an agent named in a stateless request's `_meta`, `MCP-Protocol-Version` on the
+    local channel's older eras.
+
