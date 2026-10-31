@@ -1601,7 +1601,8 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
      us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) and time.zone \
      (an IANA zone such as Europe/Paris, or UTC) and display.scale (1 or 2) and the mouse and \
      key preferences (mouse.buttons, mouse.scrolling, mouse.speed, keyboard.repeat_delay_ms, \
-     keyboard.repeat_rate) can be set with settings_set; the others report facts: the display's resolution and pointer, the \
+     keyboard.repeat_rate) and accessibility.sticky_keys, accessibility.slow_keys and \
+     accessibility.slow_keys_ms can be set with settings_set; the others report facts: the display's resolution and pointer, the \
      version, architecture, CPUs, memory and uptime.",
     &["settings", "list"],
     &[],
@@ -1633,7 +1634,10 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   or 2: the display shows at it from the next boot. mouse.buttons takes right or \
                   left, mouse.scrolling traditional or natural, mouse.speed 1 to 10, \
                   keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60: the \
-                  mouse and keys behave so from the next event. The other keys report facts \
+                  mouse and keys behave so from the next event. accessibility.sticky_keys and \
+                  accessibility.slow_keys take true or false, accessibility.slow_keys_ms 100 \
+                  to 1000: a modifier pressed alone then stays down for the next key, or a key \
+                  counts once held that long, from the next key. The other keys report facts \
                   and fail with setting_read_only. dry_run: true checks the key and the value and says what \
                   would change, and changes nothing. Needs the run grant: a setting changes how \
                   the machine behaves for its user.",
