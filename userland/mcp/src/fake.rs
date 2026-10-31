@@ -34,6 +34,7 @@ pub struct FakeSystem {
     pub capture_events: Vec<String>,
     pub capture_open: Option<(Vec<u8>, usize)>,
     pub screen: bool,
+    pub prompt_fails: Option<Errno>,
     pub prompts: Vec<Vec<u8>>,
     pub prompts_ended: usize,
 }
@@ -212,6 +213,9 @@ impl System for FakeSystem {
     fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
         if !self.screen {
             return Err(Errno::ENXIO);
+        }
+        if let Some(errno) = self.prompt_fails {
+            return Err(errno);
         }
         self.prompts.push(question.to_vec());
         Ok(())

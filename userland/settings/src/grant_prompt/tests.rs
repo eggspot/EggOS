@@ -27,9 +27,42 @@ fn key(prompt: &mut GrantPrompt, code: u16, shift: bool) {
                 modifiers,
                 character: 0,
             },
-            0,
+            ARMING_MS,
         );
     }
+}
+
+#[test]
+fn keys_in_the_first_second_cannot_answer_except_to_deny() {
+    let mut prompt = prompt_for(QUESTION);
+    for code in [key::TAB, key::SPACE] {
+        for pressed in [true, false] {
+            let input = Input::Key {
+                code,
+                pressed,
+                modifiers: Modifiers::default(),
+                character: 0,
+            };
+            prompt.handle(input, ARMING_MS - 1);
+        }
+    }
+    assert_eq!(prompt.answer(), None);
+    assert_eq!(prompt.tree().focus(), Some(prompt.button_ids()[3]));
+    let escape = Input::Key {
+        code: key::ESC,
+        pressed: true,
+        modifiers: Modifiers::default(),
+        character: 0,
+    };
+    prompt.handle(escape, 1);
+    assert_eq!(prompt.answer(), Some(PromptAnswer::Deny));
+}
+
+#[test]
+fn hidden_format_characters_in_arguments_show_as_question_marks() {
+    let line = br#"{"agent":"a","tool":"tee","title":"T","class":"write","arguments":{"path":"/home/a\u202eb"}}"#;
+    let lines = argument_lines(read_question(line).unwrap().arguments);
+    assert_eq!(lines[0], "path: /home/a?b");
 }
 
 #[test]

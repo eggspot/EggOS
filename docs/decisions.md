@@ -15837,7 +15837,12 @@ the license, by an explicit instruction recorded here.
   as strong as the client is honest, as D137's confirmations are; 41c moves the grant prompt
   to EggOS's own screen. The checksum finds damage, not forgery: only programs with `run` can
   write `/var/lib/eggos`. A deleted store gives `local` its boot grants back (deleting needs
-  `run`).
+  `run`). Round 1's review found that `install` reaches as far: `app_install` then `app_open`
+  run a program the agent picked (and, with `write` or `fetch`, supplied) as the person, with
+  no sandbox, so it can rewrite the store. So `install` is full control too, like `run`, as
+  installing software needs an administrator on Windows and macOS: `agent grant ... install`
+  says so before `--yes`, and the prompt never offers `Always` for it. Confining installed
+  apps is not yet.
 - **Decided by research.** (1) The store lives in `/var/lib/eggos`, not the settings file
   (an agent with `write` could change `/home/root/.config/eggos/settings` and raise itself)
   nor `/etc/eggos` (`/etc` is the read-only initramfs); `/var` is on the EggFS disk like the
@@ -16118,7 +16123,22 @@ the license, by an explicit instruction recorded here.
     5's parentless `Dialog` at the top of layer 1 needs the window server to allow it); its
     phone bottom sheet, wearable and TV layouts and the remote's `Back` (design section 7); a
     QEMU check (the MCP boot has no desktop); remembering `once` answers and per-tool grants
-    (left out by the design).
+    (left out by the design); for `run` and `install`, showing the whole command (wrapped or
+    scrolled) or not offering approval when the prompt cuts a line or leaves members out, and
+    saying in the prompt that it did (each line is cut at 64 bytes, three members shown).
+  - Since round 1's review: the client's elicitation is the fallback only when the screen
+    cannot ask (`start_grant_prompt` fails with `ENODEV`, `ENXIO` or `ENOENT`: no person
+    screen, no desktop, no `/bin/settings`); a question that cannot be written, or a prompt
+    that fails any other way, refuses the call with `confirmation_failed`, so an agent can
+    never push its question onto its own client and answer it. Arguments too long for the
+    1 KiB record are written again with each string cut at 64 bytes and `"cut": true`, never
+    replaced by a bare string. The prompt takes only Enter and Esc in its first second, so
+    Tab and Space typed into another window as it opens cannot grant (browsers delay
+    permission prompts the same way). Calls run under a `This session` answer are logged as
+    allowed for this session, and argument text shows Unicode format characters as `?` too
+    (`audit::is_hidden`). On the unpinned local channel the agent is whoever the client says
+    (41b1), so `agent revoke local` is not a boundary: a revoked local client can reconnect
+    under any stored agent's id; only `eggos.mcp_agent=` pins it.
 - **Slice 41d (agents on other machines).** MCP over HTTPS for paired agents, off until the
   person turns it on.
   - Built: ECDSA P-256 signing in constant time with RFC 6979 nonces (`eggos_crypto::p256`:

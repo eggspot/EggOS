@@ -46,6 +46,7 @@ use crate::tools::{
     Stdin, Tool,
 };
 use eggos_commands::{Category, ErrorDefinition, errors};
+use eggos_runtime::errno::Errno;
 
 /// The most bytes of a command's output an answer carries.
 pub const OUTPUT_LIMIT: usize = 128 * 1024;
@@ -106,6 +107,9 @@ const GRANTS_TEXT: &str = "Tools that change something need a grant the user gav
     starting EggOS, and seeing windows and their menus needs the view grant; destructive ones \
     ask the user first, or need confirm: true when this client \
     cannot ask. Grants on this machine: ";
+const SHOWN_STRING_BYTES: usize = 64;
+const PROMPT_FAILED: &str = "Refused: the question could not be shown on the screen, so the \
+    call was not made.";
 const BUSY: &str = "Refused: another call waits for the user's answer; try again once it is \
     answered.";
 const BUDGET_USED: &str = "Refused: this server run has written as much to the audit log as it \
@@ -243,6 +247,13 @@ struct Prepared<'p> {
     target: Option<&'p str>,
     arguments: &'p [u8],
     approval: Approval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptStart {
+    Shown,
+    NoScreen,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1125,9 +1136,13 @@ impl Server {
         let tool_name = tool.name.as_bytes();
         let now = self.refresh_policy(system);
         let mut ask_user = false;
+        let mut session_answer = false;
         match self.policy.check(&self.agent, tool.grant, now) {
             Decision::Allow => {}
-            Decision::AskUser => ask_user = !self.allowed_for_session(tool.grant),
+            Decision::AskUser => {
+                session_answer = self.allowed_for_session(tool.grant);
+                ask_user = !session_answer;
+            }
             Decision::Deny(denial) => {
                 let mut message = [0u8; 480];
                 let length = denied(tool, denial, &mut message);
@@ -1256,10 +1271,31 @@ impl Server {
         let replaces = !checked.append && state != FileState::Missing;
         let destructive = tool.confirmation.needed(replaces, checked.dry_run);
         let needs_yes = ask_user || destructive;
-        let mut approval = Approval::NotNeeded;
+        let mut approval = match session_answer {
+            true => Approval::ForSession,
+            false => Approval::NotNeeded,
+        };
         if needs_yes {
-            let on_screen =
-                self.pending.is_none() && self.show_prompt(tool, destructive, shown, system);
+            let prompt = match self.pending {
+                Some(_) => PromptStart::NoScreen,
+                None => self.show_prompt(tool, destructive, shown, system),
+            };
+            if prompt == PromptStart::Failed {
+                self.stop(
+                    system,
+                    scratch,
+                    id,
+                    number,
+                    tool_name,
+                    Outcome::Refused,
+                    Logged::Shown(shown),
+                    PROMPT_FAILED,
+                    Ending::Refused(&errors::CONFIRMATION_FAILED),
+                    out,
+                );
+                return;
+            }
+            let on_screen = prompt == PromptStart::Shown;
             if on_screen || self.session.elicits() {
                 self.ask(
                     id,
@@ -1851,7 +1887,7 @@ impl Server {
         destructive: bool,
         shown: &[u8],
         system: &mut impl System,
-    ) -> bool {
+    ) -> PromptStart {
         let agent = core::str::from_utf8(self.agent.as_bytes()).unwrap_or("?");
         let name = match &self.policy.store {
             StoreState::Loaded(store) => store
@@ -1872,10 +1908,14 @@ impl Server {
         };
         let mut line = [0u8; QUESTION_BYTES];
         let length = grant_prompt::write_question(&question, &mut line);
-        length > 0
-            && system
-                .start_grant_prompt(line.get(..length).unwrap_or_default())
-                .is_ok()
+        if length == 0 {
+            return PromptStart::Failed;
+        }
+        match system.start_grant_prompt(line.get(..length).unwrap_or_default()) {
+            Ok(()) => PromptStart::Shown,
+            Err(Errno::ENODEV | Errno::ENXIO | Errno::ENOENT) => PromptStart::NoScreen,
+            Err(_) => PromptStart::Failed,
+        }
     }
 
     fn end_prompt_of(&self, pending: &Pending, system: &mut impl System) {
@@ -3160,6 +3200,45 @@ fn would_text(
 }
 
 fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &mut [u8]) -> usize {
+    let whole = write_audit_arguments(tool, checked, scratch, out, None);
+    if whole > 0 {
+        return whole;
+    }
+    let cut = write_audit_arguments(tool, checked, scratch, out, Some(SHOWN_STRING_BYTES));
+    if cut > 0 {
+        return cut;
+    }
+    let mut writer = JsonWriter::new(out);
+    writer.begin_object();
+    writer.key("cut");
+    writer.bool(true);
+    writer.end_object();
+    writer.len()
+}
+
+fn shown_string(writer: &mut JsonWriter<'_>, text: &str, cut: Option<usize>) {
+    match cut {
+        Some(limit) if text.len() > limit => {
+            let mut end = limit;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            writer.begin_string();
+            writer.string_piece(&text[..end]);
+            writer.string_piece("...");
+            writer.end_string();
+        }
+        _ => writer.string(text),
+    }
+}
+
+fn write_audit_arguments(
+    tool: &Tool,
+    checked: &Checked,
+    scratch: &Scratch<'_>,
+    out: &mut [u8],
+    cut: Option<usize>,
+) -> usize {
     let mut writer = JsonWriter::new(out);
     writer.begin_object();
     if let Some(path) = arguments::path_text(checked, scratch.decoded) {
@@ -3168,33 +3247,33 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
             (_, Operand::Path(argument)) => argument.name,
             _ => "path",
         });
-        writer.string(path);
+        shown_string(&mut writer, path, cut);
     }
     if let Some(target) = arguments::link_target_text(checked, scratch.content) {
         writer.key("target");
-        writer.string(target);
+        shown_string(&mut writer, target, cut);
         writer.key("symbolic");
         writer.bool(checked.symbolic);
     }
     if let Some(name) = checked.name {
         writer.key("name");
-        writer.string(name.as_str());
+        shown_string(&mut writer, name.as_str(), cut);
     }
     if let Some(label) = checked.label.as_ref() {
         writer.key("label");
-        writer.string(label.as_str());
+        shown_string(&mut writer, label.as_str(), cut);
     }
     if let Some(entry) = arguments::archive_entry_text(checked, scratch.words) {
         writer.key("entry");
-        writer.string(entry);
+        shown_string(&mut writer, entry, cut);
     }
     if let Some(words) = arguments::app_arguments_text(checked, scratch.words) {
         writer.key("arguments");
-        writer.string(words);
+        shown_string(&mut writer, words, cut);
     }
     if let Some(environment) = arguments::app_environment_text(checked, scratch.words) {
         writer.key("environment");
-        writer.string(environment);
+        shown_string(&mut writer, environment, cut);
     }
     if tool.kind == Kind::Tee {
         writer.key("append");
@@ -3212,11 +3291,11 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     }
     if let Some(time) = checked.time {
         writer.key("time");
-        writer.string(time.as_str());
+        shown_string(&mut writer, time.as_str(), cut);
     }
     if let Some(host) = arguments::host_text(checked, scratch.words) {
         writer.key("host");
-        writer.string(host);
+        shown_string(&mut writer, host, cut);
     }
     if let Some(pings) = checked.count {
         writer.key("count");
@@ -3224,15 +3303,15 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     }
     if let Some(url) = arguments::url_text(checked, scratch.content) {
         writer.key("url");
-        writer.string(url);
+        shown_string(&mut writer, url, cut);
     }
     if let Some(key) = arguments::setting_key_text(checked, scratch.words) {
         writer.key("key");
-        writer.string(key);
+        shown_string(&mut writer, key, cut);
     }
     if let Some(value) = arguments::setting_value_text(checked, scratch.words) {
         writer.key("value");
-        writer.string(value);
+        shown_string(&mut writer, value, cut);
     }
     if tool.takes("confirm") {
         writer.key("confirm");
@@ -3248,7 +3327,7 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     }
     if let Some(cursor) = arguments::after_text(checked, scratch.words) {
         writer.key("after");
-        writer.string(cursor);
+        shown_string(&mut writer, cursor, cut);
     }
     if let Some(window) = checked.window {
         writer.key("window");
@@ -3278,11 +3357,11 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     }
     if let Some(action) = checked.action {
         writer.key("action");
-        writer.string(action);
+        shown_string(&mut writer, action, cut);
     }
     if let Some(button) = checked.button {
         writer.key("button");
-        writer.string(button.name());
+        shown_string(&mut writer, button.name(), cut);
     }
     if checked.double {
         writer.key("double");
@@ -3290,11 +3369,11 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     }
     if let Some(keys) = arguments::keys_text(checked, scratch.words) {
         writer.key("keys");
-        writer.string(keys);
+        shown_string(&mut writer, keys, cut);
     }
     if let Some(text) = arguments::typed_text(checked, scratch.words) {
         writer.key("text");
-        writer.string(text);
+        shown_string(&mut writer, text, cut);
     }
     if let Some(notches) = checked.notches {
         writer.key("dy");
@@ -3316,14 +3395,14 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     }
     if let Some(label) = arguments::menu_label_text(checked, scratch.words) {
         writer.key("label");
-        writer.string(label);
+        shown_string(&mut writer, label, cut);
     }
     if tool.kind == Kind::Run {
         writer.key("arguments");
         writer.begin_array();
         for word in checked.words.each(scratch.words) {
             let before = writer.mark();
-            writer.string(word);
+            shown_string(&mut writer, word, cut);
             if writer.overflowed() || writer.remaining() < ARGUMENTS_TAIL_BYTES {
                 writer.rewind(before);
                 writer.string("<cut>");
@@ -3334,14 +3413,14 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
         writer.key("timeout_seconds");
         writer.i64((checked.time_limit_ms / 1000) as i64);
     }
+    if cut.is_some() {
+        writer.key("cut");
+        writer.bool(true);
+    }
     writer.end_object();
     match writer.overflowed() {
         false => writer.len(),
-        true => {
-            writer.clear();
-            writer.string("<arguments too long>");
-            writer.len()
-        }
+        true => 0,
     }
 }
 

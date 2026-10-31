@@ -463,7 +463,7 @@ fn grant<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     if matches!(given, Grant::Run | Grant::Install) && !words.yes && !words.dry_run {
         let consequence: &[u8] = match given {
             Grant::Run => b" run gives it full control of EggOS",
-            _ => b" install lets it add programs",
+            _ => b" install gives it full control of EggOS too: an app it installs and opens runs as you",
         };
         output.coded(
             &errors::NEEDS_CONFIRMATION,

@@ -3461,6 +3461,14 @@ fn a_session_answer_keeps_the_class_until_the_client_disconnects() {
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(harness.system.runs.len(), 2);
     assert_eq!(harness.system.prompts.len(), 1);
+    let started =
+        parse_line(harness.system.audit[harness.system.audit.len() - 2].as_bytes()).unwrap();
+    assert_eq!(started.outcome, Outcome::Started);
+    assert!(
+        std::str::from_utf8(started.detail)
+            .unwrap()
+            .ends_with("allowed for this session by the user")
+    );
     {
         let (mut scratch, _) = harness.buffers.scratch();
         harness
@@ -3516,6 +3524,50 @@ fn the_client_cannot_answer_a_question_shown_on_the_screen() {
     );
     assert!(is_error(&lines[0]));
     assert_eq!(harness.system.prompts_ended, 1);
+}
+
+#[test]
+fn arguments_too_long_for_the_log_are_cut_and_still_asked_on_the_screen() {
+    let mut harness = on_screen(r#"{"elicitation":{}}"#);
+    let path = format!("/home/root/{}x", "./".repeat(600));
+    let call = format!(r#"{{"path":"{path}","content":"x"}}"#);
+    let lines = harness.call_lines(1, "tee", &call);
+    assert!(lines.is_empty(), "no elicitation is sent: {lines:?}");
+    assert_eq!(harness.system.prompts.len(), 1);
+    let question = crate::grant_prompt::read_question(&harness.system.prompts[0]).unwrap();
+    let shown = question.arguments.get("path").unwrap().as_str().unwrap();
+    assert!(shown.equals(&format!("{}...", &path[..64])));
+    assert_eq!(question.arguments.get("cut").unwrap().raw(), b"true");
+    let lines = reply(
+        &mut harness,
+        "eggos-elicit-0-1",
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(lines.iter().all(|line| is_error(line)), "{lines:?}");
+    assert!(harness.system.runs.is_empty());
+}
+
+#[test]
+fn a_prompt_that_fails_on_a_running_desktop_refuses_instead_of_asking_the_client() {
+    let mut harness = on_screen(r#"{"elicitation":{}}"#);
+    harness.system.prompt_fails = Some(eggos_runtime::errno::Errno::ENOMEM);
+    let answer = harness.call(1, "tee", NEW_FILE);
+    assert!(is_error(&answer), "{answer}");
+    assert!(answer.contains("confirmation_failed"), "{answer}");
+    assert!(!answer.contains("elicitation/create"), "{answer}");
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(harness.server.waiting_until(), None);
+    for errno in [
+        eggos_runtime::errno::Errno::ENODEV,
+        eggos_runtime::errno::Errno::ENXIO,
+        eggos_runtime::errno::Errno::ENOENT,
+    ] {
+        let mut harness = on_screen(r#"{"elicitation":{}}"#);
+        harness.system.prompt_fails = Some(errno);
+        let lines = harness.call_lines(1, "tee", NEW_FILE);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("elicitation/create"), "{}", lines[0]);
+    }
 }
 
 #[test]

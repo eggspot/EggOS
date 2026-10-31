@@ -7,6 +7,7 @@
 use crate::agents_pane::shortened;
 use alloc::string::String;
 use core::fmt::Write;
+use eggos_mcp::audit::is_hidden;
 use eggos_mcp::grant_prompt::{PromptAnswer, QuestionRead, offers_always};
 use eggos_mcp::grants::{AgentId, Grant, GrantStore, Permission, StoreState};
 use eggos_mcp::json::{Object, Str, Value};
@@ -40,6 +41,7 @@ const SESSION_AT: (i32, i32) = (140, 116);
 const ONCE_AT: (i32, i32) = (264, 96);
 const DENY_AT: (i32, i32) = (368, 96);
 const SECOND_MS: u32 = 1000;
+const ARMING_MS: u32 = 1000;
 
 /// The prompt's widgets and what the person answered.
 #[derive(Debug)]
@@ -139,7 +141,8 @@ impl GrantPrompt {
     }
 
     /// Acts on `input` at `now_ms`: Enter and Esc deny from anywhere, Tab and Space go to the
-    /// widgets, a pressed button answers.
+    /// widgets, a pressed button answers. For the first second after the prompt is shown only
+    /// Enter and Esc count, so keys and clicks meant for another window cannot answer it.
     pub fn handle(&mut self, input: Input, now_ms: u32) {
         if self.answer.is_some() {
             return;
@@ -151,6 +154,9 @@ impl GrantPrompt {
         } = input
         {
             self.answer = Some(PromptAnswer::Deny);
+            return;
+        }
+        if now_ms.wrapping_sub(self.started_ms) < ARMING_MS {
             return;
         }
         let response = self.tree.handle(input, now_ms);
@@ -239,7 +245,7 @@ pub fn allowed_always(state: StoreState, agent: &AgentId, class: Grant) -> Optio
 
 fn shown_text(text: Str<'_>) -> String {
     text.chars()
-        .map(|character| match character.is_control() {
+        .map(|character| match is_hidden(character) {
             true => '?',
             false => character,
         })
