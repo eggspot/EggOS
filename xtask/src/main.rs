@@ -1596,7 +1596,6 @@ fn release_initramfs(
     let shell = build_shell(arch)?;
     let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
     let settings = build_runtime_program(arch, "eggos-settings")?;
-    let app = build_runtime_program(arch, "eggos-app")?;
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
     let mut layers = Vec::new();
@@ -1622,7 +1621,7 @@ fn release_initramfs(
             TASK_MANAGER_PATH,
             initramfs::Content::HardLink(SETTINGS_PATH),
         ),
-        (APP_PATH, initramfs::Content::Program(&app)),
+        (APP_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (
             WAYLAND_SERVER_PATH,

@@ -71,6 +71,7 @@ const DIRECTORY_BUFFER: usize = 1024;
 const DIRENT_LENGTH: usize = 16;
 const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
+const APP_COMMAND_NAME: &[u8] = b"app";
 const FILES_PROGRAM_NAME: &[u8] = b"files";
 const EDITOR_PROGRAM_NAME: &[u8] = b"text-editor";
 const TASK_MANAGER_PROGRAM_NAME: &[u8] = b"task-manager";
@@ -1373,12 +1374,14 @@ fn run_task_manager(startup: &Startup) -> i32 {
 }
 
 /// The program: see the crate's documentation. Started as `app-window`, it is the
-/// installer's window instead (D134); as `files` the Files window (D135); as `text-editor` the
-/// Text Editor and as `edit` its command (D149); as `disk` the `disk` command (D192).
+/// installer's window instead (D134); as `app` the `app` command (D134, D214); as `files` the
+/// Files window (D135); as `text-editor` the Text Editor and as `edit` its command (D149); as
+/// `disk` the `disk` command (D192).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
     match eggos_app::files::file_name(started_as) {
         WINDOW_PROGRAM_NAME => return eggos_app::window_program::run(startup),
+        APP_COMMAND_NAME => return eggos_app::command::run(startup),
         FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
         EDITOR_PROGRAM_NAME => return eggos_editor::program::run(startup),
         EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
