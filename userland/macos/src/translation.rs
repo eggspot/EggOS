@@ -156,6 +156,9 @@ pub fn layer_code(startup: &Startup) -> (u64, u64) {
 }
 
 fn bridge_words(native: u64, name: &[u8]) -> Option<Vec<u32>> {
+    if translated::is_stack_probe(name) {
+        return bridge::return_bridge(0).ok();
+    }
     let first = native as *const u32;
     // SAFETY: `native` lies in the layer's executable code, which is mapped and readable, at
     // least two words before its end.

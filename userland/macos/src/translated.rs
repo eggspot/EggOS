@@ -35,6 +35,7 @@ const BRANCH: u32 = 0x1400_0000;
 const BRANCH_OPCODE: u32 = 0xFC00_0000;
 const BRANCH_OFFSET_BITS: u32 = 26;
 const LAST_ARGUMENT_REGISTER: u32 = 7;
+const STACK_PROBES: [&[u8]; 2] = [b"___chkstk_darwin", b"____chkstk_darwin"];
 const INSTRUCTION_BYTES: i64 = 4;
 const INTEGERS: [ArgumentKind; DEFAULT_ARGUMENTS] = [ArgumentKind::Integer; DEFAULT_ARGUMENTS];
 const ONE_INTEGER: [ArgumentKind; 1] = [ArgumentKind::Integer];
@@ -376,6 +377,13 @@ pub fn bridge_arguments(name: &[u8]) -> &'static [ArgumentKind] {
     }
 }
 
+/// Whether the import `name` is `___chkstk_darwin`, the stack probe that takes its size in
+/// `rax` and must change no register: translated code gets a bridge that returns at once, as
+/// a translated thread's guest stack is mapped whole with no guard page to probe (D208).
+pub fn is_stack_probe(name: &[u8]) -> bool {
+    STACK_PROBES.contains(&name)
+}
+
 /// Whether translated x86_64 code may call the layer's function for the import `name`:
 /// not the unsuffixed 32-bit-inode `stat` family, whose x86_64 structures are smaller than the
 /// layer's, nor `setjmp` and `longjmp`, which would save and restore the bridge's native
@@ -534,6 +542,14 @@ mod tests {
             [ArgumentKind::Integer]
         );
         assert_eq!(bridge_arguments(b"_printf").len(), DEFAULT_ARGUMENTS);
+    }
+
+    #[test]
+    fn only_the_stack_probe_imports_are_stack_probes() {
+        assert!(is_stack_probe(b"___chkstk_darwin"));
+        assert!(is_stack_probe(b"____chkstk_darwin"));
+        assert!(!is_stack_probe(b"_printf"));
+        assert!(!is_stack_probe(b"__chkstk"));
     }
 
     #[test]
