@@ -45,6 +45,7 @@ const SIG_IGN: usize = 1;
 const SA_RESTORER: usize = 0x0400_0000;
 const SIGNAL_SET_SIZE: usize = 8;
 const JOB_CONTROL_SIGNALS: [usize; 4] = [3, 20, 21, 22];
+const STOP_SIGNALS: [usize; 3] = [20, 21, 22];
 const SIG_BLOCK: usize = 0;
 const SIG_SETMASK: usize = 2;
 const INTERRUPT_MASK: u64 = 1 << (SIGINT - 1);
@@ -763,6 +764,11 @@ impl System for Linux {
                 }
                 if job_control {
                     reset_signals();
+                    if group == Group::Shell {
+                        for signal in STOP_SIGNALS {
+                            set_signal_action(signal, SIG_IGN);
+                        }
+                    }
                 }
                 set_signal_action(SIGPIPE, SIG_DFL);
                 self.group = 0;
