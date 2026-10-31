@@ -134,9 +134,14 @@ pub fn next_due_in_ms() -> Option<u64> {
 }
 
 fn fire(timer: Id) {
-    let (target, selector, block) = {
+    let (target, selector, user_info, block) = {
         let fields = fields(timer);
-        (fields.target, fields.selector, fields.block)
+        (
+            retained(fields.target),
+            fields.selector,
+            retained(fields.user_info),
+            retained(fields.block),
+        )
     };
     if !block.is_null() {
         // SAFETY: a timer's block takes the block and the timer.
@@ -145,6 +150,11 @@ fn fire(timer: Id) {
         function(block, timer);
     } else if !target.is_null() && selector != 0 {
         send1(target, selector as Sel, timer as usize);
+    }
+    for object in [target, user_info, block] {
+        if !object.is_null() {
+            objc_release(object);
+        }
     }
 }
 

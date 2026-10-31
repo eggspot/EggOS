@@ -944,7 +944,7 @@ const OBJC_UNRECOGNIZED: &str = "*** Terminating app due to uncaught exception \
      'NSInvalidArgumentException', reason: '-[Counter frobnicate]: unrecognized selector sent to \
      instance 0x";
 
-const OBJC_LANGUAGE_LINES: [&str; 25] = [
+const OBJC_LANGUAGE_LINES: [&str; 27] = [
     "MACOS-OBJC block 42",
     "MACOS-OBJC byref 3",
     "MACOS-OBJC enumerate a0,b1",
@@ -966,6 +966,8 @@ const OBJC_LANGUAGE_LINES: [&str; 25] = [
     "MACOS-OBJC error NSPOSIXErrorDomain 2 Egg missing",
     "MACOS-OBJC process macos-objc language 1 1",
     "MACOS-OBJC range 6 3 1 6 11",
+    "MACOS-OBJC timer witness timer",
+    "MACOS-OBJC dealloc timer",
     "MACOS-OBJC timer 3 0",
     "MACOS-OBJC tick once",
     "MACOS-OBJC language done",

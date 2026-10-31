@@ -277,16 +277,23 @@ static void foundation_classes(void) {
            (unsigned long)folded.location, (unsigned long)last.location);
 }
 
+static NSTimer *self_invalidating_timer(int *ticks) {
+    Counter *witness = [[Counter alloc] initWithName:@"timer"];
+    return [NSTimer scheduledTimerWithTimeInterval:0.01
+                                           repeats:YES
+                                             block:^(NSTimer *fired) {
+                                               *ticks += 1;
+                                               if (*ticks == 3) {
+                                                   [fired invalidate];
+                                                   printf("MACOS-OBJC timer witness %s\n",
+                                                          witness.name.UTF8String);
+                                               }
+                                             }];
+}
+
 static void timers(void) {
-    __block int ticks = 0;
-    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:0.01
-                                                     repeats:YES
-                                                       block:^(NSTimer *fired) {
-                                                         ticks += 1;
-                                                         if (ticks == 3) {
-                                                             [fired invalidate];
-                                                         }
-                                                       }];
+    static int ticks = 0;
+    NSTimer *timer = self_invalidating_timer(&ticks);
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
     printf("MACOS-OBJC timer %d %d\n", ticks, timer.isValid);
     Ticker *ticker = [Ticker new];
