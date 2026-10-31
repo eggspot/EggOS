@@ -1678,7 +1678,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     [
         whole(&["Applications  bin  dev  etc  home  init  media  proc  run  tmp  usr  var  work"]),
         vec![
-            Line::Around("-rwxr-xr-x 40 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 47 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -1717,13 +1717,13 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "1",
         ]),
         whole(&["a", "b", "a", "b"]),
-        whole(&["f", "z"]),
+        whole(&["f  z"]),
         whole(&[
             "f",
             "eggsh: /etc/motd: Read-only file system",
             "EGGOS-FILES read-only 1",
         ]),
-        whole(&["/home:", "x", "", "/tmp:", "4"]),
+        whole(&["/home:", "root  x", "", "/tmp:", "4"]),
         whole(&["EGGOS-HISTORY recalled"]),
         whole(&["EGGOS-HISTORY newest"]),
         whole(&["EGGOS-HISTORY recalled"]),
@@ -2150,14 +2150,18 @@ fn boot(
                 if let (Some(port), Some(at)) = (qmp_port, at)
                     && (terminal_frames.len() < prompts.min(2) || accent_shown)
                 {
-                    let with_pointer = prompts == PROMPT_SESSION_FRAME_PROMPT;
+                    let pointer = match (prompts == PROMPT_SESSION_FRAME_PROMPT, accent_shown) {
+                        (true, _) => PointerSteps::Sent,
+                        (false, true) => PointerSteps::AlreadySent,
+                        (false, false) => PointerSteps::None,
+                    };
                     terminal_frames.push(check_terminal_frame(
                         arch,
                         port,
                         &mut console,
                         &rx,
                         at,
-                        with_pointer,
+                        pointer,
                     ));
                 }
                 let text = String::from_utf8_lossy(&console);
@@ -2992,20 +2996,34 @@ fn apply_pointer_step(
         .map(|pressed| desktop.left_button(pressed, &mut damage, events))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PointerSteps {
+    None,
+    Sent,
+    AlreadySent,
+}
+
 fn check_terminal_frame(
     arch: &Arch,
     port: u16,
     console: &mut Vec<u8>,
     output: &mpsc::Receiver<Vec<u8>>,
     at: &str,
-    with_pointer: bool,
+    pointer: PointerSteps,
 ) -> Result<(), String> {
     let mut qmp = Qmp::connect(port)?;
     let (width, height) = screen_size(&mut qmp, arch)?;
     let mut desktop = Desktop::new(width, height)
         .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    if pointer == PointerSteps::AlreadySent {
+        for (_, steps) in pointer_steps(&desktop) {
+            for step in steps {
+                apply_pointer_step(&mut desktop, step);
+            }
+        }
+    }
     check_desktop_frame(arch, &mut qmp, console, output, at, &desktop, &[])?;
-    if !with_pointer {
+    if pointer != PointerSteps::Sent {
         return Ok(());
     }
     for (state, steps) in pointer_steps(&desktop) {
@@ -4620,7 +4638,12 @@ mod tests {
         }
         let reordered = ok.replace("  bin  dev  ", "  dev  bin  ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 40 ", "-rwxr-xr-x 1 ");
+        let links = format!("-rwxr-xr-x {} ", crate::COREUTILS.len() + 1);
+        assert!(
+            ok.contains(&links),
+            "/bin/ls has a link per utility and its own name"
+        );
+        let one_link = ok.replace("-rwxr-xr-x 47 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
