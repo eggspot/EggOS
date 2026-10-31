@@ -7,7 +7,7 @@ use crate::damage::Damage;
 use crate::input::{self, Input, RECORD_SIZE};
 use crate::tree::ROOT_ELEMENT;
 use crate::tree::{PointerShape, Response, WidgetTree};
-use crate::window::{Window, now_ms};
+use crate::window::{Window, WindowServer, now_ms};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role, TreeWriter,
     query_kind, tree_answer,
@@ -192,7 +192,43 @@ pub trait View {
     }
 }
 
-struct Tree<'a, A, const N: usize>(&'a mut A);
+struct Tree<'a, A, const N: usize>(&'a mut A, Option<WindowServer>);
+
+/// Answers a text field's clipboard response through the clipboard every app shares (D197,
+/// docs/ux/toolkit-v0.4.md section 4.4): a copy or a cut gives [`WidgetTree::copied`] to the
+/// server, a paste fetches its text into the field. What the program then sees: `Nothing` for
+/// a copy, `Edited` for a cut, [`WidgetTree::paste`]'s answer for a paste; any other response
+/// as it was.
+pub fn answer_clipboard<const N: usize>(
+    tree: &mut WidgetTree<N>,
+    server: Option<&WindowServer>,
+    response: Response,
+    now_ms: u32,
+) -> Response {
+    match response {
+        Response::Copied(_) | Response::Cut(_) => {
+            if let Some(server) = server {
+                let _ = server.set_clipboard(tree.copied());
+            }
+            match response {
+                Response::Cut(id) => Response::Edited(id),
+                _ => Response::Nothing,
+            }
+        }
+        Response::PasteWanted(id) => {
+            let mut bytes = [0u8; 255];
+            let length = server
+                .and_then(|server| server.clipboard(0, &mut bytes).ok())
+                .map_or(0, |(length, _)| length.min(bytes.len()));
+            let text = match core::str::from_utf8(&bytes[..length]) {
+                Ok(text) => text,
+                Err(error) => core::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or(""),
+            };
+            tree.paste(id, text, now_ms)
+        }
+        other => other,
+    }
+}
 
 impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
     fn resize(&mut self, width: i32, height: i32) {
@@ -201,6 +237,7 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
         let response = self.0.tree().handle(input, time_ms);
+        let response = answer_clipboard(self.0.tree(), self.1.as_ref(), response, time_ms);
         self.0.respond(response, time_ms);
         if input == Input::FocusIn {
             self.0.focused(time_ms);
@@ -227,6 +264,7 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
 
     fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
         let (outcome, response) = self.0.tree().act(element, action, text, time_ms);
+        let response = answer_clipboard(self.0.tree(), self.1.as_ref(), response, time_ms);
         self.0.respond(response, time_ms);
         outcome
     }
@@ -254,7 +292,7 @@ pub fn run<const N: usize>(
     window: &mut Window,
     application: &mut impl Application<N>,
 ) -> Result<(), Errno> {
-    run_view(window, &mut Tree(application))
+    run_view(window, &mut Tree(application, WindowServer::open().ok()))
 }
 
 /// Shows `window` with `view` drawn in it and serves it until the user asks to close it or

@@ -6,6 +6,10 @@ pub const RECORD_SIZE: usize = 32;
 
 /// Linux key codes (`input-event-codes.h`) the toolkit's widgets answer.
 pub mod key {
+    pub const A: u16 = 30;
+    pub const X: u16 = 45;
+    pub const C: u16 = 46;
+    pub const V: u16 = 47;
     pub const ESC: u16 = 1;
     pub const BACKSPACE: u16 = 14;
     pub const TAB: u16 = 15;
@@ -38,6 +42,12 @@ impl Modifiers {
     /// Whether Shift is held.
     pub fn shift(self) -> bool {
         self.0 & Self::SHIFT != 0
+    }
+
+    /// Whether Ctrl or Super is held: the shortcut modifier of every profile's text fields
+    /// (docs/ux/toolkit-v0.4.md section 4.3).
+    pub fn control_or_super(self) -> bool {
+        self.0 & (Self::CTRL | Self::SUPER) != 0
     }
 
     /// Whether Ctrl or Super is held, or Alt without the third-level key.

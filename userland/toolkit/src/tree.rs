@@ -41,6 +41,13 @@ pub enum Response {
     Edited(WidgetId),
     /// A slider's value changed to this, by a key, a click or a step of a drag (D199).
     Adjusted(WidgetId, i32),
+    /// A text field's selection was copied: give [`WidgetTree::copied`] to the clipboard.
+    Copied(WidgetId),
+    /// A text field's selection was copied, then removed: give [`WidgetTree::copied`] to the
+    /// clipboard, and treat it as [`Response::Edited`].
+    Cut(WidgetId),
+    /// A text field wants the clipboard's text: answer with [`WidgetTree::paste`].
+    PasteWanted(WidgetId),
     /// A key no widget used, for the window: its code and modifiers.
     Unused { code: u16, shift: bool },
 }
@@ -62,6 +69,8 @@ pub const ROOT_ELEMENT: u32 = 1;
 
 const CARET_BLINK_MS: u32 = 500;
 const DOUBLE_CLICK_MS: u32 = 400;
+const LEFT_SHIFT: u16 = 42;
+const RIGHT_SHIFT: u16 = 54;
 const DAMAGE_OUTSET: i32 = 5;
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +111,11 @@ pub struct WidgetTree<const N: usize> {
     key_pressed: Option<WidgetId>,
     drag: Option<Drag>,
     slide: Option<(WidgetId, i32)>,
+    selecting: Option<WidgetId>,
+    clicks: u8,
+    shift_held: bool,
+    shortcut_held: bool,
+    copied: Text<255>,
     window_focused: bool,
     caret_epoch_ms: u32,
     caret_shown: bool,
@@ -131,6 +145,11 @@ impl<const N: usize> WidgetTree<N> {
             key_pressed: None,
             drag: None,
             slide: None,
+            selecting: None,
+            clicks: 0,
+            shift_held: false,
+            shortcut_held: false,
+            copied: Text::new(),
             window_focused: true,
             caret_epoch_ms: 0,
             caret_shown: true,
@@ -675,6 +694,12 @@ impl<const N: usize> WidgetTree<N> {
             let id = WidgetId(index as u16);
             if self.focusable(id) {
                 self.set_focus(Some(id), now_ms);
+                if matches!(self.kind(id), Some(Kind::TextField(_))) {
+                    self.edit_field(id, now_ms, |field| {
+                        field.select_all();
+                        false
+                    });
+                }
                 return;
             }
         }
@@ -746,6 +771,10 @@ impl<const N: usize> WidgetTree<N> {
                 if let Some((id, grab)) = self.slide {
                     return self.slide_to(id, x - grab);
                 }
+                if let Some(id) = self.selecting {
+                    self.select_to(id, x, time_ms);
+                    return Response::Nothing;
+                }
                 self.pointer_moved(x, y);
                 Response::Nothing
             }
@@ -779,14 +808,23 @@ impl<const N: usize> WidgetTree<N> {
                 modifiers,
                 character,
             } => match pressed {
-                true => self.key_down(
-                    code,
-                    modifiers.shift(),
-                    modifiers.command(),
-                    character,
-                    time_ms,
-                ),
-                false => self.key_up(code),
+                true => {
+                    self.shift_held = modifiers.shift() || matches!(code, LEFT_SHIFT | RIGHT_SHIFT);
+                    self.shortcut_held = modifiers.control_or_super();
+                    self.key_down(
+                        code,
+                        modifiers.shift(),
+                        modifiers.command(),
+                        character,
+                        time_ms,
+                    )
+                }
+                false => {
+                    if matches!(code, LEFT_SHIFT | RIGHT_SHIFT) {
+                        self.shift_held = false;
+                    }
+                    self.key_up(code)
+                }
             },
             Input::FocusIn | Input::FocusOut => {
                 let focused = input == Input::FocusIn;
@@ -914,6 +952,10 @@ impl<const N: usize> WidgetTree<N> {
         let double = self.last_click.is_some_and(|(last, at)| {
             last == target && time_ms.wrapping_sub(at) <= DOUBLE_CLICK_MS
         });
+        self.clicks = match double {
+            true => self.clicks % 3 + 1,
+            false => 1,
+        };
         self.last_click = Some((target, time_ms));
         match self.kind(id).copied() {
             Some(Kind::List(list)) => {
@@ -928,7 +970,19 @@ impl<const N: usize> WidgetTree<N> {
                 Response::Nothing
             }
             Some(Kind::TextField(field)) => {
+                let clicks = self.clicks;
+                let extend = self.shift_held;
                 self.place_caret(id, &field, x, time_ms);
+                self.edit_field(id, time_ms, |placed| {
+                    match clicks {
+                        2 => (placed.anchor, placed.caret) = placed.word_at(placed.caret),
+                        3 => placed.select_all(),
+                        _ if extend => placed.anchor = field.anchor,
+                        _ => placed.anchor = placed.caret,
+                    }
+                    false
+                });
+                self.selecting = Some(id);
                 Response::Nothing
             }
             _ => {
@@ -976,6 +1030,53 @@ impl<const N: usize> WidgetTree<N> {
         });
     }
 
+    fn select_to(&mut self, id: WidgetId, x: i32, now_ms: u32) {
+        let (Some(Kind::TextField(field)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
+        else {
+            return;
+        };
+        let caret = widget::caret_at(&field, rect, x);
+        if caret != field.caret {
+            self.edit_field(id, now_ms, |selected| {
+                selected.caret = caret;
+                false
+            });
+        }
+    }
+
+    /// The text the last [`Response::Copied`] or [`Response::Cut`] took.
+    pub fn copied(&self) -> &str {
+        self.copied.as_str()
+    }
+
+    /// Puts `text`, the clipboard's, in text field `id` in place of its selection, as
+    /// [`Response::PasteWanted`] asked: line breaks and tabs become spaces, other control
+    /// characters go, and what does not fit is left out. [`Response::Edited`] when the text
+    /// changed.
+    pub fn paste(&mut self, id: WidgetId, text: &str, now_ms: u32) -> Response {
+        let changed = self.edit_field(id, now_ms, |field| {
+            let mut changed = field.remove_selection();
+            for character in text.chars() {
+                let character = match character {
+                    '\n' | '\r' | '\t' => ' ',
+                    character if character.is_control() => continue,
+                    character => character,
+                };
+                if !field.text.insert(field.caret, character) {
+                    break;
+                }
+                field.caret += character.len_utf8();
+                changed = true;
+            }
+            field.anchor = field.caret;
+            changed
+        });
+        match changed {
+            true => Response::Edited(id),
+            false => Response::Nothing,
+        }
+    }
+
     fn slide_to(&mut self, id: WidgetId, thumb_x: i32) -> Response {
         let (Some(Kind::Slider(slider)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
         else {
@@ -1018,6 +1119,7 @@ impl<const N: usize> WidgetTree<N> {
     }
 
     fn left_released(&mut self, x: i32, y: i32) -> Response {
+        self.selecting = None;
         if let Some((id, _)) = self.slide.take() {
             self.damage_widget(id);
             self.set_hover(self.hit(x, y));
@@ -1259,9 +1361,21 @@ impl<const N: usize> WidgetTree<N> {
             return unused;
         };
         let before = self.text_before_focus;
-        let key = widget::field_key(&mut edited, code, character, command, &before);
+        let selected = Text::<255>::from(edited.selected());
+        let key = widget::field_key_with(
+            &mut edited,
+            code,
+            character,
+            command,
+            self.shift_held,
+            self.shortcut_held,
+            &before,
+        );
         if key == FieldKey::Unused {
             return unused;
+        }
+        if key == FieldKey::Cut {
+            edited.remove_selection();
         }
         self.edit_field(id, now_ms, |field| {
             *field = edited;
@@ -1269,6 +1383,15 @@ impl<const N: usize> WidgetTree<N> {
         });
         match key {
             FieldKey::Changed => Response::Edited(id),
+            FieldKey::Copied => {
+                self.copied = selected;
+                Response::Copied(id)
+            }
+            FieldKey::Cut => {
+                self.copied = selected;
+                Response::Cut(id)
+            }
+            FieldKey::PasteWanted => Response::PasteWanted(id),
             _ => Response::Nothing,
         }
     }

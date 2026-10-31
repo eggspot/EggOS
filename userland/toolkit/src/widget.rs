@@ -140,6 +140,9 @@ pub struct Field {
     pub text: Text<255>,
     /// The caret's byte in `text`.
     pub caret: usize,
+    /// The selection's other end: the text between it and the caret is selected, none when
+    /// they are equal (docs/ux/toolkit-v0.4.md section 4).
+    pub anchor: usize,
     /// How far the text is scrolled left, in pixels.
     pub scroll: i32,
     pub placeholder: &'static str,
@@ -344,6 +347,7 @@ impl Kind {
         Self::TextField(Field {
             text: Text::new(),
             caret: 0,
+            anchor: 0,
             scroll: 0,
             placeholder,
             escape,
@@ -601,12 +605,162 @@ pub enum FieldKey {
     Moved,
     /// The text changed.
     Changed,
+    /// The selection was copied ([`Field::selected`] holds it).
+    Copied,
+    /// The selection was copied, then removed.
+    Cut,
+    /// The clipboard's text is wanted at the caret.
+    PasteWanted,
+}
+
+impl Field {
+    /// The selection's first and last byte.
+    pub fn selection(&self) -> (usize, usize) {
+        (self.caret.min(self.anchor), self.caret.max(self.anchor))
+    }
+
+    /// The selected text.
+    pub fn selected(&self) -> &str {
+        let (start, end) = self.selection();
+        self.text.as_str().get(start..end).unwrap_or("")
+    }
+
+    /// Removes the selected text, the caret where it was; whether there was any.
+    pub fn remove_selection(&mut self) -> bool {
+        let (start, end) = self.selection();
+        if start == end {
+            return false;
+        }
+        let mut kept = Text::<255>::new();
+        let words = self.text.as_str();
+        kept.push_str(&words[..start]);
+        kept.push_str(&words[end..]);
+        self.text = kept;
+        self.caret = start;
+        self.anchor = start;
+        true
+    }
+
+    /// Selects all of its text, the caret at the end.
+    pub fn select_all(&mut self) {
+        self.anchor = 0;
+        self.caret = self.text.len();
+    }
+
+    /// The word around byte `at` as a double-click selects it: a run of ASCII letters,
+    /// digits and `_`, or of characters beyond ASCII; a run of spaces; or one other character.
+    pub fn word_at(&self, at: usize) -> (usize, usize) {
+        let words = self.text.as_str();
+        let class = |character: char| match character {
+            ' ' => 0,
+            character if character.is_ascii_alphanumeric() || character == '_' => 1,
+            character if !character.is_ascii() => 1,
+            _ => 2,
+        };
+        let Some(here) = words[at.min(words.len())..]
+            .chars()
+            .next()
+            .or_else(|| words[..at.min(words.len())].chars().next_back())
+        else {
+            return (0, 0);
+        };
+        let start_at = match words[at.min(words.len())..].chars().next() {
+            Some(_) => at.min(words.len()),
+            None => at.min(words.len()) - here.len_utf8(),
+        };
+        let kind = class(here);
+        if kind == 2 {
+            return (start_at, start_at + here.len_utf8());
+        }
+        let start = words[..start_at]
+            .char_indices()
+            .rev()
+            .take_while(|&(_, character)| class(character) == kind)
+            .last()
+            .map_or(start_at, |(index, _)| index);
+        let end = words[start_at..]
+            .char_indices()
+            .take_while(|&(_, character)| class(character) == kind)
+            .last()
+            .map_or(start_at, |(index, character)| {
+                start_at + index + character.len_utf8()
+            });
+        (start, end)
+    }
 }
 
 /// Applies key `code` (typing `character`, with Ctrl, Alt or Super held when `command`) to
 /// `field` as section 7 of docs/ux/toolkit-v0.3.md says; Esc in a [`Escape::Revert`] field
 /// puts back `before`.
 pub fn field_key(
+    field: &mut Field,
+    code: u16,
+    character: u32,
+    command: bool,
+    before: &Text<255>,
+) -> FieldKey {
+    field_key_with(field, code, character, command, false, false, before)
+}
+
+/// [`field_key`] with Shift (`extend`) and Ctrl or Super (`shortcut`) told apart: Shift with a
+/// move extends the selection, and the shortcut modifier with A, C, X and V selects all,
+/// copies, cuts and asks for a paste (docs/ux/toolkit-v0.4.md section 4.3).
+pub fn field_key_with(
+    field: &mut Field,
+    code: u16,
+    character: u32,
+    command: bool,
+    extend: bool,
+    shortcut: bool,
+    before: &Text<255>,
+) -> FieldKey {
+    let selecting = field.anchor != field.caret;
+    if shortcut {
+        match code {
+            key::A => {
+                field.select_all();
+                return FieldKey::Moved;
+            }
+            key::C if selecting => return FieldKey::Copied,
+            key::X if selecting => return FieldKey::Cut,
+            key::V => return FieldKey::PasteWanted,
+            key::C | key::X => return FieldKey::Moved,
+            _ => {}
+        }
+    }
+    let moves = matches!(code, key::LEFT | key::RIGHT | key::HOME | key::END);
+    if moves && selecting && !extend && matches!(code, key::LEFT | key::RIGHT) {
+        let (start, end) = field.selection();
+        field.caret = if code == key::LEFT { start } else { end };
+        field.anchor = field.caret;
+        return FieldKey::Moved;
+    }
+    if selecting && matches!(code, key::BACKSPACE | key::DELETE) {
+        field.remove_selection();
+        return FieldKey::Changed;
+    }
+    let anchor = field.anchor;
+    let typing = !moves && !matches!(code, key::BACKSPACE | key::DELETE | key::ESC);
+    let typed_over = typing
+        && selecting
+        && char::from_u32(character)
+            .is_some_and(|typed| !command && eggos_font::egg_sans::covers(typed));
+    if typed_over {
+        field.remove_selection();
+    }
+    let result = field_key_alone(field, code, character, command, before);
+    field.anchor = match (moves && extend, result) {
+        (true, _) => anchor,
+        (false, FieldKey::Unused) => anchor,
+        _ => field.caret,
+    };
+    match (typed_over, result) {
+        (true, FieldKey::Unused | FieldKey::Moved) => FieldKey::Changed,
+        _ => result,
+    }
+}
+
+fn field_key_alone(
     field: &mut Field,
     code: u16,
     character: u32,
@@ -975,6 +1129,16 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
         false => (field.text.as_str(), colour::TEXT),
     };
     let ink = if look.enabled { ink } else { colour::TEXT_DIM };
+    let (start, end) = field.selection();
+    if look.focused && start != end && !field.text.is_empty() {
+        let text = field.text.as_str();
+        let left = inner.x - field.scroll + text::width(&text[..start]);
+        let right = inner.x - field.scroll + text::width(&text[..end]);
+        canvas.fill(
+            Rect::new(left, y, right - left, LINE_HEIGHT),
+            colour::SELECTION,
+        );
+    }
     canvas.text(inner.x - field.scroll, y, words, ink, 1);
     canvas.restore(previous);
     if look.focused && look.caret_shown && look.enabled {

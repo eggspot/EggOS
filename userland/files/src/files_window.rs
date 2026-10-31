@@ -429,6 +429,7 @@ impl FilesWindow {
             path_field: Field {
                 text: Text::new(),
                 caret: 0,
+                anchor: 0,
                 scroll: 0,
                 placeholder: "",
                 escape: Escape::Revert,
@@ -1376,6 +1377,7 @@ impl FilesWindow {
         let mut field = Field {
             text,
             caret,
+            anchor: caret,
             scroll: 0,
             placeholder: "",
             escape: Escape::Revert,

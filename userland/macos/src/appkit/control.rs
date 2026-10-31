@@ -303,6 +303,7 @@ fn field_of(fields: &TextFieldFields) -> Field {
     Field {
         text: fields.text,
         caret: fields.caret,
+        anchor: fields.caret,
         scroll: fields.scroll,
         placeholder: placeholder_text(fields),
         escape: Escape::Clear,

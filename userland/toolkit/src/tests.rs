@@ -918,3 +918,92 @@ fn a_slider_s_range_is_snapped_and_set_text_takes_a_number() {
         (Role::Slider, b"7 1..10 by 1".to_vec(), flags::FOCUSABLE)
     );
 }
+
+fn with_modifiers(tree: &mut WidgetTree<24>, code: u16, character: u32, held: u32) -> Response {
+    tree.handle(
+        Input::Key {
+            code,
+            pressed: true,
+            modifiers: Modifiers(held),
+            character,
+        },
+        0,
+    )
+}
+
+fn type_into(tree: &mut WidgetTree<24>, words: &str) {
+    for character in words.chars() {
+        press(tree, 30, character as u32, false);
+    }
+}
+
+#[test]
+fn a_field_s_selection_grows_with_shift_and_typing_replaces_it() {
+    let mut form = form();
+    form.tree.set_focus(Some(form.field), 0);
+    type_into(&mut form.tree, "hello");
+    press(&mut form.tree, key::HOME, 0, false);
+    press(&mut form.tree, key::RIGHT, 0, true);
+    press(&mut form.tree, key::RIGHT, 0, true);
+    let Some(Kind::TextField(field)) = form.tree.kind(form.field).copied() else {
+        panic!("a field");
+    };
+    assert_eq!(field.selected(), "he");
+    assert_eq!(
+        press(&mut form.tree, 30, 'j' as u32, false),
+        Response::Edited(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("jllo"));
+    press(&mut form.tree, key::END, 0, false);
+    press(&mut form.tree, key::LEFT, 0, true);
+    assert_eq!(
+        press(&mut form.tree, key::BACKSPACE, 0, false),
+        Response::Edited(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("jll"));
+}
+
+#[test]
+fn copy_cut_and_paste_go_through_the_application() {
+    let mut form = form();
+    form.tree.set_focus(Some(form.field), 0);
+    type_into(&mut form.tree, "one two");
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::A, 'a' as u32, Modifiers::CTRL),
+        Response::Nothing
+    );
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::C, 'c' as u32, Modifiers::SUPER),
+        Response::Copied(form.field)
+    );
+    assert_eq!(form.tree.copied(), "one two");
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::X, 'x' as u32, Modifiers::CTRL),
+        Response::Cut(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some(""));
+    assert_eq!(
+        with_modifiers(&mut form.tree, key::V, 'v' as u32, Modifiers::CTRL),
+        Response::PasteWanted(form.field)
+    );
+    assert_eq!(
+        form.tree.paste(form.field, "a\tb\u{7}c", 0),
+        Response::Edited(form.field)
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("a bc"));
+    assert_eq!(form.tree.paste(form.field, "", 0), Response::Nothing);
+}
+
+#[test]
+fn a_double_click_takes_a_word() {
+    let mut field = match Kind::text_field("", Escape::Clear) {
+        Kind::TextField(field) => field,
+        _ => unreachable!(),
+    };
+    field.text.set("path/to my_file.txt");
+    assert_eq!(field.word_at(1), (0, 4));
+    assert_eq!(field.word_at(4), (4, 5));
+    assert_eq!(field.word_at(7), (7, 8));
+    assert_eq!(field.word_at(9), (8, 15));
+    assert_eq!(field.word_at(19), (16, 19));
+}

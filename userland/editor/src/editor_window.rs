@@ -254,6 +254,7 @@ fn field(placeholder: &'static str) -> Field {
     Field {
         text: Text::new(),
         caret: 0,
+        anchor: 0,
         scroll: 0,
         placeholder,
         escape: Escape::Clear,
