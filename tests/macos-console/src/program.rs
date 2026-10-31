@@ -1,5 +1,6 @@
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::fmt::Write;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 const PREFIX: &str = "MACOS-CONSOLE";
 const CLOCK_REALTIME: c_int = 0;
@@ -17,6 +18,27 @@ const LISTED_NAMES: usize = 16;
 const NAME_LENGTH: usize = 64;
 const SMALL_BLOCKS: usize = 64;
 const LARGE_BLOCK: usize = 1 << 20;
+const SIGBUS: c_int = 10;
+const SA_SIGINFO: c_int = 0x40;
+const SIG_DFL: usize = 0;
+
+static BUS_FAULTS: AtomicU32 = AtomicU32::new(0);
+
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    mask: u32,
+    flags: c_int,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+struct ArgumentList {
+    general_offset: u32,
+    vector_offset: u32,
+    overflow: *mut u64,
+    saved: *mut u8,
+}
 
 #[repr(C)]
 struct File {
@@ -84,6 +106,13 @@ unsafe extern "C" {
     static __stderrp: *mut File;
     fn printf(format: *const c_char, ...) -> c_int;
     fn snprintf(buffer: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
+    fn vsnprintf(
+        buffer: *mut c_char,
+        size: usize,
+        format: *const c_char,
+        arguments: *mut c_void,
+    ) -> c_int;
+    fn sigaction(signal: c_int, action: *const SignalAction, old: *mut SignalAction) -> c_int;
     fn puts(text: *const c_char) -> c_int;
     fn fputs(text: *const c_char, file: *mut File) -> c_int;
     fn fflush(file: *mut File) -> c_int;
@@ -269,6 +298,8 @@ extern "C" fn main(
     say!("cwd {}", working_directory());
     say!("malloc {}", heap());
     say!("time {}", clocks());
+    say!("va_list {}", listed_format());
+    say!("misaligned {}", misaligned_read());
     // SAFETY: `getpid` takes no arguments.
     let pid = unsafe { getpid() };
     say!("pid {}", if pid > 0 { "positive" } else { "invalid" });
@@ -368,6 +399,82 @@ fn formats() {
     say!("snprintf {} {}", length, text(buffer.as_ptr()));
     // SAFETY: the text is a NUL-terminated literal.
     unsafe { puts(c"MACOS-CONSOLE puts".as_ptr()) };
+}
+
+#[cfg(target_arch = "x86_64")]
+fn format_list(buffer: &mut [c_char; LINE_BUFFER], format: &CStr, values: &mut [u64; 2]) -> c_int {
+    let mut list = ArgumentList {
+        general_offset: 48,
+        vector_offset: 176,
+        overflow: values.as_mut_ptr(),
+        saved: core::ptr::null_mut(),
+    };
+    // SAFETY: `list` is a System V `va_list` whose register save area is used up, so the
+    // format's two arguments come from `values`, and `buffer` holds `LINE_BUFFER` bytes.
+    unsafe {
+        vsnprintf(
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            format.as_ptr(),
+            (&raw mut list).cast(),
+        )
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn format_list(buffer: &mut [c_char; LINE_BUFFER], format: &CStr, values: &mut [u64; 2]) -> c_int {
+    // SAFETY: Darwin arm64's `va_list` points to one 8-byte slot per argument, which `values`
+    // holds, and `buffer` holds `LINE_BUFFER` bytes.
+    unsafe {
+        vsnprintf(
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            format.as_ptr(),
+            values.as_mut_ptr().cast(),
+        )
+    }
+}
+
+fn listed_format() -> &'static str {
+    let mut buffer = [0; LINE_BUFFER];
+    let mut values = [c"egg".as_ptr() as u64, 3];
+    let length = format_list(&mut buffer, c"%s %d", &mut values);
+    match (length, text(buffer.as_ptr())) {
+        (5, "egg 3") => "vsnprintf",
+        _ => "vsnprintf misread its list",
+    }
+}
+
+extern "C" fn count_bus_fault(_: c_int, _: *mut c_void, _: *mut c_void) {
+    BUS_FAULTS.fetch_add(1, Ordering::Relaxed);
+}
+
+fn misaligned_read() -> &'static str {
+    let counting = SignalAction {
+        handler: count_bus_fault as *const () as usize,
+        mask: 0,
+        flags: SA_SIGINFO,
+    };
+    // SAFETY: `counting` is a readable `struct sigaction` whose handler takes the signal, its
+    // `siginfo_t` and a context.
+    let installed = unsafe { sigaction(SIGBUS, &counting, core::ptr::null_mut()) };
+    let bytes = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let at = core::hint::black_box(bytes.as_ptr().wrapping_add(1)).cast::<u32>();
+    // SAFETY: `at` names four of `bytes`' bytes, and an unaligned read needs no alignment.
+    let value = unsafe { at.read_unaligned() };
+    let default = SignalAction {
+        handler: SIG_DFL,
+        mask: 0,
+        flags: 0,
+    };
+    // SAFETY: `default` is a readable `struct sigaction`.
+    unsafe { sigaction(SIGBUS, &default, core::ptr::null_mut()) };
+    match (installed, value, BUS_FAULTS.load(Ordering::Relaxed)) {
+        (0, 0x0504_0302, 0) => "read with a SIGBUS handler",
+        (0, 0x0504_0302, _) => "read, but the program's handler ran",
+        (0, _, _) => "misread",
+        _ => "sigaction failed",
+    }
 }
 
 fn strings() -> &'static str {

@@ -169,7 +169,10 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     let pc = unsafe { word(context, UCONTEXT_PC).read() };
     let from_the_processor = code > 0;
     #[cfg(target_arch = "aarch64")]
-    if from_the_processor && signal == fault::SIGBUS && completed_misaligned_access(pc, context) {
+    if signal == fault::SIGBUS
+        && code == fault::BUS_ADRALN
+        && completed_misaligned_access(pc, context)
+    {
         return;
     }
     #[cfg(target_arch = "aarch64")]

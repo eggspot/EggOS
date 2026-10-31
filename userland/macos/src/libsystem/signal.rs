@@ -3,7 +3,9 @@
 //! layer's `deliver`, which calls the program's handler with Darwin's signal number and, with
 //! `SA_SIGINFO`, Darwin's `siginfo_t`; the handler returns through the kernel's trampoline and
 //! `rt_sigreturn`. Ignoring and the default action go to Linux as they are (so an ignored
-//! `SIGPIPE` turns a write to a closed pipe into `EPIPE`). Masks, `sigsuspend`, `sigpending` and
+//! `SIGPIPE` turns a write to a closed pipe into `EPIPE`), except the default action of a fault
+//! signal while a translated program runs, which keeps the translation's fault handler (D207).
+//! A translated misaligned access's `SIGBUS` is completed before any handler of the program. Masks, `sigsuspend`, `sigpending` and
 //! `sigaltstack` translate Darwin's sets and `stack_t`.
 
 use super::{Exclusive, errno, errno_from, set_errno};
@@ -91,9 +93,18 @@ fn record(index: usize, action: Action) {
     HANDLERS[index].store(action.handler, Ordering::Release);
 }
 
-fn linux_words(action: &Action) -> [usize; 4] {
-    let flags = darwin_signals::linux_action_flags(action.flags);
+fn linux_words(linux_signal: usize, action: &Action) -> [usize; 4] {
+    let mut flags = darwin_signals::linux_action_flags(action.flags);
+    let translated_fault = crate::callback::translated_fault_handler(linux_signal);
+    if translated_fault.is_some() {
+        flags &= !linux_action::RESETHAND;
+    }
     let (handler, flags, restorer) = match (action.handler, signal_return()) {
+        (SIG_DFL, _) if translated_fault.is_some() => (
+            translated_fault.unwrap_or(SIG_DFL),
+            flags | linux_action::SIGINFO,
+            0,
+        ),
         (SIG_DFL | SIG_IGN, _) => (action.handler, flags & !linux_action::SIGINFO, 0),
         (_, None) => (
             deliver as *const () as usize,
@@ -156,7 +167,7 @@ fn change(signal: c_int, new: Option<Action>) -> Result<Action, c_int> {
         };
         record(index, new);
         if let Some(linux_signal) = darwin::linux_signal(signal)
-            && let Err(errno) = install_linux(linux_signal, &linux_words(&new), None)
+            && let Err(errno) = install_linux(linux_signal, &linux_words(linux_signal, &new), None)
         {
             record(index, previous);
             return Err(darwin::darwin_errno(errno.0));
@@ -170,6 +181,9 @@ extern "C" fn deliver(
     info: *const [u8; LINUX_INFO_READ],
     context: *mut c_void,
 ) {
+    if crate::callback::completed_translated_fault(linux_signal, info.cast(), context.cast()) {
+        return;
+    }
     let Some(signal) = darwin_signals::darwin_signal(linux_signal as usize) else {
         return;
     };
@@ -182,6 +196,14 @@ extern "C" fn deliver(
     if flags & action::RESETHAND != 0 {
         FLAGS[index].store(flags & !action::SIGINFO, Ordering::Relaxed);
         HANDLERS[index].store(SIG_DFL, Ordering::Release);
+        let linux_signal = linux_signal as usize;
+        if crate::callback::translated_fault_handler(linux_signal).is_some() {
+            let default = Action {
+                handler: SIG_DFL,
+                ..recorded(index)
+            };
+            let _ = install_linux(linux_signal, &linux_words(linux_signal, &default), None);
+        }
     }
     let mut darwin_info = if info.is_null() {
         SignalInfo::default()

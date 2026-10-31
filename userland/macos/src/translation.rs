@@ -45,6 +45,8 @@ const SA_SIGINFO: usize = 4;
 const SIGSET_SIZE: usize = 8;
 const SIG_DFL: usize = 0;
 const SIGINFO_CODE: usize = 8;
+const BUS_ADRALN: i32 = 1;
+const FAULT_SIGNALS: [usize; 5] = [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV];
 const SIGINFO_ADDRESS: usize = 16;
 const UCONTEXT_REGISTERS: usize = 184;
 const UCONTEXT_PC: usize = 440;
@@ -171,7 +173,10 @@ fn bridge_words(native: u64, name: &[u8]) -> Option<Vec<u32>> {
         }
         None => {
             let moves = bridge::sysv_argument_moves(translated::bridge_arguments(name));
-            bridge::sysv_forward_bridge(&moves, native, 0).ok()
+            match translated::va_list_argument(name) {
+                Some(list) => bridge::sysv_va_list_bridge(&moves, list, native, 0).ok(),
+                None => bridge::sysv_forward_bridge(&moves, native, 0).ok(),
+            }
         }
     }
 }
@@ -407,10 +412,42 @@ fn completed_misaligned_access(code: &InstalledCode, pc: u64, context: *mut u8) 
     true
 }
 
+fn signal_code(info: *const u8) -> i32 {
+    // SAFETY: the kernel calls a `SA_SIGINFO` handler with its `siginfo_t`, whose `si_code`
+    // is the third 32-bit word.
+    unsafe { info.wrapping_add(SIGINFO_CODE).cast::<i32>().read() }
+}
+
+/// Completes the misaligned ordered access of translated code that raised the Linux signal
+/// `signal` when it is a `SIGBUS` with `BUS_ADRALN` (D207), so the program resumes after it
+/// without any handler of its own running; false for any other signal. `info` and `context`
+/// are the kernel's `siginfo_t` and `ucontext_t`. Takes no lock, so it is safe in a signal
+/// handler.
+pub fn completed_misaligned_fault(signal: c_int, info: *const u8, context: *mut u8) -> bool {
+    if signal != SIGBUS as c_int || info.is_null() || context.is_null() {
+        return false;
+    }
+    let Some(translation) = current() else {
+        return false;
+    };
+    signal_code(info) == BUS_ADRALN
+        && completed_misaligned_access(&translation.code, word(context, UCONTEXT_PC), context)
+}
+
+/// The handler that stands for the default action of the Linux fault signal `signal` while a
+/// translated program runs, so a program that restores the default keeps the completion of
+/// misaligned accesses and the line naming the guest address; `None` for other signals and
+/// when no translated program runs.
+pub fn fault_handler(signal: usize) -> Option<usize> {
+    (current().is_some() && FAULT_SIGNALS.contains(&signal))
+        .then_some(on_fault as *const () as usize)
+}
+
 extern "C" fn on_fault(signal: c_int, info: *const u8, context: *mut u8) {
-    // SAFETY: the kernel calls this handler (`SA_SIGINFO`) with its `siginfo_t`, whose
-    // `si_code` is the third 32-bit word.
-    let code = unsafe { info.wrapping_add(SIGINFO_CODE).cast::<i32>().read() };
+    if completed_misaligned_fault(signal, info, context) {
+        return;
+    }
+    let code = signal_code(info);
     // SAFETY: as above; a fault's `si_addr` is the 64-bit word at 16.
     let address = unsafe { info.wrapping_add(SIGINFO_ADDRESS).cast::<u64>().read() };
     let pc = word(context, UCONTEXT_PC);
@@ -418,10 +455,6 @@ extern "C" fn on_fault(signal: c_int, info: *const u8, context: *mut u8) {
     if let Some(translation) = current()
         && code > 0
     {
-        if signal == SIGBUS as c_int && completed_misaligned_access(&translation.code, pc, context)
-        {
-            return;
-        }
         let image = (translation.code.guest_base, translation.code.guest_size);
         let trapped = signal == SIGTRAP as c_int;
         let ended = match translation.code.guest_fault(trapped, pc, x16) {
@@ -457,9 +490,10 @@ fn set_action(signal: usize, handler: usize) {
 
 /// Makes the faults of translated code end the program with a line naming the guest address;
 /// any other fault is delivered again with its default action. A handler the program installs
-/// for one of these signals replaces this one.
+/// for one of these signals replaces this one, and runs only after a misaligned access has been
+/// tried; the program restoring the default action brings this one back.
 pub fn install_fault_handler() {
-    for signal in [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV] {
+    for signal in FAULT_SIGNALS {
         set_action(signal, on_fault as *const () as usize);
     }
 }

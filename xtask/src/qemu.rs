@@ -821,7 +821,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 8] = [
     b"exit 7\r",
 ];
 
-const MACOS_CONSOLE_CHECK_LINES: [&str; 21] = [
+const MACOS_CONSOLE_CHECK_LINES: [&str; 23] = [
     "MACOS-CONSOLE apple executable_path",
     "MACOS-CONSOLE env GREETING=hi envp setenv",
     "MACOS-CONSOLE printf",
@@ -841,6 +841,8 @@ const MACOS_CONSOLE_CHECK_LINES: [&str; 21] = [
     "MACOS-CONSOLE cwd chdir getcwd relative",
     "MACOS-CONSOLE malloc small large realloc",
     "MACOS-CONSOLE time monotonic realtime mach gettimeofday",
+    "MACOS-CONSOLE va_list vsnprintf",
+    "MACOS-CONSOLE misaligned read with a SIGBUS handler",
     "MACOS-CONSOLE pid positive",
     "MACOS-CONSOLE stderr",
     "MACOS-CONSOLE atexit",

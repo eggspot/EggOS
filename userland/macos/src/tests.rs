@@ -1593,6 +1593,19 @@ fn an_exports_trie_gives_its_regular_symbols_and_refuses_bad_offsets() {
 }
 
 #[test]
+fn a_va_list_export_names_the_argument_its_bridge_tags() {
+    use crate::translated::va_list_argument;
+    assert_eq!(va_list_argument(b"_vfprintf"), Some(2));
+    assert_eq!(va_list_argument(b"_vsnprintf"), Some(3));
+    assert_eq!(va_list_argument(b"___vsnprintf_chk"), Some(5));
+    assert_eq!(va_list_argument(b"_NSLogv"), Some(1));
+    assert_eq!(va_list_argument(b"_vprintf$UNIX2003"), Some(1));
+    assert_eq!(va_list_argument(b"_printf"), None);
+    assert_eq!(va_list_argument(b"_fprintf"), None);
+    assert_eq!(va_list_argument(b"_vsscanf"), Some(2));
+}
+
+#[test]
 fn a_variadic_entry_names_its_named_count_and_the_va_list_function() {
     use crate::translated::variadic_entry;
     assert_eq!(

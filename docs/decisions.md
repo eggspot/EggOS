@@ -16740,6 +16740,11 @@ the license, by an explicit instruction recorded here.
   stronger, and the common, aligned case costs nothing. Exclusive pairs and LSE atomics on a
   misaligned address (x86's split locks) still fault, as do misaligned accesses to unmapped
   memory, which now fault inside the handler instead of reporting the guest address.
+  The completion runs only for `BUS_ADRALN`, and before any `SIGBUS` handler the program
+  installs: the macOS layer's `deliver` tries it first, and a program that restores a fault
+  signal's default action gets the layer's handler back (review round 1). The completed access
+  is a plain unaligned one, so it is not single-copy atomic even within a cache line, where
+  x86 guarantees atomicity.
 - **Follow-up.** A misaligned access costs a signal each time; when a benchmark shows hot ones,
   patch the faulting instruction into a branch to a barrier-plain-access stub, or use LSE2's
   relaxed alignment where the CPU has it.

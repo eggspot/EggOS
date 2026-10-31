@@ -40,6 +40,19 @@ const INSTRUCTION_BYTES: i64 = 4;
 const INTEGERS: [ArgumentKind; DEFAULT_ARGUMENTS] = [ArgumentKind::Integer; DEFAULT_ARGUMENTS];
 const ONE_INTEGER: [ArgumentKind; 1] = [ArgumentKind::Integer];
 const THREAD_LOCAL_ACCESSOR: &[u8] = b"__tlv_bootstrap";
+const VA_LIST_ARGUMENTS: [(&[u8], u8); 11] = [
+    (b"_vprintf", 1),
+    (b"_vfprintf", 2),
+    (b"_vdprintf", 2),
+    (b"_vsprintf", 2),
+    (b"_vsnprintf", 3),
+    (b"_vasprintf", 2),
+    (b"___vsnprintf_chk", 5),
+    (b"_vscanf", 1),
+    (b"_vfscanf", 2),
+    (b"_vsscanf", 2),
+    (b"_NSLogv", 1),
+];
 const NON_LOCAL_JUMPS: [&[u8]; 6] = [
     b"_setjmp",
     b"__setjmp",
@@ -375,6 +388,16 @@ pub fn bridge_arguments(name: &[u8]) -> &'static [ArgumentKind] {
         true => &ONE_INTEGER,
         false => &INTEGERS,
     }
+}
+
+/// Which integer argument of the layer's export `name` is a `va_list` the program passes on:
+/// translated code passes its own System V list there, which the bridge tags (D191).
+pub fn va_list_argument(name: &[u8]) -> Option<u8> {
+    let end = name.iter().position(|&b| b == b'$').unwrap_or(name.len());
+    VA_LIST_ARGUMENTS
+        .iter()
+        .find(|(function, _)| *function == &name[..end])
+        .map(|&(_, position)| position)
 }
 
 /// Whether the import `name` is `___chkstk_darwin`, the stack probe that takes its size in

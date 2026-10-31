@@ -324,6 +324,28 @@ pub fn sysv_forward_bridge(
     bridge(moves, native, dispatch, Convention::SystemV)
 }
 
+/// The forward bridge from a System V AMD64 call of a native function at `native` that takes a
+/// `va_list` as its integer argument `list` (`vfprintf`, `vsnprintf`, `NSLogv`, ...), with
+/// arguments as `moves` says: [`sysv_forward_bridge`]'s, which also sets [`SYSV_VA_LIST_TAG`]
+/// in that argument's register after the moves, so the layer reads the program's own System V
+/// `va_list` rather than Darwin arm64 stack slots. `list` must be below 8.
+pub fn sysv_va_list_bridge(
+    moves: &[ArgumentMove],
+    list: u8,
+    native: u64,
+    dispatch: u64,
+) -> Result<Vec<u32>, EmitError> {
+    if list >= AAPCS64_ARGUMENT_REGISTERS {
+        return Err(EmitError::OutOfRange { at: 0 });
+    }
+    bridge(
+        moves,
+        native,
+        dispatch,
+        Convention::SystemVListArgument(list),
+    )
+}
+
 /// The bytes of the System V register save area a variadic bridge builds: `rdi`, `rsi`, `rdx`,
 /// `rcx`, `r8` and `r9`, then `xmm0`-`xmm7` (16 bytes each).
 pub const SYSV_REGISTER_SAVE_BYTES: u32 = 176;
@@ -376,6 +398,7 @@ enum Convention {
     Win64,
     SystemV,
     SystemVVariadic(u8),
+    SystemVListArgument(u8),
 }
 
 fn emit_va_list(
@@ -426,7 +449,7 @@ fn bridge(
     let outgoing = native_stack_bytes(moves);
     let saved = match convention {
         Convention::SystemVVariadic(_) => outgoing + VARIADIC_AREA_BYTES,
-        Convention::Win64 | Convention::SystemV => outgoing,
+        Convention::Win64 | Convention::SystemV | Convention::SystemVListArgument(_) => outgoing,
     };
     let saved_vectors = saved + SAVED_GENERAL_BYTES;
     let frame = saved_vectors + SAVED_VECTOR_BYTES;
@@ -435,7 +458,7 @@ fn bridge(
     let native = asm.literal(native);
     let offsets = match convention {
         Convention::SystemVVariadic(named) => Some(asm.literal(variadic_list_offsets(named))),
-        Convention::Win64 | Convention::SystemV => None,
+        Convention::Win64 | Convention::SystemV | Convention::SystemVListArgument(_) => None,
     };
     let dispatch = asm.literal(dispatch);
     let miss = asm.label();
@@ -492,6 +515,17 @@ fn bridge(
             tagged as u16,
             false,
         ));
+    }
+    if let Convention::SystemVListArgument(list) = convention {
+        let tag = encode::logical_immediate(
+            Logic::Orr,
+            Size::X,
+            Reg(list),
+            Reg(list),
+            u64::from(SYSV_VA_LIST_TAG),
+        )
+        .ok_or(EmitError::OutOfRange { at: asm.position() })?;
+        asm.emit(tag);
     }
     asm.load_literal(LINK_TARGET, native);
     asm.emit(encode::blr(LINK_TARGET));
@@ -955,6 +989,34 @@ mod tests {
     }
 
     #[test]
+    fn a_va_list_bridge_tags_the_programs_list_after_moving_it() {
+        let moves = sysv_argument_moves(&[INTEGER; DEFAULT_ARGUMENTS]);
+        let words = sysv_va_list_bridge(&moves, 2, 0x1111, 0x2222).unwrap();
+        let tag = encode::logical_immediate(
+            Logic::Orr,
+            Size::X,
+            Reg(2),
+            Reg(2),
+            u64::from(SYSV_VA_LIST_TAG),
+        )
+        .unwrap();
+        let tagged = words.iter().position(|&word| word == tag).unwrap();
+        let moved = words
+            .iter()
+            .position(|&word| word == copy(Reg(2), Reg(2)))
+            .unwrap();
+        let call = words
+            .iter()
+            .position(|&word| word == encode::blr(LINK_TARGET))
+            .unwrap();
+        assert!(moved < tagged && tagged < call);
+        assert!(words.contains(&copy(Reg(2), Reg(1))));
+        let plain = sysv_forward_bridge(&moves, 0x1111, 0x2222).unwrap();
+        assert!(!plain.contains(&tag));
+        assert!(sysv_va_list_bridge(&moves, 8, 1, 2).is_err());
+    }
+
+    #[test]
     fn every_bridge_ends_with_its_dispatch_address_where_the_loader_patches_it() {
         let dispatch = 0x0000_7F12_3456_7890u64;
         let moves = sysv_argument_moves(&[INTEGER; 2]);
@@ -964,6 +1026,7 @@ mod tests {
             return_bridge(dispatch).unwrap(),
             sysv_variadic_bridge(1, 1, dispatch).unwrap(),
             sysv_variadic_bridge(MAX_VARIADIC_NAMED, 1, dispatch).unwrap(),
+            sysv_va_list_bridge(&moves, 1, 1, dispatch).unwrap(),
         ];
         for words in bridges {
             let last = [words[words.len() - 2], words[words.len() - 1]];
