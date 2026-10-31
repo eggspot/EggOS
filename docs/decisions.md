@@ -5087,10 +5087,7 @@ the license, by an explicit instruction recorded here.
   `CLD_KILLED`, `si_pid`, `si_uid`, `si_status`), queued for the process and delivered by the
   first thread that does not block it (`signals::send_from_outside`, which generalises D100's
   terminal sender: the target's first thread's wait slot from the table, the others' from its
-  signal state). The signal is queued before the end (or D181's stop or continuation) is shown
-  to the parent's waits (`Table::announce`), so a wait that reaps the child finds its signal
-  pending already, as on Linux, and a late one never stands in for the next child's. Its
-  default action ignores it. `SA_NOCLDSTOP` is kept but changes nothing:
+  signal state). Its default action ignores it. `SA_NOCLDSTOP` is kept but changes nothing:
   processes do not stop yet (below).
 - **Orphans (decided by research).** A process that ends hands its children to the nearest
   living ancestor that set `PR_SET_CHILD_SUBREAPER`, else to init, else to the kernel (parent 0,
@@ -16938,3 +16935,19 @@ the license, by an explicit instruction recorded here.
   with `eggos.display=offscreen` (any mode) `start_grant_prompt` fails at once, so the server
   asks through the client's elicitation when it can and refuses as before when it cannot.
   A real display, attached or not, still gets the prompt.
+
+## D212 A child's `SIGCHLD` and stop or continuation reports are queued before its waits can see the change; the table lock stays a leaf lock — Decided by the build loop (engineering; supersedes D105's ordering of the signal and the reap, extends D181)
+- **Why.** A child's end, stop or continuation became reapable or reportable under the process
+  table's lock, and the parent's `SIGCHLD` was queued only after the lock was released. On
+  several CPUs a parent could reap a killed child, block `SIGCHLD` and fork again before that
+  signal arrived, so the late signal was delivered in place of the next child's
+  (`macos-process` on x86_64).
+- **Decision.** The signal is queued before the end (or D181's stop or continuation) is shown
+  to the parent's waits: the table keeps such a change hidden behind an `Announcement`,
+  `wait::notify` and `wait::notify_job_change` send the signal first, then `Table::announce`
+  shows the change and the waits are woken. The end path, stops, continuations and zombies
+  handed over to a subreaper or init all go through it, so a wait that reaps the child finds
+  its signal pending already, as on Linux, and a late one never stands in for the next
+  child's. A wait that finds only a hidden change yields and looks again instead of sleeping
+  or taking `EINTR` for the signal. Sending the signal stays outside the table's lock, which
+  remains a leaf lock.
