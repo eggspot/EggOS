@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use super::entries::{EMPTY_KEY, EntriesTable};
 use super::link::{ImageError, TranslatedImage};
 use super::runtime;
-use crate::codegen::aarch64::emit::{Assembler, EmitError};
+use crate::codegen::aarch64::emit::{Assembler, EmitError, Literal};
 use crate::codegen::aarch64::encode::{self, AddSub, Bitfield, LoadStore, Logic, Pair};
 use crate::codegen::aarch64::simd::{self, VectorLoadStore, vector_load_store};
 use crate::codegen::aarch64::{Reg, Shift, Size};
@@ -363,6 +363,14 @@ pub fn sysv_variadic_bridge(named: u8, native: u64, dispatch: u64) -> Result<Vec
     bridge(&moves, native, dispatch, Convention::SystemVVariadic(named))
 }
 
+fn variadic_register_integers(named: u8) -> u8 {
+    named.min(SYSV_ARGUMENT_REGISTERS.len() as u8)
+}
+
+fn variadic_list_offsets(named: u8) -> u64 {
+    u64::from(8 * variadic_register_integers(named)) | (u64::from(SYSV_VECTOR_SAVE) << 32)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Convention {
     Win64,
@@ -370,7 +378,12 @@ enum Convention {
     SystemVVariadic(u8),
 }
 
-fn emit_va_list(asm: &mut Assembler, area: u32, named: u8) -> Result<(), EmitError> {
+fn emit_va_list(
+    asm: &mut Assembler,
+    area: u32,
+    named: u8,
+    offsets: Literal,
+) -> Result<(), EmitError> {
     for (index, &register) in SYSV_ARGUMENT_REGISTERS.iter().enumerate() {
         asm.emit(store(Reg(register), SP, area + 8 * index as u32)?);
     }
@@ -379,9 +392,7 @@ fn emit_va_list(asm: &mut Assembler, area: u32, named: u8) -> Result<(), EmitErr
         asm.emit(vector(VectorLoadStore::StrQ, register, SP, at)?);
     }
     let list = area + SYSV_REGISTER_SAVE_BYTES;
-    let register_integers = named.min(SYSV_ARGUMENT_REGISTERS.len() as u8);
-    let offsets =
-        asm.literal(u64::from(8 * register_integers) | (u64::from(SYSV_VECTOR_SAVE) << 32));
+    let register_integers = variadic_register_integers(named);
     asm.load_literal(LINK_TARGET, offsets);
     asm.emit(store(LINK_TARGET, SP, list)?);
     let named_on_stack = 8 * u16::from(named - register_integers);
@@ -422,6 +433,10 @@ fn bridge(
     let frame = u16::try_from(frame).map_err(|_| EmitError::OutOfRange { at: 0 })?;
     let mut asm = Assembler::new();
     let native = asm.literal(native);
+    let offsets = match convention {
+        Convention::SystemVVariadic(named) => Some(asm.literal(variadic_list_offsets(named))),
+        Convention::Win64 | Convention::SystemV => None,
+    };
     let dispatch = asm.literal(dispatch);
     let miss = asm.label();
     asm.emit(encode::add_sub_immediate(
@@ -461,8 +476,8 @@ fn bridge(
     )?);
     asm.emit(simd::msr_fpcr(Reg::ZR));
     asm.emit(copy(STACK_BASE, GUEST_STACK));
-    if let Convention::SystemVVariadic(named) = convention {
-        emit_va_list(&mut asm, outgoing, named)?;
+    if let (Convention::SystemVVariadic(named), Some(offsets)) = (convention, offsets) {
+        emit_va_list(&mut asm, outgoing, named, offsets)?;
     }
     for &step in moves {
         emit_move(&mut asm, step)?;
@@ -937,6 +952,23 @@ mod tests {
             .unwrap();
         let tag = words.iter().position(|&word| word == tagged).unwrap();
         assert!(store_rdi < move_rdi && move_rdi < tag);
+    }
+
+    #[test]
+    fn every_bridge_ends_with_its_dispatch_address_where_the_loader_patches_it() {
+        let dispatch = 0x0000_7F12_3456_7890u64;
+        let moves = sysv_argument_moves(&[INTEGER; 2]);
+        let bridges = [
+            forward_bridge(&moves, 1, dispatch).unwrap(),
+            sysv_forward_bridge(&moves, 1, dispatch).unwrap(),
+            return_bridge(dispatch).unwrap(),
+            sysv_variadic_bridge(1, 1, dispatch).unwrap(),
+            sysv_variadic_bridge(MAX_VARIADIC_NAMED, 1, dispatch).unwrap(),
+        ];
+        for words in bridges {
+            let last = [words[words.len() - 2], words[words.len() - 1]];
+            assert_eq!(last, [dispatch as u32, (dispatch >> 32) as u32]);
+        }
     }
 
     #[test]
