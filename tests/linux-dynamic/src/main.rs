@@ -4,12 +4,13 @@
 //! Rust standard library: the C library's start file calls its `main`, which prints one line
 //! with `printf` (the loader must have mapped and relocated the library and set up its thread
 //! pointer for that) and returns 0, which the C library's `exit` makes the program's status.
-//! On other hosts it is an empty program, so the workspace builds everywhere.
+//! On other hosts, and as a test target, it is an empty program, so the workspace builds
+//! everywhere.
 
-#![cfg_attr(target_os = "linux", no_std, no_main)]
+#![cfg_attr(all(target_os = "linux", not(test)), no_std, no_main)]
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 mod program;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(not(target_os = "linux"), test))]
 fn main() {}
