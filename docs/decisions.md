@@ -10257,7 +10257,16 @@ the license, by an explicit instruction recorded here.
   several adapters and their routes; multicast; reverse lookups (`nslookup` of an address);
   interrupts instead of polling (part 32); netlink (`ip` reads `/proc/net`, so iproute2 and
   musl's `getifaddrs` do not work yet); RISC-V's virt machine has eight virtio-mmio slots, so
-  `--mcp --apps` with a disk and the network needs `--no-network` there.
+  `--mcp --apps` with a disk and the network needs `--no-network` there. Since round 1's
+  review: ephemeral ports start at a place drawn from a ChaCha20 stream keyed at boot (RFC
+  6056) and the free one is found in a bitmap filled in one pass, DNS ids come from
+  `getrandom`, `nslookup` and `fetch` show server text with bytes outside printable ASCII as
+  `?`, `SO_RCVBUF` stops at twice `rmem_default`, as Linux's `rmem_max` does. Still not yet:
+  the D155 eighth of memory for `AF_UNIX` queues is shared, so one program filling queues
+  nobody reads makes new sends elsewhere fail with `ENOMEM` (a per-connection floor or
+  per-user limits); interactive `eggsh` greets (changes to `$HOME`, prints `/etc/motd`) even
+  when nested, where Linux and macOS greet only login shells; the Windows script CI job's path
+  filter leaves out `kernel/src/net*` and `drivers/src/virtio/net/`.
 
 ## D158 EggOS is on the network, part 2: TCP of our own, stream sockets for Linux programs, downloads over HTTP with `fetch`, and the MCP tools `net_ping`, `net_lookup` and `fetch` (old item 27, M8; extends D21, D22, D136, D137, D138, D155, D157) — Decided by the build loop
 - **Why.** Part 1 (D157) gave EggOS addresses, names and UDP, but nothing a person or an agent
@@ -10363,7 +10372,8 @@ the license, by an explicit instruction recorded here.
   of order, keep-alive probes, urgent data, `SO_LINGER`'s timeout, `TCP_INFO`; TCP timers on a
   machine without an adapter run only when a program makes a socket call (loopback needs none
   but `TIME-WAIT`'s end); `fetch` resuming a cut download, proxies, authentication, cookies,
-  compression and IPv6 literals; a TCP benchmark; MCP over the network.
+  compression and IPv6 literals; a TCP benchmark; MCP over the network. Outgoing connections
+  use the adapter's MSS (`net::tcp_mss`), as accepted ones do, since round 1's review.
 
 ## D159 EggOS is on the network, part 3: cryptography and a TLS 1.3 client of our own, `fetch https://` against the roots the user gives, and the network clock by SNTP with `date --sync` and `clock_sync` (networking part 3, M8; D150's "Next"; extends D21, D22, D56, D136, D137, D150, D157, D158) — Decided by the build loop (the root certificates' source decided by research)
 - **Why.** Almost all of the web is `https://`, so `fetch` (D158) reached little of it; and a
@@ -10398,7 +10408,15 @@ the license, by an explicit instruction recorded here.
   is not used), certificate policies accepted, any other critical extension refused. A path
   goes from the server's certificate through the authorities it sent (CA, `keyCertSign`,
   path length, valid now, signature) to a root whose subject is the issuer and whose key
-  signs it; names are compared as encoded. Roots are read from PEM as it streams
+  signs it; names are compared as encoded. The path is searched breadth first from the
+  server's certificate, each certificate reached once at its shortest depth (the most
+  permissive for path lengths), so at most 90 signatures are checked whatever the server sends
+  (a depth-first search over every ordering was factorial, as Go's CVE-2018-16875); RSA public
+  exponents longer than 33 bits are refused, as Go and BoringSSL do, so one check stays cheap.
+  Handshake bytes left over when the keys change, a change-cipher-spec whose body is not the
+  single byte 1, and one after the handshake are refused (RFC 8446 sections 5 and 5.1); the
+  SNTP reply's origin timestamp is checked before anything else, so a spoofed refusal is
+  skipped as not ours. Roots are read from PEM as it streams
   (`pem::Certificates`), one 8 KiB certificate at a time, so no file is held whole.
 - **`fetch https://`** (`net/src/http.rs`: `Url::secure`, port 443 by default, redirects to
   `https://`; `userland/coreutils/src/fetch.rs`): after the TCP connection, the handshake for
@@ -10460,7 +10478,11 @@ the license, by an explicit instruction recorded here.
   the host folder); TLS session resumption, early data, client certificates, HelloRetryRequest
   and P-256 key exchange, OCSP and CRLs, name constraints and policy checks; ECDSA P-521 and
   Ed25519 certificates; generating a CCADB root bundle into release images; benchmarks of the
-  ciphers.
+  ciphers; leaf, intermediate and root fixtures made by OpenSSL (the path search is tested on
+  its own, with mutually issuing authorities and path lengths); `Protection::new` building its
+  AES key as a fixed-size array so its unreachable fallback to a zero ChaCha20 key goes away;
+  RSA-PSS parameters requiring `[1] maskGenAlgorithm` and checking MGF1's hash; impossible
+  dates such as February 31 refused in `x509::time`.
 
 ## D160 The Egg command model, slice 1: JSON and clear errors from the commands agents use, `help --json`, the MCP tools from one registry, and `wm`'s other verbs as tools (the owner's approved design of 2026-10-28; extends D21, D22, D107, D128, D136, D137, D141, D143, D147) — Decided by the build loop (the stream of JSON errors decided by research)
 - **Why.** Agents and scripts used the commands' text, and an MCP refusal was a sentence: they

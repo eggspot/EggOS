@@ -524,7 +524,9 @@ pub(super) fn setsockopt<P: Platform>(
                 (_, option::SNDBUF) => options
                     .send_buffer
                     .store(doubled(number), Ordering::Relaxed),
-                (_, option::RCVBUF) => socket.endpoint.set_receive_limit(doubled(number) as usize),
+                (_, option::RCVBUF) => socket.endpoint.set_receive_limit(
+                    (doubled(number) as usize).min(2 * endpoints::DEFAULT_RECEIVE_LIMIT),
+                ),
                 (_, option::REUSEADDR) => {
                     options.reuse_address.store(number != 0, Ordering::Relaxed)
                 }

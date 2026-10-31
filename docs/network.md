@@ -30,7 +30,7 @@ address usually comes within milliseconds. `ip addr` shows it.
 - **DHCP.** The kernel asks for an address at boot and keeps it: it renews the lease halfway
   through with the server that gave it, asks any server once seven eighths are gone, starts
   again when the lease ends or is refused, and when the cable comes back. With no answer it
-  tries 4 times over a minute, then every minute.
+  tries 4 times over about a minute, rests a minute, then starts another round.
 - **Names.** `/etc/resolv.conf` lists the lease's DNS servers (the kernel serves the file, so
   it follows the lease); `/etc/hosts` names `localhost`. Linux programs resolve names through
   musl as on Linux; `ping` and `nslookup` do it themselves.

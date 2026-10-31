@@ -154,7 +154,11 @@ impl Stream {
         if !crate::heap::may_grow_for_user(core::mem::size_of::<Self>()) {
             return None;
         }
-        let connection = Connection::connect(local, remote, initial_sequence::<P>(), MSS);
+        let mss = match is_local(remote.0) {
+            true => MSS,
+            false => crate::net::tcp_mss().min(MSS),
+        };
+        let connection = Connection::connect(local, remote, initial_sequence::<P>(), mss);
         let stream = Self::new(connection, None);
         register(Arc::clone(&stream)).then_some(stream)
     }

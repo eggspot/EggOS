@@ -402,7 +402,8 @@ fn exchange<S: System>(
                 Address::of(&[scheme, url.host, b":", port.as_bytes(), path])
             }
             Err(error) => {
-                output.error(&[location, b": ", error.description().as_bytes()]);
+                let location = Shown::<MAX_URL_BYTES>::printable(location);
+                output.error(&[location.as_bytes(), b": ", error.description().as_bytes()]);
                 return Err(FAILURE);
             }
         };
@@ -425,7 +426,7 @@ fn exchange<S: System>(
             b": ",
             status.as_bytes(),
             b" ",
-            parsed.reason,
+            Shown::<64>::printable(parsed.reason).as_bytes(),
         ]);
         return Err(FAILURE);
     }
@@ -440,9 +441,7 @@ fn exchange<S: System>(
             }
         },
     };
-    let mut reason = [0u8; 64];
-    let reason_length = parsed.reason.len().min(reason.len());
-    reason[..reason_length].copy_from_slice(&parsed.reason[..reason_length]);
+    let reason = Shown::<64>::printable(parsed.reason);
     let leftover_start = head_length;
     let saved = save(
         output,
@@ -463,9 +462,9 @@ fn exchange<S: System>(
         output.write(path.to_bytes());
         output.write(b" (HTTP ");
         output.write(status.as_bytes());
-        if reason_length > 0 {
+        if !reason.as_bytes().is_empty() {
             output.write(b" ");
-            output.write(&reason[..reason_length]);
+            output.write(reason.as_bytes());
         }
         output.write(b")\n");
     }

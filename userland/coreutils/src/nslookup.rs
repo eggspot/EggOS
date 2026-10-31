@@ -104,8 +104,12 @@ pub fn nslookup<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         }
         Ok(answers) => {
             output.write(b"Non-authoritative answer:\n");
+            let canonical = answers
+                .canonical
+                .as_ref()
+                .map(|canonical| Shown::<256>::printable(canonical.as_bytes()));
             let mut shown_name = name;
-            if let Some(canonical) = answers.canonical.as_ref() {
+            if let Some(canonical) = canonical.as_ref() {
                 output.write(name);
                 output.write(b"\tcanonical name = ");
                 output.write(canonical.as_bytes());

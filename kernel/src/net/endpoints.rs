@@ -92,6 +92,34 @@ static BOUND: LeafSpinLock<Option<Box<Vec<Weak<Endpoint>>>>> = LeafSpinLock::new
 
 static NEXT_PORT: AtomicU64 = AtomicU64::new(0);
 
+static PORT_KEY: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+const EPHEMERAL_COUNT: usize = (*EPHEMERAL_PORTS.end() - *EPHEMERAL_PORTS.start()) as usize + 1;
+
+const EPHEMERAL_WORDS: usize = EPHEMERAL_COUNT.div_ceil(64);
+
+/// Keys the order in which ephemeral ports are picked with `key`, random bytes drawn at
+/// boot, so no one off the path can guess the next port (RFC 6056).
+pub fn seed_ports(key: [u8; 32]) {
+    for (word, bytes) in PORT_KEY.iter().zip(key.chunks_exact(8)) {
+        let mut value = [0u8; 8];
+        value.copy_from_slice(bytes);
+        word.store(u64::from_ne_bytes(value), Ordering::Relaxed);
+    }
+}
+
+fn ephemeral_start() -> usize {
+    let mut key = [0u8; 32];
+    for (bytes, word) in key.chunks_exact_mut(8).zip(&PORT_KEY) {
+        bytes.copy_from_slice(&word.load(Ordering::Relaxed).to_ne_bytes());
+    }
+    let counter = NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u32;
+    let block = crate::random::chacha20::block(&key, counter, &[0; 12]);
+    let mut value = [0u8; 8];
+    value.copy_from_slice(&block[..8]);
+    (u64::from_ne_bytes(value) % EPHEMERAL_COUNT as u64) as usize
+}
+
 static LAST_INODE: AtomicU64 = AtomicU64::new(0);
 
 const FIRST_INODE: u64 = 1 << 32;
@@ -141,6 +169,15 @@ impl Endpoint {
         if self.state.lock().local.is_some() {
             return Err(BindError::AlreadyBound);
         }
+        let mut taken_ephemeral = Vec::new();
+        let mut start = 0;
+        if port == 0 {
+            taken_ephemeral
+                .try_reserve_exact(EPHEMERAL_WORDS)
+                .map_err(|_| BindError::NoMemory)?;
+            taken_ephemeral.resize(EPHEMERAL_WORDS, 0u64);
+            start = ephemeral_start();
+        }
         let mut table = BOUND.lock();
         if table.is_none() {
             let mut empty = Vec::new();
@@ -151,25 +188,36 @@ impl Endpoint {
             return Err(BindError::NoMemory);
         };
         bound.retain(|endpoint| endpoint.strong_count() > 0);
+        let clashes = |other: Ipv4Address| {
+            other.is_unspecified() || address.is_unspecified() || other == address
+        };
         let taken = |port: u16| {
             bound.iter().filter_map(Weak::upgrade).any(|endpoint| {
                 endpoint.protocol == self.protocol
-                    && endpoint.local().is_some_and(|(other, taken)| {
-                        taken == port
-                            && (other.is_unspecified()
-                                || address.is_unspecified()
-                                || other == address)
-                    })
+                    && endpoint
+                        .local()
+                        .is_some_and(|(other, taken)| taken == port && clashes(other))
             })
         };
         let port = match port {
             0 => {
                 let first = *EPHEMERAL_PORTS.start();
-                let count = u64::from(*EPHEMERAL_PORTS.end() - first) + 1;
-                let start = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
-                (0..count)
-                    .map(|offset| first + ((start + offset) % count) as u16)
-                    .find(|&port| !taken(port))
+                for endpoint in bound.iter().filter_map(Weak::upgrade) {
+                    if endpoint.protocol != self.protocol {
+                        continue;
+                    }
+                    if let Some((other, taken)) = endpoint.local()
+                        && clashes(other)
+                        && EPHEMERAL_PORTS.contains(&taken)
+                    {
+                        let offset = usize::from(taken - first);
+                        taken_ephemeral[offset / 64] |= 1 << (offset % 64);
+                    }
+                }
+                (0..EPHEMERAL_COUNT)
+                    .map(|step| (start + step) % EPHEMERAL_COUNT)
+                    .find(|&offset| taken_ephemeral[offset / 64] & (1 << (offset % 64)) == 0)
+                    .map(|offset| first + offset as u16)
                     .ok_or(BindError::NoFreePort)?
             }
             port if taken(port) => return Err(BindError::InUse),

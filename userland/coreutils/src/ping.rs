@@ -199,7 +199,11 @@ fn wait_for_reply<S: System>(
         let left = timeout_ms.checked_sub(waited_ms).filter(|&left| left > 0)?;
         let received = output
             .system
-            .receive_from(descriptor, &mut reply, left as u32)
+            .receive_from(
+                descriptor,
+                &mut reply,
+                u32::try_from(left).unwrap_or(u32::MAX),
+            )
             .ok()??;
         let arrived = output.system.monotonic_us();
         let Some(echo) = icmp::parse_echo(&reply[..received.0]) else {

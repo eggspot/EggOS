@@ -151,6 +151,17 @@ fn failures_say_what_went_wrong() {
         let (status, _, errors, _) = run(network(), arguments);
         assert_eq!((status, errors.as_str()), (1, expected), "{arguments:?}");
     }
+    let mut hostile = network();
+    hostile.network.pages.push(page(
+        80,
+        "/escape",
+        b"HTTP/1.1 403 \x1b[2JGone\x07\r\nContent-Length: 0\r\n\r\n",
+    ));
+    let (status, _, errors, _) = run(hostile, &[c"http://files.test/escape"]);
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "fetch: files.test:80/escape: 403 ?[2JGone?\n")
+    );
     let (status, _, errors, _) = run(network(), &[c"-x", c"http://files.test/"]);
     assert_eq!(
         (status, errors.as_str()),

@@ -116,7 +116,9 @@ fn exchange<S: System>(
     port: u16,
     timeout_ms: u32,
 ) -> Result<Answers, LookupError> {
-    let id = (system.monotonic_us() as u16) ^ 0x5eed;
+    let mut id = [0u8; 2];
+    system.random(&mut id).map_err(LookupError::System)?;
+    let id = u16::from_ne_bytes(id);
     let mut query = [0u8; dns::MAX_MESSAGE_BYTES];
     let length = dns::write_query(&mut query, id, name, dns::record_type::A)
         .map_err(LookupError::BadName)?;
@@ -191,6 +193,20 @@ impl<const N: usize> Shown<N> {
             length: 0,
         };
         let _ = core::fmt::write(&mut shown, format_args!("{value}"));
+        shown
+    }
+
+    pub fn printable(bytes: &[u8]) -> Self {
+        let mut shown = Self {
+            bytes: [0; N],
+            length: bytes.len().min(N),
+        };
+        for (to, &from) in shown.bytes.iter_mut().zip(bytes) {
+            *to = match from {
+                b' '..=b'~' => from,
+                _ => b'?',
+            };
+        }
         shown
     }
 

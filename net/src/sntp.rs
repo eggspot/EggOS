@@ -120,6 +120,9 @@ pub fn parse_reply(packet: &[u8], sent: Timestamp) -> Result<Reply, ReplyError> 
     if packet.len() < PACKET_BYTES {
         return Err(ReplyError::Short);
     }
+    if Timestamp::read(&packet[24..32]) != sent {
+        return Err(ReplyError::NotOurs);
+    }
     let leap = packet[0] >> 6;
     let version = (packet[0] >> 3) & 7;
     let mode = packet[0] & 7;
@@ -132,9 +135,6 @@ pub fn parse_reply(packet: &[u8], sent: Timestamp) -> Result<Reply, ReplyError> 
     }
     if leap == UNSYNCHRONIZED || stratum > 15 {
         return Err(ReplyError::Unsynchronized);
-    }
-    if Timestamp::read(&packet[24..32]) != sent {
-        return Err(ReplyError::NotOurs);
     }
     let receive = Timestamp::read(&packet[32..40]);
     let transmit = Timestamp::read(&packet[40..48]);
@@ -228,7 +228,20 @@ mod tests {
             parse_reply(&unsynchronized, sent),
             Err(ReplyError::Unsynchronized)
         );
-        assert_eq!(parse_reply(&request, sent), Err(ReplyError::NotAServer));
+        assert_eq!(
+            parse_reply(&refused, Timestamp::default()),
+            Err(ReplyError::NotOurs)
+        );
+        assert_eq!(
+            parse_reply(&unsynchronized, Timestamp::default()),
+            Err(ReplyError::NotOurs)
+        );
+        let mut from_a_client = reply;
+        from_a_client[0] = request[0];
+        assert_eq!(
+            parse_reply(&from_a_client, sent),
+            Err(ReplyError::NotAServer)
+        );
         assert!(!write_reply(
             &reply,
             server_time,

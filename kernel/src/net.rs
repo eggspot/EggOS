@@ -109,6 +109,9 @@ pub fn now_ms<P: Platform>() -> u64 {
 /// `/etc/resolv.conf`, starts the thread that polls it and says so on `console`. Without one,
 /// does nothing.
 pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
+    let mut port_key = [0u8; 32];
+    crate::random::fill::<P>(&mut port_key);
+    endpoints::seed_ports(port_key);
     let Some(device) = DEVICE.lock().take() else {
         return Ok(());
     };
