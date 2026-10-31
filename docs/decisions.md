@@ -16245,6 +16245,19 @@ the license, by an explicit instruction recorded here.
   32-bit words), which `settings set` and MCP `settings_set` send after saving, so a change is
   felt at the next event; out-of-range values are refused and a file value out of range reads
   as the default.
+- The panes (slice 43c; Claude Fable's design, docs/ux/displays-mouse-v0.3.md): the Display
+  pane shows the device's size, the saved scale as a `1x` `2x` group (`Takes effect at the next
+  restart`) and a state line (`At 2x the desktop looks like 640 × 400.`, `From the next restart
+  ...`); a choice is saved at once (`Request::SetDisplayScale`), and the group is disabled
+  without a disk or on a size that cannot be halved. The Appearance pane's `Scale` row goes. The
+  Mouse pane holds `Buttons` (`Right-handed` `Left-handed`), `Scrolling` (`Traditional`
+  `Natural`) and `Pointer speed` (a stepper: `-`, the value, `+`, as the toolkit has no
+  slider); the Keyboard pane gains `Repeat delay` (steps of 50 ms) and `Repeat rate` (steps of
+  5) steppers. Each change is saved, then applied (`Request::ChangeInput`); a refused save puts
+  the control back and the pane's status line says why. `Facts` gains `scale_in_force`, and
+  `display.resolution` is the device's size at either scale. The Settings tree's `CAPACITY`
+  is 164. Built differently from the design: the no-disk line of the Display pane reads `No
+  disk attached: the scale cannot be saved for a restart.`, as a label holds 64 bytes.
 - Choices made without research: pixel doubling of a logical buffer rather than every drawer
   scaling itself (one place, every client at once, no font at 32 px needed; the cost is one
   copy of each flushed rectangle, 4 stores per pixel); scale 2 only, as the toolkit's 2x rules
@@ -16255,6 +16268,7 @@ the license, by an explicit instruction recorded here.
   move and 10 twice it, out-of-range preferences change nothing; the settings file's values
   and defaults; `settings set` for each key, refusals with their ranges, a mouse preference
   saved and applied at once; the protocol request's five words.
-- Not yet: a scale change without a reboot, fractional scales, a font drawn at 2x rather than
+- Not yet: an open Settings window following a scale or mouse preference set from the CLI or
+  MCP when it is focused again, a scale change without a reboot, fractional scales, a font drawn at 2x rather than
   doubled, pointer acceleration, sub-step moves carried at speeds under 5, per-device
   preferences, a QEMU screendump at 2x.

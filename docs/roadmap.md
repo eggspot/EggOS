@@ -369,7 +369,9 @@ D16):
     panels per profile and a launcher entry (item 35), the MCP tools, 2x, the Mouse and
     Components panes. 2x and the mouse and key preferences (D195, written, unchecked):
     `display.scale=2` doubles everything from the next boot; `mouse.buttons`,
-    `mouse.scrolling`, `mouse.speed` and key repeat apply at once through the window server.
+    `mouse.scrolling`, `mouse.speed` and key repeat apply at once through the window server;
+    Settings' Display and Mouse panes and the Keyboard pane's repeat rows (Claude Fable's
+    design) set them.
 35. **done** — users can now use the desktop like the system they came from (D133,
     docs/apps.md): the taskbar with Start, the windows and the clock (Windows profile), the
     top bar and the dock (macOS), the top bar with `Activities` (Linux), all laid out by one
