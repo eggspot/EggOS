@@ -28,6 +28,8 @@ const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_DISABLED: u32 = 0x0800_0000;
 const WS_MAXIMIZE: u32 = 0x0100_0000;
 const WS_THICK_FRAME: u32 = 0x0004_0000;
+const WS_EX_TOOL_WINDOW: u32 = 0x0000_0080;
+const WS_EX_APP_WINDOW: u32 = 0x0004_0000;
 pub(super) const FRAME: i32 = 1;
 pub(super) const CAPTION: i32 = 28;
 const DEFAULT_SHARE: (i32, i32) = (3, 4);
@@ -664,9 +666,15 @@ extern "efiapi" fn is_window(handle: usize) -> Bool {
     }
 }
 
+fn has_taskbar_button(window: &Window) -> bool {
+    window.ex_style & WS_EX_TOOL_WINDOW == 0 || window.ex_style & WS_EX_APP_WINDOW != 0
+}
+
+const MINIMISED: u32 = 1;
+
 pub(super) extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
     let state = match command {
-        2 | 6 | 7 | 11 => Some(1),
+        2 | 6 | 7 | 11 => Some(MINIMISED),
         SW_SHOW_MAXIMIZED => Some(2),
         9 => Some(0),
         _ => None,
@@ -681,6 +689,9 @@ pub(super) extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
         let was_shown = window.shown;
         if command == SW_HIDE {
             return Ok((was_shown, None));
+        }
+        if !was_shown && state == Some(MINIMISED) && !has_taskbar_button(window) {
+            return Ok((false, None));
         }
         if !was_shown {
             window.shown = true;
