@@ -98,6 +98,69 @@ pub fn display_scale(file: &[u8]) -> Option<u32> {
     }
 }
 
+/// Which hand the mouse's buttons are for: `right` (the default) or `left`, which swaps the
+/// left and right buttons (D195).
+pub const MOUSE_BUTTONS: &str = "mouse.buttons";
+/// Which way the wheel scrolls: `traditional` (the default) or `natural` (D195).
+pub const MOUSE_SCROLLING: &str = "mouse.scrolling";
+/// How far a mouse's move takes the pointer: 1 to 10, 5 the default (D195).
+pub const MOUSE_SPEED: &str = "mouse.speed";
+/// Milliseconds before a held key repeats: 150 to 2000, 400 the default (D195).
+pub const KEYBOARD_REPEAT_DELAY: &str = "keyboard.repeat_delay_ms";
+/// Repeats a second of a held key: 2 to 60, 25 the default (D195).
+pub const KEYBOARD_REPEAT_RATE: &str = "keyboard.repeat_rate";
+
+/// The mouse and key preferences the settings file holds (D195), each its default when absent
+/// or out of range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputPreferences {
+    /// The buttons are swapped.
+    pub left_handed: bool,
+    /// The wheel scrolls the natural way.
+    pub natural_scrolling: bool,
+    /// 1 to 10.
+    pub pointer_speed: u32,
+    /// 150 to 2000.
+    pub repeat_delay_ms: u32,
+    /// 2 to 60.
+    pub repeat_rate: u32,
+}
+
+impl InputPreferences {
+    /// The preferences EggOS starts with.
+    pub const DEFAULT: Self = Self {
+        left_handed: false,
+        natural_scrolling: false,
+        pointer_speed: 5,
+        repeat_delay_ms: 400,
+        repeat_rate: 25,
+    };
+}
+
+fn number_in(file: &[u8], key: &str, low: u32, high: u32) -> Option<u32> {
+    let digits = value(file, key)?;
+    if digits.is_empty() || digits.len() > 5 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let number = digits
+        .iter()
+        .fold(0u32, |number, &digit| number * 10 + u32::from(digit - b'0'));
+    (low..=high).contains(&number).then_some(number)
+}
+
+/// The mouse and key preferences `file` holds.
+pub fn input_preferences(file: &[u8]) -> InputPreferences {
+    let default = InputPreferences::DEFAULT;
+    InputPreferences {
+        left_handed: value(file, MOUSE_BUTTONS) == Some(&b"left"[..]),
+        natural_scrolling: value(file, MOUSE_SCROLLING) == Some(&b"natural"[..]),
+        pointer_speed: number_in(file, MOUSE_SPEED, 1, 10).unwrap_or(default.pointer_speed),
+        repeat_delay_ms: number_in(file, KEYBOARD_REPEAT_DELAY, 150, 2000)
+            .unwrap_or(default.repeat_delay_ms),
+        repeat_rate: number_in(file, KEYBOARD_REPEAT_RATE, 2, 60).unwrap_or(default.repeat_rate),
+    }
+}
+
 /// The keyboard layout: the name of one of [`KEYBOARD_LAYOUTS`] (D185).
 pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
 
@@ -307,6 +370,26 @@ pub fn with_value(file: &[u8], key: &str, value: &[u8], out: &mut [u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_preferences_out_of_range_or_absent_are_their_defaults() {
+        assert_eq!(input_preferences(b""), InputPreferences::DEFAULT);
+        let file = b"mouse.buttons=left\nmouse.scrolling=natural\nmouse.speed=9\nkeyboard.repeat_delay_ms=100\nkeyboard.repeat_rate=30\n";
+        assert_eq!(
+            input_preferences(file),
+            InputPreferences {
+                left_handed: true,
+                natural_scrolling: true,
+                pointer_speed: 9,
+                repeat_delay_ms: 400,
+                repeat_rate: 30,
+            }
+        );
+        assert_eq!(
+            input_preferences(b"mouse.speed=99999999\nmouse.buttons=LEFT\n"),
+            InputPreferences::DEFAULT
+        );
+    }
 
     fn set(file: &[u8], key: &str, value: &[u8]) -> Vec<u8> {
         let mut out = [0u8; LARGEST];

@@ -22,13 +22,14 @@ use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
+use eggos_settings::keys::InputChange;
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
 };
 use eggos_settings_file::{
-    self as settings_file, DIRECTORIES, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
+    self as settings_file, DIRECTORIES, InputPreferences, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
 };
 use eggos_toolkit::application::{self, Application, View};
 use eggos_toolkit::canvas::Canvas;
@@ -409,6 +410,7 @@ fn facts(server: Option<&WindowServer>) -> Facts {
             .and_then(|name| core::str::from_utf8(name).ok())
             .and_then(eggos_settings::facts::zone_index)
             .unwrap_or_else(eggos_settings::facts::utc_zone),
+        input: settings_file::input_preferences(&file[..length]),
     }
 }
 
@@ -454,6 +456,27 @@ fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<
     };
     match server {
         Some(server) => server.set_keyboard_layout(index as u32),
+        None => Ok(()),
+    }
+}
+
+fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => server.set_input_preferences([
+            u32::from(preferences.left_handed),
+            u32::from(preferences.natural_scrolling),
+            preferences.pointer_speed,
+            preferences.repeat_delay_ms,
+            preferences.repeat_rate,
+        ]),
         None => Ok(()),
     }
 }
@@ -543,6 +566,15 @@ impl command::Machine for Machine {
             _ => "1",
         };
         save_through_a_temporary_file(settings_file::DISPLAY_SCALE, value).map_err(Errno::message)
+    }
+
+    fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]> {
+        let (key, value) = change.saved();
+        save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
+    }
+
+    fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]> {
+        apply_input(preferences, self.server.as_ref()).map_err(Errno::message)
     }
 
     fn write_output(&mut self, bytes: &[u8]) {

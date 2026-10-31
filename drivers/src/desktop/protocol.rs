@@ -75,6 +75,7 @@ pub mod size {
     pub const GET_PLACEMENT: usize = 20;
     pub const GET_KEYBOARD_LAYOUT: usize = 8;
     pub const SET_KEYBOARD_LAYOUT: usize = 4;
+    pub const SET_INPUT_PREFERENCES: usize = 20;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -114,6 +115,7 @@ pub mod request {
     pub const GET_PLACEMENT: u32 = encode(READ | WRITE, 28, size::GET_PLACEMENT);
     pub const GET_KEYBOARD_LAYOUT: u32 = encode(READ, 29, size::GET_KEYBOARD_LAYOUT);
     pub const SET_KEYBOARD_LAYOUT: u32 = encode(WRITE, 30, size::SET_KEYBOARD_LAYOUT);
+    pub const SET_INPUT_PREFERENCES: u32 = encode(WRITE, 31, size::SET_INPUT_PREFERENCES);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -467,6 +469,13 @@ pub enum Request {
     SetKeyboardLayout {
         layout: u32,
     },
+    SetInputPreferences {
+        left_handed: u32,
+        natural_scrolling: u32,
+        pointer_speed: u32,
+        repeat_delay_ms: u32,
+        repeat_rate: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -525,6 +534,7 @@ impl Request {
             request::GET_PLACEMENT => size::GET_PLACEMENT,
             request::GET_KEYBOARD_LAYOUT => size::GET_KEYBOARD_LAYOUT,
             request::SET_KEYBOARD_LAYOUT => size::SET_KEYBOARD_LAYOUT,
+            request::SET_INPUT_PREFERENCES => size::SET_INPUT_PREFERENCES,
             _ => return None,
         })
     }
@@ -683,6 +693,13 @@ impl Request {
             request::GET_PLACEMENT => Self::GetPlacement { window: at(0) },
             request::GET_KEYBOARD_LAYOUT => Self::GetKeyboardLayout,
             request::SET_KEYBOARD_LAYOUT => Self::SetKeyboardLayout { layout: at(0) },
+            request::SET_INPUT_PREFERENCES => Self::SetInputPreferences {
+                left_handed: at(0),
+                natural_scrolling: at(4),
+                pointer_speed: at(8),
+                repeat_delay_ms: at(12),
+                repeat_rate: at(16),
+            },
             _ => Self::GetWorkArea,
         })
     }

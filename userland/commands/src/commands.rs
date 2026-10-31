@@ -2549,6 +2549,11 @@ const SETTINGS_LIST_TEXT: &str = concat!(
     "display.pointer=software\n",
     "keyboard.layout=us\n",
     "time.zone=UTC\n",
+    "mouse.buttons=right\n",
+    "mouse.scrolling=traditional\n",
+    "mouse.speed=5\n",
+    "keyboard.repeat_delay_ms=400\n",
+    "keyboard.repeat_rate=25\n",
     "system.version=0.2.0\n",
     "system.arch=aarch64\n",
     "system.cpus=4\n",
@@ -2611,8 +2616,11 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
                   us-colemak, dk, fi, fr, de, it, no, br, es or se); time.zone takes an IANA \
                   zone such as Europe/Paris, or UTC, which date, ls and the other programs show \
                   times in unless TZ says another; display.scale takes 1 or 2, which the \
-                  display shows at from the next boot. The other keys report facts and cannot be \
-                  set. --dry-run checks the key and the value \
+                  display shows at from the next boot; mouse.buttons takes right or left (left \
+                  swaps the buttons), mouse.scrolling traditional or natural, mouse.speed 1 to \
+                  10, keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60 \
+                  repeats a second, each used from the next event. The other keys report facts \
+                  and cannot be set. --dry-run checks the key and the value \
                   and says what would change, and changes nothing.",
     options: &[DRY_RUN_OPTION],
     operands: &[SETTING_KEY, operand("value", ValueType::Text, Count::One)],

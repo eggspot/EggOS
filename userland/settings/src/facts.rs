@@ -1,6 +1,7 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
+use eggos_settings_file::InputPreferences;
 use eggos_toolkit::text::Text;
 
 /// The system's facts and the current choices.
@@ -36,6 +37,8 @@ pub struct Facts {
     pub caps_lock: bool,
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     pub time_zone: usize,
+    /// The mouse and key preferences (D195).
+    pub input: InputPreferences,
 }
 
 impl Facts {
@@ -59,6 +62,7 @@ impl Facts {
             time_zone: utc_zone(),
             keyboard: true,
             caps_lock: false,
+            input: InputPreferences::DEFAULT,
         }
     }
 }

@@ -314,6 +314,14 @@ pub fn load_saved_settings() {
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
+    let input = eggos_settings_file::input_preferences(&file[..length]);
+    crate::input::set_preferences(crate::input::Preferences {
+        left_handed: input.left_handed,
+        natural_scrolling: input.natural_scrolling,
+        pointer_speed: input.pointer_speed,
+        repeat_delay_ms: input.repeat_delay_ms,
+        repeat_rate: input.repeat_rate,
+    });
     if let Some(scale) = eggos_settings_file::display_scale(&file[..length])
         && scale != crate::display::scale()
     {

@@ -5,12 +5,12 @@
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
-use crate::keys::{self, Change, Key, Refusal};
+use crate::keys::{self, Change, InputChange, Key, Refusal};
 use core::fmt::Write;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
-use eggos_settings_file::PATH;
+use eggos_settings_file::{InputPreferences, PATH};
 use eggos_toolkit::text::Text;
 
 /// The command's usage, printed for a usage error.
@@ -50,6 +50,11 @@ pub trait Machine {
     /// Saves the display's scale to the settings file; the kernel shows at it from its next
     /// boot.
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]>;
+    /// Saves one mouse or key preference to the settings file; the kernel uses it from its
+    /// next boot.
+    fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]>;
+    /// Uses `preferences` from the next mouse and key event on.
+    fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]>;
     /// Writes to standard output.
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
@@ -219,6 +224,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::KeyboardLayout(index) => machine.save_keyboard_layout(index),
         Change::TimeZone(index) => machine.save_time_zone(index),
         Change::DisplayScale(scale) => machine.save_display_scale(scale),
+        Change::Input(input) => machine.save_input(input),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -229,6 +235,10 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Profile(index) => machine.apply_profile(index),
         Change::KeyboardLayout(index) => machine.apply_keyboard_layout(index),
         Change::TimeZone(_) | Change::DisplayScale(_) => Ok(()),
+        Change::Input(input) => {
+            let preferences = input.applied_to(machine.facts().input);
+            machine.apply_input(preferences)
+        }
     };
     if let Err(why) = applied {
         let mut message = Message::new();
@@ -260,6 +270,8 @@ mod tests {
         layout_applied: Option<usize>,
         zone_saved: Option<usize>,
         scale_saved: Option<u32>,
+        input_saved: Option<InputChange>,
+        input_applied: Option<InputPreferences>,
         save_fails: bool,
         apply_fails: bool,
     }
@@ -297,6 +309,16 @@ mod tests {
 
         fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
             self.scale_saved = Some(scale);
+            Ok(())
+        }
+
+        fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]> {
+            self.input_saved = Some(change);
+            Ok(())
+        }
+
+        fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]> {
+            self.input_applied = Some(preferences);
             Ok(())
         }
 
@@ -495,5 +517,24 @@ mod tests {
                 .unwrap()
                 .contains("Europe/Paris")
         );
+    }
+
+    #[test]
+    fn a_mouse_preference_is_saved_and_used_at_once() {
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &["set", "mouse.buttons", "left"]), 0);
+        assert_eq!(fake.input_saved, Some(InputChange::LeftHanded(true)));
+        assert_eq!(
+            fake.input_applied,
+            Some(InputPreferences {
+                left_handed: true,
+                ..InputPreferences::DEFAULT
+            })
+        );
+        let mut fake = Fake::default();
+        let (status, _, errors) = settings(&mut fake, &["set", "mouse.speed", "11"]);
+        assert_eq!(status, INVALID_VALUE_STATUS);
+        assert!(errors.contains("(1 to 10)"), "{errors}");
+        assert_eq!(fake.input_applied, None);
     }
 }

@@ -1471,7 +1471,9 @@ const SETTINGS_SET_ARGUMENTS: [Argument; 3] = [
         ),
         "The new value: windows, macos or linux for shell.profile; a layout's name such as us, \
          de, fr or us-intl for keyboard.layout; an IANA zone such as Europe/Paris, or UTC, for \
-         time.zone.",
+         time.zone; 1 or 2 for display.scale; right or left for mouse.buttons; traditional or \
+         natural for mouse.scrolling; 1 to 10 for mouse.speed; 150 to 2000 for \
+         keyboard.repeat_delay_ms; 2 to 60 for keyboard.repeat_rate.",
     )),
     DRY_RUN,
 ];
@@ -1483,8 +1485,9 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
     "Lists every setting and its value, as `settings list` shows them: key=value, one a line. \
      shell.profile (windows, macos or linux: the desktop's layout) and keyboard.layout (us, \
      us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) and time.zone \
-     (an IANA zone such as Europe/Paris, or UTC) and display.scale (1 or 2) can be set with \
-     settings_set; the others report facts: the display's resolution and pointer, the \
+     (an IANA zone such as Europe/Paris, or UTC) and display.scale (1 or 2) and the mouse and \
+     key preferences (mouse.buttons, mouse.scrolling, mouse.speed, keyboard.repeat_delay_ms, \
+     keyboard.repeat_rate) can be set with settings_set; the others report facts: the display's resolution and pointer, the \
      version, architecture, CPUs, memory and uptime.",
     &["settings", "list"],
     &[],
@@ -1513,7 +1516,10 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se): \
                   what every key types changes at once. time.zone takes an IANA zone such as \
                   Europe/Paris, or UTC: the zone programs show times in. display.scale takes 1 \
-                  or 2: the display shows at it from the next boot. The other keys report facts \
+                  or 2: the display shows at it from the next boot. mouse.buttons takes right or \
+                  left, mouse.scrolling traditional or natural, mouse.speed 1 to 10, \
+                  keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60: the \
+                  mouse and keys behave so from the next event. The other keys report facts \
                   and fail with setting_read_only. dry_run: true checks the key and the value and says what \
                   would change, and changes nothing. Needs the run grant: a setting changes how \
                   the machine behaves for its user.",

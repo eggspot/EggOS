@@ -102,7 +102,9 @@ pub fn ioctl<P: Platform>(
     }
     let changes_settings = matches!(
         request,
-        Request::SetProfile { .. } | Request::SetKeyboardLayout { .. }
+        Request::SetProfile { .. }
+            | Request::SetKeyboardLayout { .. }
+            | Request::SetInputPreferences { .. }
     );
     if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
@@ -304,6 +306,24 @@ pub fn ioctl<P: Platform>(
         }
         Request::SetKeyboardLayout { layout } => {
             if !crate::input::set_layout(layout as usize) {
+                return Err(Errno::EINVAL);
+            }
+        }
+        Request::SetInputPreferences {
+            left_handed,
+            natural_scrolling,
+            pointer_speed,
+            repeat_delay_ms,
+            repeat_rate,
+        } => {
+            let preferences = crate::input::Preferences {
+                left_handed: left_handed != 0,
+                natural_scrolling: natural_scrolling != 0,
+                pointer_speed,
+                repeat_delay_ms,
+                repeat_rate,
+            };
+            if !crate::input::set_preferences(preferences) {
                 return Err(Errno::EINVAL);
             }
         }

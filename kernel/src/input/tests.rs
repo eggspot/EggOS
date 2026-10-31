@@ -815,3 +815,29 @@ fn the_kernel_s_layouts_are_the_settings_file_s_in_its_order() {
         assert_eq!(dead.join(" "), named.dead_keys, "{}", named.name);
     }
 }
+
+#[test]
+fn a_left_handed_mouse_swaps_only_its_left_and_right_buttons() {
+    assert_eq!(handed(Button::Left, true), Button::Right);
+    assert_eq!(handed(Button::Right, true), Button::Left);
+    assert_eq!(handed(Button::Middle, true), Button::Middle);
+    assert_eq!(handed(Button::Left, false), Button::Left);
+}
+
+#[test]
+fn pointer_speed_five_moves_as_reported_and_ten_twice_as_far() {
+    assert_eq!(sped(7, 5), 7);
+    assert_eq!(sped(7, 10), 14);
+    assert_eq!(sped(-10, 1), -2);
+    assert_eq!(sped(10, 0), 2);
+}
+
+#[test]
+fn preferences_out_of_range_change_nothing() {
+    let wrong = Preferences {
+        pointer_speed: 11,
+        ..DEFAULT_PREFERENCES
+    };
+    assert!(!set_preferences(wrong));
+    assert_eq!(preferences(), DEFAULT_PREFERENCES);
+}

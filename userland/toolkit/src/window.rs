@@ -22,6 +22,7 @@ const GET_PROFILE: usize = 0x8004_770d;
 const SET_PROFILE: usize = 0x4004_770e;
 const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
 const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
+const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
 
@@ -168,6 +169,17 @@ impl WindowServer {
     /// the keyboard's from the next key on (`SET_KEYBOARD_LAYOUT`, D185).
     pub fn set_keyboard_layout(&self, layout: u32) -> Result<(), Errno> {
         self.ioctl(SET_KEYBOARD_LAYOUT, &mut layout.to_ne_bytes())
+    }
+
+    /// Uses the mouse and key preferences `words` holds from the next event on
+    /// (`SET_INPUT_PREFERENCES`, D195): left-handed, natural scrolling, pointer speed, repeat
+    /// delay in milliseconds and repeats a second, each a 32-bit word.
+    pub fn set_input_preferences(&self, words: [u32; 5]) -> Result<(), Errno> {
+        let mut bytes = [0u8; 20];
+        for (place, word) in bytes.chunks_exact_mut(4).zip(words) {
+            place.copy_from_slice(&word.to_ne_bytes());
+        }
+        self.ioctl(SET_INPUT_PREFERENCES, &mut bytes)
     }
 
     /// The text of the action query `serial` (`READ_QUERY`, D161): `set-text`'s new text,

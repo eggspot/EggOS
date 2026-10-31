@@ -20,7 +20,7 @@ use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
 use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use eggos_drivers::desktop::Profile;
 use eggos_drivers::input::key;
 use eggos_drivers::input::keymap::{
@@ -374,15 +374,111 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// The timing on platform `P`'s clock, now.
+    /// The timing on platform `P`'s clock, now, with the repeat the preferences ask for
+    /// ([`set_preferences`]).
     pub fn now<P: Platform>() -> Self {
         let frequency = P::clock_frequency();
+        let delay = u64::from(REPEAT_DELAY.load(Ordering::Relaxed));
+        let rate = u64::from(REPEAT_RATE.load(Ordering::Relaxed)).max(1);
         Self {
             now: P::clock_ticks(),
-            repeat_delay: mul_div_ceil(REPEAT_DELAY_MS, frequency, 1000),
-            repeat_interval: mul_div_ceil(REPEAT_INTERVAL_MS, frequency, 1000),
+            repeat_delay: mul_div_ceil(delay, frequency, 1000),
+            repeat_interval: mul_div_ceil(1000, frequency, 1000 * rate),
         }
     }
+}
+
+/// How a person likes the mouse and the keys (D195): which hand the buttons are for, which
+/// way the wheel scrolls, how far a mouse's move takes the pointer, and how keys repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preferences {
+    /// The left and right buttons swapped.
+    pub left_handed: bool,
+    /// The wheel scrolls the content the way the fingers move, as on a touchpad.
+    pub natural_scrolling: bool,
+    /// 1 to 10; 5 moves the pointer as far as the mouse reports.
+    pub pointer_speed: u32,
+    /// Milliseconds before a held key repeats, 150 to 2000.
+    pub repeat_delay_ms: u32,
+    /// Repeats a second, 2 to 60.
+    pub repeat_rate: u32,
+}
+
+/// The preferences EggOS starts with.
+pub const DEFAULT_PREFERENCES: Preferences = Preferences {
+    left_handed: false,
+    natural_scrolling: false,
+    pointer_speed: 5,
+    repeat_delay_ms: REPEAT_DELAY_MS as u32,
+    repeat_rate: 25,
+};
+
+static LEFT_HANDED: AtomicBool = AtomicBool::new(false);
+static NATURAL_SCROLLING: AtomicBool = AtomicBool::new(false);
+static POINTER_SPEED: Preference<5> = Preference::new();
+static REPEAT_DELAY: Preference<{ REPEAT_DELAY_MS as u32 }> = Preference::new();
+static REPEAT_RATE: Preference<25> = Preference::new();
+
+struct Preference<const DEFAULT: u32> {
+    changed: AtomicU32,
+}
+
+impl<const DEFAULT: u32> Preference<DEFAULT> {
+    const fn new() -> Self {
+        Self {
+            changed: AtomicU32::new(0),
+        }
+    }
+
+    fn load(&self, ordering: Ordering) -> u32 {
+        self.changed.load(ordering) ^ DEFAULT
+    }
+
+    fn store(&self, value: u32, ordering: Ordering) {
+        self.changed.store(value ^ DEFAULT, ordering);
+    }
+}
+
+/// Uses `preferences` from the next event on; `false`, and nothing changed, when one is out
+/// of its range.
+pub fn set_preferences(preferences: Preferences) -> bool {
+    let in_range = (1..=10).contains(&preferences.pointer_speed)
+        && (150..=2000).contains(&preferences.repeat_delay_ms)
+        && (2..=60).contains(&preferences.repeat_rate);
+    if !in_range {
+        return false;
+    }
+    LEFT_HANDED.store(preferences.left_handed, Ordering::Relaxed);
+    NATURAL_SCROLLING.store(preferences.natural_scrolling, Ordering::Relaxed);
+    POINTER_SPEED.store(preferences.pointer_speed, Ordering::Relaxed);
+    REPEAT_DELAY.store(preferences.repeat_delay_ms, Ordering::Relaxed);
+    REPEAT_RATE.store(preferences.repeat_rate, Ordering::Relaxed);
+    true
+}
+
+/// The preferences in use.
+pub fn preferences() -> Preferences {
+    Preferences {
+        left_handed: LEFT_HANDED.load(Ordering::Relaxed),
+        natural_scrolling: NATURAL_SCROLLING.load(Ordering::Relaxed),
+        pointer_speed: POINTER_SPEED.load(Ordering::Relaxed),
+        repeat_delay_ms: REPEAT_DELAY.load(Ordering::Relaxed),
+        repeat_rate: REPEAT_RATE.load(Ordering::Relaxed),
+    }
+}
+
+/// `button` as the person's hand uses it: left and right swapped when left-handed.
+pub fn handed(button: Button, left_handed: bool) -> Button {
+    match (button, left_handed) {
+        (Button::Left, true) => Button::Right,
+        (Button::Right, true) => Button::Left,
+        (button, _) => button,
+    }
+}
+
+/// A relative move of `delta` at pointer speed `speed` (1 to 10, 5 as reported).
+pub fn sped(delta: i32, speed: u32) -> i32 {
+    (i64::from(delta) * i64::from(speed.clamp(1, 10)) / 5) as i32
 }
 
 /// Where translated input goes: bytes for the console, events for the queue, moves of the
@@ -596,40 +692,45 @@ impl InputState {
             }
             let moved =
                 |at: u32, delta: i32, size: u32| at.saturating_add_signed(delta).min(size - 1);
-            x = moved(x, report.dx, width);
-            y = moved(y, report.dy, height);
+            let speed = POINTER_SPEED.load(Ordering::Relaxed);
+            x = moved(x, sped(report.dx, speed), width);
+            y = moved(y, sped(report.dy, speed), height);
             if (x, y) != self.pointer {
                 self.pointer = (x, y);
                 sink.event(InputEvent::PointerMove { x, y });
             }
         }
+        let left_handed = LEFT_HANDED.load(Ordering::Relaxed);
         for (index, (button, _)) in BUTTONS.iter().enumerate() {
             let bit = 1 << index;
+            let button = handed(*button, left_handed);
             if report.presses & bit != 0 {
                 self.buttons_held |= bit;
                 sink.event(InputEvent::Button {
-                    button: *button,
+                    button,
                     pressed: true,
                 });
             }
             if report.releases & bit != 0 {
                 self.buttons_held &= !bit;
                 sink.event(InputEvent::Button {
-                    button: *button,
+                    button,
                     pressed: false,
                 });
             }
         }
-        if report.wheel != 0 {
-            let lines = report.wheel.unsigned_abs() as usize * WHEEL_LINES;
-            sink.view(if report.wheel > 0 {
+        let wheel = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
+            true => report.wheel.saturating_neg(),
+            false => report.wheel,
+        };
+        if wheel != 0 {
+            let lines = wheel.unsigned_abs() as usize * WHEEL_LINES;
+            sink.view(if wheel > 0 {
                 ViewMove::Back(lines)
             } else {
                 ViewMove::Forward(lines)
             });
-            sink.event(InputEvent::Wheel {
-                delta: report.wheel,
-            });
+            sink.event(InputEvent::Wheel { delta: wheel });
         }
     }
 
