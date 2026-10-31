@@ -97,6 +97,22 @@ fn is_picture(style: u32) -> bool {
 /// one that draws nowhere.
 pub(super) fn picture_of(gui: &Gui, handle: usize) -> Option<Picture<'_>> {
     super::gdi::load_section(handle);
+    loaded_picture(gui, handle)
+}
+
+/// Bitmaps `colour`'s and `mask`'s pixels, as `picture_of` gives them, both loaded from
+/// their DIB sections before either is viewed: the two may be one section.
+pub(super) fn pictures_of(
+    gui: &Gui,
+    colour: usize,
+    mask: usize,
+) -> (Option<Picture<'_>>, Option<Picture<'_>>) {
+    super::gdi::load_section(colour);
+    super::gdi::load_section(mask);
+    (loaded_picture(gui, colour), loaded_picture(gui, mask))
+}
+
+fn loaded_picture(gui: &Gui, handle: usize) -> Option<Picture<'_>> {
     let Object::Bitmap(bitmap) = objects::object(&gui.objects, handle)? else {
         return None;
     };
@@ -123,8 +139,7 @@ pub(super) fn draw_bitmaps(
     x: i32,
     y: i32,
 ) {
-    if let Some(picture) = picture_of(gui, colour) {
-        let mask = picture_of(gui, mask);
+    if let (Some(picture), mask) = pictures_of(gui, colour, mask) {
         image::draw_picture(surface, &picture, mask.as_ref(), x, y);
     }
 }
@@ -370,8 +385,7 @@ fn paint_picture(
     let saved = surface.clip();
     surface.clip_to(rect);
     surface.fill(rect, palette.surface);
-    if let Some(colour) = picture_of(gui, picture.colour) {
-        let mask = picture_of(gui, picture.mask);
+    if let (Some(colour), mask) = pictures_of(gui, picture.colour, picture.mask) {
         let bitmap = style & static_image::TYPE == static_image::BITMAP;
         match () {
             () if bitmap && style & static_image::REAL_SIZE_CONTROL != 0 => {

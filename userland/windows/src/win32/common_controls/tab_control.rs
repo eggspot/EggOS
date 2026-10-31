@@ -264,7 +264,7 @@ fn tab_message(
     match number {
         TCM_GETITEMCOUNT => (tabs.count(), false),
         TCM_GETCURSEL | TCM_GETCURFOCUS => (index_result(tabs.selected()), false),
-        TCM_SETCURSEL => match tabs.select(Some(wparam)) {
+        TCM_SETCURSEL => match tabs.select((wparam as isize != -1).then_some(wparam)) {
             Some(previous) => (index_result(previous), true),
             None => (NONE, false),
         },

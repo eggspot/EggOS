@@ -329,9 +329,10 @@ pub fn from_narrow(
             if lparam == 0 || wparam == 0 {
                 return 0;
             }
-            let Some((block, copied)) =
-                text_of(wparam, |room, buffer| deliver(window, number, room, buffer))
-            else {
+            let length = deliver(window, message::GET_TEXT_LENGTH, 0, 0);
+            let Some((block, copied)) = text_of(wparam.min(length), |room, buffer| {
+                deliver(window, number, room, buffer)
+            }) else {
                 return 0;
             };
             // SAFETY: `block` holds `copied` units.
@@ -526,7 +527,10 @@ unsafe fn register_narrow(name: *const u8, class: Class) -> u16 {
 }
 
 unsafe extern "efiapi" fn register_class_a(class: *const WindowClassA) -> u16 {
-    // SAFETY: the caller passes a `WNDCLASSA`.
+    if class.is_null() {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    // SAFETY: the caller passes a `WNDCLASSA`, not null.
     let class = unsafe { &*class };
     let registered = ansi_class(
         class.style,
@@ -559,7 +563,10 @@ struct WindowClassExA {
 }
 
 unsafe extern "efiapi" fn register_class_ex_a(class: *const WindowClassExA) -> u16 {
-    // SAFETY: the caller passes a `WNDCLASSEXA`.
+    if class.is_null() {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    // SAFETY: the caller passes a `WNDCLASSEXA`, not null.
     let class = unsafe { &*class };
     if class.size as usize != core::mem::size_of::<WindowClassExA>() {
         return fail(error::INVALID_PARAMETER, 0);

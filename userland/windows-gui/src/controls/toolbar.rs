@@ -21,6 +21,7 @@ const ROW_BELOW: i32 = 2;
 const DEFAULT_IMAGE: (i32, i32) = (16, 16);
 const DEFAULT_PADDING: (i32, i32) = (7, 6);
 const SEPARATOR_WIDTH: i32 = 8;
+const WIDEST_SEPARATOR: i32 = i16::MAX as i32;
 const SEPARATOR_COLUMN: i32 = 3;
 const SEPARATOR_INSET: i32 = 2;
 const DIVIDER_LIGHT: u32 = 0x00ff_ffff;
@@ -434,7 +435,7 @@ impl Toolbar {
         match () {
             () if button.is_hidden() => 0,
             () if button.width > 0 => i32::from(button.width),
-            () if button.is_separator() && button.image > 0 => button.image,
+            () if button.is_separator() && button.image > 0 => button.image.min(WIDEST_SEPARATOR),
             () if button.is_separator() => SEPARATOR_WIDTH,
             () if button.style & button_style::AUTOSIZE != 0 => {
                 self.natural(index, style & style::LIST != 0, layout.image, layout.images)
@@ -448,7 +449,9 @@ impl Toolbar {
         if self.button(index)?.is_hidden() {
             return None;
         }
-        let left = (0..index).fold(ROW_LEFT, |left, at| left + self.width(at, style, layout));
+        let left = (0..index).fold(ROW_LEFT, |left, at| {
+            left.saturating_add(self.width(at, style, layout))
+        });
         Some(Rect::sized(
             left,
             ROW_TOP,
@@ -461,7 +464,7 @@ impl Toolbar {
     pub fn total_width(&self, style: u32, layout: &Layout) -> i32 {
         (0..self.count)
             .map(|index| self.width(index, style, layout))
-            .sum()
+            .fold(0, i32::saturating_add)
     }
 
     /// The toolbar's own height when docked: `bh + 6`.
@@ -778,6 +781,27 @@ mod tests {
         assert!(toolbar.press(0));
         assert_eq!(toolbar.release(true), Some(1001));
         assert_eq!(toolbar.held(), None);
+    }
+
+    #[test]
+    fn a_separator_wider_than_the_bar_can_be_is_clamped_not_overflowed() {
+        let mut toolbar = Toolbar::new();
+        for _ in 0..3 {
+            let mut separator = button(9, 0, button_style::SEPARATOR);
+            separator.image = i32::MAX;
+            toolbar.insert(usize::MAX, separator, &[]);
+        }
+        let layout = toolbar.layout(EXAMPLE_STYLE, None);
+        assert_eq!(
+            toolbar.width(0, EXAMPLE_STYLE, &layout),
+            i32::from(i16::MAX)
+        );
+        assert_eq!(
+            toolbar.total_width(EXAMPLE_STYLE, &layout),
+            3 * i32::from(i16::MAX)
+        );
+        let last = toolbar.button_rect(2, EXAMPLE_STYLE, &layout).unwrap();
+        assert_eq!(last.left, ROW_LEFT + 2 * i32::from(i16::MAX));
     }
 
     #[test]

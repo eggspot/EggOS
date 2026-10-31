@@ -6,7 +6,7 @@
 //! (`ImageList_Draw`, `ImageList_DrawEx`) or, for the common controls, through [`LayerImages`].
 //! The table's lock is only ever taken alone or inside the GUI state's.
 
-use super::super::controls::picture_of;
+use super::super::controls::pictures_of;
 use super::super::gui::{Gui, with};
 use super::super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, paint};
 use crate::gui::slots::Slots;
@@ -273,12 +273,15 @@ fn put_locked(
     bitmap: usize,
     mask: Mask,
 ) -> Result<usize, u32> {
-    let source = picture_of(gui, bitmap).ok_or(error::INVALID_HANDLE)?;
+    let mask_bitmap = match mask {
+        Mask::Bitmap(handle) => handle,
+        Mask::Colour(_) => 0,
+    };
+    let (source, mask_picture) = pictures_of(gui, bitmap, mask_bitmap);
+    let source = source.ok_or(error::INVALID_HANDLE)?;
     let masks = match mask {
         Mask::Bitmap(0) => MaskSource::None,
-        Mask::Bitmap(handle) => {
-            MaskSource::Bitmap(picture_of(gui, handle).ok_or(error::INVALID_HANDLE)?)
-        }
+        Mask::Bitmap(_) => MaskSource::Bitmap(mask_picture.ok_or(error::INVALID_HANDLE)?),
         Mask::Colour(colour_ref) => MaskSource::Colour(colour_ref),
     };
     LISTS.with(|lists| {
