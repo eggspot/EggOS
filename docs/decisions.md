@@ -16203,7 +16203,17 @@ the license, by an explicit instruction recorded here.
     a restart; certificate renewal when the machine's address changes (remove the files and
     start again); mDNS; IPv6; from Fable's network design (docs/ux/agents-network-v0.3.md):
     the one-column and touch layouts, the panel's height following the window, and the
-    element tree's group names.
+    element tree's group names. Since round 1's review a request has an absolute 10 s deadline
+    from its first byte that records do not reset, and every answer that is not to an agent's
+    own MCP message closes the connection; still one connection at a time, so peers that keep
+    reconnecting can fill the backlog (more slots, or limits per address, are not yet). Also
+    not yet, from that review: a new key with an old `agent-network.der` still loaded (make a
+    new certificate when the key is new, or check its public key); a failed unlink of the
+    pairing file after a right code (burn the code instead); the QEMU check's "no elicitation
+    offered back" assertion cannot fail (the `initialize` result has no such key; test an
+    `ask` call answered without `elicitation/create` instead); the server reads the port with
+    `grants::seconds` where the CLI and pane use `pairing::parse_port`; `AGENT_SURFACE` still
+    says the agent commands have no GUI though Settings > Agents and its Network view shipped.
   - Slice 41d6 (Settings): the Agents pane's third view, `Network` (the `Off` `On` switch
     written at once with "from EggOS's next start", where agents connect, the certificate's
     PEM path and its fingerprint in two halves), and the pairing panel (an id and an optional
