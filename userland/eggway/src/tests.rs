@@ -1514,6 +1514,13 @@ impl Session {
         *self.fake.windows.keys().last().expect("a window")
     }
 
+    fn input_serial(&self) -> u32 {
+        self.of(KEYBOARD, keyboard::ENTER.opcode)
+            .last()
+            .expect("the keyboard focus came")
+            .word(0)
+    }
+
     fn focus(&mut self, from: Option<u32>, to: u32) -> Vec<SentEvent> {
         if let Some(from) = from {
             self.fake.record(from, record::FOCUS_OUT, [0; 4]);
@@ -1537,7 +1544,12 @@ fn copy_and_paste_hand_the_pipe_from_the_focused_client_to_the_source_s_client()
         ],
     );
     session.focus(None, first);
-    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(1)]);
+    let first_serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(first_serial)],
+    );
     let events = session.pump();
     let offer = events
         .iter()
@@ -1593,17 +1605,46 @@ fn copy_and_paste_hand_the_pipe_from_the_focused_client_to_the_source_s_client()
     session.send(
         DATA_DEVICE,
         1,
-        &[Value::Object(SECOND_SOURCE), Value::Uint(2)],
+        &[Value::Object(0), Value::Uint(first_serial)],
+    );
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(first_serial)],
+    );
+    session.pump();
+    assert!(
+        session.of(SOURCE, data_source::CANCELLED.opcode).is_empty(),
+        "a client without the keyboard focus cannot set the selection"
+    );
+    session.focus(Some(second), first);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(first_serial)],
+    );
+    session.pump();
+    assert!(
+        session.of(SOURCE, data_source::CANCELLED.opcode).is_empty(),
+        "nor with a serial from before its focus came"
+    );
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[
+            Value::Object(SECOND_SOURCE),
+            Value::Uint(session.input_serial()),
+        ],
     );
     session.pump();
     assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
     let read = session.read;
     session.switch_to(second_socket, second_read);
-    let events = session.pump();
+    let events = session.focus(Some(first), second);
     let fresh = events
         .iter()
         .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
-        .expect("the new selection offered at once")
+        .expect("the new selection offered when the focus comes")
         .word(0);
     assert_ne!(fresh, offer);
     let stale = session.fake.other_file();
@@ -1634,15 +1675,78 @@ fn copy_and_paste_hand_the_pipe_from_the_focused_client_to_the_source_s_client()
 }
 
 #[test]
+fn an_offer_stays_dead_however_many_times_the_selection_changes() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.source(SECOND_SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    let events = session.pump();
+    let offer = events
+        .iter()
+        .find(|event| event.object == DATA_DEVICE && event.opcode == data_device::DATA_OFFER.opcode)
+        .expect("the selection offered")
+        .word(0);
+    for change in 0..u32::from(u16::MAX) {
+        session.send(DATA_DEVICE, 1, &[Value::Object(0), Value::Uint(serial)]);
+        if change % 32 == 31 {
+            session.pump();
+        }
+    }
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    assert!(session.alive());
+    let pipe = session.fake.other_file();
+    session.send_with(
+        offer,
+        1,
+        &[Value::String(b"text/plain"), Value::Fd],
+        vec![pipe],
+    );
+    session.pump();
+    assert!(
+        !session.fake.open.contains(&pipe),
+        "the stale offer's pipe is closed"
+    );
+    assert!(
+        session
+            .of(SECOND_SOURCE, data_source::SEND.opcode)
+            .is_empty(),
+        "an offer made for the first selection never reads a later one"
+    );
+    session.end();
+}
+
+#[test]
 fn a_source_is_set_once_and_a_selection_offer_has_no_finish() {
     let mut session = Session::new();
     let window = session.shown();
     session.data_device();
     session.source(SOURCE, &[b"text/plain"]);
     session.focus(None, window);
-    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(1)]);
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
     session.pump();
-    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(2)]);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
     session.pump();
     assert_eq!(
         session.error(),
@@ -1655,7 +1759,12 @@ fn a_source_is_set_once_and_a_selection_offer_has_no_finish() {
     session.data_device();
     session.source(SOURCE, &[b"text/plain"]);
     session.focus(None, window);
-    session.send(DATA_DEVICE, 1, &[Value::Object(SOURCE), Value::Uint(1)]);
+    let serial = session.input_serial();
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
     session.pump();
     session.send(SERVER_ID_START, 3, &[]);
     session.pump();
@@ -1718,7 +1827,10 @@ fn the_primary_selection_is_offered_and_read_through_its_own_device() {
     session.send(
         PRIMARY_DEVICE,
         0,
-        &[Value::Object(PRIMARY_SOURCE), Value::Uint(3)],
+        &[
+            Value::Object(PRIMARY_SOURCE),
+            Value::Uint(session.input_serial()),
+        ],
     );
     let events = session.pump();
     let offer = events

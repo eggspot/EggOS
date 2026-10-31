@@ -12431,13 +12431,18 @@ the license, by an explicit instruction recorded here.
   `wl_data_device_manager` 3, and global 11, `zwp_primary_selection_device_manager_v1` 1): a
   client's source collects MIME types (12 at most, each 64 bytes at most, duplicates once),
   becomes the selection with `set_selection` (once: `used_source` after), and the previous
-  source is told `cancelled`. The client with the keyboard focus (the one whose window last got
-  `FOCUS_IN`) is offered the selection before its keyboard `enter` and whenever it changes:
+  source is told `cancelled`. Only the client with the keyboard focus may set a selection (or
+  clear it), quoting the serial of a key, button or keyboard `enter` event it was sent since
+  its focus came; any other `set_selection` is ignored, so a background client can neither
+  replace the clipboard nor flood the focused client with offers (review round 2). The client
+  with the keyboard focus (the one whose window last got `FOCUS_IN`) is offered the selection
+  before its keyboard `enter` and whenever it changes:
   `data_offer` with a new object from the compositor's id range (`ClientSlot::
   create_server_object`, 32 per client, freed when the client destroys it), one `offer` per
   type, then `selection`; a null selection is `selection(null)`. `receive(type, fd)` on an
-  offer that is still the selection's hands the pipe's write end to the source's client in
-  `send(type, fd)` (the compositor closes its copy once sent, so the reader sees the end when
+  offer that is still the selection's (each client keeps, per offer, the 64-bit generation of
+  the selection it was made for, which is never given out twice; review round 2) hands the
+  pipe's write end to the source's client in `send(type, fd)` (the compositor closes its copy once sent, so the reader sees the end when
   the writer closes); a stale offer's pipe is closed at once. Work for another client than the
   one whose request made it (announcing, cancelling, sending) is queued in `Selections` (8 at
   most) and done by the compositor after that request (`Compositor::deliver`); a client that

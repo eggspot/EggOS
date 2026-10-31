@@ -140,6 +140,10 @@ impl Shared {
         self.serial = self.serial.wrapping_add(1).max(1);
         self.serial
     }
+
+    pub(crate) fn last_serial(&self) -> u32 {
+        self.serial
+    }
 }
 
 /// The compositor: its clients and what they share.
@@ -2088,6 +2092,7 @@ fn window_event<S: System>(
                 return;
             }
             let serial = shared.next_serial();
+            client.input_serial = serial;
             let state = if pressed {
                 pointer::PRESSED
             } else {
@@ -2142,6 +2147,7 @@ fn window_event<S: System>(
         record::KEY => {
             send_modifiers(client, shared, c);
             let serial = shared.next_serial();
+            client.input_serial = serial;
             let state = if b == 1 {
                 keyboard::PRESSED
             } else {
@@ -2165,6 +2171,7 @@ fn window_event<S: System>(
             let focus = topmost_grab(client, index).unwrap_or(index);
             if shared.keyboard_client != Some(client.index) {
                 shared.keyboard_client = Some(client.index);
+                client.focus_serial = shared.last_serial();
                 for kind in [selection::Kind::Clipboard, selection::Kind::Primary] {
                     selection::announce(client, &shared.selections, kind);
                 }
@@ -2656,6 +2663,7 @@ fn set_keyboard_focus(client: &mut ClientSlot, shared: &mut Shared, focus: Optio
     client.keyboard_focus = focus;
     if let Some(entered) = focus.and_then(|new| peek(client, new)) {
         let serial = shared.next_serial();
+        client.input_serial = serial;
         each_of(client, Interface::Keyboard, |client, id, version| {
             client.post(
                 id,

@@ -1,18 +1,19 @@
 //! Copy and paste between Wayland clients (D176): `wl_data_device_manager` (the clipboard) and
 //! `zwp_primary_selection_device_manager_v1` (the primary selection, what is selected, pasted
 //! with the middle button). A client offers its data as a source with the MIME types it can
-//! give and sets it as the selection; the client with the keyboard focus is offered it, with
+//! give and sets it as the selection while it has the keyboard focus, quoting the serial of an
+//! input event; the client with the keyboard focus is offered it, with
 //! every type, before its focus comes and whenever it changes; a client that reads it asks for
 //! one type with the write end of a pipe, which goes to the source's client, who writes the data
 //! into it and closes it. The compositor never reads the data itself. Drag and drop is not
 //! served yet: a drag's source is cancelled at once.
 
-use crate::client::{ClientSlot, MAX_OUT_DESCRIPTORS};
+use crate::client::{ClientSlot, MAX_OUT_DESCRIPTORS, MAX_SERVER_OBJECTS};
 use crate::compositor::{Message, Shared, each_of, flush, new_object, object_index};
 use crate::system::{Fd, System};
 use eggos_wayland::protocol::{
-    Event, Interface, data_device, data_offer, data_source, display, primary_selection_device,
-    primary_selection_offer, primary_selection_source,
+    Event, Interface, SERVER_ID_START, data_device, data_offer, data_source, display,
+    primary_selection_device, primary_selection_offer, primary_selection_source,
 };
 use eggos_wayland::wire::Value;
 
@@ -168,15 +169,15 @@ pub struct DataSource {
     pub used: bool,
 }
 
-/// What a selection is now: whose source, what it offers, and its generation, which the
-/// offers made for it carry.
+/// What a selection is now: whose source, what it offers, and its generation, which each
+/// client keeps for the offers made for it; a generation is never given out twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     /// The index of the source's client.
     pub owner: u8,
     pub source: u32,
     pub mime_types: MimeTypes,
-    pub generation: u16,
+    pub generation: u64,
 }
 
 /// Work for a client other than the one whose request made it, done once that request is
@@ -203,7 +204,7 @@ pub enum Delivery {
 pub struct Selections {
     pub clipboard: Option<Selection>,
     pub primary: Option<Selection>,
-    generation: u16,
+    generation: u64,
     deliveries: [Option<Delivery>; MAX_DELIVERIES],
 }
 
@@ -223,8 +224,8 @@ impl Selections {
         }
     }
 
-    fn next_generation(&mut self) -> u16 {
-        self.generation = self.generation.wrapping_add(1);
+    fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
         self.generation
     }
 
@@ -370,8 +371,10 @@ pub(crate) fn source_request(client: &mut ClientSlot, shared: &mut Shared, messa
     }
 }
 
-/// A device's requests: `set_selection` makes a source (or none) the selection; a drag's
-/// source is cancelled at once, as drag and drop is not served yet.
+/// A device's requests: `set_selection` makes a source (or none) the selection, from the
+/// client with the keyboard focus only and with the serial of an input event it was sent since
+/// the focus came (else it is ignored, as the Wayland protocol allows); a drag's source is
+/// cancelled at once, as drag and drop is not served yet.
 pub(crate) fn device_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
@@ -396,7 +399,7 @@ pub(crate) fn device_request<S: System>(
         }
         return;
     }
-    if message.opcode != set_selection {
+    if message.opcode != set_selection || !may_set_selection(client, shared, message.uint(1)) {
         return;
     }
     let source = message.uint(0);
@@ -433,6 +436,20 @@ pub(crate) fn device_request<S: System>(
         );
     }
     shared.selections.announce_change(kind);
+}
+
+fn may_set_selection(client: &ClientSlot, shared: &Shared, serial: u32) -> bool {
+    let since_focus = serial.wrapping_sub(client.focus_serial);
+    let latest_since_focus = client.input_serial.wrapping_sub(client.focus_serial);
+    shared.keyboard_client == Some(client.index)
+        && serial != 0
+        && since_focus != 0
+        && since_focus <= latest_since_focus
+}
+
+fn offer_slot(offer: u32) -> Option<usize> {
+    let slot = offer.checked_sub(SERVER_ID_START)? as usize;
+    (slot < MAX_SERVER_OBJECTS).then_some(slot)
 }
 
 fn take_source(client: &mut ClientSlot, device: u32, source: u32, kind: Kind) -> Option<u16> {
@@ -473,10 +490,11 @@ pub(crate) fn offer_request<S: System>(
         return;
     }
     let descriptor = message.descriptors[0];
+    let made_for = offer_slot(message.object).map(|slot| client.offer_generations[slot]);
     let current = shared
         .selections
         .of(kind)
-        .filter(|selection| selection.generation == message.index);
+        .filter(|selection| Some(selection.generation) == made_for);
     let mime_type = MimeType::new(message.values[0].bytes());
     let (Some(selection), Some(mime_type)) = (current, mime_type) else {
         system.close(descriptor);
@@ -515,7 +533,10 @@ fn offer_to(
     version: u32,
 ) {
     let offer = selection.and_then(|selection| {
-        client.create_server_object(kind.offer_interface(), version, selection.generation)
+        let offer = client.create_server_object(kind.offer_interface(), version, 0)?;
+        let slot = offer_slot(offer)?;
+        client.offer_generations[slot] = selection.generation;
+        Some(offer)
     });
     let (Some(selection), Some(offer)) = (selection, offer) else {
         client.post(device, version, kind.selection_event(), &[Value::Object(0)]);

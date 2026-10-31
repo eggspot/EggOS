@@ -287,6 +287,14 @@ pub struct ClientSlot {
     pub positioners: [Option<Positioner>; MAX_POSITIONERS],
     /// Its clipboard and primary selection sources.
     pub sources: [Option<DataSource>; MAX_SOURCES],
+    /// The selection generation each selection offer the compositor made it was made for, by
+    /// the offer's offset from [`SERVER_ID_START`].
+    pub offer_generations: [u64; MAX_SERVER_OBJECTS],
+    /// The last serial given out before it got the keyboard focus: a serial it may quote to
+    /// set a selection came after it.
+    pub focus_serial: u32,
+    /// The serial of its latest key, button or keyboard-enter event.
+    pub input_serial: u32,
     pub text_inputs: [Option<TextInput>; MAX_TEXT_INPUTS],
     pub pool_bytes: usize,
     /// It bound `wl_subcompositor` or `wp_viewporter`, or made a positioner: its windows are
@@ -336,6 +344,9 @@ impl ClientSlot {
             surfaces: [None; MAX_SURFACES],
             positioners: [None; MAX_POSITIONERS],
             sources: [None; MAX_SOURCES],
+            offer_generations: [0; MAX_SERVER_OBJECTS],
+            focus_serial: 0,
+            input_serial: 0,
             text_inputs: [None; MAX_TEXT_INPUTS],
             pool_bytes: 0,
             composes: false,
