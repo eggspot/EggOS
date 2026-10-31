@@ -160,7 +160,7 @@ pub fn for_each(area: &[u8], mut visit: impl FnMut(&[u8], &[u8])) -> Result<(), 
         return Err(PropertyError::NotAnArea);
     }
     let mut stack = [0u32; WALK_DEPTH];
-    let mut depth = 0;
+    let mut depth = 0usize;
     let first = load(area, field(0, CHILDREN).ok_or(PropertyError::NotAnArea)?)?;
     if first != 0 {
         stack[0] = first;

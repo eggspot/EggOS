@@ -440,10 +440,10 @@ impl Compositor {
     }
 }
 
-fn client_at(
-    clients: &mut [Option<&'static mut ClientSlot>],
+fn client_at<'a>(
+    clients: &'a mut [Option<&'static mut ClientSlot>],
     index: u8,
-) -> Option<&mut ClientSlot> {
+) -> Option<&'a mut ClientSlot> {
     clients
         .get_mut(usize::from(index))
         .and_then(|slot| slot.as_deref_mut())

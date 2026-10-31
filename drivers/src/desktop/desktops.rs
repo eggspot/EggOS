@@ -5,7 +5,7 @@
 //! another switches to it first.
 
 use super::protocol::{EventSink, WindowError, desktop_action};
-use super::windows::Role;
+use super::protocol::Role;
 use super::{Damage, Desktop, Rect};
 
 /// The most desktops.
