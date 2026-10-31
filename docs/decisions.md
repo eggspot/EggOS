@@ -12690,7 +12690,13 @@ the license, by an explicit instruction recorded here.
   (the unhandled-exception filter, or the end of the process for an unwind), when a frame's
   stack pointer or establisher leaves that range or a caller's stack pointer moves down, as
   Windows bounds a walk by the TEB's limits; a smashed stack never makes the layer fault in
-  its own code (round 1 review).
+  its own code (round 1 review). `RtlVirtualUnwind` on its own reads the stack of the context
+  it is given: this thread's when the context's stack pointer is on it, else (another
+  thread's context, a copied stack, as sampling profilers walk) the run of committed,
+  readable pages that holds that stack pointer, as `VirtualQuery` reports it. A step it cannot
+  take sets the context's instruction pointer to 0, so a program's `while (pc)` walk ends
+  instead of spinning on an unchanged context (Windows would read on and fault instead; round
+  2 review).
 - **Cost.** Nothing runs on any path until an exception: the tables are the program's own,
   looked up by binary search; no allocation (the dispatch works on the thread's stack); the
   whole of it is in the Windows layer (D18). No benchmark covers a throw yet (see "Not yet").

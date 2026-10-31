@@ -430,7 +430,10 @@ pub(super) unsafe extern "efiapi" fn virtual_unwind(
     copy.set_pc(pc);
     let mut registers = copy.registers();
     let kinds = HandlerKinds::from_flags(kind);
-    let memory = ThreadMemory::from_stack_pointer(copy.sp());
+    let Some(memory) = stack_of_context(copy.sp()) else {
+        context.set_pc(0);
+        return 0;
+    };
     match unwinder::virtual_unwind(&image, function, kinds, &mut registers, &memory) {
         Ok(unwound) => {
             context.set_registers(&registers);
@@ -444,8 +447,23 @@ pub(super) unsafe extern "efiapi" fn virtual_unwind(
             }
             unwound.handler.unwrap_or(0)
         }
-        Err(_) => 0,
+        Err(_) => {
+            context.set_pc(0);
+            0
+        }
     }
+}
+
+fn stack_of_context(sp: u64) -> Option<ThreadMemory> {
+    let own = ThreadMemory::from_stack_pointer(sp);
+    if own.holds(sp) {
+        return Some(own);
+    }
+    let region = super::super::memory::region_of(usize::try_from(sp).ok()?).ok()?;
+    let end = region.base.checked_add(region.size)?;
+    region
+        .is_readable()
+        .then(|| ThreadMemory::readable_from(sp, end as u64))
 }
 
 pub(super) unsafe extern "efiapi" fn pc_to_file_header(pc: u64, base: *mut u64) -> u64 {

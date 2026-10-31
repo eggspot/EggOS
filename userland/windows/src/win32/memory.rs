@@ -146,7 +146,8 @@ unsafe extern "efiapi" fn virtual_protect(
     }
 }
 
-fn region_of(address: usize) -> Result<Region, u32> {
+/// The region `VirtualQuery` reports for `address`.
+pub(super) fn region_of(address: usize) -> Result<Region, u32> {
     let mut capacity = FIRST_MAPS_BYTES;
     loop {
         let block = process_heap::allocate(capacity);
@@ -157,11 +158,17 @@ fn region_of(address: usize) -> Result<Region, u32> {
         let text = unsafe { core::slice::from_raw_parts_mut(block, capacity) };
         let outcome = match linux::read_file(MAPS_PATH, text) {
             Ok(length) if length == capacity && capacity < LARGEST_MAPS_BYTES => None,
-            Ok(length) => Some(Ok(memory_regions::region_at(
-                &text[..length],
-                address,
-                END_OF_USER_SPACE,
-            ))),
+            Ok(length) => {
+                let maps = match length == capacity {
+                    true => memory_regions::complete_lines(&text[..length]),
+                    false => &text[..length],
+                };
+                Some(Ok(memory_regions::region_at(
+                    maps,
+                    address,
+                    END_OF_USER_SPACE,
+                )))
+            }
             Err(errno) => Some(Err(error_for(errno))),
         };
         // SAFETY: the block this call allocated, which nothing holds any more.

@@ -95,6 +95,27 @@ fn state_and_protect(protect: u32) -> (u32, u32) {
     }
 }
 
+impl Region {
+    /// Whether the region's pages are committed and can be read.
+    pub fn is_readable(&self) -> bool {
+        self.state == MEM_COMMIT
+            && matches!(
+                self.protect,
+                PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
+            )
+    }
+}
+
+/// The whole lines of `text`, a read of `/proc/self/maps` that may have stopped mid-line
+/// because it filled its buffer: everything up to and with the last newline.
+pub fn complete_lines(text: &[u8]) -> &[u8] {
+    let end = text
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    &text[..end]
+}
+
 /// The region `VirtualQuery` reports for `address`, from the text of `/proc/self/maps`;
 /// `end_of_user_space` is where a free region past the last mapping ends.
 pub fn region_at(maps: &[u8], address: usize, end_of_user_space: usize) -> Region {
@@ -196,6 +217,27 @@ mod tests {
         let past = region_at(MAPS, 0x0060_0000, END);
         assert_eq!((past.base, past.size), (0x0060_0000, END - 0x0060_0000));
         assert_eq!(region_at(b"", 0x1000, END).size, END - 0x1000);
+    }
+
+    #[test]
+    fn only_committed_pages_that_can_be_read_are_readable() {
+        assert!(region_at(MAPS, 0x0040_0000, END).is_readable());
+        assert!(region_at(MAPS, 0x0040_1000, END).is_readable());
+        assert!(region_at(MAPS, 0x0040_3000, END).is_readable());
+        assert!(!region_at(MAPS, 0x0040_6000, END).is_readable());
+        assert!(!region_at(MAPS, 0x0060_0000, END).is_readable());
+    }
+
+    #[test]
+    fn a_read_cut_mid_line_keeps_only_its_whole_lines() {
+        let cut = b"00400000-00401000 r--p 00000000 00:02 17 /a\n00500000-005";
+        assert_eq!(complete_lines(cut), &cut[..44]);
+        assert_eq!(
+            region_at(complete_lines(cut), 0x0050_0000, END).state,
+            MEM_FREE
+        );
+        assert_eq!(complete_lines(b"00400000-004"), b"");
+        assert_eq!(complete_lines(MAPS), MAPS);
     }
 
     #[test]

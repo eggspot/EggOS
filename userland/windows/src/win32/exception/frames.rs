@@ -82,6 +82,20 @@ impl ThreadMemory {
             range: StackRange::new(limit, base, sp),
         }
     }
+
+    /// The stack another context ran on, for `RtlVirtualUnwind` on a context that is not on
+    /// this thread's stack (another thread's, or a copy): the committed, readable pages from
+    /// `sp` up to `end`, the end of the run of such pages that holds `sp`.
+    pub fn readable_from(sp: u64, end: u64) -> Self {
+        Self {
+            range: StackRange { low: sp, high: end },
+        }
+    }
+
+    /// Whether `address` lies in the stack range the walk may read.
+    pub fn holds(&self, address: u64) -> bool {
+        self.range.holds(address)
+    }
 }
 
 impl Memory for ThreadMemory {
@@ -89,8 +103,10 @@ impl Memory for ThreadMemory {
         if !self.range.holds_word(address) {
             return None;
         }
-        // SAFETY: the word lies between the stack pointer the thread ran with and the base of
-        // the stack its TEB records, the part of the thread's stack that is in use and mapped.
+        // SAFETY: the word lies either between the stack pointer the thread ran with and the
+        // base of the stack its TEB records, the part of the thread's stack that is in use and
+        // mapped, or in a run of committed, readable pages `VirtualQuery` reported; a program
+        // that unmaps that run meanwhile faults as its own read of it would.
         Some(unsafe { (address as *const u64).read_volatile() })
     }
 }
