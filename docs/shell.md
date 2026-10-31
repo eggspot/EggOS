@@ -83,8 +83,8 @@ gets every feature below that does not need a terminal (`&&`, `||`, `&`, `2>`, `
   the last background job's last process id, `$#` the number of arguments, `$0` the script's
   name, `$1` to `$9` and `${10}` and on the arguments (D182). `"$@"` is every argument, each a
   word of its own (none at all without arguments), `"$*"` all of them in one word, separated
-  by `IFS`'s first character; unquoted, both are every argument split into words. `~` alone or
-  before `/` at the start of a word is `$HOME`.
+  by `IFS`'s first character; unquoted, both are every argument as a field of its own, each then
+  split into words. `~` alone or before `/` at the start of a word is `$HOME`.
 - The parameter operators (D182): `${NAME:-word}` is `word` if `NAME` is unset or empty,
   `${NAME:=word}` also sets `NAME` to it, `${NAME:?word}` writes `NAME: word` (or
   `parameter null or not set`) and stops the command (a script ends, with status 1),
@@ -140,6 +140,10 @@ gets every feature below that does not need a terminal (`&&`, `||`, `&`, `2>`, `
 - A complete command (a line, or a whole `if`, loop or function definition with its
   here-documents) longer than 16 KiB is refused: in a file it ends the file with status 2; at
   the prompt the shell skips it up to its end, an open quote included.
+- Nesting is bounded (D182): compound commands, `eval` and `$(...)` nest 200 deep together
+  and `${...}` words 64 deep; past that the shell says `syntax error: nested too deeply` (status
+  2) instead of running out of stack. A file name pattern with `*`, `?` or `[` in more than 32
+  of its parts is refused with `pattern nested too deeply`; the plain parts count for nothing.
 - A command is a special builtin, a function, a builtin, or a program: a name with a `/` is
   run as it is, any other is looked for in each directory of `PATH` (`/bin:/usr/bin:/sbin` if
   unset).

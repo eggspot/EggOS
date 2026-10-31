@@ -24,7 +24,7 @@ Must-have, in order:
 6. **done** — process creation: `clone` without `CLONE_THREAD`, `fork` and `vfork`, the
    memory copied (copy on write since D169) or shared with `CLONE_VM`, the parent sleeping until a `vfork` child
    execs or ends, children's exit records kept for `wait4` (D104). (Copy on write, shared
-   anonymous memory across `fork`, `MADV_DONTFORK` and `MADV_WIPEONFORK`: written, unchecked,
+   anonymous memory across `fork`, `MADV_DONTFORK` and `MADV_WIPEONFORK`: checked in QEMU,
    D169.)
 7. **done** — `wait4` and `waitid`, zombies kept in a process table until reaped, orphans
    reparented (nearest subreaper, then init, then the kernel), `SIGCHLD`, `setpgid`,
@@ -431,8 +431,8 @@ D16):
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals
     and `MAP_SHARED` of memfds (38b). The item's "`MAP_SHARED` of files" is narrowed to
     memfds, which is what Wayland's shared buffers use (writable `MAP_SHARED` of tmpfs and
-    EggFS files, `shm_open` on `/dev/shm`: written, unchecked, D169). Next: the Wayland server
-    (item 39, done), then (`epoll`, `eventfd`, `timerfd` and `signalfd`: written, unchecked,
+    EggFS files, `shm_open` on `/dev/shm`: checked in QEMU, D169). Next: the Wayland server
+    (item 39, done), then (`epoll`, `eventfd`, `timerfd` and `signalfd`: checked in QEMU,
     D169).
 39. **done** — users can now run Linux programs that open their windows through Wayland
     (D140, docs/linux-programs.md): `eggway`, our own Wayland server from the public protocol
@@ -441,7 +441,7 @@ D16):
     `xdg_wm_base`, `xdg_surface` and `xdg_toplevel`; each toplevel a desktop window with
     EggOS's chrome, its input as Wayland events, frame callbacks at 60 Hz; `xdg_toplevel.move`
     and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: (`epoll`,
-    `eventfd`, `timerfd` and `signalfd`: written, unchecked, D169; dynamic linking: done,
+    `eventfd`, `timerfd` and `signalfd`: checked in QEMU, D169; dynamic linking: done,
     D167), then the toolkits' protocols (subcompositor, decorations, popups, the clipboard).
 40. **done** — users can now run macOS Objective-C console programs from `eggsh` on aarch64
     and x86_64 (D142, docs/macos-programs.md): our own Objective-C runtime in the macOS layer
@@ -690,7 +690,7 @@ The release path (the release-path review's issues #141-#145, after the items ab
   repository's).
 - After v0.3.0, the Real apps track (alternating with the CI track): real Linux, Windows and
   macOS apps install and run, each to be listed in a new docs/compatibility.md. Its first step,
-  event loops, copy-on-write `fork` and POSIX shared memory, **written, unchecked** (D169): `epoll`,
+  event loops, copy-on-write `fork` and POSIX shared memory, **checked in QEMU** (D169): `epoll`,
   `eventfd`, `timerfd`, `signalfd`, `select` and `pselect6`, with wake lists per file for
   pipes, local sockets and the event files; `fork` copy on write with shared memory kept
   shared, `MADV_DONTFORK` and `MADV_WIPEONFORK`; `MAP_SHARED` anonymous memory as lent
@@ -984,7 +984,7 @@ flow control, output flags that the UART driver obeys, tab erase from the column
 left (output column tracking), virtio-console input (M8); `SIGWINCH` on
 `TIOCSWINSZ`; sessions
 and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); (`select`,
-`pselect6` and `epoll`: written, unchecked, D169); `poll` arrays copied in pieces with preemption points
+`pselect6` and `epoll`: checked in QEMU, D169); `poll` arrays copied in pieces with preemption points
 between them, once programs poll many thousands of descriptors; checked by observation on a
 real Linux: the order of `ppoll`'s checks, whether `sigsetsize` is checked with no mask,
 `CLOCAL` on a serial console, whether current glibc reads settings with `TCGETS2`, and whether `poll`
@@ -1111,7 +1111,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | virtio-input: keyboard, tablet and mouse, capabilities from the device's configuration, keyboard layouts with dead keys and AltGr, key repeat, Caps Lock's light, the input event queue (D113, D184, D185) | **done** (more layouts, Num and Scroll Lock lights: planned) |
 | Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
 | virtio-blk (polled): capacity, read-only disks, reads, writes and flushes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
-| EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync` (D131, docs/eggfs.md) | **done** (repair tool, links, several requests in flight: planned) |
+| EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight, access times: planned) |
 | virtio-console (the agent channel's named port, D136) | **done** |
 | virtio-net (polled): hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157) | **done** (interrupts, offloads, several adapters: planned) |
 
@@ -1120,7 +1120,8 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 Rough estimate: **~3%**. The kernel boots on three architectures (x86_64, aarch64, riscv64) to
 a desktop with windows; static Linux programs, Windows console and GUI programs (part 1), and
 Android and macOS console programs run natively; files in `/home` survive reboots on an EggFS
-disk (D131); no network or real hardware yet.
+disk (D131); a polled virtio-net network with DHCP, DNS, TCP and TLS 1.3 works (D157 to D159);
+no real hardware yet.
 
 | Area | Missing |
 |------|---------|

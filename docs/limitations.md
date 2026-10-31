@@ -49,13 +49,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   uninstalls apps. Each agent has its own grants, read again before every call and capped by the
   boot's grants (D193), which the user gives and takes back with `agent grant` and `agent
   revoke`; a client names its agent in `initialize` or the boot pins it (`--mcp-agent`), and on
-  the local channel that name is the client's own word, while agents on other machines pair with a one-time code and prove who they are with a token over HTTPS (`agent pair`, `agent network on`, from the next start; one connection at a time, no OAuth sign-in or event stream yet, a certificate made once for the addresses the machine had, pairing from the CLI only so far), and Settings' Agents pane sets them too and browses the audit log (its Activity view lists the newest 32 calls that match; older ones through narrower filters or `agentlog`); with the desktop installed every question is asked on EggOS's own screen (the grant prompt, whose window refuses injected input), without it through the client's elicitation; the prompt opens where a new window opens (not centred and kept on top yet) and has no phone layout yet; `run` is full control, the audit log included. Agents read toolkit and Wayland
+  the local channel that name is the client's own word, while agents on other machines pair with a one-time code and prove who they are with a token over HTTPS (`agent pair`, `agent network on`, from the next start; one connection at a time, no OAuth sign-in or event stream yet, a certificate made once for the addresses the machine had, pairing from the CLI or Settings' Agents pane), and Settings' Agents pane sets them too and browses the audit log (its Activity view lists the newest 32 calls that match; older ones through narrower filters or `agentlog`); with the desktop installed every question is asked on EggOS's own screen (the grant prompt, whose window refuses injected input), without it through the client's elicitation; the prompt opens where a new window opens (not centred and kept on top yet) and has no phone layout yet; `run` is full control, the audit log included, and `install` is too (an app it installs and opens runs as you). Agents read toolkit and Wayland
   windows as element trees and act on their controls by id (D161), Windows programs too, with
   the text they draw (D162), and macOS apps' windows, their views and the About panel (D175;
   a macOS alert is pixels only); a Windows list box's items and a check box's state are not in
   the tree yet.
-  Commands run as root (file permissions are not enforced yet). Reached only through the run
-  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB. The desktop shows
+  Commands run as root (file permissions are not enforced yet). Reached through the run
+  scripts' `--mcp`, or over HTTPS from another machine once the user turns it on and pairs the
+  agent (D193, docs/mcp.md). The audit log keeps at least 3.5 MiB. The desktop shows
   an `Agent` chip while a client is connected and marks what it drives for a second (D156);
   the first boot does not ask "Where are you coming from?" yet.
 - **One disk.** The root file system is the read-only initramfs inside the
@@ -68,7 +69,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `driver/rtc`, `self` and a folder per process (D125, D137, D150, D157, D168). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS
   (on-disk version 2, D170) holds symbolic and hard links (at most 65 000 names per file, no
-  hard links to folders), but has no access times or repair tool yet, gives every link's
+  hard links to folders), but has no access times and no online check (an unmounted disk is checked and repaired with
+  `disk repair`, D192), gives every link's
   target a block of its own (no inline targets), frees a file removed while open at its last
   close only at the next commit, and one left open at power-off at the next mount; removing
   the name in the folder a multiply named file was made in walks the whole tree for another;
@@ -77,7 +79,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
   FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
   GiB when QEMU's `qemu-img` is missing, and nothing stops two QEMUs sharing one image (macOS
-  and Linux refuse the second). A file removed while a program has it open is gone at once. A Linux program run from `/tmp`, `/home` or `/media/host` is read into
+  and Linux refuse the second). A Linux program run from `/tmp`, `/home` or `/media/host` is read into
   memory whole first, so it must be smaller than 4 MiB (D130).
 - **The host folder is read-only and limited by QEMU.** The run scripts' `--apps <folder>`
   shows a folder of your computer at `/media/host` through QEMU's `vvfat` driver (D130): it
@@ -98,7 +100,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   top-level `.git` and `target` are left out, with a warning for each; symbolic links and hard
   links travel both ways (D170), except on a Windows host, where every file is packed as one
   name and making a symbolic link when unpacking needs Developer Mode or the privilege (it is
-  skipped with a warning otherwise); names must be valid Unicode and at most 255 bytes. The run scripts
+  skipped with a warning otherwise). Unpacking never writes or links outside the output
+  folder: a symbolic link comes back only when its target is relative and stays inside the
+  folder, else it is left out with a warning, an entry already at a name stops the unpack, and
+  the setuid, setgid and sticky bits are dropped; names must be valid Unicode and at most 255 bytes. The run scripts
   cannot pack or unpack a folder themselves: that needs `cargo xtask` in an EggOS checkout.
   Only one work disk can be attached. The image is sized once, when it is packed (the folder
   plus a thirty-second plus 1 GiB, or `--room`'s size instead of the gibibyte, D171): a build
@@ -292,7 +297,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   classes other than `Scripting.Dictionary`, a registry with keys (it is empty and read-only),
   global keyboard and mouse hooks, global hot keys, the tray, HTTPS in WinINet (D178),
   printing (no printers), hatched brushes (drawn solid), fonts other than Egg Mono
-  and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the clipboard is each program's own until the shared one comes; names are
+  and text beyond ASCII, ARM64 programs on x86_64 and riscv64 do not run yet; the shared clipboard (D197) carries text only (`CF_UNICODETEXT`); names are
   case-sensitive and local time is UTC.
 - **Android: console programs only, on aarch64 and x86_64.** Programs built with the Android
   NDK, linked statically against bionic or dynamically (Android's `linker64` with the runtime
@@ -507,7 +512,8 @@ shortcuts), kept on the disk across reboots. Not yet:
 - the Text Editor (D149) edits UTF-8 text of up to 4 MiB in Egg Mono, so a character beyond
   ASCII, Latin-1, `€` and the font's box and arrow glyphs shows as `?`; it has no word wrap, no replace, no
   go-to-line, no syntax colouring and no file picker (Open and Save As take a typed path); its
-  clipboard is its own, shared with no other program; a file that is not text is refused, not
+  clipboard is the text clipboard every app shares (D197), which it gives the text of a copy or
+  cut and checks for a newer copy before each key press or click; a file that is not text is refused, not
   shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
   it and there is no terminal editor; a file with mixed line endings is saved all CRLF once it
   holds one `\r\n`; saving replaces a symbolic link by a regular file and breaks hard links;

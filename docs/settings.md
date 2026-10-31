@@ -101,7 +101,8 @@ the question as one JSON line on stdin and writes one word on stdout, `once`, `s
 `always`, `deny` or `timeout`. It shows the agent's name (and `id phone` when it differs), the
 tool and its title, up to three `key: value` lines of the arguments and `Denied in 1:30 if you
 do nothing.` counting down; `Deny` is the default and focused, Enter and Esc deny from
-anywhere, closing the window denies, and after 90 s the answer is `timeout`. `This session`
+anywhere (and are the only keys it takes in its first second, so keys meant for another window
+cannot answer it), closing the window denies, and after 90 s the answer is `timeout`. `This session`
 allows the agent's calls of that class until its client disconnects (the server keeps it in
 memory only); `Always` writes `allow` for that class into the grants file, as `agent grant`
 does, and is offered only for `view` and `write` calls that need no yes of their own. Its

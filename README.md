@@ -62,7 +62,7 @@ claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp --mcp-allow write,install
 claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
 ```
 
-`run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine.
+`run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine. So does `install`: an app the agent installs and opens runs as you.
 
 The window shows the desktop: the top bar with the time (UTC) and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the

@@ -85,10 +85,11 @@ works.
   Enter, opens `Type > Custom...`, opens its board type list with Tab, Tab and Alt+Down and
   closes the list and the dialog with Esc, wanting the board unchanged after each dialog,
   quits with `q`, and wants no Pegs window in `wm list` and a clean power-off.
-- **Known limits.** x86_64 only: the collection ships no ARM64 Windows build, and x64 programs
-  do not run on Arm yet (part 39). Help needs `puzzles.chm` and Windows' HTML Help, which EggOS
+- **Known limits.** x86_64 build only: the collection ships no ARM64 Windows build, so on aarch64 the x64
+  program is translated ahead of time at install (D191, docs/translation.md), and this check
+  runs on x86_64 only. Help needs `puzzles.chm` and Windows' HTML Help, which EggOS
   does not have, so the Help menu has only About; printing finds no printer; Copy puts the
-  board's text on the program's own clipboard, as there is no clipboard shared between apps yet;
+  board's text on the clipboard every app shares (D197), as text only;
   every font is Egg Mono, so the dialogs are laid out from its metrics. What the layer still
   lacks for other puzzles of the collection (comctl32's status bar, more of the math library) is
   in D174's "Not yet".
@@ -122,8 +123,9 @@ works.
   checks the design's pixels after each step: the first frame, Down twice in the list, a click
   on `Step`, `wm show`'s rows, progress and tabs, a click on the `Tree` tab, a click on `Fruit`'s
   box and Down; Alt+F4 closes it, and `wm list` has no such window afterwards.
-- **Known limits.** x86_64 only: AutoHotkey ships no ARM64 build, and x64 programs do not run on
-  Arm yet (part 39). Its hot keys work only while one of its windows has the keyboard (no global
+- **Known limits.** x86_64 build only: AutoHotkey ships no ARM64 build, so on aarch64 the x64 program is
+  translated ahead of time at install (D191, docs/translation.md), and this check runs on
+  x86_64 only. Its hot keys work only while one of its windows has the keyboard (no global
   hooks), there is no tray icon (scripts use `#NoTrayIcon`), the registry is empty and
   read-only, `Download` has no HTTPS, `Run` starts programs but not documents, and every font is
   Egg Mono. What the layer still lacks is in D178's "Not yet".

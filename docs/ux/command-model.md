@@ -164,7 +164,7 @@ checks still enforce it.
 
 - **Registry test:** every command and tool has the fields its slice requires; every command
   is a kept name or `<noun> <verb>` with a core or recorded verb; new tool names follow the `_`
-  rule and shipped names come from the recorded list; annotations, grants and confirmation
+  rule and shipped names come from the recorded list (as do the decided names above); annotations, grants and confirmation
   agree; every option a tool passes exists on its command.
 - **Parity test:** each tool's twin runs its command's words and fixed options, its schema is
   the one it shipped with, and its annotations are the shipped ones.
@@ -196,9 +196,9 @@ definition (D163), and each example runs as a test against the fakes of the prog
 it (the core utilities' fake system with a home folder holding `notes.txt`; Settings' example
 facts).
 
-**Kept names:** `agent` (D193), `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `df` (D171), `echo`, `edit`, `false`, `fetch`,
-`free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `logcat` (D188), `ls`, `mkdir`, `mv`, `nslookup`,
-`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
+**Kept names:** `agent` (D193), `agentlog`, `app`, `cat`, `chmod` (D170), `clip` (D197), `cp`, `date`, `device` (D184), `df` (D171), `disk` (D192), `echo`, `edit`, `false`, `fetch`,
+`free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill` (D200), `ln` (D170), `logcat` (D188), `ls`, `mkdir`, `mv`, `nslookup`,
+`ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `taskset` (D198), `tee`, `terminal` (D187), `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
 `break`, `cd`, `continue`, `echo`, `eval`, `exit`, `export`, `false`, `fg`, `help`, `jobs`,
 `kill`, `local`, `pwd`, `read`, `return`, `set`, `shift`, `test`, `true`, `type`, `unset`,
@@ -207,17 +207,25 @@ tests, D165, D181, D182).
 
 **`wm`'s own verbs:** `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
-item 48; `show` is a core verb), `drag` (D162).
+item 48; `show` is a core verb), `drag` (D162); `wm desktop`'s `switch` and `new` (D204; `list`
+is a core verb, `close` and `move` are `wm`'s own).
 
 **`agent`'s own verbs** (D193): `grant`, `revoke`, `forget` (`list` and `show` are core
 verbs). Its MCP tools are `agent_list` (`view`) and `agent_show`, which shows the calling
 agent's own grants; no tool changes grants.
 
-**Commands in the registry** (80, D163, D170, D171, D188, D193: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
-`fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
+**Other noun verbs:** `app icon` (D196), `disk format` and `disk repair` (D192), `agent pair` and
+`agent network` (D193).
+
+**Tool names a decision chose over `<noun>_<verb>`:** `clipboard_get` and `clipboard_set` (D197),
+named by the word agents know rather than `clip`'s (`DECIDED_NAMES`, which the registry test
+allows beside the shipped names).
+
+**Commands in the registry** (90, D163, D170, D171, D188, D193, D197, D200, D204: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app icon|install|list|open|show|uninstall`, `cat`, `chmod`, `clip get|set`, `cp`, `date`, `device list`, `df`, `disk check|format|list|repair`, `echo`, `edit`, `false`,
+`fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
-get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
-`wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type`.
+get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
+`wc`, and `wm act|capture|click|close|desktop close|list|move|new|switch|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type`.
 `echo`, `true` and `false` take any words and declare no usage error.
 
 **JSON forms** (errors as one JSON line on standard error):
