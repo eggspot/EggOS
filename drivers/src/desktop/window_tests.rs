@@ -457,7 +457,7 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.create(CLIENT, 0, 0, 10, 10, 8),
+        desktop.create(CLIENT, 0, 0, 10, 10, protocol::flags::KNOWN + 1),
         Err(WindowError::Invalid)
     );
     let ids: Vec<_> = (0..MAX_WINDOWS_PER_CLIENT)
