@@ -2,6 +2,7 @@ use crate::agent::agent;
 use crate::agentlog::agentlog;
 use crate::cat::cat;
 use crate::chmod::chmod;
+use crate::clip::clip;
 use crate::date::date;
 use crate::device::device;
 use crate::df::df;
@@ -43,6 +44,7 @@ pub enum Utility {
     Agentlog,
     Cat,
     Chmod,
+    Clip,
     Cp,
     Date,
     Device,
@@ -85,11 +87,12 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 44] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
         Self::Chmod,
+        Self::Clip,
         Self::Cp,
         Self::Date,
         Self::Device,
@@ -137,6 +140,7 @@ impl Utility {
             Self::Agentlog => b"agentlog",
             Self::Cat => b"cat",
             Self::Chmod => b"chmod",
+            Self::Clip => b"clip",
             Self::Cp => b"cp",
             Self::Date => b"date",
             Self::Device => b"device",
@@ -189,6 +193,7 @@ impl Utility {
             Self::Agentlog => agentlog(output, arguments),
             Self::Cat => cat(output, arguments),
             Self::Chmod => chmod(output, arguments),
+            Self::Clip => clip(output, arguments),
             Self::Cp => cp(output, arguments),
             Self::Date => date(output, arguments),
             Self::Device => device(output, arguments),

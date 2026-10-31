@@ -242,6 +242,13 @@ pub trait System {
         window: u32,
         tree: &mut [u8],
     ) -> Result<WindowTree, Errno>;
+    fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno>;
+    fn clipboard(
+        &mut self,
+        descriptor: usize,
+        offset: usize,
+        into: &mut [u8],
+    ) -> Result<(usize, u32), Errno>;
     fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno>;
     fn send_to(
         &mut self,
@@ -410,6 +417,19 @@ impl<T: System + ?Sized> System for &mut T {
         tree: &mut [u8],
     ) -> Result<WindowTree, Errno> {
         (**self).window_tree(descriptor, window, tree)
+    }
+
+    fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno> {
+        (**self).set_clipboard(descriptor, text)
+    }
+
+    fn clipboard(
+        &mut self,
+        descriptor: usize,
+        offset: usize,
+        into: &mut [u8],
+    ) -> Result<(usize, u32), Errno> {
+        (**self).clipboard(descriptor, offset, into)
     }
 
     fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno> {

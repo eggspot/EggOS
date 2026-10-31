@@ -659,7 +659,7 @@ pub fn check(
         };
         checked.path = Some(length);
     }
-    if tool.kind == Kind::Tee {
+    if matches!(tool.kind, Kind::Tee | Kind::ClipboardSet) {
         checked.content = Some(content(
             get("content"),
             get("content_base64"),

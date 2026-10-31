@@ -16,6 +16,7 @@ pub mod bench;
 pub mod block;
 #[cfg(feature = "qemu-boot-clock")]
 pub mod boot_clock;
+pub mod clipboard;
 pub mod console;
 pub mod cpu;
 pub mod devices;

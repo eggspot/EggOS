@@ -139,6 +139,10 @@ pub enum Kind {
     AppShow,
     /// `app_icon`: an app's own icon as a PNG (D196).
     AppIcon,
+    /// `clipboard_get`: the shared clipboard's text (D197).
+    ClipboardGet,
+    /// `clipboard_set`: copies text to it (D197).
+    ClipboardSet,
     /// `disk_list`: the disks (D192).
     DiskList,
     /// `disk_check`: checks an unmounted disk (D192).
@@ -356,7 +360,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 53] = [
+pub const TOOLS: [Tool; 55] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -615,6 +619,22 @@ pub const TOOLS: [Tool; 53] = [
         &registry::APP_ICON,
         Kind::AppIcon,
         twin("/bin/app", &["icon", "-o", CAPTURE_PATH], Operand::Name),
+    ),
+    tool(
+        &registry::CLIPBOARD_GET,
+        Kind::ClipboardGet,
+        twin("/bin/clip", &["get"], Operand::None),
+    ),
+    tool(
+        &registry::CLIPBOARD_SET,
+        Kind::ClipboardSet,
+        Twin {
+            program: Program::Fixed("/bin/clip"),
+            words: &["set"],
+            operand: Operand::None,
+            stdin: Stdin::Content,
+            output: Output::Discarded,
+        },
     ),
 ];
 

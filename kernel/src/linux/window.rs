@@ -27,9 +27,10 @@ use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
     MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
-    create_reply, element_action, get_menu_reply, get_tree_reply, input_outcome, keyboard_flags,
-    keyboard_layout_reply, list_reply, placement_reply, put_double_word, put_word, query_kind,
-    read_query_reply, request, send_input_reply, set_size_reply, size, tree_answer,
+    create_reply, element_action, get_clipboard_reply, get_menu_reply, get_tree_reply,
+    input_outcome, keyboard_flags, keyboard_layout_reply, list_reply, placement_reply,
+    put_double_word, put_word, query_kind, read_query_reply, request, send_input_reply,
+    set_size_reply, size, tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -326,6 +327,47 @@ pub fn ioctl<P: Platform>(
             if !crate::input::set_preferences(preferences) {
                 return Err(Errno::EINVAL);
             }
+        }
+        Request::SetClipboard { buffer, length } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| length <= crate::clipboard::CAPACITY)
+                .ok_or(Errno::E2BIG)?;
+            let mut text = Vec::new();
+            text.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+            text.resize(length, 0);
+            process
+                .read_user_memory(buffer, &mut text)
+                .map_err(|_| Errno::EFAULT)?;
+            if core::str::from_utf8(&text).is_err() {
+                return Err(Errno::EINVAL);
+            }
+            crate::clipboard::set(text);
+        }
+        Request::GetClipboard {
+            buffer,
+            length,
+            offset,
+        } => {
+            let (text, serial) = crate::clipboard::get();
+            let text = text.as_deref().map_or(&[][..], Vec::as_slice);
+            let rest = usize::try_from(offset)
+                .ok()
+                .and_then(|offset| text.get(offset..))
+                .unwrap_or_default();
+            let copied = rest
+                .len()
+                .min(usize::try_from(length).unwrap_or(usize::MAX));
+            if copied > 0 {
+                process
+                    .write_user_memory(buffer, &rest[..copied])
+                    .map_err(|_| Errno::EFAULT)?;
+            }
+            put_word(bytes, get_clipboard_reply::LENGTH, text.len() as u32);
+            put_word(bytes, get_clipboard_reply::SERIAL, serial);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
         }
         Request::AppsChanged => reload_catalogue::<P>(),
         Request::OpenApp { length, name } => {

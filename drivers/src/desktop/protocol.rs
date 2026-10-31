@@ -76,6 +76,8 @@ pub mod size {
     pub const GET_KEYBOARD_LAYOUT: usize = 8;
     pub const SET_KEYBOARD_LAYOUT: usize = 4;
     pub const SET_INPUT_PREFERENCES: usize = 20;
+    pub const SET_CLIPBOARD: usize = 16;
+    pub const GET_CLIPBOARD: usize = 32;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -116,6 +118,8 @@ pub mod request {
     pub const GET_KEYBOARD_LAYOUT: u32 = encode(READ, 29, size::GET_KEYBOARD_LAYOUT);
     pub const SET_KEYBOARD_LAYOUT: u32 = encode(WRITE, 30, size::SET_KEYBOARD_LAYOUT);
     pub const SET_INPUT_PREFERENCES: u32 = encode(WRITE, 31, size::SET_INPUT_PREFERENCES);
+    pub const SET_CLIPBOARD: u32 = encode(WRITE, 32, size::SET_CLIPBOARD);
+    pub const GET_CLIPBOARD: u32 = encode(READ | WRITE, 33, size::GET_CLIPBOARD);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -476,6 +480,19 @@ pub enum Request {
         repeat_delay_ms: u32,
         repeat_rate: u32,
     },
+    /// Makes the `length` bytes of UTF-8 text at `buffer` the clipboard's (D197).
+    SetClipboard {
+        buffer: u64,
+        length: u64,
+    },
+    /// Copies the clipboard's text from byte `offset` on into the `length` bytes at `buffer`,
+    /// as much as fits, and writes its whole length and its serial back
+    /// ([`get_clipboard_reply`]).
+    GetClipboard {
+        buffer: u64,
+        length: u64,
+        offset: u64,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -535,6 +552,8 @@ impl Request {
             request::GET_KEYBOARD_LAYOUT => size::GET_KEYBOARD_LAYOUT,
             request::SET_KEYBOARD_LAYOUT => size::SET_KEYBOARD_LAYOUT,
             request::SET_INPUT_PREFERENCES => size::SET_INPUT_PREFERENCES,
+            request::SET_CLIPBOARD => size::SET_CLIPBOARD,
+            request::GET_CLIPBOARD => size::GET_CLIPBOARD,
             _ => return None,
         })
     }
@@ -700,6 +719,15 @@ impl Request {
                 repeat_delay_ms: at(12),
                 repeat_rate: at(16),
             },
+            request::SET_CLIPBOARD => Self::SetClipboard {
+                buffer: double_word(bytes, 0),
+                length: double_word(bytes, 8),
+            },
+            request::GET_CLIPBOARD => Self::GetClipboard {
+                buffer: double_word(bytes, 0),
+                length: double_word(bytes, 8),
+                offset: double_word(bytes, 16),
+            },
             _ => Self::GetWorkArea,
         })
     }
@@ -742,6 +770,13 @@ pub mod placement_reply {
     pub const Y: usize = 8;
     pub const WIDTH: usize = 12;
     pub const HEIGHT: usize = 16;
+}
+
+/// Where `GetClipboard` writes the text's whole length and the clipboard's serial back into
+/// its argument.
+pub mod get_clipboard_reply {
+    pub const LENGTH: usize = 24;
+    pub const SERIAL: usize = 28;
 }
 
 /// Where `CaptureWindow` writes the window's content width and height and how many rows it

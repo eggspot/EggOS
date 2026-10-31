@@ -197,6 +197,8 @@ pub struct Fake {
     pub acted: Vec<(u32, u32, u32, Vec<u8>)>,
     pub act_outcome: u32,
     pub capture_calls: usize,
+    pub clipboard: Vec<u8>,
+    pub clipboard_serial: u32,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
     pub window_server: bool,
@@ -258,6 +260,8 @@ impl Default for Fake {
             acted: Vec::new(),
             act_outcome: 0,
             capture_calls: 0,
+            clipboard: Vec::new(),
+            clipboard_serial: 0,
             capture_fails_at: None,
             resized_at: None,
             window_server: true,
@@ -1036,6 +1040,33 @@ impl System for Fake {
             height,
             rows,
         })
+    }
+
+    fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno> {
+        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+            return Err(Errno::ENOTTY);
+        }
+        if core::str::from_utf8(text).is_err() {
+            return Err(Errno::EINVAL);
+        }
+        self.clipboard = text.to_vec();
+        self.clipboard_serial += 1;
+        Ok(())
+    }
+
+    fn clipboard(
+        &mut self,
+        descriptor: usize,
+        offset: usize,
+        into: &mut [u8],
+    ) -> Result<(usize, u32), Errno> {
+        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+            return Err(Errno::ENOTTY);
+        }
+        let rest = self.clipboard.get(offset..).unwrap_or_default();
+        let copied = rest.len().min(into.len());
+        into[..copied].copy_from_slice(&rest[..copied]);
+        Ok((self.clipboard.len(), self.clipboard_serial))
     }
 
     fn window_tree(

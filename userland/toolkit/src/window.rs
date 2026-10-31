@@ -23,6 +23,8 @@ const SET_PROFILE: usize = 0x4004_770e;
 const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
 const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
 const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
+const SET_CLIPBOARD: usize = 0x4010_7720;
+const GET_CLIPBOARD: usize = 0xc020_7721;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
 
@@ -123,6 +125,46 @@ impl WindowServer {
             )
         };
         result(answer).map(|_| ())
+    }
+
+    fn ioctl_with_buffer(
+        &self,
+        request: usize,
+        buffer: *const u8,
+        length: usize,
+        offset: usize,
+    ) -> Result<[u8; 32], Errno> {
+        let mut argument = [0u8; 32];
+        argument[..8].copy_from_slice(&(buffer as u64).to_ne_bytes());
+        argument[8..16].copy_from_slice(&(length as u64).to_ne_bytes());
+        argument[16..24].copy_from_slice(&(offset as u64).to_ne_bytes());
+        // SAFETY: the request reads its 16- or 32-byte argument, which this function owns, and
+        // reads or writes at most `length` bytes at `buffer`, which every caller borrows for the
+        // call: shared for a request that only reads it, exclusively for one that writes it.
+        let answer = unsafe {
+            call(
+                number::IOCTL,
+                [self.fd, request, argument.as_mut_ptr() as usize, 0, 0, 0],
+            )
+        };
+        result(answer).map(|_| argument)
+    }
+
+    /// Makes `text` the clipboard every app shares (`SET_CLIPBOARD`, D197).
+    pub fn set_clipboard(&self, text: &str) -> Result<(), Errno> {
+        self.ioctl_with_buffer(SET_CLIPBOARD, text.as_ptr(), text.len(), 0)
+            .map(|_| ())
+    }
+
+    /// Copies the shared clipboard's text from byte `offset` on into `into`, as much as fits
+    /// (`GET_CLIPBOARD`, D197): its whole length, which may be more than `into` holds, and its
+    /// serial, which changes with every copy.
+    pub fn clipboard(&self, offset: usize, into: &mut [u8]) -> Result<(usize, u32), Errno> {
+        let reply = self.ioctl_with_buffer(GET_CLIPBOARD, into.as_mut_ptr(), into.len(), offset)?;
+        let word = |at: usize| {
+            u32::from_ne_bytes([reply[at], reply[at + 1], reply[at + 2], reply[at + 3]])
+        };
+        Ok((word(24) as usize, word(28)))
     }
 
     /// Where windows go and the scale.
