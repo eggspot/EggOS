@@ -75,11 +75,21 @@ run-eggos.sh` the script's own path works too.
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
 | `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `wm_drag`, `clock_set`, `clock_sync` |
 
-- **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
+- **Set on the host for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
   EggOS on the kernel command line (QEMU's `-append`), which the server reads in
-  `/proc/cmdline` and nothing in the machine can change. To change the grants, restart EggOS;
-  there are no per-agent grants yet.
+  `/proc/cmdline` and nothing in the machine can change. They are the most the local
+  channel's agent (`local`) can have.
+- **Each agent has its own grants** (D193). They are kept in `/var/lib/eggos/agent-grants`,
+  outside every folder a tool can write, which only you change (the `agent` command and
+  Settings' Agents pane come next; no tool changes grants). Each grant is `deny`, `ask` (each
+  call asks you first, through the client; `confirm: true` does not count) or `allow`, and can
+  end at a time you set. An agent you never added gets nothing, not even reading. The local
+  agent keeps the boot grants until you set its own, which can only lower them. The server
+  reads the file again before every call, so a grant you take back stops the agent's next
+  call, and a call still waiting for your answer. A damaged file (its checksum line does not
+  match) leaves the local agent reading and every other agent nothing until you save the
+  grants again.
 - **A refusal names the grant.** A tool without its grant answers `isError: true` with
   `Refused: tee needs the write grant ...` and the flag that gives it.
 - **Installing comes from the shared folder only.** `app_install` installs from `/media/host`,
@@ -271,7 +281,8 @@ elicitation or sampling) that the client shows you.
 
 Every tool call, every `initialize` (with the client's name and version), each server start
 (with the grants) and each client's end are recorded in `/var/log/agent-audit.log`, one line
-each: the time, the call's number, the client, the tool, the outcome, the arguments and a detail
+each: the time, the call's number, the agent (D193; `local` for the local channel and for
+records written before), the client, the tool, the outcome, the arguments and a detail
 (a size, an exit status or an error), never the output. A call that runs a command writes
 `started`, then `ok` or `error`; one stopped before (an unknown tool, a missing grant, bad
 arguments, a refused path) writes one `error` or `refused` line; one that asks you first writes
@@ -358,8 +369,9 @@ clock at boot (D150). The log in Settings comes after the release.
 
 ## Known limits of this version
 
-- Grants are for the whole machine and the whole boot: no per-agent grants, no revoking them
-  while EggOS runs.
+- Every connection is the local agent until the channel names agents (41b, D193), and
+  agents' grants are changed only by writing the store, which the `agent` command and
+  Settings will do; a grant taken back stops the next call, not a command already running.
 - A `tee` that fails while replacing a file can leave it cut: it writes in place, as POSIX
   `tee` does, and says `N of M bytes written; the file may be cut`.
 - Commands run as root: EggOS does not enforce file permissions yet, so a separate user would
@@ -385,6 +397,6 @@ The 2026-07-28 protocol version, resources and prompts; tools for the commands t
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
-terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
-(after networking); the log in Settings. A window whose program stopped answering keeps input
+terminal's window; the `agent` command, `grants_list_own` and agents naming themselves on the
+channel (D193); MCP over the network; the log and the Agents pane in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

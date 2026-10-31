@@ -15696,3 +15696,115 @@ the license, by an explicit instruction recorded here.
   item values in the toolkit; the one-column layout under 448 px and touch-sized rows (D23);
   a mounted disk's label in `/proc/driver/disks`; a progress bar and a cancel for long checks;
   hot-plug.
+
+## D193 Agents get grants of their own: per-agent grants in a store only the user changes, read again before every call, with time limits, ask-each-time and the agent in the audit log (batch part 41, slice 41a; roadmap item 28's "Next" and M10; D21's per-agent revocable grants; extends D136, D137) — Decided by the build loop (the store's place, a corrupt store and the local agent's ceiling decided by research)
+
+- **What.** The built-in MCP server now decides every call by the agent that makes it: each
+  agent has its own grants, an agent the user never added gets nothing (not even reading),
+  and a grant the user takes back stops that agent's next call, and a call still waiting for
+  the user's answer when it resumes. Grants can end at a time the user sets, or ask the user
+  each time. Every audit record names the agent. The part is split: 41a (this) is the model,
+  the store, the server's checks and the log; 41b brings the agent's identity through the
+  channel, the `agent` command (`agent list|grant|revoke`) and the `grants_list_own` tool;
+  41c Settings' Agents pane and the grant prompt (designed by Fable); 41d `eggmcpd` over TCP
+  with TLS and a pairing code, as an optional component; 41e MCP resources, prompts and the
+  2026-07-28 protocol version. Later slices add their own paragraphs here.
+- **The model** (`userland/mcp/src/grants.rs`). An `AgentId` is 1 to 32 ASCII letters,
+  digits, `.`, `_` or `-`, given when an agent pairs or connects; `AgentId::new` refuses
+  `local`, which only the local channel (`/dev/agent`) is (`AgentId::LOCAL`), and
+  `AgentId::stored` takes it for the store and the user's front-ends. An `AgentName` is what
+  the user sees (UTF-8, at most 64 bytes, no hidden character). Each agent has, for each of
+  the classes `view`, `write`, `install` and `run` (D137's; reading needs none), a
+  `ClassGrant`: a `Permission` (`Deny`, `Ask` or `Allow`) and an optional end, in the wall
+  clock's seconds. `run` still brings the others: a class's decision is the stronger of its
+  own and `run`'s. `Policy { boot, store }` holds the grants EggOS was started with (the
+  kernel command line, D137) and the store; `Policy::check(agent, capability, now)` returns
+  `Decision::Allow`, `Decision::AskUser` or `Decision::Deny(Denial)` (`NotStartedWith`,
+  `NotGiven`, `Expired`, `UnknownAgent`, `StoreUnreadable`).
+- **The local agent keeps today's behaviour.** With no store, or no entry for `local`, the
+  local channel's agent has exactly the boot grants (`--mcp-allow`), so nothing changes for
+  existing setups and tests. An entry for `local` can only lower them: the boot grants are
+  its ceiling, so the store can take a grant back from it while EggOS runs but never give it
+  one EggOS was not started with (the refusal then names `--mcp-allow`, as before).
+- **The store** (`GrantStore`, at most 16 agents). `/var/lib/eggos/agent-grants`, a text file:
+  a header `eggos-agent-grants 1`, one tab-separated line per agent (id, `view`, `write`,
+  `install`, `run`, name; each permission `deny`, `ask` or `allow`, with `@<second>` when it
+  ends) and a last line `sum <16 hex digits>`, the FNV-1a checksum of everything before it.
+  `encode` writes it, `decode` refuses anything in doubt (another version, a bad checksum, a
+  cut file, a line with the wrong field count, an unknown word, `deny` with an end, a bad id
+  or name, an agent twice, more than 16). It is written to `agent-grants.new`, synced and
+  renamed over the file (the writers come in 41b and 41c). The server only reads it: the
+  `System` trait has `read_grant_store` and no way to write it, and no tool changes grants.
+- **The server** (`server.rs`). `Server` holds the `Policy` and the connection's `AgentId`
+  (`set_agent`, `LOCAL` by default). Before every `tools/call` it reads the store again
+  (`refresh_policy`: one open and read of at most 4 KiB, nothing next to the twin it runs)
+  and calls `check`; a denial is refused with `needs_grant` and a message naming why. A call
+  waiting for the user's answer remembers its agent and is checked again when the answer
+  comes: a grant taken back meanwhile refuses it (`the grant was taken back while the user
+  was asked`). `AskUser` makes the call ask the user through elicitation even when the tool
+  needs no confirmation; a client that cannot ask is refused, and `confirm: true` never
+  counts. A question for an agent other than `local` names it (`(EggOS, agent phone, tool
+  trash)`). `initialize`'s instructions state the agent's own grants (`none, not even
+  reading` for an unknown agent). The clock is read only when some grant has an end; a clock
+  that reads 0 (unreadable) ends every time-limited grant.
+- **The audit log** (`audit.rs`). A record has the agent's id after the call's number
+  (eight fields); a record of seven fields, written before, reads back as `local`'s.
+  `RECORD_BYTES` grew by one field (2688 bytes). `Filter { agent, tool, outcome, since,
+  until }` and `query(log, filter)` give the records a view asks for, oldest first, for
+  Settings and `agentlog` (their front-ends come in 41b and 41c).
+- **D136's exceptions.** "Grants are set when EggOS starts and cannot be revoked while it
+  runs" ends when 41b's `agent revoke` writes the store (the server side is here); "the
+  default is read-only rather than deny" ends for every agent but `local` here, and for
+  connections that name themselves in 41b and 41d; "the GUI view of the audit log comes
+  after the release" ends with 41c.
+- **Security review (slice 41a).** Checklist: (1) can an agent raise its own grants or skip
+  the check; (2) default deny and fail closed, and the store parser's edge cases; (3) the time
+  between the check and the run, and a resumed call; (4) injection through the new agent
+  field, and 7- versus 8-field records; (5) panics and out-of-bounds in no_std code; (6)
+  other. Findings: (1) none: no tool writes outside `/home/root` (a test checks that no
+  `write` or `install` tool's roots reach the store), `run` is full control by design (D137);
+  (2) the parser fails closed on every malformed case tested; (3) revocation applies at the
+  next call and at a resumed call, not to a twin already running (documented); a resumed
+  call is checked for the agent that made it (fixed: `Pending` keeps its agent); (4) every
+  free field is escaped, so a client cannot change a record's tab count; (5) none. Fixed from
+  the review: `AgentId::new` refuses `local`, so no connection can claim the local agent's
+  ceiling-only rules; an unreadable clock ends time-limited grants instead of keeping them;
+  the store is opened `O_NONBLOCK`, so a FIFO put there cannot stall the server; questions
+  name the agent. Accepted, recorded: `Ask` goes through the client's elicitation, so it is
+  as strong as the client is honest, as D137's confirmations are; 41c moves the grant prompt
+  to EggOS's own screen. The checksum finds damage, not forgery: only programs with `run` can
+  write `/var/lib/eggos`. A deleted store gives `local` its boot grants back (deleting needs
+  `run`).
+- **Decided by research.** (1) The store lives in `/var/lib/eggos`, not the settings file
+  (an agent with `write` could change `/home/root/.config/eggos/settings` and raise itself)
+  nor `/etc/eggos` (`/etc` is the read-only initramfs); `/var` is on the EggFS disk like the
+  audit log, and in memory with `--no-disk`. (2) A store that is there but cannot be trusted
+  fails closed: the local agent keeps reading, every other agent gets nothing, and the
+  refusal says why; a missing store is not an error. (3) The local agent's grants are the
+  store's entry capped by the boot grants, the boot grants when there is no entry.
+- **Choices made without research.** FNV-1a 64 for the checksum (it finds damage; nothing
+  here needs a keyed hash, see the review). At most 16 agents and a 4 KiB file, so the store
+  fits the server's fixed buffers with no heap. The store is read on every call rather than
+  watched: one small read per call needs no inode-change support and is far cheaper than the
+  twin the call runs. `Ask` reuses the destructive-call question and its timeout instead of a
+  second kind of question. The agent field goes after the call's number, and old records are
+  read as `local`'s, so `agentlog` reads every generation of the log.
+- **Front-ends (slice 41a).** MCP: the instructions state the agent's own grants; every
+  refusal names why. CLI and GUI: none yet for changing grants (41b, 41c); `agentlog` shows
+  the agent field in `--raw`.
+- **Check.** Host tests: the grant matrix per agent (an unknown agent denied, each class
+  alone, `run` bringing the rest, `ask`, revoking, forgetting, time limits, the local
+  agent's ceiling, an unreadable store), the store's round trip and every refused file, ids
+  and names; in the server, a grant taken back stops the next call, a store that cannot
+  raise the local agent, an unknown agent refused and logged under its id, `ask` with and
+  without elicitation, a grant taken back while the user is asked, an unreadable store, the
+  instructions, the agent named in a question, and no writing tool reaching the store; the
+  log's agent field, old records and every filter. The QEMU check (revoking mid-session)
+  comes with 41b's `agent` command.
+- **Not yet (after slice 41a).** The agent's identity from the channel (41b; today every
+  connection is `local`); the `agent` command and the `grants_list_own` tool (41b); an
+  unknown agent still gets `tools/list` and `initialize` (41b decides what it sees);
+  Settings' Agents pane, the grant prompt on EggOS's screen and the log there (41c);
+  network connections (41d); resources, prompts and the 2026-07-28 protocol (41e); stopping
+  a twin already running when its grant is taken back; `agentlog` filters and an `AGENT`
+  column (41b).

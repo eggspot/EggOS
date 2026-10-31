@@ -409,7 +409,9 @@ D16):
     `app_uninstall` manage apps; destructive calls ask the user through elicitation or need
     `confirm: true`; every call goes to `/var/log/agent-audit.log` (seven generations, a budget
     per run, content never logged), which `agentlog` shows; `kill` reaches other processes and
-    groups, init excepted. Next: per-agent grants, network MCP, the log in Settings.
+    groups, init excepted; each agent has its own grants, checked before every call, with
+    time limits and ask-each-time, and the log names the agent (D193). Next: the `agent`
+    command and agents naming themselves, network MCP, the log in Settings.
 38. **done** — users can now run Linux programs that talk over local stream sockets, pass
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals
