@@ -8,7 +8,8 @@
 //! `EnumClipboardFormats` lists what it holds and `GetClipboardFormatNameW` names a registered
 //! format. Its `CF_UNICODETEXT` is the clipboard every app shares (D197): closing the clipboard
 //! after a change gives that text to the window server, and opening it takes a text another app
-//! copied since in its place.
+//! copied since in its place, only once the open succeeded: no other thread of the program
+//! holds the clipboard open then, so no data `GetClipboardData` handed out is freed under it.
 
 use super::gui::{self, try_with, with};
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
@@ -147,19 +148,29 @@ fn free(data: usize) {
     }
 }
 
+enum Opening {
+    Newly,
+    Again,
+    Refused,
+}
+
 extern "efiapi" fn open_clipboard(_owner: usize) -> Bool {
-    take_shared_text();
     let thread = thread_environment::thread_id();
-    let opened = CLIPBOARD.with(|clipboard| match clipboard.opened_by {
-        Some(holder) if holder != thread => false,
-        _ => {
+    let opening = CLIPBOARD.with(|clipboard| match clipboard.opened_by {
+        None => {
             clipboard.opened_by = Some(thread);
-            true
+            Opening::Newly
         }
+        Some(holder) if holder == thread => Opening::Again,
+        Some(_) => Opening::Refused,
     });
-    match opened {
-        true => TRUE,
-        false => fail(error::ACCESS_DENIED, FALSE),
+    match opening {
+        Opening::Newly => {
+            take_shared_text();
+            TRUE
+        }
+        Opening::Again => TRUE,
+        Opening::Refused => fail(error::ACCESS_DENIED, FALSE),
     }
 }
 
