@@ -39,6 +39,7 @@ pub mod linux_action {
     pub const NOCLDSTOP: u64 = 0x1;
     pub const NOCLDWAIT: u64 = 0x2;
     pub const SIGINFO: u64 = 0x4;
+    pub const RESTORER: u64 = 0x0400_0000;
     pub const ONSTACK: u64 = 0x0800_0000;
     pub const RESTART: u64 = 0x1000_0000;
     pub const NODEFER: u64 = 0x4000_0000;

@@ -93,12 +93,31 @@ fn record(index: usize, action: Action) {
 
 fn linux_words(action: &Action) -> [usize; 4] {
     let flags = darwin_signals::linux_action_flags(action.flags);
-    let (handler, flags) = match action.handler {
-        SIG_DFL | SIG_IGN => (action.handler, flags & !linux_action::SIGINFO),
-        _ => (deliver as *const () as usize, flags | linux_action::SIGINFO),
+    let (handler, flags, restorer) = match (action.handler, signal_return()) {
+        (SIG_DFL | SIG_IGN, _) => (action.handler, flags & !linux_action::SIGINFO, 0),
+        (_, None) => (
+            deliver as *const () as usize,
+            flags | linux_action::SIGINFO,
+            0,
+        ),
+        (_, Some(restorer)) => (
+            deliver as *const () as usize,
+            flags | linux_action::SIGINFO | linux_action::RESTORER,
+            restorer,
+        ),
     };
     let mask = darwin_signals::linux_signal_set(action.mask);
-    [handler, flags as usize, 0, mask as usize]
+    [handler, flags as usize, restorer, mask as usize]
+}
+
+#[cfg(target_arch = "x86_64")]
+fn signal_return() -> Option<usize> {
+    Some(eggos_runtime::process::restore_after_signal as *const () as usize)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn signal_return() -> Option<usize> {
+    None
 }
 
 fn install_linux(
