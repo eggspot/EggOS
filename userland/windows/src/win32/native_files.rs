@@ -3,9 +3,10 @@
 //! file's position, report the result in the `IO_STATUS_BLOCK` and an NT status, signal the
 //! event and queue the APC routine they were given; the end of a file is
 //! `STATUS_END_OF_FILE` and of a pipe `STATUS_PIPE_BROKEN`. Anonymous pipes come in two steps:
-//! `NtOpenFile` of the pipe file system (`\??\PIPE\`), then `NtCreateNamedPipeFile` with no name
-//! under it, which makes a Linux pipe and returns the end the access asks for, and `NtOpenFile`
-//! with no name under that end, which returns the other end; each end is inherited when its
+//! `NtOpenFile` of the pipe file system (`\??\PIPE\`, or `\Device\NamedPipe\` as newer Rust
+//! standard libraries name it), then `NtCreateNamedPipeFile` with no name under it, which makes
+//! a Linux pipe and returns the end the access asks for, and `NtOpenFile` with no name under
+//! that end, which returns the other end; each end is inherited when its
 //! `OBJECT_ATTRIBUTES` say `OBJ_INHERIT`. `RtlNtStatusToDosError` turns a status into its Win32
 //! error (`nt_status.rs`).
 
@@ -25,7 +26,7 @@ const UNICODE_STRING_BUFFER: usize = POINTER;
 const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_READ_DATA: u32 = 1;
 const USE_FILE_POSITION: i64 = -2;
-const PIPE_FILE_SYSTEM_NAME: &[u8] = b"\\??\\PIPE\\";
+const PIPE_FILE_SYSTEM_NAMES: [&[u8]; 2] = [b"\\??\\PIPE\\", b"\\Device\\NamedPipe\\"];
 const PIPE_FILE_SYSTEM_PATH: &[u8] = b"/\0";
 const UNCLAIMED_ENDS: usize = 8;
 const EPIPE: u16 = 32;
@@ -94,10 +95,12 @@ unsafe fn report(block: *mut u8, status: u32, information: usize) -> u32 {
 }
 
 fn names_pipe_file_system(name: &[u16]) -> bool {
-    name.len() == PIPE_FILE_SYSTEM_NAME.len()
-        && name.iter().zip(PIPE_FILE_SYSTEM_NAME).all(|(unit, byte)| {
-            u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(byte))
-        })
+    PIPE_FILE_SYSTEM_NAMES.iter().any(|known| {
+        name.len() == known.len()
+            && name.iter().zip(*known).all(|(unit, byte)| {
+                u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(byte))
+            })
+    })
 }
 
 fn set_inherited(fd: usize, inherit: bool) {
