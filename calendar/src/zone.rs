@@ -14,6 +14,10 @@ pub const MAX_ABBREVIATION_BYTES: usize = 8;
 /// The most bytes of a zone name, such as `America/Argentina/ComodRivadavia`.
 pub const MAX_ZONE_NAME_BYTES: usize = 40;
 
+/// Instants further than this from the epoch, in seconds (about 35 million years), are in
+/// standard time: daylight saving rules are not worked out so far out.
+pub const MAX_RULED_SECONDS: i64 = 1 << 50;
+
 /// A zone's abbreviation, as `date` shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Abbreviation {
@@ -333,6 +337,9 @@ impl Rule {
         let Some(daylight) = self.daylight else {
             return standard;
         };
+        if !(-MAX_RULED_SECONDS..=MAX_RULED_SECONDS).contains(&utc) {
+            return standard;
+        }
         let (year, _, _) = civil_from_days((utc - self.west).div_euclid(SECONDS_PER_DAY));
         let start = transition_utc(daylight.start, year, self.west);
         let end = transition_utc(daylight.end, year, daylight.west);
@@ -354,12 +361,12 @@ impl Rule {
     /// the earlier one when the clocks went back, and the time after the gap when they went
     /// forward over it.
     pub fn to_utc(&self, local: i64) -> i64 {
-        let standard = local + self.west;
+        let standard = local.saturating_add(self.west);
         let Some(daylight) = &self.daylight else {
             return standard;
         };
-        let summer = local + daylight.west;
-        let names_local = |utc: i64| utc + self.at(utc).offset == local;
+        let summer = local.saturating_add(daylight.west);
+        let names_local = |utc: i64| utc.saturating_add(self.at(utc).offset) == local;
         match (names_local(standard), names_local(summer)) {
             (true, true) => standard.min(summer),
             (true, false) => standard,

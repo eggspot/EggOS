@@ -147,3 +147,20 @@ fn month_rules_are_what_windows_keeps() {
             .is_none()
     );
 }
+
+#[test]
+fn instants_at_the_ends_of_time_are_standard_time_without_overflow() {
+    let paris = zone("Europe/Paris").unwrap();
+    for utc in [
+        i64::MAX,
+        i64::MIN,
+        MAX_RULED_SECONDS + 1,
+        -MAX_RULED_SECONDS - 1,
+    ] {
+        let local = paris.at(utc);
+        assert_eq!((local.offset, local.daylight), (3600, false), "{utc}");
+    }
+    assert_eq!(paris.to_utc(i64::MAX), i64::MAX - 3600);
+    assert_eq!(paris.to_utc(i64::MIN), i64::MIN);
+    assert!(paris.at(MAX_RULED_SECONDS).offset >= 3600);
+}

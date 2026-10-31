@@ -33,5 +33,5 @@ pub fn local_zone<S: System>(system: &mut S) -> Rule {
 }
 
 pub fn local_seconds(zone: &Rule, utc: i64) -> i64 {
-    utc + zone.at(utc).offset
+    utc.saturating_add(zone.at(utc).offset)
 }
