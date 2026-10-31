@@ -16056,3 +16056,58 @@ the license, by an explicit instruction recorded here.
     phone bottom sheet, wearable and TV layouts and the remote's `Back` (design section 7); a
     QEMU check (the MCP boot has no desktop); remembering `once` answers and per-tool grants
     (left out by the design).
+- **Slice 41d (agents on other machines).** MCP over HTTPS for paired agents, off until the
+  person turns it on.
+  - Built: ECDSA P-256 signing in constant time with RFC 6979 nonces (`eggos_crypto::p256`:
+    4-limb Montgomery arithmetic with masked selects, the Renes-Costello-Batina complete
+    addition formulas, a double-and-add-always ladder); EggOS's own self-signed certificate
+    (`eggos_tls::certificate`: `eggos.local`, the host name and the machine's IPv4 addresses,
+    `keyUsage` digitalSignature, `extKeyUsage` serverAuth, no `basicConstraints`, PEM and the
+    SHA-256 fingerprint); a TLS 1.3 server (`eggos_tls::server::accept`, sharing the client's
+    records, key schedule and `Session`; X25519 only, no HelloRetryRequest, AES-128-GCM
+    preferred, ALPN `http/1.1` answered); the grants store's version 2, whose seventh field is
+    a paired agent's token hash (version 1 still read, `local` never has one, the file grows to
+    8 KiB); pairing (`eggos_mcp::pairing`: an 8-character code from 31 symbols without `0`,
+    `O`, `1`, `I`, `L`, 5 minutes, one at a time, 5 wrong codes burn it and the next waits
+    30 s, 1 s after each wrong code; the token is `eggos_` and 32 random bytes in base64url,
+    and the store keeps only its SHA-256); MCP's Streamable HTTP as small as the specification
+    allows (`eggos_mcp::http`: `POST /mcp` with one message, the answer as `application/json`
+    or 202, `GET` and `DELETE` 405, `Authorization: Bearer` required, `Origin` refused unless
+    it is `https://` and the request's `Host`, `Content-Length` bodies only, `POST /pair`);
+    `eggmcpd --network`, which init starts when `/var/lib/eggos/agent-network` exists (port
+    8443 unless the file says otherwise), keeps its key (0600) and certificate (DER and PEM) in
+    `/var/lib/eggos`, answers one connection at a time with a server per paired agent pinned to
+    it, and never asks through elicitation (`Server::set_answers_only`); and `agent pair
+    [--name] <id>` and `agent network [--port] <on|off|show>` in the registry and coreutils.
+  - Decided by research (one sonnet subagent, from the MCP specification's 2025-06-18 and
+    2026-07-28 authorization and transport pages): HTTPS with a self-signed P-256 certificate
+    pinned by fingerprint and a bearer token per agent, not TLS with a pre-shared key (no MCP
+    client's HTTP stack offers it) nor a PAKE (no client has one), and not yet the
+    specification's OAuth 2.1 path (an authorization server with metadata, client
+    registration and PKCE is a later step; until then only clients that send a static
+    `Authorization` header work, as Claude Code's `--header` does); the pairing code's size,
+    life and limits above; pairing and turning the network on are the person's only, so no MCP
+    tool does either, a deliberate exception to D22's three front-ends; the listener is off
+    until the person turns it on (D18); a new agent has no grants.
+  - Choices made without research: the person's `agent pair` writes both the agent and its
+    token's hash to the store and the code's hash with the token itself to
+    `/run/eggos/agent-pairing` (memory only, 0600), so the network server never writes the
+    grants store: it counts wrong codes in that file and removes it once the token is handed
+    out; the boot's grants do not bound network agents (their token says who they are, so only
+    the person's store does); one connection at a time, and a call waiting for the person's
+    answer on the screen holds its connection until answered or timed out; a request's last
+    answer line is the HTTP body; the certificate is made once (valid from 2026 for 20 years,
+    its serial from the public key's hash) and kept, so its fingerprint stays the one clients
+    pinned until the person removes it; no `basicConstraints`, so rustls and webpki accept the
+    certificate as a server's own while it is also the client's only trusted certificate.
+  - Check. Host tests: P-256 against RFC 6979's vectors and through `ecdsa::verify`, the
+    certificate read back by the client's own X.509 code and accepted by a client pinning it,
+    a TLS handshake between our client and our server over pipes, refusals without TLS 1.3 or
+    X25519, the store with tokens and its older version, pairing (codes, tokens, tries, the
+    file), HTTP (reading, limits, routing, answers), a server without elicitation, and `agent
+    pair`/`agent network` against the fake system.
+  - Not yet: the specification's OAuth path; an event stream (`GET`) and
+    `Mcp-Session-Id`; more than one connection at a time; turning the server on or off without
+    a restart; certificate renewal when the machine's address changes (remove the files and
+    start again); mDNS; IPv6; the Agents pane's controls for pairing and the network
+    (slice 41d6); a QEMU check over the network (slice 41d7).

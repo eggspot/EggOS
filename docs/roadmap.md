@@ -416,7 +416,10 @@ D16):
     agents and sets, revokes and forgets their grants, its controls person-only, and its
     Activity view browses the audit log by agent, tool, result and time; with the desktop
     installed EggOS asks on its own screen (the grant prompt: once, this session, always or
-    deny, 90 s, its window refusing injected input). Next: network MCP, resources and prompts.
+    deny, 90 s, its window refusing injected input); agents on other machines connect over
+    HTTPS once the person turns it on (`agent network on`) and pairs them with a one-time code
+    (`agent pair`), each with its own token and a certificate the client pins (written,
+    unchecked, D193). Next: pairing from the Agents pane, OAuth, resources and prompts.
 38. **done** — users can now run Linux programs that talk over local stream sockets, pass
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals

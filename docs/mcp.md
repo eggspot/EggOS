@@ -65,6 +65,56 @@ run-eggos.sh` the script's own path works too.
   interactive ones, where it restarts EggOS: the session cannot survive a restart, so the
   client sees the server end and starts it again (D153).
 
+## Connect an agent on another machine
+
+EggOS also answers MCP over HTTPS, for agents that run elsewhere on the network (D193). It is
+off until you turn it on, on EggOS itself:
+
+```
+agent network on
+```
+
+From EggOS's next start, `eggmcpd --network` answers on port 8443 (`agent network --port 9443
+on` for another). The first start makes the server's key and its self-signed certificate in
+`/var/lib/eggos` (`agent-network.key`, readable by root only, and `agent-network.der` and
+`.pem`); `agent network show` prints whether it is on, where agents connect and the
+certificate's SHA-256 fingerprint.
+
+Then pair each agent, on EggOS:
+
+```
+agent pair --name "My laptop" laptop
+```
+
+It prints a one-time code, `ABCD-EFGH`, good for 5 minutes. On the agent's machine, check the
+certificate's fingerprint against the one EggOS showed, then trade the code for the agent's
+token once:
+
+```
+curl --cacert agent-network.pem -H 'Content-Type: application/json' \
+  -d '{"code":"ABCD-EFGH"}' https://eggos.local:8443/pair
+```
+
+The answer is `{"agent":"laptop","token":"eggos_..."}`. Keep the token like a password: it is
+the agent's identity, and EggOS keeps only its hash. Five wrong codes burn the code; a new one
+can be made 30 seconds later. Pairing again gives the agent a new token and ends the old one;
+`agent forget laptop` ends it too.
+
+A paired agent has no grants until you give them (`agent grant laptop view`, or Settings'
+Agents pane). Connect the client with the token as a header, trusting the certificate file:
+
+```
+NODE_EXTRA_CA_CERTS=/path/agent-network.pem claude mcp add --transport http eggos \
+  https://eggos.local:8443/mcp --header "Authorization: Bearer eggos_..."
+```
+
+The server speaks Streamable HTTP without an event stream: each `POST /mcp` carries one
+message and gets its answer as JSON. It never asks the client a question (elicitation); a call
+that needs your yes asks on EggOS's own screen, or is refused when no desktop runs. A request
+whose `Origin` header names another address is refused, so a web page cannot reach the server
+through DNS rebinding. Only clients that can send a fixed `Authorization` header work yet: the
+specification's OAuth sign-in comes later.
+
 ## Grants
 
 | Grant | Lets the agent | Tools |
@@ -397,8 +447,13 @@ clock at boot (D150). The log in Settings comes after the release.
 
 - A client's word names its agent on the local channel (D193): any program that can open
   `/dev/agent` can claim to be any agent, so every agent there is capped by `--mcp-allow`;
-  paired connections that prove who they are come with MCP over the network. A grant taken back
-  stops the next call, not a command already running.
+  paired agents on the network prove who they are with their token, so only your grants bound
+  them. A grant taken back stops the next call, not a command already running.
+- The network server answers one connection at a time, and a call waiting for your answer on
+  the screen holds its connection until you answer. Turning it on or off takes effect at the
+  next start. Its certificate names the addresses the machine had when it was made: after the
+  address changes, remove `/var/lib/eggos/agent-network.der` and `.pem` and start again, then
+  give clients the new certificate.
 - A `tee` that fails while replacing a file can leave it cut: it writes in place, as POSIX
   `tee` does, and says `N of M bytes written; the file may be cut`.
 - Commands run as root: EggOS does not enforce file permissions yet, so a separate user would
@@ -424,6 +479,6 @@ The 2026-07-28 protocol version, resources and prompts; tools for the commands t
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
-terminal's window; MCP over the network; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
+terminal's window; OAuth sign-in, an event stream and session ids for MCP over the network, and pairing from Settings' Agents pane; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
 where the window server puts a new window). A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.
