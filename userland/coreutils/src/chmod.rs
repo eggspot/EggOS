@@ -116,9 +116,9 @@ fn applied_clause(clause: &[u8], mut mode: u32, directory: bool) -> u32 {
     let who = clause[..start]
         .iter()
         .fold(0, |who, &letter| who | who_bits(letter));
-    let affected = match who {
-        0 => PERMISSION_BITS & !UMASK,
-        who => who,
+    let (affected, cleared_by_equals) = match who {
+        0 => (PERMISSION_BITS & !UMASK, PERMISSION_BITS),
+        who => (who, who),
     };
     let mut rest = &clause[start..];
     while let Some((&operation, after)) = rest.split_first() {
@@ -132,7 +132,7 @@ fn applied_clause(clause: &[u8], mut mode: u32, directory: bool) -> u32 {
         mode = match operation {
             b'+' => mode | bits,
             b'-' => mode & !bits,
-            _ => (mode & !affected) | bits,
+            _ => (mode & !cleared_by_equals) | bits,
         };
         rest = &after[end..];
     }
@@ -385,7 +385,11 @@ mod tests {
             ("u=rwx,g=rx,o=", 0o000, 0o750),
             ("+x", 0o644, 0o755),
             ("-w", 0o666, 0o466),
-            ("=r", 0o666, 0o466),
+            ("=r", 0o666, 0o444),
+            ("=", 0o666, 0),
+            ("=", 0o4777, 0),
+            ("=rw", 0o000, 0o644),
+            ("=u", 0o760, 0o755),
             ("u+s", 0o755, 0o4755),
             ("g+s,o+t", 0o755, 0o3755),
             ("+t", 0o755, 0o1755),
