@@ -325,10 +325,7 @@ pub fn pipe_with(flags: usize) -> Result<(usize, usize), Errno> {
     Ok((ends[0] as usize, ends[1] as usize))
 }
 
-/// `poll`'s "bytes wait to be read".
-pub const POLLIN: u16 = 1;
-/// `poll`'s "hung up": a pipe's read end with no writer left.
-pub const POLLHUP: u16 = 0x10;
+const POLLIN: u16 = 1;
 
 /// The `poll` events `fd` reports at once: `POLLIN` when bytes wait, and the `POLLHUP`,
 /// `POLLERR` and `POLLNVAL` Linux always reports.

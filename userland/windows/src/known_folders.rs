@@ -5,6 +5,8 @@
 //! `/Applications` (D131) and the Windows and system folders are where the layer's own
 //! libraries live (`/usr/lib/eggos`). The folders "for all users" are the user's own.
 
+use crate::text::PATH_CAPACITY;
+
 /// A special folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Folder {
@@ -55,6 +57,21 @@ impl Folder {
             Folder::Fonts => Place::Absolute(b"/usr/share/fonts"),
         }
     }
+}
+
+/// Appends `/` and `under` to the `length`-byte path in `out` (nothing for an empty `under`);
+/// the new length, or `None` when the path and its NUL would not fit.
+pub fn append_under(out: &mut [u8; PATH_CAPACITY], length: usize, under: &[u8]) -> Option<usize> {
+    if under.is_empty() {
+        return Some(length);
+    }
+    let end = length.checked_add(1 + under.len())?;
+    if end >= PATH_CAPACITY {
+        return None;
+    }
+    out[length] = b'/';
+    out[length + 1..end].copy_from_slice(under);
+    Some(end)
 }
 
 /// The folder `CSIDL` value `csidl` names (its flags in the high byte left out).
@@ -324,5 +341,26 @@ mod tests {
         assert_eq!(by_known_folder_id(&documents), Some(Folder::Documents));
         assert_eq!(Folder::Documents.place(), Place::Home(b"Documents"));
         assert_eq!(by_known_folder_id(&[0; 16]), None);
+    }
+
+    #[test]
+    fn a_folder_under_a_home_too_long_for_it_is_refused_not_overrun() {
+        let mut out = [b'h'; PATH_CAPACITY];
+        assert_eq!(append_under(&mut out, PATH_CAPACITY - 3, b"Desktop"), None);
+        assert_eq!(append_under(&mut out, PATH_CAPACITY - 1, b"Desktop"), None);
+        assert_eq!(
+            append_under(&mut out, PATH_CAPACITY - 9, b"Desktop"),
+            Some(PATH_CAPACITY - 1)
+        );
+        assert_eq!(&out[PATH_CAPACITY - 9..PATH_CAPACITY - 1], b"/Desktop");
+    }
+
+    #[test]
+    fn the_profile_folder_is_the_home_folder_itself() {
+        let mut out = [0u8; PATH_CAPACITY];
+        out[..5].copy_from_slice(b"/home");
+        assert_eq!(append_under(&mut out, 5, b""), Some(5));
+        assert_eq!(append_under(&mut out, 5, b"Music"), Some(11));
+        assert_eq!(&out[..11], b"/home/Music");
     }
 }

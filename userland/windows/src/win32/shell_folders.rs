@@ -53,24 +53,11 @@ fn folder_path(folder: Folder, out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
         }
         Place::Home(under) => {
             let length = home(out);
-            append_under(out, length, under)?
+            known_folders::append_under(out, length, under)?
         }
     };
     *out.get_mut(length)? = 0;
     Some(length + 1)
-}
-
-fn append_under(out: &mut [u8; PATH_CAPACITY], length: usize, under: &[u8]) -> Option<usize> {
-    if under.is_empty() {
-        return Some(length);
-    }
-    let end = length + 1 + under.len();
-    if end >= PATH_CAPACITY {
-        return None;
-    }
-    out[length] = b'/';
-    out[length + 1..end].copy_from_slice(under);
-    Some(end)
 }
 
 /// Makes the folder at the NUL-terminated `path` and the folders above it that are missing;
@@ -307,29 +294,3 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SHBrowseForFolderW" => sh_browse_for_folder_w,
     b"SHGetMalloc" => sh_get_malloc,
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_folder_under_a_home_too_long_for_it_is_refused_not_overrun() {
-        let mut out = [b'h'; PATH_CAPACITY];
-        assert_eq!(append_under(&mut out, PATH_CAPACITY - 3, b"Desktop"), None);
-        assert_eq!(append_under(&mut out, PATH_CAPACITY - 1, b"Desktop"), None);
-        assert_eq!(
-            append_under(&mut out, PATH_CAPACITY - 9, b"Desktop"),
-            Some(PATH_CAPACITY - 1)
-        );
-        assert_eq!(&out[PATH_CAPACITY - 9..PATH_CAPACITY - 1], b"/Desktop");
-    }
-
-    #[test]
-    fn the_profile_folder_is_the_home_folder_itself() {
-        let mut out = [0u8; PATH_CAPACITY];
-        out[..5].copy_from_slice(b"/home");
-        assert_eq!(append_under(&mut out, 5, b""), Some(5));
-        assert_eq!(append_under(&mut out, 5, b"Music"), Some(11));
-        assert_eq!(&out[..11], b"/home/Music");
-    }
-}

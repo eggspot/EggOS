@@ -164,7 +164,7 @@ unsafe extern "efiapi" fn peek_named_pipe(
         Ok(counts) => counts,
         Err(code) => return fail(code, FALSE),
     };
-    let ended = total == 0 && linux::events_now(fd).is_ok_and(hung_up_empty);
+    let ended = total == 0 && linux::events_now(fd).is_ok_and(peeked_pipes::hung_up_empty);
     if ended {
         return fail(error::BROKEN_PIPE, FALSE);
     }
@@ -176,10 +176,6 @@ unsafe extern "efiapi" fn peek_named_pipe(
         }
     }
     TRUE
-}
-
-fn hung_up_empty(events: u16) -> bool {
-    events & linux::POLLHUP != 0 && events & linux::POLLIN == 0
 }
 
 fn descriptor_of(handle: usize) -> Result<(usize, usize), u32> {
@@ -250,16 +246,3 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SetHandleInformation" => set_handle_information,
     b"GetHandleInformation" => get_handle_information,
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_pipe_ends_only_when_hung_up_with_nothing_left_to_read() {
-        assert!(hung_up_empty(linux::POLLHUP));
-        assert!(!hung_up_empty(linux::POLLHUP | linux::POLLIN));
-        assert!(!hung_up_empty(linux::POLLIN));
-        assert!(!hung_up_empty(0));
-    }
-}

@@ -2,6 +2,15 @@
 //! out of it, so the layer takes them and keeps them here, per descriptor, until `ReadFile`
 //! takes them first, before what is still in the pipe.
 
+const POLLIN: u16 = 0x1;
+const POLLHUP: u16 = 0x10;
+
+/// Whether a pipe whose `poll` reported `events` is at its end: hung up (no writer left) with
+/// nothing left to read, taken from one poll so bytes written meanwhile never look like the end.
+pub fn hung_up_empty(events: u16) -> bool {
+    events & POLLHUP != 0 && events & POLLIN == 0
+}
+
 /// How many bytes one pipe keeps.
 pub const CAPACITY: usize = 4096;
 /// How many pipes can hold peeked bytes at once.
@@ -109,6 +118,14 @@ impl Default for PeekedPipes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pipe_ends_only_when_hung_up_with_nothing_left_to_read() {
+        assert!(hung_up_empty(POLLHUP));
+        assert!(!hung_up_empty(POLLHUP | POLLIN));
+        assert!(!hung_up_empty(POLLIN));
+        assert!(!hung_up_empty(0));
+    }
 
     #[test]
     fn peeked_bytes_come_back_first_and_in_order() {
