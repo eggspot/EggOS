@@ -148,6 +148,7 @@ pub const STAT_INODE_WORD: usize = 1;
 pub const STAT_ACCESS_TIME_WORD: usize = 9;
 pub const STAT_MODIFY_TIME_WORD: usize = 11;
 pub const STAT_CHANGE_TIME_WORD: usize = 13;
+pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 pub const FILE_TYPE: u32 = 0o170_000;
 pub const DIRECTORY: u32 = 0o040_000;
 pub const REGULAR_FILE: u32 = 0o100_000;
@@ -542,6 +543,20 @@ pub unsafe fn set_thread_environment_block(address: usize) -> Result<(), Errno> 
 /// The `stat` words of the NUL-terminated `path`, relative to directory `directory_fd`
 /// ([`AT_FDCWD`] for the working directory).
 pub fn stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Errno> {
+    stat_with_flags(directory_fd, path, 0)
+}
+
+/// The `stat` words of the NUL-terminated `path` itself, relative to directory `directory_fd`:
+/// a symbolic link's own, never its target's.
+pub fn link_stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Errno> {
+    stat_with_flags(directory_fd, path, AT_SYMLINK_NOFOLLOW)
+}
+
+fn stat_with_flags(
+    directory_fd: usize,
+    path: &[u8],
+    flags: usize,
+) -> Result<[u64; STAT_WORDS], Errno> {
     if path.last() != Some(&0) {
         return Err(Errno::EINVAL);
     }
@@ -555,7 +570,7 @@ pub fn stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Er
                 directory_fd,
                 path.as_ptr() as usize,
                 words.as_mut_ptr() as usize,
-                0,
+                flags,
                 0,
                 0,
             ],

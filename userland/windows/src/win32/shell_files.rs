@@ -42,6 +42,12 @@ fn exists(path: &[u8]) -> Option<bool> {
         .map(|words| linux::file_mode(&words) & linux::FILE_TYPE == linux::DIRECTORY)
 }
 
+fn is_real_folder(path: &[u8]) -> Option<bool> {
+    linux::link_stat_at(AT_FDCWD, path)
+        .ok()
+        .map(|words| linux::file_mode(&words) & linux::FILE_TYPE == linux::DIRECTORY)
+}
+
 fn child(parent: &[u8], name: &[u8], out: &mut [u8; PATH_CAPACITY]) -> Result<usize, u32> {
     let parent = &parent[..parent.len() - 1];
     let length = parent.len() + 1 + name.len();
@@ -61,7 +67,7 @@ fn last_name(path: &[u8]) -> &[u8] {
 }
 
 fn remove_tree(path: &[u8], depth: usize) -> Result<(), u32> {
-    match exists(path) {
+    match is_real_folder(path) {
         None => return Err(error::FILE_NOT_FOUND),
         Some(false) => {
             return linux::remove(path, 0).map(|_| ()).map_err(error_for);
@@ -305,7 +311,7 @@ fn run_one(
         _ => false,
     };
     if !wildcard {
-        if exists(path).is_none() {
+        if is_real_folder(path).is_none() {
             return Err(error::FILE_NOT_FOUND);
         }
         let mut item_target = [0u8; PATH_CAPACITY];
