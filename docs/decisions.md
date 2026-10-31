@@ -16428,3 +16428,23 @@ the license, by an explicit instruction recorded here.
 - Not yet: memory per process, idle time in `/proc/uptime` and the busy share, `T` in
   `/proc/ps`, `not_responding` in the window list, the CPU column in `ps`'s text, the layout
   following the window's size, `--apps` from the shortcut.
+
+## D201 Programs can't find or reach the kernel, first slice: random PIE bases and stacks, and SMEP (batch part 54; D49, D45 and the paging and user-mode follow-ups) — Decided by the build loop
+
+- Address-space layout randomization: from the moment init starts (`exec::randomize_layouts`),
+  each position-independent program is placed up to 256 of its alignments (at least 2 MiB)
+  below the PIE base, and every program's initial stack up to 256 pages below the top of its
+  8 MiB reserve, from the kernel's random number generator. The kernel's self-tests and
+  benchmarks run before it on the fixed layout, and host tests never turn it on.
+- SMEP on x86_64 when `CPUID` reports it, set on each CPU with its user-mode setup: a fetch in
+  ring 0 from a user page faults.
+- Choices made without research: 8 bits of entropy for each (Linux gives PIEs 28 bits on
+  x86_64): small enough to keep a program's place in its third of the address space on every
+  paging format we boot (Sv39's 256 GiB included), and a start.
+- Check. QEMU: the self-tests, the shell session and every program still start on all three
+  architectures; x86_64 with SMEP (QEMU's default CPU model has it from `-cpu max`).
+- Not yet: randomizing the `mmap` area, the break and the interpreter's base; SMAP (the
+  `syscall` entry and every interrupt entry must clear `AC` first) and UMIP on x86_64; PAN on
+  AArch64; IST stacks for NMI, double fault and machine check; guard pages under kernel thread
+  stacks; KPTI, MDS and Retbleed mitigations chosen per CPU; `PROT_BTI`; `RLIMIT_DATA` and
+  `RLIMIT_AS`.
