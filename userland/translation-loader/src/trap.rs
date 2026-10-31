@@ -119,14 +119,15 @@ impl OrderedAccess {
         let address = registers[usize::from(self.base)] as usize;
         fence(Ordering::SeqCst);
         if self.load {
-            // SAFETY: the caller's contract; the reads take any alignment.
-            let value = unsafe {
-                match self.bytes {
-                    1 => u64::from((address as *const u8).read_volatile()),
-                    2 => u64::from((address as *const u16).read_unaligned()),
-                    4 => u64::from((address as *const u32).read_unaligned()),
-                    _ => (address as *const u64).read_unaligned(),
-                }
+            let value = match self.bytes {
+                // SAFETY: the caller's contract.
+                1 => u64::from(unsafe { (address as *const u8).read() }),
+                // SAFETY: the caller's contract; the read takes any alignment.
+                2 => u64::from(unsafe { (address as *const u16).read_unaligned() }),
+                // SAFETY: as above.
+                4 => u64::from(unsafe { (address as *const u32).read_unaligned() }),
+                // SAFETY: as above.
+                _ => unsafe { (address as *const u64).read_unaligned() },
             };
             if self.data != STACK_POINTER_OR_ZERO {
                 registers[usize::from(self.data)] = value;
@@ -136,14 +137,15 @@ impl OrderedAccess {
                 STACK_POINTER_OR_ZERO => 0,
                 data => registers[usize::from(data)],
             };
-            // SAFETY: the caller's contract; the writes take any alignment.
-            unsafe {
-                match self.bytes {
-                    1 => (address as *mut u8).write_volatile(value as u8),
-                    2 => (address as *mut u16).write_unaligned(value as u16),
-                    4 => (address as *mut u32).write_unaligned(value as u32),
-                    _ => (address as *mut u64).write_unaligned(value),
-                }
+            match self.bytes {
+                // SAFETY: the caller's contract.
+                1 => unsafe { (address as *mut u8).write(value as u8) },
+                // SAFETY: the caller's contract; the write takes any alignment.
+                2 => unsafe { (address as *mut u16).write_unaligned(value as u16) },
+                // SAFETY: as above.
+                4 => unsafe { (address as *mut u32).write_unaligned(value as u32) },
+                // SAFETY: as above.
+                _ => unsafe { (address as *mut u64).write_unaligned(value) },
             }
         }
         fence(Ordering::SeqCst);
