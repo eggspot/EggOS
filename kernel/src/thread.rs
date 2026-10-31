@@ -189,6 +189,12 @@ struct Thread {
     user: bool,
     /// A user thread's FP/SIMD registers, once its program has used them ([`start_fp`], D54).
     fp: OnceCell<FpRegisters>,
+    /// The clock ticks it ran before it last started running (D201).
+    ran: Cell<u64>,
+    /// The clock tick it last started running at.
+    since: Cell<u64>,
+    /// Where a user thread's process adds the ticks its threads run ([`spawn_user`]).
+    account: Option<Arc<AtomicU64>>,
 }
 
 /// A thread's FP/SIMD registers (D54): where they are saved, and the CPU that last loaded them.
@@ -218,6 +224,7 @@ impl Thread {
         stack: Option<Stack>,
         cpu: &'static Cpu,
         user: bool,
+        account: Option<Arc<AtomicU64>>,
     ) -> ThreadBox {
         ThreadBox::new(Self {
             id,
@@ -232,7 +239,20 @@ impl Thread {
             cpu,
             user,
             fp: OnceCell::new(),
+            ran: Cell::new(0),
+            since: Cell::new(0),
+            account,
         })
+    }
+
+    /// Adds the ticks from when it started running to `now` to its time and its process's.
+    #[inline(always)]
+    fn charge(&self, now: u64) {
+        let spent = now.wrapping_sub(self.since.get());
+        self.ran.set(self.ran.get().wrapping_add(spent));
+        if let Some(account) = &self.account {
+            account.fetch_add(spent, Ordering::Relaxed);
+        }
     }
 
     /// Stops the kernel if the thread overflowed its stack: whatever lies below it may already
@@ -1015,13 +1035,14 @@ impl Scheduler {
         // SAFETY: the stack's frames are allocated, writable through the direct map and used
         // by nothing else; the idle thread never exits, so they stay allocated.
         let context = unsafe { P::prepare_thread(stack.top(), idle_thread::<P>, 0) };
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here, false);
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here, false, None);
         self.idle = Some(Thread::boxed(
             ThreadId::next(),
             context,
             Some(stack),
             here,
             false,
+            None,
         ));
         self.current = Some(boot);
         Ok(())
@@ -1272,7 +1293,7 @@ pub(crate) fn start_secondary<P: Platform>() {
         "a CPU started its scheduler twice"
     );
     scheduler.slice_ticks = slice_ticks;
-    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false));
+    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false, None));
 }
 
 /// Runs this CPU's idle thread, which [`start_secondary`] made of the code running now.
@@ -1286,20 +1307,22 @@ pub(crate) fn run_idle<P: Platform>() -> ! {
 pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
 ) -> Result<JoinHandle, SpawnError> {
-    spawn_thread::<P, F>(function, false)
+    spawn_thread::<P, F>(function, false, None)
 }
 
 /// [`spawn`] for a thread that runs a program in user mode ([`crate::process::spawn`]): a CPU
 /// running it gets the wake-up interrupt with a reschedule request (D48).
 pub(crate) fn spawn_user<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
+    account: Arc<AtomicU64>,
 ) -> Result<JoinHandle, SpawnError> {
-    spawn_thread::<P, F>(function, true)
+    spawn_thread::<P, F>(function, true, Some(account))
 }
 
 fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
     user: bool,
+    account: Option<Arc<AtomicU64>>,
 ) -> Result<JoinHandle, SpawnError> {
     let stack = Stack::allocate().ok_or(SpawnError::OutOfMemory)?;
     let function: Box<dyn FnOnce() + Send> = Box::new(function);
@@ -1318,7 +1341,7 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
     }
     let here = cpu::current::<P>();
     let cpu = schedulers.place(here);
-    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user);
+    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user, account);
     let handle = JoinHandle {
         id: thread.get().id,
         joined: thread.get().joined.clone(),
@@ -1427,6 +1450,32 @@ pub(crate) fn with_running_fp<P: Platform, R>(f: impl FnOnce(&mut FpState) -> R)
     // own methods, which keep it loadable.
     unsafe { P::restore_fp(state) };
     Some(result)
+}
+
+/// The clock ticks the running thread has run, this turn included (D201).
+pub fn running_thread_ticks<P: Platform>() -> u64 {
+    let mut schedulers = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    let now = P::clock_ticks();
+    schedulers.of(here).current.as_ref().map_or(0, |thread| {
+        let thread = thread.get();
+        thread
+            .ran
+            .get()
+            .wrapping_add(now.wrapping_sub(thread.since.get()))
+    })
+}
+
+/// The ticks the running thread has run this turn, not yet added to its process's account.
+pub fn running_turn_ticks<P: Platform>() -> u64 {
+    let mut schedulers = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    let now = P::clock_ticks();
+    schedulers
+        .of(here)
+        .current
+        .as_ref()
+        .map_or(0, |thread| now.wrapping_sub(thread.get().since.get()))
 }
 
 /// Lets the next ready thread run, if there is one; returns when this thread's turn comes
@@ -1619,7 +1668,10 @@ fn switch_now<P: Platform>(
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
 ) {
     let resume = next.get().context;
+    let now = P::clock_ticks();
+    next.get().since.set(now);
     let previous = schedulers.of(here).replace_current(next);
+    previous.get().charge(now);
     let save = previous.context();
     park(&mut schedulers, here, previous);
     // Held across the switch, for the thread it resumes to release.
@@ -2168,7 +2220,7 @@ mod tests {
 
     /// A thread for the scheduler-state tests, which never runs.
     fn idle_thread_for_test(cpu: &'static Cpu) -> ThreadBox {
-        Thread::boxed(ThreadId::next(), 0, None, cpu, false)
+        Thread::boxed(ThreadId::next(), 0, None, cpu, false, None)
     }
 
     /// Takes every thread out of `scheduler`, so that it can be dropped.
@@ -2239,7 +2291,7 @@ mod tests {
         // A kernel thread passes a preemption point soon: the request alone does.
         assert!(scheduler.request_reschedule::<P>(other).is_none());
         empty(&mut scheduler);
-        scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true));
+        scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true, None));
         // In user mode it may never pass one: the interrupt takes the CPU back.
         assert!(
             scheduler
@@ -2325,7 +2377,7 @@ mod tests {
             busy.current = Some(idle_thread_for_test(cpu));
             busy.idle = Some(idle_thread_for_test(cpu));
         }
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false);
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false, None);
         schedulers.of(cpus[3]).ready.push_back(boot);
         let waiting = idle_thread_for_test(cpus[0]);
         let id = waiting.get().id;

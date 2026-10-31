@@ -219,9 +219,62 @@ pub fn clock_gettime<P: Platform>(
     clock_id: u64,
     tp: u64,
 ) -> Result<u64, Errno> {
+    if let Some(spent) = cpu_clock(process, clock_id) {
+        write(process, tp, &timespec(spent))?;
+        return Ok(0);
+    }
     let clock = clock(clock_id).ok_or(Errno::EINVAL)?;
     write(process, tp, &timespec(clock.now::<P>()))?;
     Ok(0)
+}
+
+/// The CPU time clocks (D201): `CLOCK_PROCESS_CPUTIME_ID`, the nanoseconds the calling
+/// process's threads have run, and `CLOCK_THREAD_CPUTIME_ID`, the calling thread's; `None` for
+/// another clock.
+fn cpu_clock<P: Platform>(process: &Process<P>, clock_id: u64) -> Option<u64> {
+    let ticks = match clock_id as u32 as i32 {
+        clock::PROCESS_CPUTIME_ID => process.cpu_ticks(true),
+        clock::THREAD_CPUTIME_ID => crate::thread::running_thread_ticks::<P>(),
+        _ => return None,
+    };
+    Some(nanoseconds_at(ticks, nanoseconds_per_tick::<P>()))
+}
+
+const RUSAGE_SELF: i64 = 0;
+const RUSAGE_CHILDREN: i64 = -1;
+const RUSAGE_THREAD: i64 = 1;
+const RUSAGE_SIZE: usize = 144;
+const USER_HZ: u64 = 100;
+
+/// `getrusage(who, usage)` (D201): the calling process's (`RUSAGE_SELF`) or thread's
+/// (`RUSAGE_THREAD`) CPU time as user time in the `struct rusage` at `usage`, every other field
+/// 0; `RUSAGE_CHILDREN` reads all 0, as the time of waited-for children is not kept yet.
+/// `EINVAL` for another `who`, `EFAULT` for `usage` not the program's writable memory.
+pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Result<u64, Errno> {
+    let nanoseconds = match who as i64 as i32 as i64 {
+        RUSAGE_SELF => cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0),
+        RUSAGE_THREAD => cpu_clock(process, clock::THREAD_CPUTIME_ID as u64).unwrap_or(0),
+        RUSAGE_CHILDREN => 0,
+        _ => return Err(Errno::EINVAL),
+    };
+    let mut bytes = [0u8; RUSAGE_SIZE];
+    bytes[..8].copy_from_slice(&(nanoseconds / NANOSECONDS_PER_SECOND).to_ne_bytes());
+    bytes[8..16].copy_from_slice(&(nanoseconds % NANOSECONDS_PER_SECOND / 1000).to_ne_bytes());
+    write(process, usage, &bytes)?;
+    Ok(0)
+}
+
+/// `times(buf)` (D201): writes the calling process's CPU time as user time in the `struct tms`
+/// at `buf` (unless null), in `USER_HZ` (100) ticks, its system time and its children's 0;
+/// returns the ticks since boot.
+pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> {
+    if buf != 0 {
+        let spent = cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&(spent / (NANOSECONDS_PER_SECOND / USER_HZ)).to_ne_bytes());
+        write(process, buf, &bytes)?;
+    }
+    Ok(monotonic_nanoseconds::<P>() / (NANOSECONDS_PER_SECOND / USER_HZ))
 }
 
 /// `clock_getres(clock, res)`: writes clock `clock`'s resolution, 1 ns for each, to the
@@ -233,7 +286,9 @@ pub fn clock_getres<P: Platform>(
     clock_id: u64,
     res: u64,
 ) -> Result<u64, Errno> {
-    clock(clock_id).ok_or(Errno::EINVAL)?;
+    if clock(clock_id).is_none() && cpu_clock(process, clock_id).is_none() {
+        return Err(Errno::EINVAL);
+    }
     if res != 0 {
         write(process, res, &timespec(1))?;
     }

@@ -51,7 +51,7 @@ use alloc::vec::Vec;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
@@ -265,6 +265,8 @@ struct Memory<P: Platform> {
     fork_marks: LeafSpinLock<ForkMarks>,
     has_fork_marks: AtomicBool,
     image: ImageLayout,
+    /// The clock ticks the threads using this memory have run (D201).
+    cpu_ticks: Arc<AtomicU64>,
 }
 
 fn mapping_end(
@@ -346,6 +348,7 @@ impl<P: Platform> Memory<P> {
             files: LeafSpinLock::new_leaf(FileRanges::new()),
             has_files: AtomicBool::new(false),
             fork_marks: LeafSpinLock::new_leaf(ForkMarks::new()),
+            cpu_ticks: Arc::new(AtomicU64::new(0)),
             has_fork_marks: AtomicBool::new(false),
             image: ImageLayout::default(),
         }
@@ -797,7 +800,13 @@ impl<P: Platform> Process<P> {
             .lock()
             .copy_actions()
             .ok_or(NewChildError::OutOfMemory)?;
-        Ok(Self::with_memory(memory, record, id, credentials_and_limits, signals))
+        Ok(Self::with_memory(
+            memory,
+            record,
+            id,
+            credentials_and_limits,
+            signals,
+        ))
     }
 
     /// A new id for a child of this process, already in the process table with this process
@@ -2331,6 +2340,19 @@ impl<P: Platform> Process<P> {
         u8::try_from(self.first_thread_status.load(Ordering::Acquire)).ok()
     }
 
+    /// The clock ticks its threads have run, the calling thread's running turn included when
+    /// it is one of them (D201).
+    pub fn cpu_ticks(&self, caller_is_its_thread: bool) -> u64 {
+        let running = match caller_is_its_thread {
+            true => thread::running_turn_ticks::<P>(),
+            false => 0,
+        };
+        self.memory
+            .cpu_ticks
+            .load(Ordering::Relaxed)
+            .wrapping_add(running)
+    }
+
     /// Its threads that run its program and have not exited.
     pub fn threads(&self) -> u32 {
         self.threads.load(Ordering::Acquire)
@@ -2417,7 +2439,8 @@ where
     P: Platform,
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
 {
-    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler))
+    let account = process.memory.cpu_ticks.clone();
+    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler), account)
 }
 
 /// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended

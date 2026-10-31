@@ -217,6 +217,8 @@ pub mod number {
         pub const SCHED_GETPARAM: u64 = 143;
         pub const SCHED_GETSCHEDULER: u64 = 145;
         pub const SCHED_GETAFFINITY: u64 = 204;
+        pub const GETRUSAGE: u64 = 98;
+        pub const TIMES: u64 = 100;
         pub const DUP3: u64 = 292;
         pub const PIPE: u64 = 22;
         pub const PIPE2: u64 = 293;
@@ -383,6 +385,8 @@ pub mod number {
         pub const SCHED_GETSCHEDULER: u64 = 120;
         pub const SCHED_GETPARAM: u64 = 121;
         pub const SCHED_GETAFFINITY: u64 = 123;
+        pub const TIMES: u64 = 153;
+        pub const GETRUSAGE: u64 = 165;
         pub const GETTIMEOFDAY: u64 = 169;
         pub const SETTIMEOFDAY: u64 = 170;
         pub const GETPID: u64 = 172;
@@ -532,6 +536,8 @@ pub mod number {
             SCHED_GETSCHEDULER,
             SCHED_GETPARAM,
             SCHED_GETAFFINITY,
+            GETRUSAGE,
+            TIMES,
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
             GETRANDOM,
@@ -1341,6 +1347,8 @@ fn out_of_line_result<P: Platform>(
         }
         number::CLOCK_GETTIME => time::clock_gettime(process, first, second),
         number::CLOCK_GETRES => time::clock_getres(process, first, second),
+        number::GETRUSAGE => time::getrusage(process, first, second),
+        number::TIMES => time::times(process, first),
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
         number::TIME => time::time(process, first),
@@ -7181,6 +7189,48 @@ mod tests {
         assert_eq!(param(negative, SCRATCH), Errno::EINVAL.result());
         assert_eq!(param(other, SCRATCH), Errno::ESRCH.result());
         assert_eq!(param(0, u64::MAX - 1), Errno::EFAULT.result());
+    }
+
+    #[test]
+    fn the_cpu_time_calls_answer_and_refuse_what_linux_refuses() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        for clock_id in [2, 3] {
+            assert_eq!(
+                call(
+                    &process,
+                    number::CLOCK_GETTIME,
+                    [clock_id, SCRATCH, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                call(&process, number::CLOCK_GETRES, [clock_id, 0, 0, 0, 0, 0]),
+                0
+            );
+        }
+        for who in [0, 1, u64::MAX] {
+            assert_eq!(
+                call(&process, number::GETRUSAGE, [who, SCRATCH, 0, 0, 0, 0]),
+                0
+            );
+        }
+        assert_eq!(
+            call(&process, number::GETRUSAGE, [7, SCRATCH, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&process, number::GETRUSAGE, [0, 0, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        let mut children = [0xffu8; 16];
+        process.read_user_memory(SCRATCH, &mut children).unwrap();
+        assert_eq!(children, [0; 16]);
+        assert_ne!(
+            call(&process, number::TIMES, [SCRATCH, 0, 0, 0, 0, 0]),
+            u64::MAX
+        );
     }
 
     #[test]
