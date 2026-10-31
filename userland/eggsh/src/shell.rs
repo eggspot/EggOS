@@ -1040,9 +1040,8 @@ impl<'a, S: System> Shell<'a, S> {
             SyntaxError::UnexpectedEnd(b'"') => {
                 self.error(&[b"syntax error: unexpected end of file, looking for the closing `\"`"])
             }
-            SyntaxError::UnexpectedEnd(b'`') => {
-                self.error(&[b"syntax error: unexpected end of file, looking for the closing `` ` ``"])
-            }
+            SyntaxError::UnexpectedEnd(b'`') => self
+                .error(&[b"syntax error: unexpected end of file, looking for the closing `` ` ``"]),
             SyntaxError::UnexpectedEnd(b'(') => {
                 self.error(&[b"syntax error: unexpected end of file, looking for the closing `)`"])
             }
@@ -1123,7 +1122,8 @@ impl<'a, S: System> Shell<'a, S> {
             return Ran::Finished(self.last_substitution.unwrap_or(0));
         }
         let name = words.command(0);
-        let chosen = builtin(name).filter(|&found| found != Builtin::Help || words.command_length() == 1);
+        let chosen =
+            builtin(name).filter(|&found| found != Builtin::Help || words.command_length() == 1);
         if !chosen.is_some_and(Builtin::is_special) && self.functions.contains(name) {
             return match forked {
                 true => self.fork_function(words, streams, pipeline),
@@ -1507,7 +1507,9 @@ impl<S: System> Parameters for Shell<'_, S> {
             b"0" => Value::Text(self.name),
             [b'0'..=b'9', ..] if name.iter().all(u8::is_ascii_digit) => {
                 let number = name.iter().try_fold(0usize, |value, &digit| {
-                    value.checked_mul(10)?.checked_add(usize::from(digit - b'0'))
+                    value
+                        .checked_mul(10)?
+                        .checked_add(usize::from(digit - b'0'))
                 });
                 number
                     .and_then(|number| self.arguments.get(number))

@@ -514,7 +514,8 @@ impl Words {
             at += word.len() + 1;
         }
         let shift = replacements.len() - 1;
-        self.ends.copy_within(index + 1..self.count, index + 1 + shift);
+        self.ends
+            .copy_within(index + 1..self.count, index + 1 + shift);
         for later in &mut self.ends[index + 1 + shift..count] {
             *later = (usize::from(*later) + added - (end - start)) as u16;
         }
@@ -877,7 +878,11 @@ pub fn substitution_end(input: &[u8], final_input: bool) -> Result<usize, Syntax
     Err(end_of_text())
 }
 
-fn skip_double_quoted(input: &[u8], mut at: usize, final_input: bool) -> Result<usize, SyntaxError> {
+fn skip_double_quoted(
+    input: &[u8],
+    mut at: usize,
+    final_input: bool,
+) -> Result<usize, SyntaxError> {
     while let Some(&byte) = input.get(at) {
         at = match byte {
             b'"' => return Ok(at + 1),
@@ -1185,8 +1190,11 @@ impl Scanner<'_, '_> {
             Some(source @ b'0'..=b'9') if ends_a_word(self.peek(1)) => {
                 self.at += 1;
                 let descriptor = self.descriptor.take().unwrap_or(default);
-                self.words
-                    .add_redirection(descriptor, StoredKind::Duplicate, usize::from(source - b'0'))?;
+                self.words.add_redirection(
+                    descriptor,
+                    StoredKind::Duplicate,
+                    usize::from(source - b'0'),
+                )?;
                 self.redirected = true;
                 Ok(())
             }
@@ -1544,7 +1552,12 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
         self.substitute(&input[start..after - 1], true, quoted)
     }
 
-    fn substitute(&mut self, command: &[u8], backquoted: bool, quoted: bool) -> Result<(), SyntaxError> {
+    fn substitute(
+        &mut self,
+        command: &[u8],
+        backquoted: bool,
+        quoted: bool,
+    ) -> Result<(), SyntaxError> {
         self.scan.expansion_start();
         if quoted {
             self.scan.in_word = true;

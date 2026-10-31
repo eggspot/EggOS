@@ -150,10 +150,16 @@ fn ifs_decides_where_fields_split() {
     let mut fixed = Fixed::default();
     fixed.assigned.push(("IFS".into(), ":".into()));
     fixed.assigned.push(("V".into(), "a::b:c d:".into()));
-    assert_eq!(parse_with("x $V", &mut fixed).unwrap().0, ["x", "a", "", "b", "c d"]);
+    assert_eq!(
+        parse_with("x $V", &mut fixed).unwrap().0,
+        ["x", "a", "", "b", "c d"]
+    );
     fixed.assigned.push(("IFS".into(), ", ".into()));
     fixed.assigned.push(("V".into(), " a , b,,c ".into()));
-    assert_eq!(parse_with("x $V", &mut fixed).unwrap().0, ["x", "a", "b", "", "c"]);
+    assert_eq!(
+        parse_with("x $V", &mut fixed).unwrap().0,
+        ["x", "a", "b", "", "c"]
+    );
     fixed.assigned.push(("IFS".into(), String::new()));
     fixed.assigned.push(("V".into(), "a b".into()));
     assert_eq!(parse_with("x $V", &mut fixed).unwrap().0, ["x", "a b"]);
@@ -163,7 +169,18 @@ fn ifs_decides_where_fields_split() {
 fn special_parameters_expand() {
     assert_eq!(
         words("echo $? $$ $# $0 ${?} \"$1\" $1x $"),
-        ["echo", "127", "42", "2", "eggsh", "127", "first arg", "first", "argx", "$"]
+        [
+            "echo",
+            "127",
+            "42",
+            "2",
+            "eggsh",
+            "127",
+            "first arg",
+            "first",
+            "argx",
+            "$"
+        ]
     );
     assert_eq!(words("echo $- $/ a$"), ["echo", "$-", "$/", "a$"]);
 }
@@ -221,11 +238,23 @@ fn removing_a_pattern_takes_the_shortest_or_the_longest_match() {
 #[test]
 fn assigning_a_default_sets_the_variable_and_an_error_stops_the_command() {
     let mut fixed = Fixed::default();
-    assert_eq!(parse_with("echo ${NEW:=a b}", &mut fixed).unwrap().0, ["echo", "a", "b"]);
+    assert_eq!(
+        parse_with("echo ${NEW:=a b}", &mut fixed).unwrap().0,
+        ["echo", "a", "b"]
+    );
     assert_eq!(fixed.assigned, [("NEW".to_owned(), "a b".to_owned())]);
-    assert_eq!(parse_with("echo ${3:=x}", &mut fixed), Err(SyntaxError::BadSubstitution));
-    assert_eq!(parse_with("echo ${UNSET:?gone $X}", &mut fixed), Err(SyntaxError::Failed));
-    assert_eq!(parse_with("echo ${EMPTY:?}", &mut fixed), Err(SyntaxError::Failed));
+    assert_eq!(
+        parse_with("echo ${3:=x}", &mut fixed),
+        Err(SyntaxError::BadSubstitution)
+    );
+    assert_eq!(
+        parse_with("echo ${UNSET:?gone $X}", &mut fixed),
+        Err(SyntaxError::Failed)
+    );
+    assert_eq!(
+        parse_with("echo ${EMPTY:?}", &mut fixed),
+        Err(SyntaxError::Failed)
+    );
     assert_eq!(
         fixed.failed,
         [
@@ -233,7 +262,10 @@ fn assigning_a_default_sets_the_variable_and_an_error_stops_the_command() {
             ("EMPTY".to_owned(), "parameter null or not set".to_owned())
         ]
     );
-    assert_eq!(parse_with("echo ${EMPTY?}", &mut fixed).unwrap().0, ["echo"]);
+    assert_eq!(
+        parse_with("echo ${EMPTY?}", &mut fixed).unwrap().0,
+        ["echo"]
+    );
 }
 
 #[test]
@@ -259,23 +291,42 @@ fn command_substitutions_run_and_lose_their_trailing_newlines() {
 #[test]
 fn checking_syntax_runs_nothing() {
     let mut words = Words::default();
-    let parsed = next_command(b"a $(rm x) `y` ${Z:?no}; b", true, &mut NoParameters, &mut words);
+    let parsed = next_command(
+        b"a $(rm x) `y` ${Z:?no}; b",
+        true,
+        &mut NoParameters,
+        &mut words,
+    );
     assert_eq!(parsed.unwrap().terminator, Terminator::Semicolon);
 }
 
 #[test]
 fn a_substitution_s_end_skips_quotes_and_nesting() {
     assert_eq!(substitution_end(b"echo a)", true), Ok(6));
-    assert_eq!(substitution_end(b"echo ')' \")\" \\) $(b) (c))x", true), Ok(24));
+    assert_eq!(
+        substitution_end(b"echo ')' \")\" \\) $(b) (c))x", true),
+        Ok(24)
+    );
     assert_eq!(substitution_end(b"echo # )\n)", true), Ok(9));
-    assert_eq!(substitution_end(b"echo (", false), Err(SyntaxError::Incomplete));
+    assert_eq!(
+        substitution_end(b"echo (", false),
+        Err(SyntaxError::Incomplete)
+    );
 }
 
 #[test]
 fn tilde_is_home_only_alone_or_before_a_slash_at_a_word_s_start() {
     assert_eq!(
         words("cd ~ ~/bin a~ ~x '~' ~;"),
-        ["cd", "/home/egg", "/home/egg/bin", "a~", "~x", "~", "/home/egg"]
+        [
+            "cd",
+            "/home/egg",
+            "/home/egg/bin",
+            "a~",
+            "~x",
+            "~",
+            "/home/egg"
+        ]
     );
 }
 
@@ -283,7 +334,13 @@ fn tilde_is_home_only_alone_or_before_a_slash_at_a_word_s_start() {
 fn assignments_come_only_before_the_command() {
     let mut words = Words::default();
     let mut fixed = Fixed::default();
-    next_command(b"A=1 B=\"x y\" C=$SPACED cmd D=2", true, &mut fixed, &mut words).unwrap();
+    next_command(
+        b"A=1 B=\"x y\" C=$SPACED cmd D=2",
+        true,
+        &mut fixed,
+        &mut words,
+    )
+    .unwrap();
     assert_eq!(words.assignment_count(), 3);
     let assignments: Vec<&[u8]> = words.assignments().collect();
     assert_eq!(assignments, [&b"A=1"[..], b"B=x y", b"C=  one two\tthree "]);
@@ -326,8 +383,17 @@ fn terminators_end_a_command() {
         assert_eq!(parsed.terminator, terminator, "{input}");
         assert_eq!(parsed.consumed, consumed, "{input}");
     }
-    for (input, token) in [("; a", ";"), ("| a", "|"), ("&& a", "&&"), ("echo >", "newline")] {
-        assert_eq!(parse(input), Err(SyntaxError::UnexpectedToken(token)), "{input}");
+    for (input, token) in [
+        ("; a", ";"),
+        ("| a", "|"),
+        ("&& a", "&&"),
+        ("echo >", "newline"),
+    ] {
+        assert_eq!(
+            parse(input),
+            Err(SyntaxError::UnexpectedToken(token)),
+            "{input}"
+        );
     }
     assert_eq!(parse("echo a(b"), Err(SyntaxError::UnexpectedToken("(")));
 }
@@ -341,7 +407,11 @@ fn operators_not_supported_yet_are_refused_not_read_as_words() {
         ("a >&f", ">&"),
         ("a 2>&-", ">&"),
     ] {
-        assert_eq!(parse(input), Err(SyntaxError::NotSupported(operator)), "{input}");
+        assert_eq!(
+            parse(input),
+            Err(SyntaxError::NotSupported(operator)),
+            "{input}"
+        );
     }
     assert_eq!(words("echo '|' \\& \"<>\""), ["echo", "|", "&", "<>"]);
 }
@@ -349,7 +419,9 @@ fn operators_not_supported_yet_are_refused_not_read_as_words() {
 #[test]
 fn unterminated_quotes_need_more_text_or_fail_at_the_end() {
     let mut words = Words::default();
-    for input in ["echo 'a", "echo \"a", "echo ${X", "echo $X", "echo a", "# c", "a $(b", "a <<"] {
+    for input in [
+        "echo 'a", "echo \"a", "echo ${X", "echo $X", "echo a", "# c", "a $(b", "a <<",
+    ] {
         let result = next_command(input.as_bytes(), false, &mut Fixed::default(), &mut words);
         assert_eq!(result, Err(SyntaxError::Incomplete), "{input}");
     }
@@ -379,8 +451,16 @@ fn too_many_words_or_bytes_are_refused() {
 fn quoted_pattern_characters_are_escaped_and_plain_ones_make_a_pattern() {
     let mut words = Words::default();
     let mut fixed = Fixed::default();
-    next_command(b"ls *.c '*'x \"a?\"[b] $STAR plain", true, &mut fixed, &mut words).unwrap();
-    let patterns: Vec<bool> = (0..words.count()).map(|index| words.is_pattern(index)).collect();
+    next_command(
+        b"ls *.c '*'x \"a?\"[b] $STAR plain",
+        true,
+        &mut fixed,
+        &mut words,
+    )
+    .unwrap();
+    let patterns: Vec<bool> = (0..words.count())
+        .map(|index| words.is_pattern(index))
+        .collect();
     assert_eq!(patterns, [false, true, false, true, true, false]);
     let mut buffer = [0; 32];
     assert_eq!(words.pattern(2, &mut buffer), Some(&br"\*x"[..]));
@@ -442,8 +522,13 @@ fn a_digit_before_a_redirection_names_the_descriptor_and_ampersand_copies_one() 
 #[test]
 fn here_document_operators_record_their_position() {
     let mut words = Words::default();
-    let parsed = next_command(b"cat <<EOF 3<<-'E F' x\nbody", true, &mut Fixed::default(), &mut words)
-        .unwrap();
+    let parsed = next_command(
+        b"cat <<EOF 3<<-'E F' x\nbody",
+        true,
+        &mut Fixed::default(),
+        &mut words,
+    )
+    .unwrap();
     assert_eq!(parsed.terminator, Terminator::Newline);
     let redirections: Vec<_> = words.redirections().collect();
     assert_eq!(
@@ -461,10 +546,19 @@ fn here_document_operators_record_their_position() {
     );
     assert_eq!(collected(&words), ["cat", "x"]);
     let delimiter = document_delimiter(b"<<EOF x").unwrap();
-    assert_eq!((delimiter.text(), delimiter.quoted, delimiter.strip_tabs), (&b"EOF"[..], false, false));
+    assert_eq!(
+        (delimiter.text(), delimiter.quoted, delimiter.strip_tabs),
+        (&b"EOF"[..], false, false)
+    );
     let delimiter = document_delimiter(b"<<- 'E F'\"x\"\\y").unwrap();
-    assert_eq!((delimiter.text(), delimiter.quoted, delimiter.strip_tabs), (&b"E Fxy"[..], true, true));
-    assert_eq!(parse("cat <<"), Err(SyntaxError::UnexpectedToken("newline")));
+    assert_eq!(
+        (delimiter.text(), delimiter.quoted, delimiter.strip_tabs),
+        (&b"E Fxy"[..], true, true)
+    );
+    assert_eq!(
+        parse("cat <<"),
+        Err(SyntaxError::UnexpectedToken("newline"))
+    );
 }
 
 #[test]
@@ -512,10 +606,16 @@ fn reserved_words_are_whole_unquoted_first_words() {
 fn one_word_is_read_without_splitting() {
     let mut words = Words::default();
     let mut fixed = Fixed::default();
-    assert_eq!(next_word(b"  $SPACED) x", true, &mut fixed, &mut words), Ok(Some(9)));
+    assert_eq!(
+        next_word(b"  $SPACED) x", true, &mut fixed, &mut words),
+        Ok(Some(9))
+    );
     assert_eq!(words.get(0), b"  one two\tthree ");
     assert_eq!(next_word(b" | x", true, &mut fixed, &mut words), Ok(None));
-    assert_eq!(next_word(b" $UNSET in", true, &mut fixed, &mut words), Ok(Some(7)));
+    assert_eq!(
+        next_word(b" $UNSET in", true, &mut fixed, &mut words),
+        Ok(Some(7))
+    );
     assert_eq!(words.count(), 0);
 }
 

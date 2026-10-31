@@ -473,7 +473,13 @@ impl Client {
         u16::try_from(now_ms.saturating_sub(self.started_ms) / 1000).unwrap_or(u16::MAX)
     }
 
-    fn send(&mut self, out: &mut [u8], request: Request, source: Ipv4Address, destination: Ipv4Address) -> Option<Outgoing> {
+    fn send(
+        &mut self,
+        out: &mut [u8],
+        request: Request,
+        source: Ipv4Address,
+        destination: Ipv4Address,
+    ) -> Option<Outgoing> {
         let length = write_request(out, self.mac, &request);
         (length > 0).then_some(Outgoing {
             length,
@@ -494,7 +500,12 @@ impl Client {
             requested: None,
             server: None,
         };
-        self.send(out, request, Ipv4Address::UNSPECIFIED, Ipv4Address::BROADCAST)
+        self.send(
+            out,
+            request,
+            Ipv4Address::UNSPECIFIED,
+            Ipv4Address::BROADCAST,
+        )
     }
 
     fn send_request_for_offer(&mut self, now_ms: u64, out: &mut [u8]) -> Option<Outgoing> {
@@ -510,7 +521,12 @@ impl Client {
             requested: Some(offer.address),
             server: Some(offer.server),
         };
-        self.send(out, request, Ipv4Address::UNSPECIFIED, Ipv4Address::BROADCAST)
+        self.send(
+            out,
+            request,
+            Ipv4Address::UNSPECIFIED,
+            Ipv4Address::BROADCAST,
+        )
     }
 
     fn send_extension(&mut self, now_ms: u64, out: &mut [u8]) -> Option<Outgoing> {
@@ -658,7 +674,12 @@ pub mod server {
     /// Writes the answer of type `answer` to the client message `request` to the start of
     /// `out`: its length, or `None` when `request` is not a client's message or `out` is
     /// shorter than [`MESSAGE_BYTES`].
-    pub fn write_answer(out: &mut [u8], request: &[u8], answer: u8, offered: &Offered) -> Option<usize> {
+    pub fn write_answer(
+        out: &mut [u8],
+        request: &[u8],
+        answer: u8,
+        offered: &Offered,
+    ) -> Option<usize> {
         if request.len() < OPTIONS_OFFSET || request[0] != BOOT_REQUEST {
             return None;
         }

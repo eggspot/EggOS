@@ -230,7 +230,11 @@ impl<S: System> Shell<'_, S> {
             2 => match status::parse_exit_status(words.command(1)) {
                 Some(status) => status,
                 None => {
-                    self.error(&[b"return: ", words.command(1), b": numeric argument required"]);
+                    self.error(&[
+                        b"return: ",
+                        words.command(1),
+                        b": numeric argument required",
+                    ]);
                     USAGE
                 }
             },
@@ -356,7 +360,8 @@ impl<S: System> Shell<'_, S> {
         while self.locals.count > 0 && self.locals.entries[self.locals.count - 1].call == call {
             let local = self.locals.entries[self.locals.count - 1];
             let name = &self.locals.bytes[local.start..local.start + local.name_length];
-            let value = &self.locals.bytes[local.start + local.name_length..local.start + local.length];
+            let value =
+                &self.locals.bytes[local.start + local.name_length..local.start + local.length];
             match local.set {
                 true => {
                     let _ = self.variables.set(name, value, local.exported);
@@ -410,7 +415,11 @@ impl<S: System> Shell<'_, S> {
         }
         for index in first..words.command_length() {
             if !is_name(words.command(index)) {
-                self.error(&[b"read: `", words.command(index), b"': not a valid identifier"]);
+                self.error(&[
+                    b"read: `",
+                    words.command(index),
+                    b"': not a valid identifier",
+                ]);
                 return 2;
             }
         }
@@ -438,7 +447,11 @@ impl<S: System> Shell<'_, S> {
             };
             let (start, end, next) = line.field(at.min(line.length), index + 1 == names.max(1));
             at = next;
-            if self.variables.set(name, &line.bytes[start..end], false).is_err() {
+            if self
+                .variables
+                .set(name, &line.bytes[start..end], false)
+                .is_err()
+            {
                 self.error(&[b"read: too many variables"]);
                 return 1;
             }

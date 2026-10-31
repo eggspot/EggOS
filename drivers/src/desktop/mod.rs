@@ -14,11 +14,11 @@
 //! when the kernel hands the desktop a new catalogue ([`Desktop::set_catalogue`]) or a client
 //! sets a menu ([`Desktop::set_menu`]).
 
-mod desktops;
 mod agent;
 pub mod boot_screen;
 mod catalogue;
 mod desktop_icons;
+mod desktops;
 mod events;
 mod icons;
 mod injection;

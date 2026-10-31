@@ -36,7 +36,9 @@ impl InterfaceName {
     pub fn new(name: &[u8]) -> Option<Self> {
         if name.is_empty()
             || name.len() > NAME_BYTES
-            || !name.iter().all(|&byte| byte.is_ascii_graphic() && byte != b':')
+            || !name
+                .iter()
+                .all(|&byte| byte.is_ascii_graphic() && byte != b':')
         {
             return None;
         }

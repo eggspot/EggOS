@@ -810,7 +810,7 @@ mod tests {
             Some(Launch::Type(line)) => assert_eq!(
                 line.as_bytes(),
                 b"\x15/Applications/brogue/lib/ld-musl-x86_64.so.1 --library-path \
-                  /Applications/brogue/lib:/Applications/brogue/usr/lib \
+                  '/Applications/brogue/lib:/Applications/brogue/usr/lib' \
                   /Applications/brogue/brogue --data-dir /Applications/brogue/share/brogue\r"
             ),
             other => panic!("{other:?}"),

@@ -97,6 +97,9 @@ mod tests {
         unreachable[0] = 3;
         assert_eq!(parse_echo(&unreachable), None);
         assert_eq!(parse_echo(&message[..7]), None);
-        assert_eq!(write_echo_header(&mut [0u8; 7], kind::ECHO_REPLY, 1, 1, 0), None);
+        assert_eq!(
+            write_echo_header(&mut [0u8; 7], kind::ECHO_REPLY, 1, 1, 0),
+            None
+        );
     }
 }

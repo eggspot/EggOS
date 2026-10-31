@@ -116,7 +116,9 @@ mod tests {
         functions.define(b"greet", b"{ echo hi; }").unwrap();
         functions.define(b"other", b"(ls)").unwrap();
         assert_eq!(functions.get(b"greet"), Some(&b"{ echo hi; }"[..]));
-        functions.define(b"greet", b"{ echo hello there; }").unwrap();
+        functions
+            .define(b"greet", b"{ echo hello there; }")
+            .unwrap();
         assert_eq!(functions.get(b"greet"), Some(&b"{ echo hello there; }"[..]));
         assert_eq!(functions.get(b"other"), Some(&b"(ls)"[..]));
         functions.remove(b"other");
@@ -134,7 +136,8 @@ mod tests {
         assert_eq!(functions.get(b"kept"), Some(&b"{ :; }"[..]));
         let mut many = Functions::default();
         for index in 0..MAX_FUNCTIONS {
-            many.define(format!("f{index}").as_bytes(), b"{ :; }").unwrap();
+            many.define(format!("f{index}").as_bytes(), b"{ :; }")
+                .unwrap();
         }
         assert_eq!(many.define(b"one_more", b"{ :; }"), Err(Full));
         many.define(b"f3", b"{ true; }").unwrap();

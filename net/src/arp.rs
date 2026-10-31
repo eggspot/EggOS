@@ -41,8 +41,7 @@ pub struct Packet {
 pub fn parse(bytes: &[u8]) -> Option<Packet> {
     let bytes = bytes.first_chunk::<PACKET_BYTES>()?;
     let word = |at: usize| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
-    if word(0) != HARDWARE_ETHERNET || word(2) != PROTOCOL_IPV4 || bytes[4] != 6 || bytes[5] != 4
-    {
+    if word(0) != HARDWARE_ETHERNET || word(2) != PROTOCOL_IPV4 || bytes[4] != 6 || bytes[5] != 4 {
         return None;
     }
     let mac = |at: usize| {
@@ -210,7 +209,10 @@ mod tests {
     fn answers_expire_refresh_and_the_oldest_makes_room() {
         let mut cache = Cache::new();
         cache.update(host(2), mac(2), 1000);
-        assert_eq!(cache.lookup(host(2), 1000 + ENTRY_LIFETIME_MS - 1), Some(mac(2)));
+        assert_eq!(
+            cache.lookup(host(2), 1000 + ENTRY_LIFETIME_MS - 1),
+            Some(mac(2))
+        );
         assert_eq!(cache.lookup(host(2), 1000 + ENTRY_LIFETIME_MS), None);
         assert!(!cache.refresh(host(3), mac(3), 2000));
         assert_eq!(cache.lookup(host(3), 2000), None);

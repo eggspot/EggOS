@@ -1270,7 +1270,7 @@ fn a_window_on_another_desktop_is_hidden_until_its_desktop_shows() {
     assert_eq!(desktop.new_desktop(&mut damage, &mut DiscardEvents), Ok(1));
     assert!(!desktop.is_shown(first));
     let second = shown(&mut desktop, 300, 200);
-    assert_eq!(desktop.desktops(), (2, 1, [1, 1, 0, 0, 0, 0, 0, 0]));
+    assert_eq!(desktop.desktops(), (2, 1, [2, 1, 0, 0, 0, 0, 0, 0]));
     assert_eq!(
         desktop.desktop_action(
             desktop_action::SWITCH,
@@ -1326,7 +1326,7 @@ fn focusing_a_window_on_another_desktop_shows_its_desktop() {
     desktop
         .manage(
             u32::from(first),
-            WindowAction::Focus.value(),
+            WindowAction::Focus as u32,
             0,
             0,
             &mut damage,

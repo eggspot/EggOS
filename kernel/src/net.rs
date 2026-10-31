@@ -130,7 +130,10 @@ pub fn start<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     };
     writeln!(console, "net: eth0 {mac}: {state}")?;
     if thread::spawn::<P, _>(poll_forever::<P>).is_err() {
-        writeln!(console, "net: no thread to run the network: eth0 stays idle")?;
+        writeln!(
+            console,
+            "net: no thread to run the network: eth0 stays idle"
+        )?;
     }
     Ok(())
 }
@@ -141,7 +144,9 @@ fn poll_forever<P: Platform>() {
         let now = now_ms::<P>();
         let active = now.saturating_sub(LAST_TRAFFIC_MS.load(Ordering::Relaxed)) < ACTIVE_WINDOW_MS;
         let interval = if active { ACTIVE_POLL_MS } else { IDLE_POLL_MS };
-        let due = next_poll_ms().saturating_sub(now).clamp(ACTIVE_POLL_MS, interval);
+        let due = next_poll_ms()
+            .saturating_sub(now)
+            .clamp(ACTIVE_POLL_MS, interval);
         thread::sleep::<P>(Duration::from_millis(due));
     }
 }
@@ -340,13 +345,22 @@ pub fn send_echo<P: Platform>(
 ) -> Result<(), SendError> {
     if is_local(destination) {
         let mut reply = Vec::new();
-        if reply.try_reserve_exact(icmp::HEADER_BYTES + data.len()).is_err() {
+        if reply
+            .try_reserve_exact(icmp::HEADER_BYTES + data.len())
+            .is_err()
+        {
             return Err(SendError::TooLong);
         }
         reply.resize(icmp::HEADER_BYTES, 0);
         reply.extend_from_slice(data);
-        icmp::write_echo_header(&mut reply, icmp::kind::ECHO_REPLY, identifier, sequence, data.len())
-            .ok_or(SendError::TooLong)?;
+        icmp::write_echo_header(
+            &mut reply,
+            icmp::kind::ECHO_REPLY,
+            identifier,
+            sequence,
+            data.len(),
+        )
+        .ok_or(SendError::TooLong)?;
         count_loopback(2 * (reply.len() + ipv4::HEADER_BYTES));
         let delivery = Delivery::EchoReply {
             source: destination,

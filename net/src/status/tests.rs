@@ -76,7 +76,10 @@ fn missing_values_are_dashes_a_lease_that_never_ends_is_forever_and_lo_is_static
         ..connected()
     };
     let text = line(&forever);
-    assert!(text.contains(" 10.0.2.3,10.0.2.4,10.0.2.5 10.0.2.2 forever forever "), "{text}");
+    assert!(
+        text.contains(" 10.0.2.3,10.0.2.4,10.0.2.5 10.0.2.2 forever forever "),
+        "{text}"
+    );
     assert_eq!(parse_interface(text.as_bytes()), Some(forever));
 }
 
@@ -116,10 +119,13 @@ fn malformed_lines_are_refused_and_a_file_parses_line_by_line() {
     ] {
         assert_eq!(parse_interface(bad.as_bytes()), None, "{bad}");
     }
-    let file = format!("{good}{}", line(&InterfaceStatus {
-        name: InterfaceName::new(b"eth1").unwrap(),
-        ..connected()
-    }));
+    let file = format!(
+        "{good}{}",
+        line(&InterfaceStatus {
+            name: InterfaceName::new(b"eth1").unwrap(),
+            ..connected()
+        })
+    );
     let (interfaces, count) = parse_interfaces::<4>(file.as_bytes());
     assert_eq!(count, 2);
     assert_eq!(interfaces[1].unwrap().name.as_bytes(), b"eth1");
@@ -162,5 +168,8 @@ fn neighbours_are_linux_s_arp_table_and_parse_back() {
     );
     let mut lines = text.lines();
     assert_eq!(parse_neighbour(lines.next().unwrap().as_bytes()), None);
-    assert_eq!(parse_neighbour(lines.next().unwrap().as_bytes()), Some(neighbour));
+    assert_eq!(
+        parse_neighbour(lines.next().unwrap().as_bytes()),
+        Some(neighbour)
+    );
 }

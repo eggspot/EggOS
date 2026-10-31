@@ -48,7 +48,12 @@ pub enum QueryError {
 
 /// Writes a recursive query with id `id` for `name`'s records of type `record_type` to the
 /// start of `out`: its length. A final dot on `name` is allowed.
-pub fn write_query(out: &mut [u8], id: u16, name: &[u8], record_type: u16) -> Result<usize, QueryError> {
+pub fn write_query(
+    out: &mut [u8],
+    id: u16,
+    name: &[u8],
+    record_type: u16,
+) -> Result<usize, QueryError> {
     let name = name.strip_suffix(b".").unwrap_or(name);
     if name.is_empty() {
         return Err(QueryError::EmptyLabel);
@@ -136,7 +141,9 @@ impl Name {
 
     fn push(&mut self, bytes: &[u8]) -> Option<()> {
         let at = usize::from(self.length);
-        let end = at.checked_add(bytes.len()).filter(|&end| end <= MAX_NAME_BYTES)?;
+        let end = at
+            .checked_add(bytes.len())
+            .filter(|&end| end <= MAX_NAME_BYTES)?;
         self.bytes[at..end].copy_from_slice(bytes);
         self.length = end as u8;
         Some(())
@@ -160,7 +167,10 @@ impl Answers {
 }
 
 fn word(message: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([*message.get(at)?, *message.get(at + 1)?]))
+    Some(u16::from_be_bytes([
+        *message.get(at)?,
+        *message.get(at + 1)?,
+    ]))
 }
 
 fn read_name(message: &[u8], start: usize, mut name: Option<&mut Name>) -> Option<usize> {
@@ -273,7 +283,12 @@ pub fn nameservers(resolv_conf: &[u8]) -> [Option<Ipv4Address>; MAX_NAMESERVERS]
 /// Writes the answer a server gives to `query` to the start of `out`: the query's question
 /// and an `A` record for each of `addresses` with time to live `ttl`, or `NXDOMAIN` when there
 /// are none; its length, or `None` when `query` has no question or `out` is too small.
-pub fn write_answer(out: &mut [u8], query: &[u8], addresses: &[Ipv4Address], ttl: u32) -> Option<usize> {
+pub fn write_answer(
+    out: &mut [u8],
+    query: &[u8],
+    addresses: &[Ipv4Address],
+    ttl: u32,
+) -> Option<usize> {
     let question_end = read_name(query, HEADER_BYTES, None)? + 4;
     let question = query.get(..question_end)?;
     let length = question_end + addresses.len() * 16;
@@ -318,29 +333,62 @@ mod tests {
             &query[..length],
             b"\xbe\xef\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
         );
-        assert_eq!(query_name(&query[..length]).unwrap().as_bytes(), b"example.com");
-        assert_eq!(write_query(&mut query, 1, b"a..b", 1), Err(QueryError::EmptyLabel));
-        assert_eq!(write_query(&mut query, 1, b"", 1), Err(QueryError::EmptyLabel));
-        assert_eq!(write_query(&mut query, 1, &[b'a'; 64], 1), Err(QueryError::LabelTooLong));
-        assert_eq!(write_query(&mut query, 1, &[b'a'; 300], 1), Err(QueryError::NameTooLong));
-        assert_eq!(write_query(&mut [0u8; 20], 1, b"example.com", 1), Err(QueryError::BufferTooSmall));
+        assert_eq!(
+            query_name(&query[..length]).unwrap().as_bytes(),
+            b"example.com"
+        );
+        assert_eq!(
+            write_query(&mut query, 1, b"a..b", 1),
+            Err(QueryError::EmptyLabel)
+        );
+        assert_eq!(
+            write_query(&mut query, 1, b"", 1),
+            Err(QueryError::EmptyLabel)
+        );
+        assert_eq!(
+            write_query(&mut query, 1, &[b'a'; 64], 1),
+            Err(QueryError::LabelTooLong)
+        );
+        assert_eq!(
+            write_query(&mut query, 1, &[b'a'; 300], 1),
+            Err(QueryError::NameTooLong)
+        );
+        assert_eq!(
+            write_query(&mut [0u8; 20], 1, b"example.com", 1),
+            Err(QueryError::BufferTooSmall)
+        );
     }
 
     #[test]
     fn an_answer_gives_its_addresses_and_errors_are_named() {
         let mut query = [0u8; MAX_MESSAGE_BYTES];
         let length = write_query(&mut query, 7, b"eggos.test", record_type::A).unwrap();
-        let addresses = [Ipv4Address::new(10, 0, 2, 2), Ipv4Address::new(192, 0, 2, 1)];
+        let addresses = [
+            Ipv4Address::new(10, 0, 2, 2),
+            Ipv4Address::new(192, 0, 2, 1),
+        ];
         let mut answer = [0u8; MAX_MESSAGE_BYTES];
         let answered = write_answer(&mut answer, &query[..length], &addresses, 60).unwrap();
         let parsed = parse_response(&answer[..answered], 7).unwrap();
         assert_eq!(parsed.addresses(), &addresses);
         assert_eq!(parsed.canonical, None);
-        assert_eq!(parse_response(&answer[..answered], 8), Err(ResponseError::NotOurs));
-        assert_eq!(parse_response(&query[..length], 7), Err(ResponseError::NotOurs));
-        assert_eq!(parse_response(&answer[..answered - 1], 7), Err(ResponseError::Malformed));
+        assert_eq!(
+            parse_response(&answer[..answered], 8),
+            Err(ResponseError::NotOurs)
+        );
+        assert_eq!(
+            parse_response(&query[..length], 7),
+            Err(ResponseError::NotOurs)
+        );
+        assert_eq!(
+            parse_response(&answer[..answered - 1], 7),
+            Err(ResponseError::Malformed)
+        );
         let missing = write_answer(&mut answer, &query[..length], &[], 60).unwrap();
-        assert_eq!(parse_response(&answer[..missing], 7), Err(ResponseError::NameNotFound));
+        assert_eq!(
+            parse_response(&answer[..missing], 7),
+            Err(ResponseError::NameNotFound)
+        );
     }
 
     #[test]

@@ -56,7 +56,13 @@ fn without_an_adapter_only_lo_is_reported() {
     let text = interfaces_text::<TestPlatform>().unwrap();
     assert!(text.starts_with(b"lo up 00:00:00:00:00:00 65536 off 127.0.0.1/8 - - - - - "));
     let routes = routes_text::<TestPlatform>().unwrap();
-    assert_eq!(routes.split(|&byte| byte == b'\n').filter(|line| !line.is_empty()).count(), 1);
+    assert_eq!(
+        routes
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count(),
+        1
+    );
     assert_eq!(
         neighbours_text::<TestPlatform>().unwrap(),
         b"IP address       HW type     Flags       HW address            Mask     Device\n"

@@ -198,7 +198,8 @@ pub fn parse(packet: &[u8]) -> Option<(Header, &[u8])> {
     if checksum::of(&packet[..header_length]) != 0 {
         return None;
     }
-    let address = |at: usize| Ipv4Address([packet[at], packet[at + 1], packet[at + 2], packet[at + 3]]);
+    let address =
+        |at: usize| Ipv4Address([packet[at], packet[at + 1], packet[at + 2], packet[at + 3]]);
     Some((
         Header {
             source: address(12),
@@ -242,14 +243,31 @@ mod tests {
 
     #[test]
     fn addresses_parse_strictly_and_print_dotted() {
-        assert_eq!(Ipv4Address::parse(b"10.0.2.15"), Some(Ipv4Address::new(10, 0, 2, 15)));
-        for bad in [&b"10.0.2"[..], b"10.0.2.256", b"10.0.2.15.1", b"10..2.15", b"+1.0.0.0", b"0010.0.0.1", b""] {
+        assert_eq!(
+            Ipv4Address::parse(b"10.0.2.15"),
+            Some(Ipv4Address::new(10, 0, 2, 15))
+        );
+        for bad in [
+            &b"10.0.2"[..],
+            b"10.0.2.256",
+            b"10.0.2.15.1",
+            b"10..2.15",
+            b"+1.0.0.0",
+            b"0010.0.0.1",
+            b"",
+        ] {
             assert_eq!(Ipv4Address::parse(bad), None, "{bad:?}");
         }
-        assert_eq!(format!("{}", Ipv4Address::new(192, 168, 1, 254)), "192.168.1.254");
+        assert_eq!(
+            format!("{}", Ipv4Address::new(192, 168, 1, 254)),
+            "192.168.1.254"
+        );
         assert!(Ipv4Address::LOOPBACK.is_loopback());
         assert!(Ipv4Address::new(224, 0, 0, 251).is_multicast());
-        assert_eq!(Ipv4Address::from_bits(0x0a00_020f), Ipv4Address::new(10, 0, 2, 15));
+        assert_eq!(
+            Ipv4Address::from_bits(0x0a00_020f),
+            Ipv4Address::new(10, 0, 2, 15)
+        );
     }
 
     #[test]

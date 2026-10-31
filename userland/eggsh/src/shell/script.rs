@@ -454,7 +454,8 @@ impl<S: System> Shell<'_, S> {
             let (end, terminator, _) = self.and_or_walk(source, at, pass, false, words)?;
             return Ok((end, terminator));
         }
-        let (end, terminator, pipelines) = self.and_or_walk(source, at, Pass::Skip, false, words)?;
+        let (end, terminator, pipelines) =
+            self.and_or_walk(source, at, Pass::Skip, false, words)?;
         let background = terminator == Terminator::Background;
         if background && pipelines > 1 {
             self.run_list_in_background(source, at, end - terminator.length(), words);
@@ -614,7 +615,13 @@ impl<S: System> Shell<'_, S> {
             return Ok(());
         };
         let mut found = Matches::default();
-        if glob::expand(pattern, &mut SystemDirectories(&mut self.system), &mut found).is_err() {
+        if glob::expand(
+            pattern,
+            &mut SystemDirectories(&mut self.system),
+            &mut found,
+        )
+        .is_err()
+        {
             self.error(&[words.get(index), b": too many file names"]);
             return Err(SyntaxError::Failed);
         }
@@ -711,7 +718,10 @@ impl<S: System> Shell<'_, S> {
         match kind {
             Compound::Brace | Compound::Subshell => {
                 let (close, wanted) = match kind {
-                    Compound::Brace => (Keyword::CloseBrace.length(), Stop::Word(Keyword::CloseBrace)),
+                    Compound::Brace => (
+                        Keyword::CloseBrace.length(),
+                        Stop::Word(Keyword::CloseBrace),
+                    ),
                     _ => (1, Stop::Close),
                 };
                 let (end, stop) = self.list(source, at + 1, pass, true, words)?;
@@ -722,8 +732,12 @@ impl<S: System> Shell<'_, S> {
                 Ok(end + close)
             }
             Compound::If => self.if_clause(source, at + Keyword::If.length(), pass, words),
-            Compound::While => self.loop_clause(source, at + Keyword::While.length(), false, pass, words),
-            Compound::Until => self.loop_clause(source, at + Keyword::Until.length(), true, pass, words),
+            Compound::While => {
+                self.loop_clause(source, at + Keyword::While.length(), false, pass, words)
+            }
+            Compound::Until => {
+                self.loop_clause(source, at + Keyword::Until.length(), true, pass, words)
+            }
             Compound::For => self.for_clause(source, at + Keyword::For.length(), pass, words),
             Compound::Case => self.case_clause(source, at + Keyword::Case.length(), pass, words),
         }
@@ -764,7 +778,8 @@ impl<S: System> Shell<'_, S> {
             expect(source, stop, Stop::Word(Keyword::Then))?;
             let branch = tested && self.status == 0;
             let this = if branch { Pass::Run } else { pass.quiet() };
-            let (next, stop) = self.list(source, then + Keyword::Then.length(), this, true, words)?;
+            let (next, stop) =
+                self.list(source, then + Keyword::Then.length(), this, true, words)?;
             taken |= branch;
             if run && self.unwinding() {
                 return Ok(next);
@@ -1235,7 +1250,11 @@ impl<S: System> Shell<'_, S> {
 
     /// Opens the here-document whose `<<` is at `operator`: its body, expanded unless its
     /// delimiter was quoted, `<<-`'s leading tabs removed.
-    pub(super) fn open_document(&mut self, source: Source<'_>, operator: usize) -> Result<usize, i32> {
+    pub(super) fn open_document(
+        &mut self,
+        source: Source<'_>,
+        operator: usize,
+    ) -> Result<usize, i32> {
         let Some(document) = self.documents.of(operator) else {
             self.error(&[b"here-document missing"]);
             return Err(1);

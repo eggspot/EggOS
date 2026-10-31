@@ -94,7 +94,8 @@ impl Transport for FakeNet {
         let memory = addresses.descriptors.get() as *mut u8;
         // SAFETY: the queue lives in the test's HostDma, whose device address is its host
         // address, for as long as the fake device is used.
-        self.queues.borrow_mut()[usize::from(queue)] = Some(unsafe { DeviceSide::new(memory, size) });
+        self.queues.borrow_mut()[usize::from(queue)] =
+            Some(unsafe { DeviceSide::new(memory, size) });
         Ok(())
     }
     fn notify(&self, queue: u16) {
@@ -114,7 +115,9 @@ impl Transport for FakeNet {
         panic!("the driver wrote configuration byte {offset}");
     }
     fn read_config32(&self, offset: usize) -> u32 {
-        u32::from_le_bytes(std::array::from_fn(|index| self.read_config8(offset + index)))
+        u32::from_le_bytes(std::array::from_fn(|index| {
+            self.read_config8(offset + index)
+        }))
     }
 }
 
@@ -130,7 +133,9 @@ fn driver(fake: FakeNet) -> VirtioNet<FakeNet, HostDma> {
 }
 
 fn frame(fill: u8, length: usize) -> Vec<u8> {
-    (0..length).map(|index| fill.wrapping_add(index as u8)).collect()
+    (0..length)
+        .map(|index| fill.wrapping_add(index as u8))
+        .collect()
 }
 
 #[test]
@@ -141,7 +146,10 @@ fn the_device_is_set_up_with_its_address_link_and_every_receive_buffer_posted() 
         fake.status.get(),
         status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK
     );
-    assert_eq!(fake.accepted.get(), common::VERSION_1 | feature::MAC | feature::STATUS);
+    assert_eq!(
+        fake.accepted.get(),
+        common::VERSION_1 | feature::MAC | feature::STATUS
+    );
     assert_eq!(net.mac(), MAC);
     assert_eq!(net.mtu(), DEFAULT_MTU);
     assert!(net.is_link_up());
@@ -151,7 +159,10 @@ fn the_device_is_set_up_with_its_address_link_and_every_receive_buffer_posted() 
     for posted in 0..QUEUE_SIZE {
         assert!(fake.deliver(&frame(posted as u8, 60)), "buffer {posted}");
     }
-    assert!(!fake.deliver(&frame(0, 60)), "only QUEUE_SIZE buffers are posted");
+    assert!(
+        !fake.deliver(&frame(0, 60)),
+        "only QUEUE_SIZE buffers are posted"
+    );
 }
 
 #[test]
@@ -161,7 +172,10 @@ fn a_device_that_says_its_mtu_or_not_its_link_is_believed_within_limits() {
     fake.link.set(0);
     let net = driver(fake);
     assert_eq!(net.mtu(), 1400);
-    assert!(net.is_link_up(), "a device that does not report its link is up");
+    assert!(
+        net.is_link_up(),
+        "a device that does not report its link is up"
+    );
     let mut huge = FakeNet::new(feature::MAC | feature::MTU);
     huge.mtu = 9000;
     assert_eq!(driver(huge).mtu(), DEFAULT_MTU);
@@ -174,7 +188,10 @@ fn received_frames_come_without_the_header_and_their_buffers_go_back() {
     assert_eq!(net.receive(&mut buffer), None);
     for round in 0..3u8 {
         for index in 0..QUEUE_SIZE as u8 {
-            assert!(net.transport().deliver(&frame(round ^ index, 60 + usize::from(index))));
+            assert!(
+                net.transport()
+                    .deliver(&frame(round ^ index, 60 + usize::from(index)))
+            );
         }
         for index in 0..QUEUE_SIZE as u8 {
             let length = 60 + usize::from(index);
@@ -185,7 +202,11 @@ fn received_frames_come_without_the_header_and_their_buffers_go_back() {
     }
     assert!(net.transport().deliver(&frame(9, MAX_FRAME_BYTES)));
     let mut short = [0u8; 100];
-    assert_eq!(net.receive(&mut short), Some(100), "a frame is cut to the caller's buffer");
+    assert_eq!(
+        net.receive(&mut short),
+        Some(100),
+        "a frame is cut to the caller's buffer"
+    );
     assert_eq!(&short[..], &frame(9, 100)[..]);
 }
 
@@ -198,11 +219,18 @@ fn sent_frames_go_with_a_zero_header_and_a_full_queue_waits_for_the_device() {
     assert_eq!(net.transmit(&frame(0, 60)), Err(Error::QueueFull));
     let sent = net.transport().sent();
     assert_eq!(sent.len(), usize::from(QUEUE_SIZE));
-    assert!(sent.iter().enumerate().all(|(index, sent)| *sent == frame(index as u8, 60)));
+    assert!(
+        sent.iter()
+            .enumerate()
+            .all(|(index, sent)| *sent == frame(index as u8, 60))
+    );
     assert!(net.transport().notified.borrow().contains(&TRANSMIT_QUEUE));
     net.transmit(&frame(7, 1514)).unwrap();
     assert_eq!(net.transport().sent(), [frame(7, 1514)]);
-    assert_eq!(net.transmit(&frame(0, MAX_FRAME_BYTES + 1)), Err(Error::FrameTooLong));
+    assert_eq!(
+        net.transmit(&frame(0, MAX_FRAME_BYTES + 1)),
+        Err(Error::FrameTooLong)
+    );
 }
 
 #[test]
@@ -218,7 +246,11 @@ fn a_device_without_a_hardware_address_or_memory_enough_is_refused() {
     assert_eq!(error, Error::NoHardwareAddress);
     assert!(memory.is_some());
     assert_ne!(fake.status.get() & status::FAILED, 0);
-    let small = VirtioNet::new(FakeNet::new(feature::MAC), HostDma::zeroed(1), &mut polls(10));
+    let small = VirtioNet::new(
+        FakeNet::new(feature::MAC),
+        HostDma::zeroed(1),
+        &mut polls(10),
+    );
     assert!(matches!(small, Err((Error::MemoryTooSmall, _, Some(_)))));
 }
 

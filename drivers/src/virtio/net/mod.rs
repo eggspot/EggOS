@@ -171,7 +171,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             transmit_buffer_of_head: [0; QUEUE_SIZE as usize],
             free_transmit_buffers: ((1u32 << transmit_size) - 1) as u16,
         };
-        if let Err(error) = (0..receive_size as u8).try_for_each(|buffer| net.post_receive(buffer)) {
+        if let Err(error) = (0..receive_size as u8).try_for_each(|buffer| net.post_receive(buffer))
+        {
             super::fail(&net.transport);
             return match net.reset(keep_waiting) {
                 Ok((transport, memory, _)) => Err((error, transport, Some(memory))),
@@ -202,7 +203,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
 
     /// Whether the link is up; a device that does not report its link is always up.
     pub fn is_link_up(&self) -> bool {
-        !self.reports_link || read_config16(&self.transport, config::STATUS_OFFSET) & config::LINK_UP != 0
+        !self.reports_link
+            || read_config16(&self.transport, config::STATUS_OFFSET) & config::LINK_UP != 0
     }
 
     fn buffer_addr(&self, offset: usize) -> Result<crate::dma::DmaAddr, Error> {

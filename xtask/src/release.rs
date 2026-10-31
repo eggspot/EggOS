@@ -1205,11 +1205,9 @@ mod tests {
         }
         assert!(shell.contains("printf '%s\\n' \"$*\" >&2"));
         assert!(shell.contains("--mcp) mcp=yes ;;"));
-        assert!(
-            shell.contains(
-                "if [ -n \"$no_window$mcp_allow_given$mcp_agent_given\" ] && [ -z \"$mcp\" ]; then"
-            )
-        );
+        assert!(shell.contains(
+            "if [ -n \"$no_window$mcp_allow_given$mcp_agent_given\" ] && [ -z \"$mcp\" ]; then"
+        ));
         assert!(shell.contains("qemu-io -f raw -c quit \"$disk\""));
         assert!(shell.contains("another EggOS is using the disk image $disk"));
         let powershell = powershell_script(&arches);
@@ -1251,11 +1249,9 @@ mod tests {
         let shell = shell_script(&arches);
         let powershell = powershell_script(&arches);
         assert!(shell.contains("    --mcp-allow)\n"));
-        assert!(
-            shell.contains(
-                "if [ -n \"$no_window$mcp_allow_given$mcp_agent_given\" ] && [ -z \"$mcp\" ]; then"
-            )
-        );
+        assert!(shell.contains(
+            "if [ -n \"$no_window$mcp_allow_given$mcp_agent_given\" ] && [ -z \"$mcp\" ]; then"
+        ));
         assert!(shell.contains("    *,,*)\n"));
         assert!(shell.contains("      view | write | run | install) ;;\n"));
         assert!(shell.contains("set -f\n"));
@@ -1311,9 +1307,10 @@ mod tests {
             "    } elseif ($argument -in @('-McpAgent', '--mcp-agent') -and $null -ne $value) {\n"
         ));
         assert!(powershell.contains("(($null -ne $McpAgent) -and -not $Mcp)"));
-        assert!(powershell.contains(
-            "-cnotmatch '^[A-Za-z0-9._-]{1,32}$') -or ($McpAgent -ceq 'local')"
-        ));
+        assert!(
+            powershell
+                .contains("-cnotmatch '^[A-Za-z0-9._-]{1,32}$') -or ($McpAgent -ceq 'local')")
+        );
         assert!(powershell.contains(
             "if ($McpAgent) {\n    $CommandLineWords += \"eggos.mcp_agent=$McpAgent\"\n"
         ));

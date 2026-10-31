@@ -159,8 +159,7 @@ fn bracket(pattern: &[u8], open: usize, character: u32) -> Option<(usize, bool)>
             continue;
         }
         let (low, after) = bracket_character(pattern, at)?;
-        if pattern.get(after) == Some(&b'-') && pattern.get(after + 1).is_some_and(|&b| b != b']')
-        {
+        if pattern.get(after) == Some(&b'-') && pattern.get(after + 1).is_some_and(|&b| b != b']') {
             let (high, end) = bracket_character(pattern, after + 1)?;
             found |= (low..=high).contains(&character);
             at = end;
@@ -223,7 +222,11 @@ mod tests {
             ("", "", true),
             ("", "a", false),
         ] {
-            assert_eq!(matches(pattern.as_bytes(), text.as_bytes()), expected, "{pattern} {text}");
+            assert_eq!(
+                matches(pattern.as_bytes(), text.as_bytes()),
+                expected,
+                "{pattern} {text}"
+            );
         }
     }
 
@@ -243,7 +246,11 @@ mod tests {
             ("[a", "[a", true),
             ("[é]", "é", true),
         ] {
-            assert_eq!(matches(pattern.as_bytes(), text.as_bytes()), expected, "{pattern} {text}");
+            assert_eq!(
+                matches(pattern.as_bytes(), text.as_bytes()),
+                expected,
+                "{pattern} {text}"
+            );
         }
     }
 
@@ -263,9 +270,15 @@ mod tests {
     #[test]
     fn removal_takes_the_shortest_or_longest_match_from_either_end() {
         let path = b"/usr/lib/file.tar.gz";
-        assert_eq!(remove(path, b"*/", Side::Prefix, false), b"usr/lib/file.tar.gz");
+        assert_eq!(
+            remove(path, b"*/", Side::Prefix, false),
+            b"usr/lib/file.tar.gz"
+        );
         assert_eq!(remove(path, b"*/", Side::Prefix, true), b"file.tar.gz");
-        assert_eq!(remove(path, b".*", Side::Suffix, false), b"/usr/lib/file.tar");
+        assert_eq!(
+            remove(path, b".*", Side::Suffix, false),
+            b"/usr/lib/file.tar"
+        );
         assert_eq!(remove(path, b".*", Side::Suffix, true), b"/usr/lib/file");
         assert_eq!(remove(path, b"x*", Side::Prefix, false), path);
         assert_eq!(remove(b"abc", b"", Side::Suffix, true), b"abc");

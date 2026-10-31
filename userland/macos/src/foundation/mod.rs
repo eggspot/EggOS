@@ -246,6 +246,6 @@ mod runtime {
     pub use super::bundle::{LONGEST_PATH, app_name, info_string, own_icon_path};
     pub use super::exception::terminate_with;
     pub use super::number::{Exact, exact_value};
-    pub use super::timer::{fire_due, next_due_in_ms};
     pub use super::string::{string_from_utf8, text_of, with_utf8};
+    pub use super::timer::{fire_due, next_due_in_ms};
 }

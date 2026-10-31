@@ -610,11 +610,11 @@ fn the_shell_s_pictures_are_pinned_in_each_profile() {
 const PINNED: [(Profile, u64, u64); 3] = [
     (
         Profile::Windows,
-        0xbe80_b6eb_c2ea_f968,
-        0x4db2_a5f4_bd53_8c26,
+        0x1422_a675_8e05_fca9,
+        0x1bc2_6652_da64_77bb,
     ),
-    (Profile::Macos, 0x3a28_a52e_3978_2474, 0x831a_a2a2_f8a4_7503),
-    (Profile::Linux, 0x6966_c9e4_12d0_ae5f, 0x60c2_f140_bf00_28b9),
+    (Profile::Macos, 0x1ab2_a83a_3182_0789, 0x04b2_d38b_ae0b_0542),
+    (Profile::Linux, 0x8541_1cbc_9afc_227e, 0x6013_1d84_897c_fa88),
 ];
 
 #[test]

@@ -934,14 +934,19 @@ fn the_keyboard_layout_requests_have_their_numbers_and_arguments() {
 fn the_input_preferences_request_carries_five_words() {
     assert_eq!(request::SET_INPUT_PREFERENCES, 0x4014_771f);
     let mut bytes = [0u8; 20];
-    for (place, word) in bytes.chunks_exact_mut(4).zip([1u32, 0, 8, 600, 30]) {
-        place.copy_from_slice(&word.to_ne_bytes());
+    for (place, word) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([1u32, 0, 8, 600, 30])
+    {
+        *place = word.to_ne_bytes();
     }
     assert_eq!(
         Request::parse(request::SET_INPUT_PREFERENCES, &bytes),
         Some(Request::SetInputPreferences {
-            left_handed: true,
-            natural_scrolling: false,
+            left_handed: 1,
+            natural_scrolling: 0,
             pointer_speed: 8,
             repeat_delay_ms: 600,
             repeat_rate: 30,

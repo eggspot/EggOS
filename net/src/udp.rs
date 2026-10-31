@@ -101,7 +101,10 @@ mod tests {
             parse(source, destination, &datagram),
             Some((header, &b"abc"[..]))
         );
-        assert_eq!(parse(source, Ipv4Address::new(10, 0, 2, 4), &datagram), None);
+        assert_eq!(
+            parse(source, Ipv4Address::new(10, 0, 2, 4), &datagram),
+            None
+        );
         let mut unchecked = datagram;
         unchecked[6..8].fill(0);
         unchecked[9] = b'X';

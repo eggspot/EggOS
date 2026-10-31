@@ -68,10 +68,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
 impl fmt::Display for MacAddress {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let [a, b, c, d, e, f] = self.0;
-        write!(
-            formatter,
-            "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}"
-        )
+        write!(formatter, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}")
     }
 }
 

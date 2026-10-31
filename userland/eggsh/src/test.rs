@@ -349,7 +349,13 @@ mod tests {
         let words: Vec<&[u8]> = arguments
             .split(' ')
             .filter(|word| !word.is_empty())
-            .map(|word| if word == "''" { &b""[..] } else { word.as_bytes() })
+            .map(|word| {
+                if word == "''" {
+                    &b""[..]
+                } else {
+                    word.as_bytes()
+                }
+            })
             .collect();
         evaluate(&words, &mut Fake)
     }

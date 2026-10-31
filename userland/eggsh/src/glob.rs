@@ -153,7 +153,11 @@ fn walk(
     found: &mut Matches,
 ) -> Result<(), TooMany> {
     let (part, rest, slash) = match pattern.iter().position(|&byte| byte == b'/') {
-        Some(at) => (&pattern[..at], without_leading_slashes(&pattern[at..]), true),
+        Some(at) => (
+            &pattern[..at],
+            without_leading_slashes(&pattern[at..]),
+            true,
+        ),
         None => (pattern, &pattern[pattern.len()..], false),
     };
     let start = path.length;
@@ -247,8 +251,7 @@ mod tests {
                 "/" => "/".to_owned(),
                 _ => format!("{}/", path.trim_end_matches('/')),
             };
-            let listed =
-                matches!(path, "." | "/") || self.0.contains(&path.trim_end_matches('/'));
+            let listed = matches!(path, "." | "/") || self.0.contains(&path.trim_end_matches('/'));
             if !listed {
                 return Err(Unreadable);
             }
@@ -274,8 +277,18 @@ mod tests {
 
     fn tree() -> Tree {
         Tree(vec![
-            "b.rs", "a.rs", ".hidden.rs", "notes", "src", "src/main.rs", "src/lib.rs", "src/x",
-            "/bin", "/bin/ls", "/bin/cat", "/etc",
+            "b.rs",
+            "a.rs",
+            ".hidden.rs",
+            "notes",
+            "src",
+            "src/main.rs",
+            "src/lib.rs",
+            "src/x",
+            "/bin",
+            "/bin/ls",
+            "/bin/cat",
+            "/etc",
         ])
     }
 
