@@ -228,6 +228,19 @@ fn eval_runs_its_words_and_set_e_ends_on_a_failure() {
 }
 
 #[test]
+fn set_e_is_ignored_inside_what_runs_before_and_or_or_after_a_bang() {
+    let shell = run("set -e; f() { false; echo after; }; f || echo handled\n\
+         { false; true; } && echo brace\n\
+         ! f\n\
+         { false; echo inner; } || true\n\
+         echo still\n\
+         f\n\
+         echo never");
+    assert_eq!(output(&shell), "after\nbrace\nafter\ninner\nstill\n");
+    assert_eq!(shell.exit_status(), 1);
+}
+
+#[test]
 fn a_list_in_the_background_runs_in_a_copy() {
     let mut shell = shell(false);
     shell.run_text(b"true && ls &\necho $!");

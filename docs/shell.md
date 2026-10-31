@@ -136,7 +136,8 @@ gets every feature below that does not need a terminal (`&&`, `||`, `&`, `2>`, `
 - Words such as `if`, `then`, `do`, `done`, `case`, `esac`, `{`, `}` and `!` are reserved only
   as the first word of a command, unquoted: `echo if` writes `if`.
 - `set -e` ends the shell when a command fails, except in an `if`, `while` or `until`
-  condition, a command before `&&` or `||`, or one after `!`; `set +e` stops that.
+  condition, a command before `&&` or `||`, or one after `!`, including everything such a
+  command runs (a function's body, a `{ }` group or a subshell); `set +e` stops that.
 - A complete command (a line, or a whole `if`, loop or function definition with its
   here-documents) longer than 16 KiB is refused: in a file it ends the file with status 2; at
   the prompt the shell skips it up to its end, an open quote included.

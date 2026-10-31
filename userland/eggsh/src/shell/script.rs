@@ -451,17 +451,18 @@ impl<S: System> Shell<'_, S> {
         words: &mut Words,
     ) -> Result<(usize, Terminator), SyntaxError> {
         if pass != Pass::Run {
-            let (end, terminator, _) = self.and_or_walk(source, at, pass, false, words)?;
+            let (end, terminator, _) = self.and_or_walk(source, at, pass, false, 0, words)?;
             return Ok((end, terminator));
         }
         let (end, terminator, pipelines) =
-            self.and_or_walk(source, at, Pass::Skip, false, words)?;
+            self.and_or_walk(source, at, Pass::Skip, false, 0, words)?;
         let background = terminator == Terminator::Background;
         if background && pipelines > 1 {
-            self.run_list_in_background(source, at, end - terminator.length(), words);
+            self.run_list_in_background(source, at, end - terminator.length(), pipelines, words);
             return Ok((end, terminator));
         }
-        let (end, terminator, _) = self.and_or_walk(source, at, Pass::Run, background, words)?;
+        let (end, terminator, _) =
+            self.and_or_walk(source, at, Pass::Run, background, pipelines, words)?;
         Ok((end, terminator))
     }
 
@@ -471,13 +472,18 @@ impl<S: System> Shell<'_, S> {
         mut at: usize,
         pass: Pass,
         background: bool,
+        listed_pipelines: usize,
         words: &mut Words,
     ) -> Result<(usize, Terminator, usize), SyntaxError> {
         let mut pipelines = 0;
         let mut runs = pass == Pass::Run;
         loop {
             let this = if runs { Pass::Run } else { pass.quiet() };
-            let (next, terminator, checked) = self.pipeline(source, at, this, background, words)?;
+            let before_and_or = this == Pass::Run && pipelines + 1 < listed_pipelines;
+            self.conditions += u32::from(before_and_or);
+            let walked = self.pipeline(source, at, this, background, words);
+            self.conditions -= u32::from(before_and_or);
+            let (next, terminator, checked) = walked?;
             pipelines += 1;
             at = next;
             if pass == Pass::Run && self.unwinding() {
@@ -511,11 +517,27 @@ impl<S: System> Shell<'_, S> {
     ) -> Result<(usize, Terminator, bool), SyntaxError> {
         let text = source.text;
         let mut at = skip_blanks(text, at);
-        let mut negated = false;
-        if syntax::keyword(&text[at..], source.complete)? == Some(Keyword::Bang) {
-            negated = true;
+        let negated = syntax::keyword(&text[at..], source.complete)? == Some(Keyword::Bang);
+        if negated {
             at = skip_blanks(text, at + 1);
         }
+        let quieted = negated && pass == Pass::Run;
+        self.conditions += u32::from(quieted);
+        let result = self.pipeline_commands(source, at, pass, background, negated, words);
+        self.conditions -= u32::from(quieted);
+        result
+    }
+
+    fn pipeline_commands(
+        &mut self,
+        source: Source<'_>,
+        mut at: usize,
+        pass: Pass,
+        background: bool,
+        negated: bool,
+        words: &mut Words,
+    ) -> Result<(usize, Terminator, bool), SyntaxError> {
+        let text = source.text;
         let run = pass == Pass::Run;
         let mut pipeline = Pipeline::new(at);
         pipeline.background = background && run;
@@ -1188,6 +1210,7 @@ impl<S: System> Shell<'_, S> {
         source: Source<'_>,
         at: usize,
         end: usize,
+        pipelines: usize,
         words: &mut Words,
     ) {
         let group = match self.interactive {
@@ -1207,7 +1230,7 @@ impl<S: System> Shell<'_, S> {
                 }
                 self.become_subshell(streams);
                 let list = Source::new(&source.text[..end], true);
-                if let Err(error) = self.and_or_walk(list, at, Pass::Run, false, words) {
+                if let Err(error) = self.and_or_walk(list, at, Pass::Run, false, pipelines, words) {
                     self.syntax_error(error);
                 }
                 self.leave_subshell();
