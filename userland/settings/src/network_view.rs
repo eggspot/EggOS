@@ -142,9 +142,9 @@ pub fn clock_time(seconds: u64) -> String {
 /// Why pairing could not begin, in the pane's words.
 pub fn pair_error_text(error: PairError) -> String {
     match error {
-        PairError::Burned(wait) => alloc::format!(
-            "The last code was burned by wrong tries: pair again in {wait} s."
-        ),
+        PairError::Burned(wait) => {
+            alloc::format!("The last code was burned by wrong tries: pair again in {wait} s.")
+        }
         PairError::Randomness(errno) => alloc::format!(
             "No randomness for a code: {}.",
             core::str::from_utf8(errno.message()).unwrap_or("failed")
@@ -231,8 +231,20 @@ impl NetworkView {
         );
         let url = line(tree, panel, PADDING, URL_TOP, PANEL_LINE_WIDTH);
         let fingerprint = [
-            line(tree, panel, PADDING, PANEL_FINGERPRINT_TOPS[0], PANEL_LINE_WIDTH),
-            line(tree, panel, SECOND_HALF_X, PANEL_FINGERPRINT_TOPS[1], PANEL_LINE_WIDTH),
+            line(
+                tree,
+                panel,
+                PADDING,
+                PANEL_FINGERPRINT_TOPS[0],
+                PANEL_LINE_WIDTH,
+            ),
+            line(
+                tree,
+                panel,
+                SECOND_HALF_X,
+                PANEL_FINGERPRINT_TOPS[1],
+                PANEL_LINE_WIDTH,
+            ),
         ];
         let countdown = line(tree, panel, PADDING, COUNTDOWN_TOP, PANEL_LINE_WIDTH);
         let cancel = add(
@@ -355,7 +367,12 @@ impl NetworkView {
                 tree.set_shown(widgets.lines[3], tree.is_shown(widgets.pair));
             }
             None => {
-                show_line(tree, widgets.lines[1], NO_CERTIFICATE_LINE, colour::TEXT_DIM);
+                show_line(
+                    tree,
+                    widgets.lines[1],
+                    NO_CERTIFICATE_LINE,
+                    colour::TEXT_DIM,
+                );
                 tree.set_shown(widgets.lines[2], false);
                 tree.set_shown(widgets.lines[3], false);
             }
@@ -409,7 +426,12 @@ impl NetworkView {
         Some((id, name))
     }
 
-    fn hint(&self, tree: &WidgetTree<CAPACITY>, rows: &[AgentGrants], full: bool) -> (String, bool) {
+    fn hint(
+        &self,
+        tree: &WidgetTree<CAPACITY>,
+        rows: &[AgentGrants],
+        full: bool,
+    ) -> (String, bool) {
         let (id, name) = self.typed(tree);
         if id.as_bytes() == LOCAL_AGENT_ID {
             return (String::from(LOCAL_LINE), false);
@@ -439,7 +461,12 @@ impl NetworkView {
             return;
         };
         let id = core::str::from_utf8(agent.as_bytes()).unwrap_or_default();
-        show_line(tree, widgets.title, &alloc::format!("Pairing {id}"), colour::TEXT);
+        show_line(
+            tree,
+            widgets.title,
+            &alloc::format!("Pairing {id}"),
+            colour::TEXT,
+        );
         tree.set_text(
             widgets.code,
             core::str::from_utf8(&code_text(&code)).unwrap_or_default(),
@@ -459,7 +486,12 @@ impl NetworkView {
                 tree.set_shown(widgets.fingerprint[1], true);
             }
             None => {
-                show_line(tree, widgets.fingerprint[0], NO_CERTIFICATE_LINE, colour::TEXT_DIM);
+                show_line(
+                    tree,
+                    widgets.fingerprint[0],
+                    NO_CERTIFICATE_LINE,
+                    colour::TEXT_DIM,
+                );
                 tree.set_shown(widgets.fingerprint[1], false);
             }
         }
@@ -495,7 +527,13 @@ impl NetworkView {
         tree.set_focus(Some(widgets.id_field), now_ms);
     }
 
-    fn to_code_step(&mut self, tree: &mut WidgetTree<CAPACITY>, agent: AgentId, code: Code, now_ms: u32) {
+    fn to_code_step(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        agent: AgentId,
+        code: Code,
+        now_ms: u32,
+    ) {
         let widgets = self.widgets;
         self.step = Some(Step::Code(agent, code));
         for id in [widgets.id_field, widgets.name_field, widgets.cancel] {

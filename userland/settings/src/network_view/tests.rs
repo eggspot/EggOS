@@ -7,7 +7,7 @@ use eggos_mcp::pairing::{fingerprint_text, token_from};
 use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 use eggos_toolkit::widget::radio_rect;
 
-const AGENTS_ROW_Y: i32 = 44 + 6 * 32 + 10;
+const AGENTS_ROW_Y: i32 = 44 + 7 * 32 + 10;
 const NOW: u64 = 1_793_438_042;
 const CODE: Code = *b"BCDEFGHJ";
 

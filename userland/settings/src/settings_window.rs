@@ -5,12 +5,13 @@
 //! docs/ux/agents-v0.3.md), Components and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
+use crate::accessibility_pane::AccessibilityPane;
 use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
-use crate::keys::InputChange;
+use crate::keys::{InputChange, KeysChange};
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use crate::zone_picker::{self, ZonePicker};
@@ -37,7 +38,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 164;
+pub const CAPACITY: usize = 176;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -93,11 +94,12 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 9] = [
+pub const PANES: [&str; 10] = [
     "Appearance",
     "Display",
     "Keyboard",
     "Mouse",
+    "Accessibility",
     "Storage",
     "Date & time",
     "Agents",
@@ -110,20 +112,22 @@ const DISPLAY: usize = 1;
 /// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
 pub const KEYBOARD: usize = 2;
 const MOUSE: usize = 3;
+/// The `Accessibility` pane's place in [`PANES`] (D205, docs/ux/first-run-accessibility-v0.3.md).
+pub const ACCESSIBILITY: usize = 4;
 /// The `Storage` pane's place in [`PANES`] (D192, docs/ux/storage-v0.3.md).
-pub const STORAGE: usize = 4;
+pub const STORAGE: usize = 5;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
-pub const DATE_AND_TIME: usize = 5;
+pub const DATE_AND_TIME: usize = 6;
 /// The `Agents` pane's place in [`PANES`] (D193, docs/ux/agents-v0.3.md).
-pub const AGENTS: usize = 6;
-const COMPONENTS: usize = 7;
+pub const AGENTS: usize = 7;
+const COMPONENTS: usize = 8;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 8;
+pub const ABOUT: usize = 9;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 9] = [
+const PANE_WORDS: [&[&str]; 10] = [
     &[
         "theme",
         "layout",
@@ -189,6 +193,17 @@ const PANE_WORDS: [&[&str]; 9] = [
         "acceleration",
         "cursor",
         "touchpad",
+    ],
+    &[
+        "accessibility",
+        "a11y",
+        "Ease of Access",
+        "Universal Access",
+        "Sticky keys",
+        "Slow keys",
+        "Filter keys",
+        "keyboard navigation",
+        "disability",
     ],
     &[
         "disks",
@@ -288,6 +303,9 @@ pub enum Request {
     /// Save this mouse or key preference, then apply it, then say how both went
     /// ([`SettingsWindow::input_changed`]) (D195).
     ChangeInput(InputChange),
+    /// Save this key accessibility setting, then apply it, then say how both went
+    /// ([`SettingsWindow::keys_changed`]) (D205).
+    ChangeKeys(KeysChange),
     /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
     ReadDisks,
     /// Check this disk without writing, read the disks again, then show both
@@ -368,6 +386,7 @@ pub struct SettingsWindow {
     zones: ZonePicker,
     display: DisplayPane,
     inputs: InputPanes,
+    accessibility: AccessibilityPane,
     facts: Facts,
     pane: usize,
 }
@@ -589,6 +608,7 @@ impl SettingsWindow {
 
         build.heading(panes[DISPLAY], PANES[DISPLAY]);
         build.heading(panes[MOUSE], PANES[MOUSE]);
+        build.heading(panes[ACCESSIBILITY], PANES[ACCESSIBILITY]);
 
         let keyboard = panes[KEYBOARD];
         build.heading(keyboard, PANES[KEYBOARD]);
@@ -750,6 +770,7 @@ impl SettingsWindow {
             keyboard_no_disk,
             facts.input,
         );
+        let accessibility = AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], facts.keys);
         let zones = ZonePicker::build(
             &mut tree,
             panes[DATE_AND_TIME],
@@ -792,6 +813,7 @@ impl SettingsWindow {
             zones,
             display,
             inputs,
+            accessibility,
             facts,
             pane: APPEARANCE,
         };
@@ -836,6 +858,26 @@ impl SettingsWindow {
         &self.inputs
     }
 
+    /// The Accessibility pane.
+    pub fn accessibility_pane(&self) -> &AccessibilityPane {
+        &self.accessibility
+    }
+
+    /// How saving, then applying, a key accessibility setting went ([`Request::ChangeKeys`]):
+    /// `applied` is only looked at when `saved` worked.
+    pub fn keys_changed(
+        &mut self,
+        change: KeysChange,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        if saved.is_ok() {
+            self.facts.keys = change.applied_to(self.facts.keys);
+        }
+        self.accessibility
+            .changed(&mut self.tree, self.facts.keys, saved, applied);
+    }
+
     /// How saving the display's scale went ([`Request::SetDisplayScale`]).
     pub fn display_scale_saved(&mut self, scale: u32, saved: Result<(), Errno>) {
         if saved.is_ok() {
@@ -877,6 +919,9 @@ impl SettingsWindow {
         }
         if pane == MOUSE || pane == KEYBOARD {
             self.inputs.reset(&mut self.tree, &self.facts);
+        }
+        if pane == ACCESSIBILITY {
+            self.accessibility.reset(&mut self.tree, &self.facts);
         }
         if pane == STORAGE {
             self.storage.reset(&mut self.tree);
@@ -1208,6 +1253,11 @@ impl SettingsWindow {
         if let input_panes::Reply::Done(request) = self.inputs.respond(response, self.facts.input) {
             return request;
         }
+        if let input_panes::Reply::Done(request) =
+            self.accessibility.respond(response, self.facts.keys)
+        {
+            return request;
+        }
         if let zone_picker::Reply::Done(request) =
             self.zones
                 .respond(&mut self.tree, response, now_ms, self.widgets.set_button)
@@ -1344,7 +1394,7 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, 44 + 8 * 32 + 10);
+        click(&mut window, 40, 44 + 9 * 32 + 10);
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
@@ -1395,7 +1445,7 @@ mod tests {
         assert_eq!(uptime_text(59).as_str(), "Up 0:00:59");
     }
 
-    const DATE_AND_TIME_ROW: i32 = 44 + 5 * 32 + 10;
+    const DATE_AND_TIME_ROW: i32 = 44 + 6 * 32 + 10;
 
     fn press(window: &mut SettingsWindow, code: u16, character: u32) -> Option<Request> {
         let response = window.tree().handle(
@@ -1844,5 +1894,34 @@ mod tests {
         );
         window.input_changed(InputChange::RepeatRate(20), Ok(()), Ok(()));
         assert_eq!(window.input_panes().values(window.widgets())[2], Some(20));
+    }
+
+    const ACCESSIBILITY_ROW: i32 = 44 + 4 * 32 + 10;
+
+    #[test]
+    fn the_accessibility_pane_turns_sticky_and_slow_keys_on() {
+        let mut window = SettingsWindow::new(Facts::example());
+        click(&mut window, 40, ACCESSIBILITY_ROW);
+        assert_eq!(window.pane(), ACCESSIBILITY);
+        assert_eq!(
+            window.accessibility_pane().state(window.widgets()),
+            (false, false, Some(300), false)
+        );
+        assert_eq!(
+            click(&mut window, 200, 164),
+            Some(Request::ChangeKeys(KeysChange::StickyKeys(true)))
+        );
+        window.keys_changed(KeysChange::StickyKeys(true), Ok(()), Ok(()));
+        assert_eq!(
+            click(&mut window, 200, 204),
+            Some(Request::ChangeKeys(KeysChange::SlowKeys(true)))
+        );
+        window.keys_changed(KeysChange::SlowKeys(true), Ok(()), Ok(()));
+        assert_eq!(
+            window.accessibility_pane().state(window.widgets()),
+            (true, true, Some(300), true)
+        );
+        window.keys_changed(KeysChange::SlowKeysMs(500), Err(Errno::EPERM), Ok(()));
+        assert_eq!(window.facts().keys.slow_keys_ms, 300);
     }
 }

@@ -792,6 +792,22 @@ impl Application<CAPACITY> for Settings {
                 self.window
                     .display_scale_saved(scale, save_display_scale(scale));
             }
+            Some(Request::ChangeKeys(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match (saved, self.server.as_ref()) {
+                    (Ok(()), Some(server)) => {
+                        let keys = change.applied_to(self.window.facts().keys);
+                        server.set_key_accessibility(
+                            keys.sticky_keys,
+                            keys.slow_keys,
+                            keys.slow_keys_ms,
+                        )
+                    }
+                    _ => Ok(()),
+                };
+                self.window.keys_changed(change, saved, applied);
+            }
             Some(Request::ChangeInput(change)) => {
                 let (key, value) = change.saved();
                 let saved = save_through_a_temporary_file(key, value.as_str());

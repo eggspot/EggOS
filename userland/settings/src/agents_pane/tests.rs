@@ -11,7 +11,7 @@ use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 use eggos_toolkit::tree::element_of;
 use eggos_toolkit::widget::radio_rect;
 
-const AGENTS_ROW_Y: i32 = 44 + 6 * 32 + 10;
+const AGENTS_ROW_Y: i32 = 44 + 7 * 32 + 10;
 const NOW: u64 = 1_793_438_042;
 const WRITE_ENDS: u64 = 1_793_445_240;
 const DENY: usize = 0;
@@ -448,7 +448,7 @@ fn an_agent_cannot_change_grants_through_the_element_tree() {
     assert!(window.grants_to_write().get(&id("tv")).is_none());
 }
 
-const ABOUT_ROW_Y: i32 = 44 + 8 * 32 + 10;
+const ABOUT_ROW_Y: i32 = 44 + 9 * 32 + 10;
 const GRANTS_VIEW: usize = 0;
 const ACTIVITY: usize = 1;
 

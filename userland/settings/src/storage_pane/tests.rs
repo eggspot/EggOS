@@ -8,7 +8,7 @@ use eggos_files::storage::{Usage, list};
 use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 
 const BLOCKS: usize = 512;
-const STORAGE_ROW_Y: i32 = 44 + 4 * 32 + 10;
+const STORAGE_ROW_Y: i32 = 44 + 5 * 32 + 10;
 const PANE_X: i32 = 176;
 
 fn machine() -> MemoryDisks {
@@ -124,7 +124,7 @@ fn press_button(window: &mut SettingsWindow, id: WidgetId) -> Option<Request> {
 #[test]
 fn the_storage_pane_comes_after_mouse_and_is_found_by_its_words() {
     assert_eq!(PANES[STORAGE], "Storage");
-    assert_eq!(PANES[STORAGE - 1], "Mouse");
+    assert_eq!(PANES[STORAGE - 1], "Accessibility");
     assert_eq!(PANES[STORAGE + 1], "Date & time");
     for word in [
         "storage",
