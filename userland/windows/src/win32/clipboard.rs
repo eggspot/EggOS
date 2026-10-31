@@ -100,7 +100,7 @@ fn take_shared_text() {
 }
 
 enum OutgoingText {
-    None,
+    Nothing,
     Text { bytes: *mut u8, length: usize },
     Unavailable,
 }
@@ -115,7 +115,7 @@ fn copy_outgoing_text() -> OutgoingText {
             .map(|entry| entry.data)
     });
     let Some(data) = data else {
-        return OutgoingText::None;
+        return OutgoingText::Nothing;
     };
     // SAFETY: clipboard data are `GlobalAlloc` blocks; `global_units` reads only within the
     // block's size, which the heap's header gives. The calling thread holds the clipboard
@@ -142,7 +142,7 @@ fn copy_outgoing_text() -> OutgoingText {
 
 fn give_shared_text(device: super::window_device::Device, outgoing: OutgoingText) {
     match outgoing {
-        OutgoingText::None => {
+        OutgoingText::Nothing => {
             if let Ok((_, serial)) = device.clipboard(&mut []) {
                 CLIPBOARD.with(|clipboard| clipboard.shared_serial = Some(serial));
             }
