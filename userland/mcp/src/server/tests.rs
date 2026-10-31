@@ -3505,3 +3505,20 @@ fn a_destructive_call_is_asked_on_the_screen_without_always() {
         question.destructive
     ));
 }
+
+#[test]
+fn a_transport_without_requests_of_its_own_never_asks_through_elicitation() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_answers_only();
+    harness.initialize(r#"{"elicitation":{}}"#);
+    assert!(!harness.server.session().elicits());
+    harness
+        .system
+        .files
+        .insert("/home/root/a".into(), b"a".to_vec());
+    harness.system.folders.push("/home/root".into());
+    let lines = harness.call_lines(4, "trash", r#"{"path":"/home/root/a"}"#);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!lines[0].contains("elicitation/create"), "{}", lines[0]);
+    assert_eq!(harness.server.waiting_until(), None);
+}

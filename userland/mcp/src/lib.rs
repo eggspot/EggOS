@@ -17,6 +17,7 @@ pub mod fuzz;
 pub mod grant_files;
 pub mod grant_prompt;
 pub mod grants;
+pub mod http;
 pub mod json;
 #[cfg(target_env = "musl")]
 pub mod linux;

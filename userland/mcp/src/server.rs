@@ -205,6 +205,7 @@ pub struct Server {
     audit_written: u64,
     budget: u64,
     budget_spent: bool,
+    answers_only: bool,
 }
 
 impl Default for Server {
@@ -224,6 +225,7 @@ impl Default for Server {
             audit_written: 0,
             budget: BUDGET_BYTES,
             budget_spent: false,
+            answers_only: false,
         }
     }
 }
@@ -291,6 +293,13 @@ impl Server {
     pub fn set_agent(&mut self, agent: AgentId) {
         self.channel_agent = agent;
         self.agent = agent;
+    }
+
+    /// Says the transport only carries the server's answers, never a request of its own (MCP
+    /// over HTTP without an event stream): no client is asked through elicitation, so a call
+    /// needing the person's answer asks on EggOS's screen or is refused.
+    pub fn set_answers_only(&mut self) {
+        self.answers_only = true;
     }
 
     /// The agent this server answers.
@@ -598,11 +607,12 @@ impl Server {
                 .and_then(Value::as_str)
                 .map_or(0, |text| text.decode_prefix_into(buffer).0.len())
         };
-        let elicitation = session::elicits_forms(
-            params
-                .and_then(|params| params.get("capabilities"))
-                .and_then(|capabilities| capabilities.get("elicitation")),
-        );
+        let elicitation = !self.answers_only
+            && session::elicits_forms(
+                params
+                    .and_then(|params| params.get("capabilities"))
+                    .and_then(|capabilities| capabilities.get("elicitation")),
+            );
         let mut requested_text = [0u8; 64];
         let requested = requested.decode_prefix_into(&mut requested_text).0;
         let mut name = [0u8; 256];
