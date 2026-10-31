@@ -13,6 +13,7 @@ use eggos_mcp::grant_prompt::{
     ANSWER_BYTES, PROMPT_OPTION, PromptAnswer, QUESTION_BYTES, offers_always, read_question,
 };
 use eggos_mcp::grants::{self, AgentId, Grant};
+use eggos_mcp::pairing::{self, PairingFiles};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
@@ -21,6 +22,7 @@ use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
+use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
@@ -576,6 +578,31 @@ impl GrantFiles for LinuxGrantFiles {
     }
 }
 
+impl PairingFiles for LinuxGrantFiles {
+    fn remove(&mut self, path: &CStr) -> Result<(), Errno> {
+        syscall(
+            number::UNLINKAT,
+            [AT_FDCWD, path.as_ptr() as usize, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        let mut filled = 0;
+        while let Some(free) = out.get_mut(filled..).filter(|free| !free.is_empty()) {
+            match syscall(
+                number::GETRANDOM,
+                [free.as_mut_ptr() as usize, free.len(), 0, 0, 0, 0],
+            ) {
+                Ok(count) => filled += count,
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        Ok(())
+    }
+}
+
 struct LinuxLogFiles;
 
 impl LogFiles for LinuxLogFiles {
@@ -619,6 +646,16 @@ fn grants_read(on_disk: bool) -> GrantsRead {
 
 fn write_grants(window: &SettingsWindow) -> Result<(), SaveError> {
     grant_files::save(&mut LinuxGrantFiles, window.grants_to_write())
+}
+
+fn network_read() -> NetworkRead {
+    let files = &mut LinuxGrantFiles;
+    NetworkRead {
+        state: pairing::network_state(files),
+        fingerprint: pairing::certificate_fingerprint(files),
+        pending: pairing::pending(files),
+        now: wall_clock().0,
+    }
 }
 
 struct Settings {
@@ -676,6 +713,21 @@ impl Application<CAPACITY> for Settings {
                 let read = read_activity(&mut LinuxLogFiles, &query, wall_clock().0);
                 self.window.show_activity(read);
             }
+            Some(Request::ReadNetwork) => self.window.show_network(network_read()),
+            Some(Request::TurnNetwork(port)) => {
+                let turned =
+                    pairing::turn_network(&mut LinuxGrantFiles, port).map_err(|(_, errno)| errno);
+                self.window.network_turned(turned, network_read());
+            }
+            Some(Request::BeginPairing) => {
+                if let Some((agent, name)) = self.window.to_pair() {
+                    let outcome =
+                        pairing::begin_pairing(&mut LinuxGrantFiles, agent, name, wall_clock().0);
+                    let grants = grants_read(self.window.facts().on_disk);
+                    self.window
+                        .paired(agent, outcome, grants, network_read(), now_ms);
+                }
+            }
             None => self.show_clock(now_ms),
         }
         if self.window.pane() == KEYBOARD {
@@ -686,6 +738,10 @@ impl Application<CAPACITY> for Settings {
     fn deadline(&self, now_ms: u32) -> Option<u32> {
         if self.unsaved_profile.is_some() || self.disk_work.is_some() {
             return Some(now_ms);
+        }
+        if self.window.pairing_counting_down() {
+            let (_, nanoseconds) = wall_clock();
+            return Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS));
         }
         match self.window.pane() {
             ABOUT => {
@@ -704,6 +760,9 @@ impl Application<CAPACITY> for Settings {
         self.save_unsaved();
         self.do_disk_work(now_ms);
         self.show_clock(now_ms);
+        if self.window.pairing_counting_down() {
+            self.window.show_network(network_read());
+        }
     }
 
     fn focused(&mut self, _now_ms: u32) {

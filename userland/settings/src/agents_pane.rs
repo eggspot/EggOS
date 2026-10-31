@@ -5,6 +5,7 @@
 //! that change grants are person-only: an agent's `wm act` on them is refused.
 
 use crate::activity::{ActivityQuery, ActivityRead, ActivityView};
+use crate::network_view::{NetworkRead, NetworkView};
 use crate::settings_window::{CAPACITY, Request};
 use crate::storage_pane::format_panel;
 use alloc::string::String;
@@ -55,9 +56,10 @@ const GRANT_AT: (i32, i32) = (288, 88);
 pub(crate) const EMPTY_ROWS: [&str; 32] = [""; 32];
 const VIEW_RADIOS_TOP: i32 = 18;
 const ACTIVITY_VIEW: usize = 1;
+const NETWORK_VIEW: usize = 2;
 
-/// The pane's two views, chosen beside its heading.
-pub const VIEWS: [&str; 2] = ["Grants", "Activity"];
+/// The pane's three views, chosen beside its heading.
+pub const VIEWS: [&str; 3] = ["Grants", "Activity", "Network"];
 
 /// The class rows' titles, in [`Grant::ALL`] order.
 pub const CLASS_TITLES: [&str; 4] = ["View", "Write", "Install", "Run"];
@@ -150,6 +152,7 @@ pub struct AgentsPane {
     status: Option<String>,
     default_button: WidgetId,
     activity: ActivityView,
+    network: NetworkView,
 }
 
 pub(crate) fn add(
@@ -507,6 +510,7 @@ impl AgentsPane {
         }
         tree.set_shown(panel, false);
         let activity = ActivityView::build(tree, pane);
+        let network = NetworkView::build(tree, pane);
         let mut agents = Self {
             widgets: Widgets {
                 view,
@@ -535,6 +539,7 @@ impl AgentsPane {
             status: None,
             default_button,
             activity,
+            network,
         };
         agents.show_grants(tree, GrantsRead::default());
         agents
@@ -554,6 +559,8 @@ impl AgentsPane {
         tree.set_selected(self.widgets.list, 0);
         tree.set_selected(self.widgets.view, 0);
         self.activity.reset(tree);
+        self.network.reset(tree);
+        tree.set_default_button(self.default_button);
         self.show_view(tree);
     }
 
@@ -578,12 +585,19 @@ impl AgentsPane {
         tree.selected(self.widgets.view) == Some(ACTIVITY_VIEW)
     }
 
+    /// Whether the `Network` view is chosen.
+    pub fn showing_network(&self, tree: &WidgetTree<CAPACITY>) -> bool {
+        tree.selected(self.widgets.view) == Some(NETWORK_VIEW)
+    }
+
     fn show_view(&self, tree: &mut WidgetTree<CAPACITY>) {
         let activity = self.showing_activity(tree);
+        let network = self.showing_network(tree);
         for id in self.grants_view() {
-            tree.set_shown(id, !activity);
+            tree.set_shown(id, !activity && !network);
         }
         self.activity.set_shown(tree, activity);
+        self.network.set_shown(tree, network);
     }
 
     fn switch_view(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) -> Option<Request> {
@@ -597,7 +611,64 @@ impl AgentsPane {
         }
         self.status = None;
         self.refresh(tree);
-        self.showing_activity(tree).then_some(Request::ReadActivity)
+        if self.showing_activity(tree) {
+            Some(Request::ReadActivity)
+        } else if self.showing_network(tree) {
+            Some(Request::ReadNetwork)
+        } else {
+            None
+        }
+    }
+
+    /// Shows the network just read in the `Network` view and the pairing panel.
+    pub fn show_network(&mut self, tree: &mut WidgetTree<CAPACITY>, read: NetworkRead) {
+        self.network.show(tree, read);
+        self.refresh(tree);
+    }
+
+    /// How turning the network on or off went, and the network read again after it.
+    pub fn network_turned(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        turned: Result<(), eggos_runtime::errno::Errno>,
+        read: NetworkRead,
+    ) {
+        self.network.network_turned(tree, turned, read);
+        self.refresh(tree);
+    }
+
+    /// The agent the pairing panel asks to pair, and its name ([`Request::BeginPairing`]).
+    pub fn to_pair(&self, tree: &WidgetTree<CAPACITY>) -> Option<(AgentId, Option<AgentName>)> {
+        self.network.to_pair(tree)
+    }
+
+    /// How pairing `agent` went, with the grants and the network read again after it: the
+    /// agent is selected in the list.
+    pub fn paired(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        agent: AgentId,
+        outcome: Result<eggos_mcp::pairing::Code, eggos_mcp::pairing::PairError>,
+        grants: GrantsRead,
+        network: NetworkRead,
+        now_ms: u32,
+    ) {
+        self.show_grants(tree, grants);
+        if let Some(index) = self.rows.iter().position(|row| *row.id() == agent) {
+            tree.set_selected(self.widgets.list, index);
+        }
+        self.network.paired(tree, agent, outcome, network, now_ms);
+        self.refresh(tree);
+    }
+
+    /// Whether the pairing panel shows a code, so the program reads the network each second.
+    pub fn pairing_counting_down(&self) -> bool {
+        self.network.counting_down()
+    }
+
+    /// The `Network` view.
+    pub fn network(&self) -> &NetworkView {
+        &self.network
     }
 
     /// What the Activity view's filters ask the log for, `This agent only` meaning the agent
@@ -769,8 +840,11 @@ impl AgentsPane {
         tree.set_enabled(widgets.forget, writable && !local);
         tree.set_enabled(widgets.add, writable && id_ok && !self.store_full());
         tree.set_enabled(widgets.id_field, self.writable());
+        self.network
+            .refresh_panel(tree, &self.rows, self.store_full());
         let (line, ink) = match &self.status {
             _ if self.showing_activity(tree) => self.activity.status_line(tree),
+            _ if self.showing_network(tree) => self.network.status_line(),
             Some(status) => (status.clone(), colour::TEXT),
             None => self.idle_line(tree),
         };
@@ -928,6 +1002,17 @@ impl AgentsPane {
         now_ms: u32,
     ) -> Reply {
         if let Some(request) = self.activity.respond(response) {
+            self.refresh(tree);
+            return Reply::Done(request);
+        }
+        let full = self.store_full();
+        if let Some(request) = self
+            .network
+            .respond(tree, response, now_ms, &self.rows, full)
+        {
+            if !self.network.panel_open() {
+                tree.set_default_button(self.default_button);
+            }
             self.refresh(tree);
             return Reply::Done(request);
         }

@@ -141,7 +141,7 @@ impl core::fmt::Debug for Listing {
 
 impl Listing {
     /// The longest listing, in bytes.
-    pub const CAPACITY: usize = 120;
+    pub const CAPACITY: usize = 140;
     const SEPARATOR: &[u8] = b", ";
     const ELLIPSIS: &[u8] = b"...";
 

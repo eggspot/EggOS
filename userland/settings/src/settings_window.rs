@@ -9,6 +9,7 @@ use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::facts::Facts;
+use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -16,7 +17,9 @@ use eggos_calendar::{ParseError, parse_setting};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_mcp::grant_files::SaveError;
-use eggos_mcp::grants::GrantStore;
+use eggos_mcp::grants::{AgentId, AgentName, GrantStore};
+use eggos_mcp::pairing::{Code, PairError};
+use eggos_runtime::errno::Errno;
 use eggos_settings_file::KEYBOARD_LAYOUTS;
 use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
@@ -31,7 +34,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 120;
+pub const CAPACITY: usize = 140;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -257,6 +260,15 @@ pub enum Request {
     /// Read the audit log's rows [`SettingsWindow::activity_query`] asks for and show them
     /// ([`SettingsWindow::show_activity`]) (D193).
     ReadActivity,
+    /// Read the network file, the certificate and the pairing file and show them
+    /// ([`SettingsWindow::show_network`]) (D193).
+    ReadNetwork,
+    /// Turn the network server on with this port, or off with `None`, from the next start, read
+    /// the network again, then show both ([`SettingsWindow::network_turned`]).
+    TurnNetwork(Option<u16>),
+    /// Pair the agent [`SettingsWindow::to_pair`] names, read the grants and the network again,
+    /// then show them ([`SettingsWindow::paired`]).
+    BeginPairing,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -817,6 +829,40 @@ impl SettingsWindow {
     /// Shows the audit log's rows just read in the Agents pane's Activity view (D193).
     pub fn show_activity(&mut self, read: ActivityRead) {
         self.agents.show_activity(&mut self.tree, read);
+    }
+
+    /// Shows the network just read in the Agents pane's Network view (D193).
+    pub fn show_network(&mut self, read: NetworkRead) {
+        self.agents.show_network(&mut self.tree, read);
+    }
+
+    /// How turning the network on or off went ([`Request::TurnNetwork`]).
+    pub fn network_turned(&mut self, turned: Result<(), Errno>, read: NetworkRead) {
+        self.agents.network_turned(&mut self.tree, turned, read);
+    }
+
+    /// The agent the pairing panel asks to pair ([`Request::BeginPairing`]).
+    pub fn to_pair(&self) -> Option<(AgentId, Option<AgentName>)> {
+        self.agents.to_pair(&self.tree)
+    }
+
+    /// How pairing went, with the grants and the network read again after it.
+    pub fn paired(
+        &mut self,
+        agent: AgentId,
+        outcome: Result<Code, PairError>,
+        grants: GrantsRead,
+        network: NetworkRead,
+        now_ms: u32,
+    ) {
+        self.agents
+            .paired(&mut self.tree, agent, outcome, grants, network, now_ms);
+    }
+
+    /// Whether the Agents pane's pairing panel counts a code down, so the window wants a tick
+    /// each second.
+    pub fn pairing_counting_down(&self) -> bool {
+        self.pane() == AGENTS && self.agents.pairing_counting_down()
     }
 
     /// The Agents pane.

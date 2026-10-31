@@ -6,12 +6,15 @@
 //! with every request. The network server only reads the store, and changes nothing but this
 //! file: it counts wrong codes and removes the file once the token is handed out.
 
+use crate::grant_files::{FOLDER_MODE, GrantFiles, STORE_FOLDERS};
 use crate::grants::{
-    AgentId, TOKEN_HASH_BYTES, decimal, digest_from_hex, fnv1a, hex_digest, hex_value, seconds,
+    AgentId, GrantStore, StoreState, TOKEN_HASH_BYTES, decimal, digest_from_hex, fnv1a, hex_digest,
+    hex_value, seconds,
 };
 use core::ffi::CStr;
 use eggos_crypto::constant_time;
 use eggos_crypto::sha2::Sha256;
+use eggos_runtime::errno::Errno;
 
 /// The file whose presence turns the network server on (`agent network on`); it may hold the
 /// port, in decimal.
@@ -212,6 +215,11 @@ impl PendingPairing {
         self.expires
     }
 
+    /// How many wrong codes were sent.
+    pub fn wrong_codes(&self) -> u8 {
+        self.wrong
+    }
+
     /// Whether a code can be tried at `now`.
     pub fn is_open(&self, now: u64) -> bool {
         self.burned_at.is_none() && now < self.expires
@@ -347,3 +355,208 @@ impl PendingPairing {
 
 #[cfg(test)]
 mod tests;
+
+/// What else pairing and the network switch need beyond [`GrantFiles`]: removing a file and
+/// fresh randomness.
+pub trait PairingFiles: GrantFiles {
+    /// Removes the file at `path`; `ENOENT` when there is none.
+    fn remove(&mut self, path: &CStr) -> Result<(), Errno>;
+    /// Fills `out` with fresh randomness from the system's generator.
+    fn random(&mut self, out: &mut [u8]) -> Result<(), Errno>;
+}
+
+/// The port agents connect to unless the network file says another.
+pub const DEFAULT_PORT: u16 = 8443;
+/// The most bytes of a certificate kept for its fingerprint.
+pub const MAX_CERTIFICATE_BYTES: usize = 1536;
+/// The pairing file's mode: only root reads the token in it.
+pub const PAIRING_MODE: u32 = 0o600;
+/// The network file's mode.
+pub const NETWORK_MODE: u32 = 0o644;
+/// The pairing file's folder's mode.
+pub const PAIRING_FOLDER_MODE: u32 = 0o700;
+
+/// Whether agents on the network are answered from EggOS's next start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkState {
+    /// They are not.
+    Off,
+    /// They are, on this port.
+    On(u16),
+}
+
+/// A port as `agent network --port` and the network file write it, `None` when it is not one.
+pub fn parse_port(digits: &[u8]) -> Option<u16> {
+    let digits = digits.strip_suffix(b"\n").unwrap_or(digits);
+    if digits.is_empty() || digits.len() > 5 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let value = digits
+        .iter()
+        .fold(0u32, |value, &digit| value * 10 + u32::from(digit - b'0'));
+    u16::try_from(value).ok().filter(|&port| port > 0)
+}
+
+/// Whether the network file is there, and its port ([`DEFAULT_PORT`] when it holds none).
+pub fn network_state(files: &mut impl GrantFiles) -> NetworkState {
+    let mut text = [0u8; 16];
+    match files.read_whole(NETWORK_ENABLED, &mut text) {
+        Ok(length) => NetworkState::On(
+            text.get(..length)
+                .and_then(parse_port)
+                .unwrap_or(DEFAULT_PORT),
+        ),
+        Err(_) => NetworkState::Off,
+    }
+}
+
+/// Turns the network server on with `port`, or off with `None`, from EggOS's next start.
+pub fn turn_network(
+    files: &mut impl PairingFiles,
+    port: Option<u16>,
+) -> Result<(), (&'static CStr, Errno)> {
+    let Some(port) = port else {
+        return match files.remove(NETWORK_ENABLED) {
+            Ok(()) | Err(Errno::ENOENT) => Ok(()),
+            Err(errno) => Err((NETWORK_ENABLED, errno)),
+        };
+    };
+    for folder in STORE_FOLDERS {
+        match files.make_directory(folder, FOLDER_MODE) {
+            Ok(()) | Err(Errno::EEXIST) => {}
+            Err(errno) => return Err((folder, errno)),
+        }
+    }
+    let mut digits = [0u8; 20];
+    let text = decimal(u64::from(port), &mut digits);
+    let mut line = [0u8; 8];
+    let length = text.len() + 1;
+    line[..text.len()].copy_from_slice(text);
+    line[text.len()] = b'\n';
+    write_replacing(
+        files,
+        NETWORK_ENABLED,
+        NETWORK_ENABLED_TEMPORARY,
+        NETWORK_MODE,
+        &line[..length],
+    )
+}
+
+fn write_replacing(
+    files: &mut impl GrantFiles,
+    target: &'static CStr,
+    temporary: &'static CStr,
+    mode: u32,
+    bytes: &[u8],
+) -> Result<(), (&'static CStr, Errno)> {
+    files
+        .write_new(temporary, mode, bytes)
+        .map_err(|errno| (temporary, errno))?;
+    files.sync();
+    files
+        .rename(temporary, target)
+        .map_err(|errno| (target, errno))
+}
+
+/// The network server's certificate's fingerprint, when the server has made one.
+pub fn certificate_fingerprint(
+    files: &mut impl GrantFiles,
+) -> Option<[u8; FINGERPRINT_TEXT_BYTES]> {
+    let mut der = [0u8; MAX_CERTIFICATE_BYTES];
+    match files.read_whole(NETWORK_CERTIFICATE, &mut der) {
+        Ok(length) if length > 0 => Some(fingerprint_text(der.get(..length)?)),
+        _ => None,
+    }
+}
+
+/// The pairing waiting in [`PAIRING_PATH`], if one is there and reads back.
+pub fn pending(files: &mut impl GrantFiles) -> Option<PendingPairing> {
+    let mut file = [0u8; PAIRING_BYTES];
+    let length = files.read_whole(PAIRING_PATH, &mut file).ok()?;
+    PendingPairing::decode(file.get(..length)?).ok()
+}
+
+/// Why a pairing could not begin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairError {
+    /// The last code was burned by wrong tries: this many seconds must pass.
+    Burned(u64),
+    /// No randomness could be had.
+    Randomness(Errno),
+    /// The grants file cannot be trusted or cannot hold the agent.
+    Store(crate::grants::StoreError),
+    /// This file or folder could not be made or written.
+    File(&'static CStr, Errno),
+}
+
+/// Pairs the agent `id`: adds it with no grants unless the store has it (then its grants stay,
+/// and its name unless `name` gives one), gives it a new token in place of any old one, writes
+/// the pairing file with a new code, then the grants file, at `now`; returns the code.
+pub fn begin_pairing(
+    files: &mut impl PairingFiles,
+    id: AgentId,
+    name: Option<crate::grants::AgentName>,
+    now: u64,
+) -> Result<Code, PairError> {
+    if let Some(waiting) = pending(files) {
+        let wait = waiting.wait_before_next(now);
+        if wait > 0 {
+            return Err(PairError::Burned(wait));
+        }
+    }
+    let mut store = match crate::grant_files::load(files) {
+        StoreState::Loaded(store) => store,
+        StoreState::Missing => GrantStore::new(),
+        StoreState::Unreadable(error) => return Err(PairError::Store(error)),
+    };
+    let code = loop {
+        let mut randomness = [0u8; 32];
+        files
+            .random(&mut randomness)
+            .map_err(PairError::Randomness)?;
+        if let Some(code) = code_from(&randomness) {
+            break code;
+        }
+    };
+    let mut randomness = [0u8; TOKEN_RANDOM_BYTES];
+    files
+        .random(&mut randomness)
+        .map_err(PairError::Randomness)?;
+    let token = token_from(&randomness);
+    let shown = match (name, store.get(&id)) {
+        (Some(name), _) => name,
+        (None, Some(entry)) => *entry.name(),
+        (None, None) => crate::grants::AgentName::new(id.as_bytes())
+            .ok_or(PairError::Store(crate::grants::StoreError::Malformed))?,
+    };
+    store
+        .add(id, shown)
+        .map_err(PairError::Store)?
+        .set_token_hash(Some(token_hash(&token)));
+    let mut file = [0u8; PAIRING_BYTES];
+    let length = PendingPairing::new(id, &code, token, now)
+        .encode(&mut file)
+        .map_err(|_| PairError::File(PAIRING_PATH, Errno::ENOSPC))?;
+    match files.make_directory(PAIRING_FOLDER, PAIRING_FOLDER_MODE) {
+        Ok(()) | Err(Errno::EEXIST) => {}
+        Err(errno) => return Err(PairError::File(PAIRING_FOLDER, errno)),
+    }
+    write_replacing(
+        files,
+        PAIRING_PATH,
+        PAIRING_TEMPORARY_PATH,
+        PAIRING_MODE,
+        file.get(..length).unwrap_or_default(),
+    )
+    .map_err(|(path, errno)| PairError::File(path, errno))?;
+    match crate::grant_files::save(files, &store) {
+        Ok(()) => Ok(code),
+        Err(error) => {
+            let _ = files.remove(PAIRING_PATH);
+            Err(match error {
+                crate::grant_files::SaveError::Store(error) => PairError::Store(error),
+                crate::grant_files::SaveError::File(path, errno) => PairError::File(path, errno),
+            })
+        }
+    }
+}

@@ -1,4 +1,5 @@
 use super::*;
+use eggos_mcp::pairing::{PAIRING_BYTES, PendingPairing};
 use crate::fake::Fake;
 
 fn run(fake: &mut Fake, arguments: &[&CStr]) -> i32 {
