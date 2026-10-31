@@ -744,6 +744,9 @@ impl Application<CAPACITY> for Settings {
             Some(Request::SetKeyboardLayout(index)) => {
                 choose_keyboard_layout(index, self.server.as_ref());
             }
+            Some(Request::SetTimeZone(index)) => {
+                self.window.time_zone_saved(index, save_time_zone(index));
+            }
             Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
             Some(Request::CheckDisk(device)) => {
                 self.disk_work = Some(DiskWork::Check(device, CheckMode::ReadOnly));

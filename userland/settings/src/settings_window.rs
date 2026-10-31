@@ -11,9 +11,10 @@ use crate::art;
 use crate::facts::Facts;
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
+use crate::zone_picker::{self, ZonePicker};
 use alloc::vec::Vec;
 use core::fmt::Write;
-use eggos_calendar::{ParseError, parse_setting};
+use eggos_calendar::{ParseError, parse_local_setting};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_mcp::grant_files::SaveError;
@@ -34,7 +35,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 140;
+pub const CAPACITY: usize = 149;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -191,6 +192,15 @@ const PANE_WORDS: [&[&str]; 9] = [
         "calendar",
         "Now",
         "Set to",
+        "zone",
+        "daylight",
+        "DST",
+        "summer time",
+        "offset",
+        "city",
+        "IANA",
+        "Europe/Paris",
+        "Time zone",
     ],
     &[
         "agent",
@@ -242,6 +252,9 @@ pub enum Request {
     /// Make the keyboard layout at this index of the settings file's `KEYBOARD_LAYOUTS` the
     /// keyboard's and save it (D185).
     SetKeyboardLayout(usize),
+    /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
+    /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
+    SetTimeZone(usize),
     /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
     ReadDisks,
     /// Check this disk without writing, read the disks again, then show both
@@ -320,6 +333,7 @@ pub struct SettingsWindow {
     widgets: Widgets,
     storage: StoragePane,
     agents: AgentsPane,
+    zones: ZonePicker,
     facts: Facts,
     pane: usize,
 }
@@ -385,9 +399,17 @@ fn uptime_text(seconds: u64) -> Text<64> {
     text
 }
 
-fn time_text(seconds: u64) -> Text<64> {
+fn time_text(seconds: u64, zone: usize) -> Text<64> {
+    let rule = eggos_calendar::zone::ZONES
+        .get(zone)
+        .and_then(|(_, rule)| eggos_calendar::zone::parse(rule));
     let mut text = Text::new();
-    let _ = eggos_calendar::format::sentence(&mut text, seconds as i64);
+    let _ = match rule {
+        Some(rule) => {
+            eggos_calendar::format::sentence_in(&mut text, seconds as i64, &rule.at(seconds as i64))
+        }
+        None => eggos_calendar::format::sentence(&mut text, seconds as i64),
+    };
     text
 }
 
@@ -624,7 +646,12 @@ impl SettingsWindow {
 
         let date_and_time = panes[DATE_AND_TIME];
         build.heading(date_and_time, PANES[DATE_AND_TIME]);
-        let now = build.row(date_and_time, 0, "Now", time_text(facts.now_s).as_str());
+        let now = build.row(
+            date_and_time,
+            0,
+            "Now",
+            time_text(facts.now_s, facts.time_zone).as_str(),
+        );
         build.label(
             date_and_time,
             PADDING,
@@ -713,6 +740,12 @@ impl SettingsWindow {
 
         let storage = StoragePane::build(&mut tree, panes[STORAGE], set_button);
         let agents = AgentsPane::build(&mut tree, panes[AGENTS], set_button);
+        let zones = ZonePicker::build(
+            &mut tree,
+            panes[DATE_AND_TIME],
+            facts.time_zone,
+            facts.now_s as i64,
+        );
         tree.set_enabled(radios, false);
         tree.set_enabled(set_button, false);
         tree.set_default_button(set_button);
@@ -748,6 +781,7 @@ impl SettingsWindow {
             },
             storage,
             agents,
+            zones,
             facts,
             pane: APPEARANCE,
         };
@@ -986,8 +1020,47 @@ impl SettingsWindow {
     /// Shows `seconds` since the epoch as the time in the `Date & time` pane.
     pub fn show_time(&mut self, seconds: u64) {
         self.facts.now_s = seconds;
-        self.tree
-            .set_text(self.widgets.now, time_text(seconds).as_str());
+        self.tree.set_text(
+            self.widgets.now,
+            time_text(seconds, self.facts.time_zone).as_str(),
+        );
+    }
+
+    /// How saving time zone `zone` went ([`Request::SetTimeZone`]): saved, the pane shows it in
+    /// `Now`, its name and its facts; refused, the selection goes back to the chosen zone and
+    /// the status line says why (docs/ux/date-time-v0.3.md section 8.4).
+    pub fn time_zone_saved(&mut self, zone: usize, saved: Result<(), Errno>) {
+        match saved {
+            Ok(()) => {
+                self.facts.time_zone = zone;
+                self.zones.choose(&mut self.tree, zone);
+                self.show_time(self.facts.now_s);
+            }
+            Err(Errno::EPERM | Errno::EACCES) => {
+                self.zones.reselect_chosen(&mut self.tree);
+                self.set_status(
+                    "Not allowed: this user may not set the time zone.",
+                    colour::TEXT,
+                );
+            }
+            Err(_) => {
+                self.zones.reselect_chosen(&mut self.tree);
+                self.set_status(
+                    "No disk attached: the time zone could not be saved.",
+                    colour::TEXT,
+                );
+            }
+        }
+    }
+
+    /// The time zone picker.
+    pub fn zone_picker(&self) -> &ZonePicker {
+        &self.zones
+    }
+
+    /// The time zone picker's list.
+    pub fn zone_picker_list(&self) -> WidgetId {
+        self.zones.list()
     }
 
     /// Says on the `Date & time` pane's status line how setting the clock went, at `now_ms`.
@@ -1028,11 +1101,17 @@ impl SettingsWindow {
         self.tree.set_text(self.widgets.set_field, "");
         self.tree.set_enabled(self.widgets.set_button, false);
         self.set_status(shown_status(&self.facts), colour::TEXT_DIM);
+        self.zones.reset(&mut self.tree, self.facts.now_s as i64);
     }
 
     fn ask_to_set(&mut self) -> Option<Request> {
         let typed = Text::<255>::from(self.tree.text_of(self.widgets.set_field).unwrap_or(""));
-        let refusal = match parse_setting(typed.as_str(), self.facts.now_s as i64) {
+        let rule = eggos_calendar::zone::ZONES
+            .get(self.facts.time_zone)
+            .and_then(|(_, rule)| eggos_calendar::zone::parse(rule))
+            .or_else(|| eggos_calendar::zone::parse("UTC0"))
+            .expect("UTC0 is a rule");
+        let refusal = match parse_local_setting(typed.as_str(), self.facts.now_s as i64, &rule) {
             Ok(seconds) => return Some(Request::SetTime(seconds as u64)),
             Err(ParseError::NotADateAndTime) => {
                 "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM."
@@ -1071,6 +1150,12 @@ impl SettingsWindow {
         }
         if let agents_pane::Reply::Done(request) =
             self.agents.respond(&mut self.tree, response, now_ms)
+        {
+            return request;
+        }
+        if let zone_picker::Reply::Done(request) =
+            self.zones
+                .respond(&mut self.tree, response, now_ms, self.widgets.set_button)
         {
             return request;
         }
@@ -1471,5 +1556,116 @@ mod tests {
             assert!(!pane_matches(APPEARANCE, query), "{query}");
         }
         assert!(pane_matches(KEYBOARD, "layout") && pane_matches(APPEARANCE, "layout"));
+    }
+
+    fn zone(name: &str) -> usize {
+        crate::facts::zone_index(name).unwrap()
+    }
+
+    fn in_zone(name: &str) -> SettingsWindow {
+        let mut window = SettingsWindow::new(Facts {
+            time_zone: zone(name),
+            ..Facts::example()
+        });
+        click(&mut window, 40, DATE_AND_TIME_ROW);
+        window
+    }
+
+    fn zone_rows(window: &SettingsWindow) -> [&str; 3] {
+        window.zone_picker().row_lines(window.widgets())
+    }
+
+    #[test]
+    fn the_pane_shows_the_chosen_zone_s_time_name_and_facts() {
+        let window = in_zone("Europe/Paris");
+        let tree = window.widgets();
+        assert_eq!(
+            tree.text_of(window.widgets.now),
+            Some("Thursday 29 October 2026, 15:05:09 CET")
+        );
+        assert_eq!(
+            window.zone_picker().lines(tree),
+            [
+                Some("Europe/Paris"),
+                Some("UTC+01:00 CET, standard time"),
+                None
+            ]
+        );
+        assert_eq!(
+            zone_rows(&window),
+            ["Europe/Paris \u{b7} UTC+01:00 CET", "", ""]
+        );
+        let window = in_zone("UTC");
+        assert_eq!(
+            window.widgets().text_of(window.widgets.now),
+            Some("Thursday 29 October 2026, 14:05:09 UTC")
+        );
+        assert_eq!(zone_rows(&window), ["UTC \u{b7} UTC+00:00", "", ""]);
+    }
+
+    #[test]
+    fn typing_in_the_zone_field_lists_the_chosen_zone_then_the_matches() {
+        let mut window = in_zone("UTC");
+        click(&mut window, 200, 236);
+        type_text(&mut window, "par");
+        assert_eq!(
+            zone_rows(&window),
+            [
+                "UTC \u{b7} UTC+00:00",
+                "America/Paramaribo \u{b7} UTC-03:00",
+                "Europe/Paris \u{b7} UTC+01:00 CET"
+            ]
+        );
+        assert_eq!(
+            window.zone_picker().lines(window.widgets())[2],
+            Some("2 zones")
+        );
+        type_text(&mut window, "xyz");
+        assert_eq!(zone_rows(&window), ["", "", ""]);
+        assert_eq!(window.zone_picker().lines(window.widgets())[2], None);
+    }
+
+    #[test]
+    fn arrows_in_the_list_choose_zones_and_a_refused_write_chooses_none() {
+        let mut window = in_zone("UTC");
+        click(&mut window, 200, 236);
+        type_text(&mut window, "par");
+        assert_eq!(press(&mut window, key::DOWN, 0), None);
+        let paramaribo = zone("America/Paramaribo");
+        assert_eq!(
+            press(&mut window, key::DOWN, 0),
+            Some(Request::SetTimeZone(paramaribo))
+        );
+        window.time_zone_saved(paramaribo, Ok(()));
+        assert_eq!(
+            window.widgets().text_of(window.widgets.now),
+            Some("Thursday 29 October 2026, 11:05:09 UTC-03:00")
+        );
+        let paris = zone("Europe/Paris");
+        assert_eq!(
+            press(&mut window, key::DOWN, 0),
+            Some(Request::SetTimeZone(paris))
+        );
+        window.time_zone_saved(paris, Err(Errno::EPERM));
+        assert_eq!(
+            window.status_shown(),
+            Some("Not allowed: this user may not set the time zone.")
+        );
+        assert_eq!(window.facts().time_zone, paramaribo);
+        assert_eq!(
+            window.widgets().selected(window.zone_picker_list()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn the_time_typed_to_set_is_the_chosen_zone_s_local_time() {
+        let mut window = in_zone("Europe/Paris");
+        click(&mut window, 330, 120);
+        type_text(&mut window, "2026-10-29 15:05");
+        assert_eq!(
+            click(&mut window, 540, 120),
+            Some(Request::SetTime(1_793_282_700))
+        );
     }
 }

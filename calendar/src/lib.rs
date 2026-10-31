@@ -13,7 +13,7 @@ pub mod format;
 mod parse;
 pub mod zone;
 
-pub use parse::{ParseError, parse_proc_driver_rtc, parse_setting};
+pub use parse::{ParseError, parse_local_setting, parse_proc_driver_rtc, parse_setting};
 
 /// Seconds in a day.
 pub const SECONDS_PER_DAY: i64 = 86_400;
