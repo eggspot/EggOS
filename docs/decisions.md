@@ -12237,7 +12237,10 @@ the license, by an explicit instruction recorded here.
   (`SetForegroundWindow`); fonts other than Egg Mono. From round 1 review: `pegs.exe` kept as
   a test asset we host (a release asset of this repository, still checked by its SHA-256),
   since the upstream URL is replaced by every upstream build and a cache miss then fails CI's
-  `win32-app` job until it is re-pinned.
+  `win32-app` job until it is re-pinned. From round 2 review: `GetWindowTextA` sizes its copy
+  by `WM_GETTEXTLENGTH`, so a window that answers it with 0 or too little gets an empty or cut
+  text; `GetOpenFileNameA` does not pass back the needed size when the path does not fit
+  (`FNERR_BUFFERTOOSMALL`).
 
 ## D175 A real Objective-C Mac app installs and runs: CocoaGame from its `.zip` through the Cocoa umbrella, views told when they move into a window, the standard About panel, AppKit windows as element trees, NSTimer in the event loop, and the Objective-C runtime's blocks, `__weak` references and exceptions with an unwinder over the image's compact unwind information (the Real apps track's fifth step, its first Mac app; extends D18, D21, D22, D120, D142, D147, D148, D161, D162, D172, D174) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the About panel designed by Claude Fable, `docs/ux/macos-gui-v0.3.md` section 8)
 - **Why.** The Real apps track checks EggOS against applications people use. After a Linux SDL
@@ -12460,8 +12463,9 @@ the license, by an explicit instruction recorded here.
   source is told `cancelled`. Only the client with the keyboard focus may set a selection (or
   clear it), quoting the serial of a key, button or keyboard `enter` event it was sent since
   its focus came, or of its latest pointer `enter` since then (GTK 3 quotes its display's
-  latest serial, which a pointer `enter` moves); any other `set_selection` is ignored, so a background client can neither
-  replace the clipboard nor flood the focused client with offers (review round 2). The client
+  latest serial, which a pointer `enter` moves); any other `set_selection` is ignored, so a
+  background client can neither replace the clipboard nor flood the focused client with
+  offers (review round 2). The client
   with the keyboard focus (the one whose window last got `FOCUS_IN`) is offered the selection
   before its keyboard `enter` and whenever it changes:
   `data_offer` with a new object from the compositor's id range (`ClientSlot::
@@ -14849,7 +14853,10 @@ the license, by an explicit instruction recorded here.
   taking the layer's locks around `fork`; a `vfork`-style `posix_spawn` that copies no page
   tables; `POSIX_SPAWN_START_SUSPENDED`; `popen` with `r+`; `execvp` running a file without
   a format through the shell; `posix_spawn_file_actions_addclosefrom_np` (slices 38b, 38b2
-  and 38c below add the rest of part 38).
+  and 38c below add the rest of part 38). From round 2 review: `posix_spawn`'s file actions
+  can still name the report pipe's read end, which the child keeps open until `exec`; moving
+  the report pipe fails, and `posix_spawn` with it, when an action names a descriptor at or
+  above the open-file limit.
 - **Slice 38b: `scanf`.** `scanf`, `fscanf`, `sscanf`, `vscanf`, `vfscanf` and `vsscanf`
   (`libsystem/scanf.rs`, variadic entries as `printf`'s) read Darwin's conversions: `%d %i %u
   %o %x %X %p`, `%e %f %g %a` (and capitals), `%c`, `%s`, `%[...]` with ranges, negation and a
