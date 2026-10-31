@@ -15922,3 +15922,50 @@ the license, by an explicit instruction recorded here.
     one answer word on stdout, `once|session|always|deny|timeout`, 90 s, headless falling back
     to the client's elicitation; eggmcpd must start it and wait on it beside the channel);
     naming an agent from the pane; list items named by agent for `wm show`.
+- **Slice 41c2 (Settings' Agents pane: the activity view).** Per docs/ux/agents-v0.3.md
+  section 2.2: the `Grants` `Activity` radios at the heading's right (`agents_pane::VIEWS`;
+  `Grants` each time the pane is shown) switch between the grants view's widgets and the
+  activity view's (`userland/settings/src/activity.rs`, `ActivityView`): `This agent only`
+  (the agents list's selected agent), the `Tool name` field (exact, trimmed), the result radios
+  `Any result` `ok` `error` `refused` (by how the call ended, as `agentlog --outcome` in rows),
+  the time radios `Last hour` `Last day` `Last week` `All time`, the count `32 of 418`, and a
+  list of the newest 32 matching calls, newest first, four rows visible (labels over 32 static
+  empty rows, as the agents list), each `10-31 09:14:02 · phone · tee · ok`. The status line
+  shows the chosen record's detail line (`phone · exit status 0, 5 bytes · {"path":"/home/a"}`),
+  `No records match.` or `The log could not be read: <errno text>.` The program reads the log
+  (`Request::ReadActivity`, `read_activity`) when the view is shown and whenever a filter
+  changes (each edit of the tool field), or the selected agent with the box ticked; never on a
+  tick. The filters reset when the pane is shown again and keep their values across switches.
+  - Shared with `agentlog`: `eggos_mcp::audit::calls` reads the log the one way both do:
+    `FILES_OLDEST_FIRST` (the seven older logs then the log), `each_line` over a `LogFiles`
+    trait (open, read, close; a missing file skipped, a line past `LINE_BYTES` 4096 or a cut last
+    line skipped), and `CallRows` (`take`, `finish`), which pairs a call's records into one
+    `CallRow` (its last record, `interrupted` when it was still open). `agentlog` implements
+    `LogFiles` for its `Output`, and its row, raw and JSON modes read through it unchanged.
+  - Element tree and agents: every activity control only filters, so none is person-only
+    (`wm act` may switch views, tick the box, set the tool and choose the radios and records);
+    the grants view keeps its person-only controls. The record rows are labels, so `wm show`
+    lists them with their text.
+  - `CAPACITY` (and `eggos_app::dialog::CAPACITY`) is 120: the window holds 116 widgets with
+    the activity view (41c1's 114 counted 26 widgets for the pane and 11 more for the view, but
+    the window had 105 before this slice).
+  - Choices made without research: the detail line leaves out an empty detail or argument
+    field rather than showing `· ·`; the fields are shown through `audit::display_into` (escaped
+    again) and kept to 256 bytes each, the labels cut to 64 bytes with `...`; the tool field
+    reads the log on every edit, as the design says, since the log is at most about 4 MiB and
+    read in 4 KiB chunks with no allocation per line beyond the 32 rows kept (their strings are
+    reused); a log that cannot be read empties the list rather than keeping the last rows;
+    the time filters are measured from the clock when the log is read.
+  - Check. Host tests: `audit::calls` (pairing, filters by agent, tool, time and outcome, a cut
+    last line, an unreadable file, the files' order), `activity` (rows newest first, the
+    detail line, every filter, the newest 32 of 40 with all counted, an unreadable log, long ids
+    and escaped hidden characters), and the pane (the view radios' place, the activity widgets'
+    places, the count and rows on `agentlog`'s test log, a record's detail line, the filters
+    narrowing and bringing back the rows, `This agent only` following the selection, an
+    unreadable log, switching back and the reset, and an agent switching views and filtering
+    through `wm act`). No QEMU check of its own: the log's reading is `agentlog`'s, which the
+    MCP QEMU check reads back.
+  - Not yet (41c3 and after): the grant prompt on EggOS's own screen (design section 5);
+    paging past the newest 32 records and live updates of the log; the narrow (one column)
+    layout and touch sizes of design section 7 for the whole pane; naming an agent from the
+    pane; list items named by their row text for `wm show`.

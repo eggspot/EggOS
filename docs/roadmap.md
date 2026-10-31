@@ -413,8 +413,9 @@ D16):
     time limits and ask-each-time, and the log names the agent (D193); clients name their agent in `initialize` (or
     `--mcp-agent`), `agent grant|revoke|list|show|forget` changes and shows grants, `agent_list`
     and `agent_show` read them, and `agentlog` filters by agent, tool, outcome and time; Settings' Agents pane lists the
-    agents and sets, revokes and forgets their grants, its controls person-only. Next: the
-    pane's log view and the grant prompt on EggOS's screen, network MCP, resources and prompts.
+    agents and sets, revokes and forgets their grants, its controls person-only, and its
+    Activity view browses the audit log by agent, tool, result and time. Next: the grant
+    prompt on EggOS's screen, network MCP, resources and prompts.
 38. **done** — users can now run Linux programs that talk over local stream sockets, pass
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals

@@ -71,8 +71,17 @@ every grant back, `Forget` removes an agent (never `local`), and `Add` adds an i
 grants. A damaged grants file disables every change and says why. The controls that change
 grants are person-only: an agent's `wm act` on them answers `element_cannot`. Its command-line
 front-end is `agent` (docs/coreutils.md), its MCP tools `agent_list` and `agent_show` (an agent
-reads its own grants; none changes them). The audit log's view and the grant prompt come next
-(D193 "Not yet").
+reads its own grants; none changes them).
+
+The pane's `Activity` view (the `Grants` `Activity` choice beside its heading) browses the
+audit log: `agentlog`'s rows, one per call (`interrupted` for a call still open), the newest 32
+that match, newest first, with `7 of 418` saying how many match in all. `This agent only` keeps
+the selected agent's calls, `Tool name` one tool's, the result choice `ok`, `error` or
+`refused` calls that ended so, and `Last hour`, `Last day` or `Last week` the recent ones; the
+status line shows the chosen call's detail line (the agent, the detail and the arguments). The
+log is read when the view shows and when a filter changes, never on a tick. Its controls only
+filter, so agents may use them; the CLI front-end is `agentlog`, and no MCP tool reads the log
+(agents read it through `run`). EggOS's own grant prompt comes next (D193 "Not yet").
 
 ## The command
 
