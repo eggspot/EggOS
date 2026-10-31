@@ -186,8 +186,7 @@ impl FilesWindow {
             }
             (Action::SetText, _, _, PATH_ELEMENT) => {
                 self.focus_path();
-                self.path_field.text.set(text);
-                self.path_field.caret = self.path_field.text.len();
+                self.path_field.set_text(text);
                 let rect = self.path_field_rect();
                 widget::keep_caret_visible(&mut self.path_field, rect);
                 self.damage_all();

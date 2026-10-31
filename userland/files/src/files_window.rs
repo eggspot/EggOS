@@ -775,7 +775,7 @@ impl FilesWindow {
             Location::Trash => Text::from(Place::Trash.label(self.windows_words)),
         };
         self.path_field.text = text;
-        self.path_field.caret = text.len();
+        self.path_field.place_caret(text.len());
         self.path_field.scroll = 0;
         let rect = self.path_field_rect();
         widget::keep_caret_visible(&mut self.path_field, rect);
@@ -1333,7 +1333,8 @@ impl FilesWindow {
                 pressed: true,
                 ..
             } if rect.contains(x, y) => {
-                rename.field.caret = widget::caret_at(&rename.field, rect, x);
+                let at = widget::caret_at(&rename.field, rect, x);
+                rename.field.place_caret(at);
                 self.rename = Some(rename);
                 self.restart_caret();
                 self.damage.add(rect);
@@ -1586,8 +1587,7 @@ impl FilesWindow {
     fn focus_path(&mut self) {
         self.focus = Focus::Path;
         self.path_before = self.path_field.text;
-        self.path_field.caret = self.path_field.text.len();
-        self.path_field.anchor = self.path_field.caret;
+        self.path_field.place_caret(self.path_field.text.len());
         let rect = self.path_field_rect();
         widget::keep_caret_visible(&mut self.path_field, rect);
         self.restart_caret();
@@ -1794,7 +1794,8 @@ impl FilesWindow {
             if self.focus != Focus::Path {
                 self.focus_path();
             }
-            self.path_field.caret = widget::caret_at(&self.path_field, field, x);
+            let at = widget::caret_at(&self.path_field, field, x);
+            self.path_field.place_caret(at);
             self.restart_caret();
             self.damage.add(self.toolbar());
             return;

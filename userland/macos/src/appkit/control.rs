@@ -464,7 +464,8 @@ extern "C" fn field_mouse_down(this: Id, _: Sel, event: Id) {
     let location = event::fields(event).location;
     let (x, _) = eggos_macos_gui::geometry::pixel_of_point(location, height as i32);
     let mut field = field_of(text_field(this));
-    field.caret = widget::caret_at(&field, rect, x);
+    let at = widget::caret_at(&field, rect, x);
+    field.place_caret(at);
     widget::keep_caret_visible(&mut field, rect);
     keep_field(this, &field);
     changed(this);

@@ -1018,7 +1018,7 @@ impl<'a> EditorWindow<'a> {
         match bar {
             Bar::Find => {
                 self.focus = Focus::FindField;
-                self.find_field.caret = self.find_field.text.len();
+                self.find_field.place_caret(self.find_field.text.len());
             }
             Bar::Open | Bar::SaveAs => {
                 let mut text = Line::new();
@@ -1033,8 +1033,7 @@ impl<'a> EditorWindow<'a> {
                 if bar == Bar::Open && !text.as_str().ends_with('/') {
                     let _ = text.write_str("/");
                 }
-                self.path_field.text.set(text.as_str());
-                self.path_field.caret = self.path_field.text.len();
+                self.path_field.set_text(text.as_str());
                 self.path_field.scroll = 0;
                 let rect = self.path_field_rect();
                 widget::keep_caret_visible(&mut self.path_field, rect);
@@ -1810,15 +1809,16 @@ impl<'a> EditorWindow<'a> {
         match self.bar {
             Bar::Find if FIND_FIELD.contains(x, y) => {
                 self.focus = Focus::FindField;
-                self.find_field.caret = widget::caret_at(&self.find_field, FIND_FIELD, x);
+                let at = widget::caret_at(&self.find_field, FIND_FIELD, x);
+                self.find_field.place_caret(at);
                 self.restart_caret();
                 self.damage_all();
                 return;
             }
             Bar::Open | Bar::SaveAs if self.path_field_rect().contains(x, y) => {
                 self.focus = Focus::PathField;
-                self.path_field.caret =
-                    widget::caret_at(&self.path_field, self.path_field_rect(), x);
+                let at = widget::caret_at(&self.path_field, self.path_field_rect(), x);
+                self.path_field.place_caret(at);
                 self.restart_caret();
                 self.damage_all();
                 return;

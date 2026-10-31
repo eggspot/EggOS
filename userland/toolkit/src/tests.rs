@@ -1005,6 +1005,30 @@ fn a_double_click_takes_a_word() {
     assert_eq!(field.word_at(19), (16, 19));
 }
 
+#[test]
+fn a_stale_anchor_never_reaches_past_the_text() {
+    let mut field = match Kind::text_field("", Escape::Clear) {
+        Kind::TextField(field) => field,
+        _ => unreachable!(),
+    };
+    field.text.set("/home/root");
+    field.place_caret(10);
+    field.text.set("/tmp");
+    field.caret = 4;
+    field.anchor = 10;
+    assert_eq!(field.selection(), (4, 4));
+    assert_eq!(field.selected(), "");
+    assert!(!field.remove_selection());
+    field.text.set("\u{e9}t\u{e9}");
+    field.caret = 1;
+    field.anchor = 4;
+    assert_eq!(field.selection(), (0, 3));
+    field.set_text("/tmp/x");
+    assert_eq!((field.caret, field.anchor), (6, 6));
+    field.place_caret(99);
+    assert_eq!((field.caret, field.anchor), (6, 6));
+}
+
 const LAYOUTS: &[&str] = &["US", "UK", "German", "Swedish"];
 
 fn dropdown_tree() -> (WidgetTree<4>, WidgetId) {

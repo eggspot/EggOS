@@ -662,9 +662,31 @@ pub enum FieldKey {
 }
 
 impl Field {
-    /// The selection's first and last byte.
+    /// The selection's first and last byte, both within the text and on character boundaries
+    /// however `caret` and `anchor` were set.
     pub fn selection(&self) -> (usize, usize) {
-        (self.caret.min(self.anchor), self.caret.max(self.anchor))
+        let text = self.text.as_str();
+        let bounded = |at: usize| {
+            let mut at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let (caret, anchor) = (bounded(self.caret), bounded(self.anchor));
+        (caret.min(anchor), caret.max(anchor))
+    }
+
+    /// Puts the caret at byte `at` (at most the text's end), nothing selected.
+    pub fn place_caret(&mut self, at: usize) {
+        self.caret = at.min(self.text.len());
+        self.anchor = self.caret;
+    }
+
+    /// Replaces its text, the caret at the end and nothing selected.
+    pub fn set_text(&mut self, text: &str) {
+        self.text.set(text);
+        self.place_caret(self.text.len());
     }
 
     /// The selected text.
