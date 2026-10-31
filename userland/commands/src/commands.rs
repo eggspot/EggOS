@@ -436,6 +436,109 @@ pub const WM_SIZE: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("dragging the window's edges"),
 };
 
+const DESKTOP_NUMBER: OperandDefinition = operand(
+    "n",
+    ValueType::Integer {
+        minimum: 1,
+        maximum: 8,
+    },
+    Count::One,
+);
+
+/// `wm desktop list` (D204).
+pub const WM_DESKTOP_LIST: CommandDefinition = CommandDefinition {
+    words: &["wm", "desktop", "list"],
+    summary: "Lists the virtual desktops.",
+    description: "Lists the virtual desktops, one a line: its number, how many windows are on \
+                  it, and * for the one shown.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_WINDOW_SERVER, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[],
+    surface: Surface::Gui("the overview's desktops strip"),
+};
+
+/// `wm desktop switch` (D204).
+pub const WM_DESKTOP_SWITCH: CommandDefinition = CommandDefinition {
+    words: &["wm", "desktop", "switch"],
+    summary: "Shows a virtual desktop.",
+    description: "Shows desktop n: its windows become the ones on screen.",
+    options: &[],
+    operands: &[DESKTOP_NUMBER],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&INVALID_VALUE, 1),
+        exits(&NO_WINDOW_SERVER, 1),
+    ],
+    examples: &[],
+    surface: Surface::Gui("Ctrl+Super+Left and Right"),
+};
+
+/// `wm desktop new` (D204).
+pub const WM_DESKTOP_NEW: CommandDefinition = CommandDefinition {
+    words: &["wm", "desktop", "new"],
+    summary: "Makes a virtual desktop.",
+    description: "Makes a new desktop after the last, at most 8, and shows it.",
+    options: &[],
+    operands: &[],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Control,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&INVALID_VALUE, 1),
+        exits(&NO_WINDOW_SERVER, 1),
+    ],
+    examples: &[],
+    surface: Surface::Gui("Ctrl+Super+D"),
+};
+
+/// `wm desktop close` (D204).
+pub const WM_DESKTOP_CLOSE: CommandDefinition = CommandDefinition {
+    words: &["wm", "desktop", "close"],
+    summary: "Closes a virtual desktop.",
+    description: "Closes desktop n; its windows move to the desktop before it. The last desktop \
+                  cannot be closed.",
+    options: &[],
+    operands: &[DESKTOP_NUMBER],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&INVALID_VALUE, 1),
+        exits(&NO_WINDOW_SERVER, 1),
+    ],
+    examples: &[],
+    surface: Surface::Gui("Ctrl+Super+F4"),
+};
+
+/// `wm desktop move` (D204).
+pub const WM_DESKTOP_MOVE: CommandDefinition = CommandDefinition {
+    words: &["wm", "desktop", "move"],
+    summary: "Moves a window to a virtual desktop.",
+    description: "Moves the window to desktop n, its dialogs with it, without showing that \
+                  desktop.",
+    options: &[],
+    operands: &[WINDOW_OPERAND, DESKTOP_NUMBER],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&INVALID_VALUE, 1),
+        exits(&NO_SUCH_WINDOW, 1),
+        exits(&NO_WINDOW_SERVER, 1),
+    ],
+    examples: &[],
+    surface: Surface::Gui("Ctrl+Super+Shift+Left and Right"),
+};
+
 /// `wm capture`.
 pub const WM_CAPTURE: CommandDefinition = CommandDefinition {
     words: &["wm", "capture"],
@@ -2979,7 +3082,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 85] = [
+pub const COMMANDS: [CommandDefinition; 90] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3051,6 +3154,11 @@ pub const COMMANDS: [CommandDefinition; 85] = [
     WM_ACT,
     WM_CAPTURE,
     WM_CLICK,
+    WM_DESKTOP_CLOSE,
+    WM_DESKTOP_LIST,
+    WM_DESKTOP_MOVE,
+    WM_DESKTOP_NEW,
+    WM_DESKTOP_SWITCH,
     WM_CLOSE,
     WM_DRAG,
     WM_FOCUS,

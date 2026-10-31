@@ -701,6 +701,28 @@ pub const WM_LIST: ToolDefinition = reading(
     &LIST_PAGE,
 );
 
+/// `wm_desktop_list` (D204).
+pub const WM_DESKTOP_LIST: ToolDefinition = reading(
+    "wm_desktop_list",
+    "List virtual desktops",
+    "Lists the virtual desktops, as `wm desktop list --json` writes them: each one's number, \
+         how many windows are on it, and whether it is the one shown.",
+    &["wm", "desktop", "list"],
+    &["--json"],
+    &[],
+);
+
+/// `wm_desktop_new` (D204).
+pub const WM_DESKTOP_NEW: ToolDefinition = operating(
+    "wm_desktop_new",
+    "Make a virtual desktop",
+    "Makes a new virtual desktop, at most 8, and shows it, as `wm desktop new` does. Needs the \
+         run grant: it changes what the person sees.",
+    &["wm", "desktop", "new"],
+    &[],
+    &[],
+);
+
 /// `app_list`.
 pub const APP_LIST: ToolDefinition = reading(
     "app_list",
@@ -1832,7 +1854,7 @@ pub const AGENT_SHOW: ToolDefinition = reading(
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's and D193's.
-pub const TOOLS: [ToolDefinition; 56] = [
+pub const TOOLS: [ToolDefinition; 58] = [
     LS,
     CAT,
     PS,
@@ -1889,6 +1911,8 @@ pub const TOOLS: [ToolDefinition; 56] = [
     CLIPBOARD_GET,
     CLIPBOARD_SET,
     KILL,
+    WM_DESKTOP_LIST,
+    WM_DESKTOP_NEW,
 ];
 
 impl ToolDefinition {

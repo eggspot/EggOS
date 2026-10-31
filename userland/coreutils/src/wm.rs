@@ -261,12 +261,14 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(b"menu") => return crate::window_menu::menu(output, &arguments[1..]),
         Some(b"show") => return crate::window_tree::show(output, &arguments[1..]),
         Some(b"act") => return crate::window_tree::act(output, &arguments[1..]),
+        Some(b"desktop") => return crate::window_desktop::desktop(output, &arguments[1..]),
         Some(b"help") if arguments.len() == 1 => {
             output.write(USAGE);
             output.write(b"\n");
             output.write(crate::window_input::HELP);
             output.write(crate::window_menu::HELP);
             output.write(crate::window_tree::HELP);
+            output.write(crate::window_desktop::HELP);
             return 0;
         }
         _ => {}

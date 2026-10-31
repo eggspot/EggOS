@@ -145,6 +145,10 @@ pub enum Kind {
     ClipboardSet,
     /// `kill`: sends a signal to a process (D200).
     Kill,
+    /// `wm_desktop_list`: the virtual desktops (D204).
+    WmDesktopList,
+    /// `wm_desktop_new`: makes one (D204).
+    WmDesktopNew,
     /// `disk_list`: the disks (D192).
     DiskList,
     /// `disk_check`: checks an unmounted disk (D192).
@@ -362,7 +366,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 56] = [
+pub const TOOLS: [Tool; 58] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -642,6 +646,16 @@ pub const TOOLS: [Tool; 56] = [
         &registry::KILL,
         Kind::Kill,
         twin("/bin/kill", &[], Operand::None),
+    ),
+    tool(
+        &registry::WM_DESKTOP_LIST,
+        Kind::WmDesktopList,
+        twin("/bin/wm", &["desktop", "list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::WM_DESKTOP_NEW,
+        Kind::WmDesktopNew,
+        twin("/bin/wm", &["desktop", "new"], Operand::None),
     ),
 ];
 

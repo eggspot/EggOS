@@ -97,6 +97,8 @@ mod wc;
 #[cfg(any(test, target_env = "musl"))]
 mod window_capture;
 #[cfg(any(test, target_env = "musl"))]
+mod window_desktop;
+#[cfg(any(test, target_env = "musl"))]
 mod window_input;
 #[cfg(any(test, target_env = "musl"))]
 mod window_menu;
