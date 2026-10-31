@@ -281,14 +281,25 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
                 (MouseButton::Left, false) => (kind::LEFT_MOUSE_UP, 0),
                 (MouseButton::Right, true) => (kind::RIGHT_MOUSE_DOWN, 1),
                 (MouseButton::Right, false) => (kind::RIGHT_MOUSE_UP, 1),
-                (MouseButton::Middle, _) => return,
+                (MouseButton::Middle, pressed) => {
+                    if pressed {
+                        CLICKS.with(|clicks| clicks.other_press());
+                    }
+                    return;
+                }
             };
             if button == MouseButton::Left {
                 LEFT_HELD.store(pressed, Ordering::Relaxed);
             }
             let clicks = match (button, pressed) {
-                (MouseButton::Left, true) => CLICKS.with(|clicks| clicks.press(time, x, y)),
+                (MouseButton::Left, true) => {
+                    CLICKS.with(|clicks| clicks.press(time, window as usize, x, y))
+                }
                 (MouseButton::Left, false) => CLICKS.with(|clicks| clicks.release()),
+                (_, true) => {
+                    CLICKS.with(|clicks| clicks.other_press());
+                    1
+                }
                 _ => 1,
             };
             let location = point_of_pixel(x, y, content_height(window));
