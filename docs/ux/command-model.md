@@ -225,7 +225,7 @@ allows beside the shipped names).
 `fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `kill`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
 get|list|set`, `sleep`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `touch`, `trash`, `true`, `uname`, `uptime`,
-`wc`, and `wm act|capture|click|close|desktop close|list|move|new|switch|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type`.
+`wc`, and `wm act|capture|click|close|drag|focus|list|maximise|menu|minimise|move|press|restore|scroll|show|size|type` and `wm desktop close|list|move|new|switch`.
 `echo`, `true` and `false` take any words and declare no usage error.
 
 **JSON forms** (errors as one JSON line on standard error):
