@@ -49,6 +49,8 @@ pub struct Module {
     pub abi: &'static str,
     /// The git blob id of the APEX at the pinned commit.
     pub blob: &'static str,
+    /// The SHA-256 of the APEX's bytes, checked as every other download is.
+    pub sha256: &'static str,
 }
 
 /// The runtime module for the architecture named `arch`. `None` on riscv64, whose Android
@@ -58,10 +60,12 @@ pub fn module(arch: &str) -> Option<Module> {
         "aarch64" => Some(Module {
             abi: "arm64",
             blob: "26a7749e9b232184112897144c97128073776f2a",
+            sha256: "83bf0dce249728dae48149b80d28b48115c54adad95a352120d58a6ac669d1fc",
         }),
         "x86_64" => Some(Module {
             abi: "x86_64",
             blob: "8763cb7be08e9490ea38865a282b7ec643390ce5",
+            sha256: "11c91be1e1f1fe19af790a0c3a6f9db6e8e36d0ab74e403aabb3b81bbe31bdd9",
         }),
         _ => None,
     }
@@ -185,6 +189,14 @@ impl Runtime {
             .join(module.abi);
         create_folder(&folder)?;
         let apex = gitiles::fetch(&url(module), module.blob, &folder.join(file_name(module)))?;
+        let found = crate::sha256::hex_digest(&apex);
+        if found != module.sha256 {
+            return Err(format!(
+                "{}: SHA-256 {found}, not the pinned {}",
+                file_name(module),
+                module.sha256
+            ));
+        }
         let payload = payload(&apex).map_err(|e| format!("{}: {e}", file_name(module)))?;
         let extracted = folder.join("files");
         let mut files = Vec::new();
@@ -229,6 +241,8 @@ mod tests {
             assert_eq!(module.abi, abi);
             assert_eq!(module.blob.len(), 40);
             assert!(module.blob.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert_eq!(module.sha256.len(), 64);
+            assert!(module.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()));
             assert!(url(module).starts_with(&format!("{REPOSITORY}/+/{COMMIT}/mainline/")));
             assert!(url(module).ends_with(&format!("runtime-{abi}.apex?format=TEXT")));
         }

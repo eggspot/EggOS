@@ -10019,8 +10019,10 @@ the license, by an explicit instruction recorded here.
 - **The CI job** `run-scripts-windows` runs on `windows-latest` on pull requests into `main`
   whose files touch `xtask/src/release.rs`, `xtask/src/qemu*`, `userland/mcp/`,
   `kernel/src/agent_channel.rs` or the workflow (gated inside the job, so the required `check`
-  never waits on a skipped workflow), installs QEMU with `choco install qemu` (a step that only
-  installs a tool), and runs `cargo xtask run-scripts --arch x86_64`; it is in `check`'s
+  never waits on a skipped workflow), installs QEMU with `choco install qemu --version
+  2026.8.11` (a step that only installs a tool; pinned since round 2's review, so a new QEMU
+  release cannot change the check on a pull request that never touched it), and runs
+  `cargo xtask run-scripts --arch x86_64`; it is in `check`'s
   `needs`, with a 30-minute timeout, beside the `qemu` jobs. The issue asked for main as well;
   the repository's rule (Windows jobs only on pull requests into `main`, CLAUDE.md) wins, and a
   change reaches `main` only through such a pull request. It builds the x86_64 image on the
@@ -11137,8 +11139,12 @@ the license, by an explicit instruction recorded here.
   `gcc-riscv64-linux-gnu` packages (their sysroots hold each target's loader and `libc.so.6`,
   and the cross compilers link the glibc builds, `rustup target add <arch>-unknown-linux-gnu`
   in the job); musl comes from Alpine's `musl` and `musl-dev` packages of the pinned branch
-  `v3.24` (the index read for the current file names, as Alpine keeps only the latest
-  revision), unpacked with `tar`, and our `rust-lld` links the musl build against the loader
+  `v3.24`, revision `1.2.6-r3`, each package checked against its pinned SHA-256 on each
+  architecture like the later Alpine downloads (D172) (before round 2's review the index was
+  read for the current file names, so a new revision changed what CI tested; Alpine keeps
+  only the latest revision, so a new one fails the check until it is pinned), unpacked with
+  `tar`, which fails on an extraction error, and our `rust-lld` links the musl build against
+  the loader
   (musl's loader is its `libc.so`; `usr/lib/libc.so`, a link to `/lib` in the package, is
   replaced by a copy so the linker finds it) with `Scrt1.o` and `--dynamic-linker`; the CI
   steps only install tools, and xtask does the rest (it runs `curl` and `tar`), so it works
@@ -11892,7 +11898,8 @@ the license, by an explicit instruction recorded here.
   title and app id, as before (D161).
 - **The check** (`cargo xtask sdl3`, `cargo xtask sdl-app`, `xtask/src/qemu/sdl_app.rs`; CI's
   `sdl3` and `sdl-app` jobs, x86_64 and aarch64, in `check`'s needs). `sdl3` builds
-  `libSDL3.so.0` in an `alpine:3.24` container on a runner of the architecture's own CPU
+  `libSDL3.so.0` in an `alpine:3.24` container (pinned by its index digest since round 2's
+  review) on a runner of the architecture's own CPU
   (`ubuntu-24.04`, `ubuntu-24.04-arm`), cached by `xtask/src/sdl_app.rs`'s hash and passed on
   as an artifact; `sdl-app` packs `brogue.zip`, boots the release image on a blank disk with
   the zip in the host folder and 1 GiB, installs it with `--arguments '-n --data-dir
@@ -11958,7 +11965,11 @@ the license, by an explicit instruction recorded here.
   saves where the terminal is); riscv64 (Alpine `v3.24` has no riscv64 Brogue build pinned);
   SDL 3.5.0's release replacing the build from `main`; audio and game controllers; whatever the
   first CI run finds missing in the kernel for SDL `main`, `sdl2-compat` and libwayland (listed
-  above), to be recorded in the roadmap once it has run.
+  above), to be recorded in the roadmap once it has run. The `sdl3` build's `apk add` packages
+  are not pinned by version (only the image is, by digest), so two cache misses with one key
+  can build different libraries. xtask's six download-then-check-SHA-256 routines
+  (`cocoa_app`, `win32_app`, `autohotkey`, `workspace_build`, `sdl_app`, `rustc_version`)
+  are not yet one shared `fetch_pinned`.
 
 ## D173 A multi-crate workspace builds inside EggOS with a job per CPU, timed against Linux in the same QEMU machine: `EDEADLK` for record locks, record locks released by every way a descriptor closes, `/proc/<pid>/fd` links that reopen pipes, the build timer and CI's `workspace-build` job (the CI track's stage 2, milestone 3; extends D101, D122, D125, D166, D168, D171) — Decided by the build loop (how the build is measured against Linux decided by research)
 - **Why.** The CI track's stage 2 (D166) ends with a multi-crate workspace building inside
@@ -14365,7 +14376,9 @@ the license, by an explicit instruction recorded here.
     from `platform/prebuilts/runtime` at commit `070571b4`, fetched from
     android.googlesource.com as base64 and checked against the git blob id that commit
     records (`xtask/src/gitiles.rs`: base64 and SHA-1 from RFC 4648 and FIPS 180-4, git's
-    blob format), kept in `target/android-runtime/<abi>`, never shipped, never committed.
+    blob format) and, since round 2's review, against a pinned SHA-256 of the decoded bytes
+    too, as every other download is, kept in `target/android-runtime/<abi>`, never shipped,
+    never committed.
     Its stored `apex_payload.img` (read with the installer's `.zip` reader, D148) is an ext4
     image read by `xtask/src/ext4.rs` (superblock, group descriptors, inodes, extent trees,
     directories, symbolic links; read-only, from the ext4 disk layout documentation).
@@ -14409,8 +14422,9 @@ the license, by an explicit instruction recorded here.
     runtime module for riscv64 is at the same commit (blob `c7d53ea7`).
   - **Decided without research.** The test program is `tests/android-console` linked a
     second way rather than a second program, so both builds are held to the same lines;
-    the runtime is checked by git blob id rather than a SHA-256 because the id is what the
-    pinned commit records for those bytes; the libraries go to `/system/lib64` as copies,
+    the runtime is checked by git blob id because the id is what the pinned commit records
+    for those bytes, and by SHA-256 as well because SHA-1 alone no longer resists a chosen
+    collision; the libraries go to `/system/lib64` as copies,
     not under `/apex/com.android.runtime` with links, which nothing in a console program
     needs; the session does not abort the dynamic build, whose crash handler (`debuggerd`)
     would look for `crash_dump64`.
@@ -15638,7 +15652,9 @@ the license, by an explicit instruction recorded here.
   re-translating installed apps when the translator version changes (their records then name
   stale keys); and the 39e2c "Not yet" above (floating-point and long callbacks, Swift,
   exceptions through translated frames, `GetProcAddress` past 64 functions, freeing a thread's
-  guest state).
+  guest state). `xtask/src/bench.rs`, touched for the sizes gated exactly, still holds its 27
+  legacy doc comments on private items; their cleanup (and `cargo xtask lint --shrink`) is its
+  own pull request.
 - **Review round 1.** A translated macOS program's own `va_list` passed to the layer's `v`
   functions (`vfprintf`, `vsnprintf`, `vasprintf`, `vsscanf`, `NSLogv`, ...) is tagged by its
   bridge (`bridge::sysv_va_list_bridge`), so the layer reads it as System V; a 128-bit `idiv`

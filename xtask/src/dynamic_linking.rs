@@ -24,6 +24,48 @@ pub const GLIBC_LIBRARY_FOLDER: &str = "/usr/lib/eggos-tests/glibc";
 
 const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.24/main";
 
+/// The revision of Alpine's `musl` and `musl-dev` the musl build links and boots against.
+pub(crate) const MUSL_VERSION: &str = "1.2.6-r3";
+
+/// Each of the two packages' SHA-256 on each architecture, pinned like every other Alpine
+/// download: a new revision on the mirror fails the check until it is pinned here.
+const MUSL_PACKAGES: [(&str, [(&str, &str); 3]); 2] = [
+    (
+        "musl",
+        [
+            (
+                "x86_64",
+                "e142255d0fa397f14318996bc10378093dcc069dc3dd1b6818c8f28a789c21da",
+            ),
+            (
+                "aarch64",
+                "2e17864102278d9049c3a56f1bceed9e8cf287065617e579325123443daed8a5",
+            ),
+            (
+                "riscv64",
+                "f21b18f22a511de1e57f70112f761d0daad0c7d74e0734a82fcd5e037387dbb4",
+            ),
+        ],
+    ),
+    (
+        "musl-dev",
+        [
+            (
+                "x86_64",
+                "310b51cff12e1d5ce5f135c558a82e2550427da5465bbd16c9ff9b05e63ee3d9",
+            ),
+            (
+                "aarch64",
+                "45afe0a9f78de3402b6b5d11f5153ed955bf59d59b45344d9c3fed9f4bbf2f66",
+            ),
+            (
+                "riscv64",
+                "f47066d861413b3d76fe200240ea2919cdf807f82770d574a16d10dbd6b56ad7",
+            ),
+        ],
+    ),
+];
+
 /// What the glibc build needs on the host for one architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Glibc {
@@ -204,19 +246,15 @@ fn fetch_musl(arch: &str) -> Result<PathBuf, String> {
     for folder in [&sysroot, &downloads] {
         std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     }
-    let index = downloads.join("APKINDEX.tar.gz");
-    download(&format!("{ALPINE}/{arch}/APKINDEX.tar.gz"), &index)?;
-    unpack(&index, &downloads)?;
-    let listing = downloads.join("APKINDEX");
-    let listing =
-        std::fs::read_to_string(&listing).map_err(|e| format!("{}: {e}", listing.display()))?;
-    for package in ["musl", "musl-dev"] {
-        let version = package_version(&listing, package)
-            .ok_or_else(|| format!("Alpine's index for {arch} has no `{package}`"))?;
-        let file = format!("{package}-{version}.apk");
+    for (package, pins) in MUSL_PACKAGES {
+        let sha256 = pins
+            .iter()
+            .find_map(|&(pinned_arch, sha256)| (pinned_arch == arch).then_some(sha256))
+            .ok_or_else(|| format!("{arch}: no `{package}` package is pinned for it"))?;
+        let file = format!("{package}-{MUSL_VERSION}.apk");
         let apk = downloads.join(&file);
-        download(&format!("{ALPINE}/{arch}/{file}"), &apk)?;
-        unpack(&apk, &sysroot)?;
+        crate::sdl_app::fetch_pinned(&format!("{ALPINE}/{arch}/{file}"), &apk, sha256)?;
+        crate::sdl_app::untar(&apk, &sysroot)?;
     }
     if !loader.is_file() || !start.is_file() {
         return Err(format!(
@@ -252,32 +290,6 @@ pub(crate) fn download(url: &str, to: &Path) -> Result<(), String> {
         true => Ok(()),
         false => Err(format!("curl {url}: {status}")),
     }
-}
-
-fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
-    Command::new("tar")
-        .arg("-xzf")
-        .arg(archive)
-        .arg("-C")
-        .arg(into)
-        .status()
-        .map(drop)
-        .map_err(|e| format!("could not run tar: {e}"))
-}
-
-fn package_version(index: &str, package: &str) -> Option<String> {
-    index.split("\n\n").find_map(|block| {
-        let mut name = None;
-        let mut version = None;
-        for line in block.lines() {
-            if let Some(value) = line.strip_prefix("P:") {
-                name = Some(value);
-            } else if let Some(value) = line.strip_prefix("V:") {
-                version = Some(value);
-            }
-        }
-        (name == Some(package)).then(|| version.map(str::to_owned))?
-    })
 }
 
 pub(crate) fn interpreter_of_file(program: &Path) -> Result<String, String> {
@@ -328,16 +340,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_index_gives_each_package_s_version() {
-        let index = "C:Q1abc=\nP:musl\nV:1.2.6-r3\nA:x86_64\n\nC:Q1def=\nP:musl-dev\nV:1.2.6-r3\n\n\
-                     P:musl-utils\nV:1.2.6-r4\n";
-        assert_eq!(package_version(index, "musl").as_deref(), Some("1.2.6-r3"));
-        assert_eq!(
-            package_version(index, "musl-dev").as_deref(),
-            Some("1.2.6-r3")
-        );
-        assert_eq!(package_version(index, "musl-ut"), None);
-        assert_eq!(package_version(index, "glibc"), None);
+    fn musl_is_pinned_for_every_architecture_the_job_boots_and_matches_the_sdl_app_s() {
+        for (package, pins) in MUSL_PACKAGES {
+            for arch in ["x86_64", "aarch64", "riscv64"] {
+                assert!(glibc(arch).is_some());
+                let sha256 = pins.iter().find(|&&(pinned, _)| pinned == arch).unwrap().1;
+                assert_eq!(sha256.len(), 64, "{package} {arch}");
+                assert!(sha256.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            }
+        }
+        let sdl_musl = crate::sdl_app::PACKAGES
+            .iter()
+            .find(|package| package.name == "musl")
+            .unwrap();
+        assert_eq!(sdl_musl.version, MUSL_VERSION);
+        assert_eq!(sdl_musl.sha256("x86_64"), Some(MUSL_PACKAGES[0].1[0].1));
+        assert_eq!(sdl_musl.sha256("aarch64"), Some(MUSL_PACKAGES[0].1[1].1));
     }
 
     fn program_naming(path: &[u8]) -> Vec<u8> {

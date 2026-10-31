@@ -956,7 +956,7 @@ jobs:
         run: rustup toolchain install
       - name: Install QEMU
         if: steps.scripts.outputs.run == 'true'
-        run: choco install qemu --no-progress -y
+        run: choco install qemu --version 2026.8.11 --no-progress -y
       - name: Boot the release image through run-eggos.ps1 (serial, host folder, MCP)
         if: steps.scripts.outputs.run == 'true'
         run: cargo xtask run-scripts --arch x86_64

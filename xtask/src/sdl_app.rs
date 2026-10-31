@@ -38,7 +38,8 @@ pub const SDL3_LIBRARY: &str = "libSDL3.so.0";
 
 const SDL_SHA256: &str = "10975a4a09a7272f080d2123b7e626db77329405536f4fab5fdaf9f9e6da6237";
 const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.24";
-const ALPINE_IMAGE: &str = "alpine:3.24";
+const ALPINE_IMAGE: &str =
+    "alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a";
 const BUILD_PACKAGES: &[&str] = &[
     "build-base",
     "cmake",
@@ -241,14 +242,46 @@ pub(crate) fn untar(archive: &Path, into: &Path) -> Result<(), String> {
         .arg(into)
         .status()
         .map_err(|e| format!("could not run tar: {e}"))?;
-    match status.success()
-        || archive
-            .extension()
-            .is_some_and(|extension| extension == "apk")
-    {
-        true => Ok(()),
-        false => Err(format!("tar -xzf {}: {status}", archive.display())),
+    let is_apk = archive
+        .extension()
+        .is_some_and(|extension| extension == "apk");
+    if status.success() {
+        return Ok(());
     }
+    if !is_apk {
+        return Err(format!("tar -xzf {}: {status}", archive.display()));
+    }
+    let listing = Command::new("tar")
+        .arg("-tzf")
+        .arg(archive)
+        .output()
+        .map_err(|e| format!("could not run tar: {e}"))?;
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    let missing = first_member_missing(&listing, into);
+    match (listing.trim().is_empty(), missing) {
+        (false, None) => Ok(()),
+        (true, _) => Err(format!(
+            "tar -xzf {}: {status}, and tar lists no member of it",
+            archive.display()
+        )),
+        (false, Some(member)) => Err(format!(
+            "tar -xzf {}: {status}, and {member} was not extracted into {}",
+            archive.display(),
+            into.display()
+        )),
+    }
+}
+
+fn first_member_missing<'a>(listing: &'a str, into: &Path) -> Option<&'a str> {
+    listing
+        .lines()
+        .map(|line| line.trim_end_matches('/'))
+        .filter(|member| !member.is_empty() && !is_package_control_member(member))
+        .find(|member| std::fs::symlink_metadata(into.join(member)).is_err())
+}
+
+fn is_package_control_member(member: &str) -> bool {
+    member.starts_with('.') && !member.contains('/')
 }
 
 fn run(command: &mut Command, what: &str) -> Result<(), String> {
@@ -471,6 +504,19 @@ mod tests {
     use super::*;
 
     const BROGUE_VERSION: &str = "1.15.1";
+
+    #[test]
+    fn a_failed_package_extraction_names_the_first_member_it_left_out() {
+        let into = std::env::temp_dir().join(format!("eggos-untar-test-{}", std::process::id()));
+        std::fs::create_dir_all(into.join("usr").join("lib")).unwrap();
+        std::fs::write(into.join("usr").join("lib").join("libc.so"), b"x").unwrap();
+        let listing = ".SIGN.RSA.alpine.rsa.pub\n.PKGINFO\nusr/\nusr/lib/\nusr/lib/libc.so\n";
+        assert_eq!(first_member_missing(listing, &into), None);
+        let cut = format!("{listing}usr/lib/Scrt1.o\n");
+        assert_eq!(first_member_missing(&cut, &into), Some("usr/lib/Scrt1.o"));
+        assert!(!is_package_control_member("usr/.hidden"));
+        std::fs::remove_dir_all(&into).unwrap();
+    }
 
     #[test]
     fn every_package_is_pinned_on_both_architectures() {
