@@ -13216,7 +13216,8 @@ the license, by an explicit instruction recorded here.
   access conflict message without its second and third lines (Swift prints where each access
   began); fatal errors ending with `abort` (status 134) where Swift traps; `___chkstk_darwin`
   touching nothing (a stack's 8 MiB reserve sits above a 1 MiB guard gap, so only a frame
-  larger than the gap could skip it); the runtime's own storage classes descending from
+  larger than the gap could skip it; that held only for the main thread, so since review round
+  2 it probes every page, see D208); the runtime's own storage classes descending from
   `_SwiftObject` with no Objective-C class data of their own; no type-layout prefix before
   class metadata; generic metadata kept for the program's life in one list behind one lock;
   existentials of more than three protocols, class-bound existentials, metatypes and generic
@@ -13330,7 +13331,11 @@ the license, by an explicit instruction recorded here.
   types in mangled names (`swift_getGenericMetadata`), printing values other than strings,
   `Bool` and the numbers (reflection), `Float`'s description, class-bound existentials and
   metatypes by name, full Unicode tables for characters, case and normalization, Swift
-  concurrency, the Swift benchmarks and riscv64 (no Swift for it on macOS).
+  concurrency, the Swift benchmarks and riscv64 (no Swift for it on macOS). From round 2
+  review: `String.lowercased()` maps `Σ` to `σ` even at a word's end (Unicode's Final_Sigma
+  context needs the Cased and Case_Ignorable properties); `swift_getTypeByMangledName`'s
+  generic parameter `q<n>_` is not checked against the context's generic parameter count
+  before its argument is read.
 
 ## D181 The shell runs `&&`, `||` and background jobs, with `jobs`, `fg`, `bg`, `wait`, `kill` and `^Z`; the kernel stops and continues processes (`WUNTRACED`, `WCONTINUED`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`, orphaned groups) and sends `SIGWINCH`; `2>` and `2>&1`, moving the cursor within a line and a history kept across sessions (batch part 29; v0.3.0 items 7, 9 and 22's follow-ups; D105's, D107's and D125's "Not yet"; extends D97, D100, D105, D107, D125, D165) — Decided by the build loop (the history file, the job reports and scripts' background jobs decided by research)
 
@@ -16810,6 +16815,21 @@ the license, by an explicit instruction recorded here.
   an overflow faults instead of writing over the mapping below.
 - **Follow-up.** The macOS layer's `___chkstk_darwin` for x86_64 programs takes its size in
   `rax` the same way; bind it to the same bridge when a translated macOS program needs it.
+- **Review round 2: the probes probe.** Returning at once was safe only within the main
+  thread's 1 MiB guard gap: a `pthread_create` stack and a translated thread's guest stack have
+  one 4 KiB guard page with the next mapping right below, so a frame of 8 KiB stepped over it
+  and wrote into that mapping. A bigger guard gap cannot fix it, since a dynamically sized
+  frame (`alloca`, a variable-length array, Swift's large stack-promoted values) has no upper
+  bound; the probe can, as Apple's and Microsoft's do. So the translator's
+  `bridge::stack_probe_bridge` (which replaces `return_bridge`, for `__chkstk` and
+  `___chkstk_darwin` alike) reads one byte of every guest page from the caller's `rsp` after
+  the return down to that `rsp` less `rax`, using only `x16`, `x17` (the bridge's scratch
+  registers, no guest register) and the flags (x86's calling conventions keep none across a
+  call), then returns to the guest as before. The macOS layer's native `___chkstk_darwin`
+  does the same for native callers: on arm64 it takes the size in bytes in `x9` and changes
+  only `x16`, `x17` (which AAPCS64 lets any call's veneer or stub change) and NZCV, as the
+  Windows layer's `__chkstk` does; on x86_64 it takes `rax` and keeps every register, changing
+  only the flags.
 
 ## D209 The translator's first SSE4.1 forms: `ptest`, `pmovzxbq`, `pextrb`/`pextrd`/`pextrq`, `pinsrb` — Decided by the build loop (engineering; brings part of translation.md's next step forward)
 - **Why.** Rust and clang build x86_64 macOS code for Penryn (SSE4.1) by default, so a
