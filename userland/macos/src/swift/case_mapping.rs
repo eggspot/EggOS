@@ -1,6 +1,7 @@
 //! `String.lowercased()`'s mapping of a scalar to its lowercase (D180): Unicode's lowercase
-//! mappings for Latin (ASCII, Latin-1, Extended-A and Additional), Greek, Cyrillic, Armenian,
-//! Georgian and fullwidth Latin, including `İ`'s two scalars; other scalars stay as they are.
+//! mappings for Latin (ASCII, Latin-1, Extended-A and Additional), Greek, Cyrillic (with its
+//! Supplement), Armenian, Georgian (with Mtavruli) and fullwidth Latin, including `İ`'s two
+//! scalars; other scalars stay as they are.
 //! Pure logic with host tests.
 
 fn alternating(scalar: u32, first: u32, last: u32, upper_parity: u32) -> Option<u32> {
@@ -14,7 +15,10 @@ fn single(scalar: u32) -> u32 {
         0x0410..=0x042f => return scalar + 0x20,
         0x0400..=0x040f => return scalar + 0x50,
         0x0531..=0x0556 => return scalar + 0x30,
-        0x10a0..=0x10c5 => return scalar + 0x1c60,
+        0x10a0..=0x10c5 | 0x10c7 | 0x10cd => return scalar + 0x1c60,
+        0x1c90..=0x1cba | 0x1cbd..=0x1cbf => return scalar - 0xbc0,
+        0x04c0 => return 0x04cf,
+        0x1e9e => return 0xdf,
         0xff21..=0xff3a => return scalar + 0x20,
         0x0178 => return 0xff,
         0x0386 => return 0x03ac,
@@ -28,6 +32,8 @@ fn single(scalar: u32) -> u32 {
             .or_else(|| alternating(scalar, 0x0179, 0x017e, 1))
             .or_else(|| alternating(scalar, 0x0460, 0x0481, 0))
             .or_else(|| alternating(scalar, 0x048a, 0x04bf, 0))
+            .or_else(|| alternating(scalar, 0x04c1, 0x04ce, 1))
+            .or_else(|| alternating(scalar, 0x04d0, 0x052f, 0))
             .or_else(|| alternating(scalar, 0x1e00, 0x1e95, 0))
             .or_else(|| alternating(scalar, 0x1ea0, 0x1eff, 0)),
     };
@@ -69,6 +75,8 @@ mod tests {
             "\u{391}\u{3a3}\u{3a9}\u{386}\u{388}\u{38c}\u{38e}\u{38f}",
             "\u{410}\u{42f}\u{400}\u{40f}\u{460}\u{48a}",
             "\u{531}\u{556}\u{10a0}\u{1e00}\u{1ea0}\u{ff21}",
+            "\u{1e9e}\u{4c0}\u{4c1}\u{4cd}\u{4d0}\u{4d8}\u{4e8}\u{500}\u{52e}",
+            "\u{10c7}\u{10cd}\u{1c90}\u{1cba}\u{1cbd}\u{1cbf}",
             "\u{130}stanbul",
         ];
         for sample in samples {

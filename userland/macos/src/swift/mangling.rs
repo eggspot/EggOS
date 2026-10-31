@@ -153,7 +153,7 @@ fn parameter_index(bytes: &[u8], at: &mut usize) -> Option<usize> {
     let value = number(bytes, at)?;
     (bytes.get(*at) == Some(&b'_')).then_some(())?;
     *at += 1;
-    Some(value + 1)
+    value.checked_add(1)
 }
 
 /// The length of a mangled name that ends at its first NUL byte outside symbolic references,
@@ -213,7 +213,7 @@ pub fn parse<R: Resolver>(bytes: &[u8], base: usize, resolver: &mut R) -> Option
             }
             b's' => {
                 let length = number(bytes, &mut at)?;
-                let name = bytes.get(at..at + length)?;
+                let name = bytes.get(at..at.checked_add(length)?)?;
                 at += length;
                 let kind = *bytes.get(at)?;
                 at += 1;
@@ -276,10 +276,10 @@ pub fn parse<R: Resolver>(bytes: &[u8], base: usize, resolver: &mut R) -> Option
             b'q' => {
                 let (depth, index) = if bytes.get(at) == Some(&b'd') {
                     at += 1;
-                    let depth = parameter_index(bytes, &mut at)? + 1;
+                    let depth = parameter_index(bytes, &mut at)?.checked_add(1)?;
                     (depth, parameter_index(bytes, &mut at)?)
                 } else {
-                    (0, parameter_index(bytes, &mut at)? + 1)
+                    (0, parameter_index(bytes, &mut at)?.checked_add(1)?)
                 };
                 let parameter = resolver.generic_parameter(depth, index)?;
                 stack.push(Entry::Item(Item::Type(parameter)))?;
@@ -451,6 +451,10 @@ mod tests {
         assert_eq!(named(b"G", 0, &[]), None);
         assert_eq!(named(b"Sz", 0, &[]), None);
         assert_eq!(named(b"s99X", 0, &[]), None);
+        assert_eq!(named(b"s18446744073709551615V", 0, &[]), None);
+        assert_eq!(named(b"q18446744073709551615_", 0, &[]), None);
+        assert_eq!(named(b"q18446744073709551614_", 0, &[]), None);
+        assert_eq!(named(b"qd18446744073709551614__", 0, &[]), None);
     }
 
     #[test]
