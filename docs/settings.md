@@ -81,7 +81,22 @@ the selected agent's calls, `Tool name` one tool's, the result choice `ok`, `err
 status line shows the chosen call's detail line (the agent, the detail and the arguments). The
 log is read when the view shows and when a filter changes, never on a tick. Its controls only
 filter, so agents may use them; the CLI front-end is `agentlog`, and no MCP tool reads the log
-(agents read it through `run`). EggOS's own grant prompt comes next (D193 "Not yet").
+(agents read it through `run`).
+
+**The grant prompt** (D193 slice 41c3, design section 5) is EggOS's own window, `An agent
+asks`, that the MCP server opens when it must ask you about a call (a grant set to `Ask`, or a
+call that removes or replaces something) and the desktop runs: `settings --grant-prompt` reads
+the question as one JSON line on stdin and writes one word on stdout, `once`, `session`,
+`always`, `deny` or `timeout`. It shows the agent's name (and `id phone` when it differs), the
+tool and its title, up to three `key: value` lines of the arguments and `Denied in 1:30 if you
+do nothing.` counting down; `Deny` is the default and focused, Enter and Esc deny from
+anywhere, closing the window denies, and after 90 s the answer is `timeout`. `This session`
+allows the agent's calls of that class until its client disconnects (the server keeps it in
+memory only); `Always` writes `allow` for that class into the grants file, as `agent grant`
+does, and is offered only for `view` and `write` calls that need no yes of their own. Its
+buttons are person-only and its window takes the person's input only: `wm click`, `wm type`,
+`wm key` and menu choices aimed at it are refused (`EPERM`), and `wm act` answers
+`element_cannot`.
 
 ## The command
 

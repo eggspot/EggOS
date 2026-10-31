@@ -250,6 +250,14 @@ coordinates times 2.
 Replacing an existing file with `tee` (not adding to it with `append`, not creating it) or
 `fetch`, `trash` and `app_uninstall` need a yes:
 
+- **When the desktop runs**, EggOS asks you on its own screen instead, for every agent and
+  whether or not the client can ask: the grant prompt (`settings --grant-prompt`,
+  docs/settings.md) shows the agent, the tool and its arguments with `Always`, `This session`,
+  `Once` and `Deny`, and denies after 90 s. The client cannot answer that question, and no
+  agent can press its buttons or inject input into its window. `This session` lasts until the
+  client disconnects; `Always` (only for `view` and `write` calls that need no yes of their
+  own) writes `allow` into the grants file. Without the desktop, or when the prompt cannot
+  start, EggOS asks as below.
 - **When the client can ask you** (it declares elicitation, as Claude Code does), EggOS asks
   through it: `An agent asks to move /home/root/notes.txt (812 bytes) to the Trash. Allow it?`
   The call runs only if you accept and tick the box; declining, dismissing the question or not
@@ -416,5 +424,6 @@ The 2026-07-28 protocol version, resources and prompts; tools for the commands t
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
-terminal's window; MCP over the network; the audit log's view in Settings' Agents pane and the grant prompt on EggOS's own screen (Ask still asks through the client). A window whose program stopped answering keeps input
+terminal's window; MCP over the network; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
+where the window server puts a new window). A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

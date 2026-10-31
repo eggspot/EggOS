@@ -15969,3 +15969,90 @@ the license, by an explicit instruction recorded here.
     paging past the newest 32 records and live updates of the log; the narrow (one column)
     layout and touch sizes of design section 7 for the whole pane; naming an agent from the
     pane; list items named by their row text for `wm show`.
+- **Slice 41c3 (the grant prompt on EggOS's own screen).** Per docs/ux/agents-v0.3.md section 5.
+  When the server must ask (`Decision::AskUser`, or a call whose `Confirmation` needs a yes) and
+  no other call waits, it first tries the screen: `System::start_grant_prompt` (the seam the
+  slice brief called `Prompter`; `Server` is generic over one `System`, so the prompter is two
+  methods there, `start_grant_prompt` and `end_grant_prompt`, an error by default) starts
+  `/bin/settings --grant-prompt` once `/dev/window` opens, writes the question
+  (`eggos_mcp::grant_prompt`: `Question`, `write_question`, `read_question`, `QuestionRead`;
+  `agent`, `name`, `tool`, `title`, `class`, `destructive`, `arguments` as the audit record's
+  object, `timeout_s` 90) and keeps the prompt's stdout. `eggmcpd`'s loop polls the channel and
+  that pipe together (`wait_for_channel`, `Woke`); the answer word (`PromptAnswer`: `once`,
+  `session`, `always`, `deny`, `timeout`) goes to `Server::prompt_answered`, which re-reads the
+  store, checks the target again and runs the call (`started` detail `allowed once by the user
+  on EggOS's screen`, `allowed for this session by the user`, `allowed always by the user`) or
+  refuses it (`denied by the user`, `no answer in 90 s`, `the grant prompt ended without an
+  answer`). The audit log has `asked` then the answer, as for elicitation. Without the desktop,
+  or when the prompt cannot start, the server asks through the client's elicitation as before,
+  and refuses as before when the client cannot ask. `session` keeps the class allowed for the
+  connection (`Server::session_classes`, memory only, cleared at `disconnected` and at a server
+  restart); only an `ask` decision becomes allowed by it, so a store's `deny` still wins and a
+  destructive call still asks. The 120 s backstop (`expire`) ends a prompt that never answers.
+  - The prompt (`userland/settings/src/grant_prompt.rs`, `GrantPrompt`, pure and host-tested;
+    `program.rs`'s `PromptWindow` serves it with `run_view`): a fixed-size 480x200 window
+    titled `An agent asks`, the name at (16, 16), `id <id>` ending at 464 (hidden when the name
+    is the id), `<tool> · <title>` at (16, 40), three `key: value` argument lines, the countdown
+    `Denied in 1:30 if you do nothing.` at (16, 132) redrawn once a second, and `Always`, `This
+    session`, `Once`, `Deny` at (36, 156), (140, 156), (264, 156), (368, 156), `Deny` primary,
+    default and focused. Enter and Esc deny from anywhere, Space presses the focused button,
+    Tab skips a hidden `Always`, closing denies. `Always` is shown only for `view` and `write`
+    calls that need no yes of their own (`grant_prompt::offers_always`); on it the prompt sets
+    the agent's class to `allow` with no end (`grant_prompt::allowed_always`) and saves through
+    `grant_files::save` before answering, and answers `once` when the store is damaged, has no
+    entry for the agent or cannot be written. The program writes its word and exits at once
+    (`run_view` cannot end on a tick, and the countdown's end is a tick).
+  - Security review (slice 41c3). Checklist: can the client, an agent's tools or another
+    program answer the prompt; can `eggmcpd` raise a grant on an agent's say-so; injection
+    through the question; a prompt that dies, hangs or is killed. Findings and fixes: (1) a
+    question shown on the screen ignores elicitation answers (question ids are predictable, so
+    without this a client could answer for the person; `answered` refuses an on-screen
+    `Pending`, tested). (2) The four buttons are person-only (41c1's flag): `wm act` answers
+    `element_cannot`. (3) Injected input is refused for the whole window (decided here,
+    replacing design section 5's "the prompt adds no input filtering"): the window server gains
+    the create flag `PERSON_INPUT_ONLY` (4; toolkit `window::PERSON_INPUT_ONLY`, with
+    `window::FIXED_SIZE`), and `SendInput` (`wm click`, `wm type`, `wm key`, `wm scroll`,
+    `wm drag`) and `ChooseMenu` aimed at such a window, or queued to it as a dialog, fail with
+    `NotAllowed` (`EPERM`) before anything is queued; any program may set the flag on its own
+    windows, which only takes input away from itself. `wm close` only denies. (4) `eggmcpd`
+    never writes the grants file: only the prompt process does, after the person's click, and
+    it checks `offers_always` itself (an `always` it did not offer becomes `deny`); the class
+    in the question comes from the server's tool table, not from the agent; names and
+    arguments are written by the JSON writer, so a name cannot add fields (tested), and shown
+    with control characters as `?`. (5) A prompt that exits or is killed without a word
+    refuses the call; one that hangs is killed (`kill` of its process group) by the 120 s
+    backstop, a cancelled call or a disconnect. Accepted: an agent with `run` can still write
+    the grants file or kill the prompt (D137: `run` is full control); another window may look
+    like the prompt, but only the prompt's own stdout reaches the server; assistive tools that
+    inject input cannot press the prompt's buttons (the person's own keyboard and pointer can).
+  - Decided by research: (1) the server starts the prompt itself, as it starts a twin (pipes,
+    its own process group, `/home` as its folder), not through `/bin/app open`: the desktop's
+    launcher gives the caller no stdin or stdout to ask and answer on; (2) the desktop counts
+    as running when `/dev/window` opens (it fails with `ENXIO` without a display, the same test
+    the toolkit's `WindowServer::open` makes), and a failed spawn of `/bin/settings` (not
+    installed) falls back to elicitation; (3) the answer is read beside the channel with one
+    `ppoll` over both descriptors, so the server keeps answering reads and `ping` while the
+    person decides; (4) `always` is stored in the per-agent grants file through 41c1's
+    `grant_files` writer by the prompt process, `session` only in the server's memory.
+  - Choices made without research: a denial on the screen is refused with
+    `declined_by_user` (as an elicitation decline), not design section 5's `needs_grant`,
+    since a destructive call by an agent holding the grant is denied too; the timeout uses
+    `confirmation_timed_out`; the prompt is tried only when no other call waits for an answer
+    (one prompt at a time); the answer is one read of at most 16 bytes (a pipe write that size
+    is whole); the prompt's errors go to the console; a tool needing no grant writes
+    `"class":null`; `PERSON_INPUT_ONLY` reuses `NotAllowed` rather than a new error.
+  - Check. Host tests: `grant_prompt` (the question line and its read-back, escaping, a
+    question that does not fit, bad questions, the answer words, `offers_always`), the server
+    (the screen asks first and `once` runs the call with its detail, a second answer is ignored,
+    `session` lasts until the disconnect, `deny`, `timeout` and a closed prompt refuse, the
+    client cannot answer a screen question and the backstop sends no cancellation, a
+    destructive call's question), the prompt model (places, focus on `Deny`, argument lines and
+    cuts, Enter, Esc, Space and closing, `Always` hidden for `run` and destructive calls with
+    Tab skipping it, the countdown at 1:29 and the timeout at 90 s, `wm act` on every button
+    refused, `allowed_always`, hidden characters) and the window server (a `PERSON_INPUT_ONLY`
+    window refuses a click, a key and a character; another window still takes them).
+  - Not yet: the prompt centred in the work area and kept above other windows (design section
+    5's parentless `Dialog` at the top of layer 1 needs the window server to allow it); its
+    phone bottom sheet, wearable and TV layouts and the remote's `Back` (design section 7); a
+    QEMU check (the MCP boot has no desktop); remembering `once` answers and per-tool grants
+    (left out by the design).
