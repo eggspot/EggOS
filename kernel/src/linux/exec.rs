@@ -46,6 +46,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
+use core::sync::atomic::{AtomicBool, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::fp::FpState;
 use eggos_hal::memory::FRAME_SIZE;
@@ -153,9 +154,34 @@ impl From<InvalidElf> for ExecError {
 /// Where a position-independent program goes in a user space that ends at `user_end`: two
 /// thirds of the way up, as Linux places one, leaving room below for `mmap` and above for the
 /// stack, aligned to 2 MiB or to the program's largest segment alignment `align` if larger.
-/// Fixed until address-space layout randomization draws from the random number generator (D56).
+/// Once [`randomize_layouts`] has run, each program goes up to [`PIE_SLOTS`] alignments lower,
+/// and its stack up to [`STACK_SLOTS`] pages lower, at random (D201).
 pub fn pie_base(user_end: u64, align: u64) -> u64 {
     (user_end / 3 * 2) & !(align.max(PIE_ALIGN) - 1)
+}
+
+/// How many alignments below [`pie_base`] a program may be placed at random.
+pub const PIE_SLOTS: u64 = 256;
+/// How many pages below the top of its reserve a program's stack may start at random.
+pub const STACK_SLOTS: u64 = 256;
+
+static RANDOMIZE_LAYOUTS: AtomicBool = AtomicBool::new(false);
+
+/// Places the programs started from now on at random (D201): position-independent programs
+/// below [`pie_base`] and every program's stack below the top of its reserve, so a program
+/// cannot know where its code or its stack is. The kernel's own tests and benchmarks run
+/// before this, on the fixed layout.
+pub fn randomize_layouts() {
+    RANDOMIZE_LAYOUTS.store(true, Ordering::Relaxed);
+}
+
+fn random_below<P: Platform>(limit: u64) -> u64 {
+    if limit == 0 || !RANDOMIZE_LAYOUTS.load(Ordering::Relaxed) {
+        return 0;
+    }
+    let mut bytes = [0u8; 8];
+    random::fill::<P>(&mut bytes);
+    u64::from_ne_bytes(bytes) % limit
 }
 
 /// A program image to load ([`load_program`]) and the file it was read from, if it was: the
@@ -224,7 +250,12 @@ pub fn load_program<P: Platform>(
 ) -> Result<UserContext, ExecError> {
     let user_end = <P::PageTableFormat as Format>::USER_END;
     let elf = Elf::parse(program.image, elf::machine::NATIVE)?;
-    let bias = load_bias(&elf, &Span::of(&elf)?, user_end);
+    let span = Span::of(&elf)?;
+    let slide = match elf.kind() {
+        Kind::Executable => 0,
+        _ => random_below::<P>(PIE_SLOTS) * span.align.max(PIE_ALIGN),
+    };
+    let bias = load_bias(&elf, &span, user_end).wrapping_sub(slide);
     let layout = check_image(&elf, bias, user_end)?;
     let program_headers = layout.program_headers.ok_or(ExecError::InvalidProgram(
         "the program headers are not in a segment",
@@ -275,8 +306,9 @@ pub fn load_program<P: Platform>(
         (auxv::HWCAP2, hwcap2),
         (auxv::EXECFN, 0),
     ];
+    let stack_top = user_end - random_below::<P>(STACK_SLOTS) * FRAME_SIZE;
     let stack = InitialStack::new(
-        user_end,
+        stack_top,
         path,
         PLATFORM,
         arguments,

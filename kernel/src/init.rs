@@ -139,6 +139,7 @@ fn start_and_wait<P: Platform>(memory: &Memory<P>) -> Outcome {
     let Ok(mut process) = (unsafe { Process::<P>::new(&memory.page_tables) }) else {
         return Outcome::NotStarted("no memory for process 1");
     };
+    exec::randomize_layouts();
     let Ok(context) = exec::load(&mut process, image, PATH, &[PATH], &ENVIRONMENT) else {
         return Outcome::NotStarted("/init is not a program this machine runs");
     };
