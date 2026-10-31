@@ -13982,8 +13982,12 @@ the license, by an explicit instruction recorded here.
   `CLOCAL`); `TCGETS2` reports 38400. The last close of the controlling side hangs up: the
   foreground group and the session's leader get `SIGHUP` then `SIGCONT`, the session loses the
   terminal, program-side reads return 0 and writes `EIO`; once the program side was opened and
-  closed again, controlling-side reads fail with `EIO`. Both sides poll and `epoll` through a
-  wake list, `fstat` as character devices, show in `/proc/<pid>/fd` as `/dev/ptmx` and
+  closed again, controlling-side reads fail with `EIO`. A hung-up program side answers
+  `TIOCSCTTY`, `TIOCGPGRP` and `TIOCGSID` with `EIO` and `TIOCSPGRP` with `ENOTTY`, as Linux's;
+  `TIOCSCTTY` and an open without `O_NOCTTY` check the hang-up under the process table's lock,
+  and a new terminal's number is released from any session first, so no session keeps a
+  terminal past its hang-up or a reused number. A controlling-side read that faults puts the
+  bytes it took back. Both sides poll and `epoll` through a wake list, `fstat` as character devices, show in `/proc/<pid>/fd` as `/dev/ptmx` and
   `/dev/pts/<n>`, refuse seeks. `/dev/pts` lists the terminals whose controlling side is open.
   `linux/terminal.rs` reads and answers terminal requests for any `Line` (the console's
   `Console`, a `PseudoTerminal`); the console's paths are the same code, monomorphised.

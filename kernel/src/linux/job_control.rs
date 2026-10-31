@@ -312,12 +312,17 @@ pub fn ioctl<P: Platform>(
                 .map(|()| 0)
         }
         request::TIOCSCTTY => {
-            let privileged = credentials::get_effective(process, credentials::Kind::User) == 0;
-            let steal = argument as u32 == 1 && privileged;
+            let steal = may_steal(process, argument);
             TABLE.lock().take(terminal, caller, steal).map(|()| 0)
         }
         _ => return None,
     })
+}
+
+/// Whether `TIOCSCTTY` with `argument` by `process` takes a terminal another session controls:
+/// an argument of 1 from a privileged process.
+pub fn may_steal<P: Platform>(process: &Process<P>, argument: u64) -> bool {
+    argument as u32 == 1 && credentials::get_effective(process, credentials::Kind::User) == 0
 }
 
 /// Sends the signal a character typed on `terminal` raises to every process of the terminal's

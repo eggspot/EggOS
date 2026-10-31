@@ -32,7 +32,7 @@
 use super::descriptors::{FileKind, OpenFile, open_flag};
 use super::job_control;
 use super::poll::{self, WakeList, event};
-use super::process_table::{TABLE, Terminal};
+use super::process_table::{TABLE, Table, Terminal};
 use super::signals::{self, Interrupted};
 use super::terminal::{self, Line, WINSIZE_SIZE, Waited};
 use super::thread::LinuxThread;
@@ -112,6 +112,18 @@ impl Output {
             self.start = 0;
         }
         count
+    }
+
+    fn put_back(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() > self.room() {
+            return false;
+        }
+        self.start = (self.start + OUTPUT_CAPACITY - bytes.len()) % OUTPUT_CAPACITY;
+        let first = bytes.len().min(OUTPUT_CAPACITY - self.start);
+        self.bytes[self.start..self.start + first].copy_from_slice(&bytes[..first]);
+        self.bytes[..bytes.len() - first].copy_from_slice(&bytes[first..]);
+        self.length += bytes.len();
+        true
     }
 
     fn push_processed(&mut self, settings: Termios, bytes: &[u8]) -> usize {
@@ -390,6 +402,7 @@ fn hang_up<P: Platform>(terminal: Terminal) {
 /// side. `ENOSPC` once [`MAX_PSEUDO_TERMINALS`] exist, `ENOMEM` without memory.
 pub fn open_controlling_side<P: Platform>() -> Result<FileKind, Errno> {
     let terminal = new_terminal(hang_up::<P>)?;
+    TABLE.lock().release(terminal.terminal());
     Ok(FileKind::PseudoTerminal(PseudoTerminalEnd {
         terminal,
         side: Side::Controlling,
@@ -398,8 +411,8 @@ pub fn open_controlling_side<P: Platform>() -> Result<FileKind, Errno> {
 
 /// `open` of `/dev/pts/<number>` by `process` with `flags`: the program side, which becomes the
 /// caller's controlling terminal if it leads a session that has none, the terminal is no
-/// session's and `flags` lacks `O_NOCTTY`. As Linux: `ENXIO` for no such terminal, `EIO` while
-/// it is locked or once its controlling side closed.
+/// session's and `flags` lacks `O_NOCTTY` (and it has not hung up meanwhile). As Linux: `ENXIO`
+/// for no such terminal, `EIO` while it is locked or once its controlling side closed.
 pub fn open_program_side<P: Platform>(
     process: &Process<P>,
     number: u32,
@@ -419,14 +432,31 @@ pub fn open_program_side<P: Platform>(
         side: Side::Program,
     };
     if flags & open_flag::NOCTTY == 0 {
-        TABLE
-            .lock()
-            .give_if_free(Terminal::Pseudo(number), process.id().get());
+        end.terminal
+            .give_if_free(&mut TABLE.lock(), process.id().get());
     }
     Ok(FileKind::PseudoTerminal(end))
 }
 
 impl PseudoTerminal {
+    fn give_if_free(&self, table: &mut Table, caller: u32) {
+        if !self.is_hung_up() {
+            table.give_if_free(self.terminal(), caller);
+        }
+    }
+
+    fn become_controlling_terminal(
+        &self,
+        table: &mut Table,
+        caller: u32,
+        steal: bool,
+    ) -> Result<(), Errno> {
+        if self.is_hung_up() {
+            return Err(Errno::EIO);
+        }
+        table.take(self.terminal(), caller, steal)
+    }
+
     fn receive(&self, bytes: &[u8]) -> Received {
         let mut state = self.state.lock();
         let State {
@@ -509,7 +539,8 @@ impl Line for PseudoTerminal {
 /// `FIONREAD` with the output waiting, and `TIOCGPGRP` and `TIOCGSID` whoever asks (`ENOTTY`
 /// while no session has the terminal), refuses `TIOCSCTTY` and `TIOCSPGRP` (`ENOTTY`); both
 /// sides answer the terminal requests of [`terminal::ioctl`], the program side as the console
-/// does, `SIGTTOU` included.
+/// does, `SIGTTOU` included, but once hung up its job-control requests fail as Linux's do
+/// (`EIO`, `ENOTTY` for `TIOCSPGRP`), `TIOCSCTTY` checked under the process table's lock.
 pub(super) fn ioctl<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -525,6 +556,22 @@ pub(super) fn ioctl<P: Platform>(
             .map_err(|_| Errno::EFAULT)
     };
     if end.side == Side::Program {
+        match request as u32 {
+            job_control::request::TIOCSCTTY => {
+                let steal = job_control::may_steal(process, argument);
+                let caller = process.id().get();
+                return pseudo
+                    .become_controlling_terminal(&mut TABLE.lock(), caller, steal)
+                    .map(|()| 0);
+            }
+            job_control::request::TIOCSPGRP if pseudo.is_hung_up() => return Err(Errno::ENOTTY),
+            job_control::request::TIOCGPGRP | job_control::request::TIOCGSID
+                if pseudo.is_hung_up() =>
+            {
+                return Err(Errno::EIO);
+            }
+            _ => {}
+        }
         if terminal::changes_the_terminal(request) {
             let signal = super::signal::SIGTTOU;
             match job_control::terminal_access(process, thread, pseudo.terminal(), signal) {
@@ -651,16 +698,17 @@ fn take_output_into<P: Platform>(
                     _ => Some(Ok(copied)),
                 };
             }
-            terminal.wake_list.wake();
             if process
                 .write_user_memory(base + done, &chunk[..taken])
                 .is_err()
             {
+                terminal.state.lock().output.put_back(&chunk[..taken]);
                 return Some(match copied {
                     0 => Err(Errno::EFAULT),
                     _ => Ok(copied),
                 });
             }
+            terminal.wake_list.wake();
             done += taken as u64;
             copied += taken as u64;
         }
@@ -896,6 +944,28 @@ mod tests {
     }
 
     #[test]
+    fn bytes_put_back_are_taken_again_first_even_across_the_ring_s_end() {
+        let terminal = new_terminal(no_hang_up).unwrap();
+        let _controlling = controlling(&terminal);
+        let mut state = terminal.state.lock();
+        let filler = alloc::vec![b'.'; OUTPUT_CAPACITY - 2];
+        assert_eq!(state.output.push(&filler), OUTPUT_CAPACITY - 2);
+        let mut taken = alloc::vec![0u8; OUTPUT_CAPACITY - 3];
+        assert_eq!(state.output.take(&mut taken), OUTPUT_CAPACITY - 3);
+        assert_eq!(state.output.push(b"abcd"), 4);
+        let mut chunk = [0u8; 4];
+        assert_eq!(state.output.take(&mut chunk), 4);
+        assert_eq!(&chunk, b".abc");
+        assert!(state.output.put_back(&chunk));
+        let mut again = [0u8; 8];
+        assert_eq!(state.output.take(&mut again), 5);
+        assert_eq!(&again[..5], b".abcd");
+        let full = alloc::vec![b'x'; OUTPUT_CAPACITY];
+        assert_eq!(state.output.push(&full), OUTPUT_CAPACITY);
+        assert!(!state.output.put_back(b"y"));
+    }
+
+    #[test]
     fn a_full_ring_takes_only_what_fits_and_never_half_a_line_end() {
         let terminal = new_terminal(no_hang_up).unwrap();
         let _controlling = controlling(&terminal);
@@ -944,5 +1014,33 @@ mod tests {
         assert!(terminal.state.lock().program_side_gone());
         drop(controlling_side);
         assert!(terminal.is_hung_up());
+    }
+
+    #[test]
+    fn a_hung_up_terminal_becomes_no_session_s_controlling_terminal() {
+        let mut table = Table::new();
+        table.add(140, None).unwrap();
+        let terminal = new_terminal(no_hang_up).unwrap();
+        let controlling_side = controlling(&terminal);
+        let program_side = program(&terminal);
+        drop(controlling_side);
+        assert_eq!(
+            terminal.become_controlling_terminal(&mut table, 140, false),
+            Err(Errno::EIO)
+        );
+        terminal.give_if_free(&mut table, 140);
+        assert_eq!(table.session_and_foreground(terminal.terminal()), None);
+        assert_eq!(table.controlling_terminal_of(140), None);
+        drop(program_side);
+        let live = new_terminal(no_hang_up).unwrap();
+        let _live_controlling_side = controlling(&live);
+        assert_eq!(
+            live.become_controlling_terminal(&mut table, 140, false),
+            Ok(())
+        );
+        assert_eq!(
+            table.session_and_foreground(live.terminal()),
+            Some((140, 140))
+        );
     }
 }
