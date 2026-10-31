@@ -3548,9 +3548,14 @@ fn prompts_and_resources_are_listed_and_given() {
         .unwrap();
     assert!(got.contains("Show me window 3"), "{got}");
     let missing = harness
-        .send(r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"look-at-window"}}"#)
+        .send(
+            r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"look-at-window"}}"#,
+        )
         .unwrap();
-    assert!(missing.contains("-32602") && missing.contains("window"), "{missing}");
+    assert!(
+        missing.contains("-32602") && missing.contains("window"),
+        "{missing}"
+    );
     let unknown = harness
         .send(r#"{"jsonrpc":"2.0","id":5,"method":"prompts/get","params":{"name":"x"}}"#)
         .unwrap();
@@ -3568,7 +3573,10 @@ fn prompts_and_resources_are_listed_and_given() {
     let instructions = harness
         .send(r#"{"jsonrpc":"2.0","id":8,"method":"resources/read","params":{"uri":"eggos://instructions"}}"#)
         .unwrap();
-    assert!(instructions.contains("EggOS's built-in MCP server"), "{instructions}");
+    assert!(
+        instructions.contains("EggOS's built-in MCP server"),
+        "{instructions}"
+    );
     let nothing = harness
         .send(r#"{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"eggos://nothing"}}"#)
         .unwrap();
@@ -3576,5 +3584,92 @@ fn prompts_and_resources_are_listed_and_given() {
     let templates = harness
         .send(r#"{"jsonrpc":"2.0","id":10,"method":"resources/templates/list"}"#)
         .unwrap();
-    assert!(templates.contains("\"resourceTemplates\":[]"), "{templates}");
+    assert!(
+        templates.contains("\"resourceTemplates\":[]"),
+        "{templates}"
+    );
+}
+
+const MODERN_META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{}},"io.modelcontextprotocol/clientInfo":{"name":"modern-client","version":"2.0"}}"#;
+
+#[test]
+fn a_stateless_client_discovers_the_server_and_is_answered_without_initialize() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let discovered = harness
+        .send(r#"{"jsonrpc":"2.0","id":"d","method":"server/discover","params":{}}"#)
+        .unwrap();
+    let result = parsed(&discovered).get("result").unwrap();
+    assert!(
+        result
+            .get("resultType")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("complete")
+    );
+    assert!(
+        discovered.contains(r#""supportedVersions":["2026-07-28","2025-11-25","2025-06-18"]"#),
+        "{discovered}"
+    );
+    assert!(discovered.contains(r#""cacheScope":"private""#));
+    assert!(discovered.contains(r#""io.modelcontextprotocol/serverInfo":{"name":"eggos""#));
+
+    let listed = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    let result = parsed(&listed).get("result").unwrap();
+    assert!(result.get("tools").is_some(), "{listed}");
+    assert!(
+        result
+            .get("resultType")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("complete")
+    );
+    assert_eq!(result.get("ttlMs").map(Value::raw), Some(&b"0"[..]));
+    assert!(harness.server.session().is_stateless());
+    assert!(!harness.server.session().elicits());
+    assert_eq!(harness.server.session().client_name(), "modern-client");
+
+    let missing = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{{"uri":"eggos://none",{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(
+        missing.contains("-32602") && missing.contains(r#""uri":"eggos://none""#),
+        "{missing}"
+    );
+}
+
+#[test]
+fn stateless_requests_need_their_capabilities_and_a_known_version() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let old = harness
+        .send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
+        .unwrap();
+    assert!(
+        old.contains("-32022") && old.contains(r#""requested":"1900-01-01""#),
+        "{old}"
+    );
+    let bare = harness
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#)
+        .unwrap();
+    assert!(
+        bare.contains("-32602") && bare.contains("capabilities"),
+        "{bare}"
+    );
+    let initialize = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"initialize","params":{{"protocolVersion":"2026-07-28",{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(initialize.contains("-32601"), "{initialize}");
+    let legacy = harness
+        .send(r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#)
+        .unwrap();
+    assert!(legacy.contains("initialize first"), "{legacy}");
 }

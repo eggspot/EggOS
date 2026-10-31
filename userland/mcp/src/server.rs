@@ -506,6 +506,92 @@ impl Server {
             }
         };
         reply.id = IdCopy::of(id);
+        let meta = params
+            .and_then(|params| params.get("_meta"))
+            .and_then(Value::as_object);
+        let requested = meta
+            .and_then(|meta| meta.get(session::META_PROTOCOL_VERSION))
+            .and_then(Value::as_str);
+        if let Some(requested) = requested
+            && !requested.equals(session::STATELESS_VERSION)
+        {
+            write_unsupported_version(out, id, requested);
+            return reply;
+        }
+        if method.equals("server/discover") {
+            self.discover(id, system, out);
+            return reply;
+        }
+        let stateless = requested.is_some();
+        if stateless {
+            let capabilities = meta
+                .and_then(|meta| meta.get(session::META_CLIENT_CAPABILITIES))
+                .and_then(Value::as_object);
+            if capabilities.is_none() || method.equals("initialize") {
+                let message = match capabilities {
+                    None => "a 2026-07-28 request names its client's capabilities in _meta",
+                    Some(_) => "a 2026-07-28 client does not initialize: send requests with _meta",
+                };
+                let code = match capabilities {
+                    None => INVALID_PARAMS,
+                    Some(_) => METHOD_NOT_FOUND,
+                };
+                rpc::write_error(out, Some(id), code, message);
+                return reply;
+            }
+            let info = meta.and_then(|meta| meta.get(session::META_CLIENT_INFO));
+            let mut name = [0u8; 128];
+            let mut version = [0u8; 64];
+            let text_of = |key: &str, buffer: &mut [u8]| -> usize {
+                info.and_then(|info| info.get(key))
+                    .and_then(Value::as_str)
+                    .map_or(0, |text| text.decode_prefix_into(buffer).0.len())
+            };
+            let name_length = text_of("name", &mut name);
+            let version_length = text_of("version", &mut version);
+            self.session.serve_stateless(
+                text_prefix(&name, name_length),
+                text_prefix(&version, version_length),
+            );
+        }
+        let main_start = out.len();
+        self.dispatch(
+            id,
+            method,
+            params,
+            nested_duplicate,
+            system,
+            scratch,
+            out,
+            &mut reply,
+        );
+        if stateless {
+            let cacheable = [
+                "tools/list",
+                "prompts/list",
+                "resources/list",
+                "resources/read",
+                "resources/templates/list",
+            ]
+            .iter()
+            .any(|name| method.equals(name));
+            mark_stateless_result(out, main_start.max(reply.main_start), cacheable);
+        }
+        reply
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch(
+        &mut self,
+        id: &[u8],
+        method: crate::json::Str<'_>,
+        params: Option<Object<'_>>,
+        nested_duplicate: bool,
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut JsonWriter<'_>,
+        reply: &mut Reply,
+    ) {
         let known = [
             "initialize",
             "ping",
@@ -519,14 +605,14 @@ impl Server {
         ];
         let Some(&name) = known.iter().find(|name| method.equals(name)) else {
             rpc::write_error(out, Some(id), METHOD_NOT_FOUND, "method not found");
-            return reply;
+            return;
         };
         if name == "ping" {
             rpc::write_result(out, id, |out| {
                 out.begin_object();
                 out.end_object();
             });
-            return reply;
+            return;
         }
         if name == "initialize" {
             if let Some(pending) = self.pending.take() {
@@ -551,11 +637,11 @@ impl Server {
             }
             self.session_classes = [false; Grant::ALL.len()];
             self.initialize(id, params, system, scratch, out);
-            return reply;
+            return;
         }
         if !self.session.is_initialized() {
             rpc::write_error(out, Some(id), INVALID_REQUEST, "initialize first");
-            return reply;
+            return;
         }
         match name {
             "tools/list" => {
@@ -578,7 +664,6 @@ impl Server {
             "resources/read" => self.read_resource(id, params, system, out),
             _ => self.call(id, params, nested_duplicate, system, scratch, out),
         }
-        reply
     }
 
     fn prompt(&mut self, id: &[u8], params: Option<Object<'_>>, out: &mut JsonWriter<'_>) {
@@ -662,8 +747,39 @@ impl Server {
                     })
                 });
             }
-            _ => rpc::write_error(out, Some(id), RESOURCE_NOT_FOUND, "Resource not found"),
+            _ => match self.session.is_stateless() {
+                true => write_resource_not_found(out, id, uri),
+                false => rpc::write_error(out, Some(id), RESOURCE_NOT_FOUND, "Resource not found"),
+            },
         }
+    }
+
+    fn discover(&mut self, id: &[u8], system: &mut impl System, out: &mut JsonWriter<'_>) {
+        let mut grants = [0u8; 192];
+        let length = self.grants_text(system, &mut grants);
+        let grants = text_prefix(&grants, length);
+        rpc::write_result(out, id, |out| {
+            out.begin_object();
+            out.key("resultType");
+            out.string("complete");
+            out.key("supportedVersions");
+            out.begin_array();
+            for version in session::DISCOVERED_VERSIONS {
+                out.string(version);
+            }
+            out.end_array();
+            out.key("capabilities");
+            write_capabilities(out);
+            out.key("instructions");
+            write_instructions(out, grants);
+            out.key("ttlMs");
+            out.u64(0);
+            out.key("cacheScope");
+            out.string("private");
+            out.key("_meta");
+            write_server_meta(out);
+            out.end_object();
+        });
     }
 
     fn grants_text(&mut self, system: &mut impl System, out: &mut [u8]) -> usize {
@@ -3294,6 +3410,96 @@ pub const INSTRUCTIONS_RESOURCE: &str = "eggos://instructions";
 pub const GRANTS_RESOURCE: &str = "eggos://grants";
 /// MCP 2025's error for a resource that does not exist.
 pub const RESOURCE_NOT_FOUND: i64 = -32002;
+
+fn write_server_meta(out: &mut JsonWriter<'_>) {
+    out.begin_object();
+    out.key(session::META_SERVER_INFO);
+    out.begin_object();
+    out.key("name");
+    out.string(SERVER_NAME);
+    out.key("version");
+    out.string(SERVER_VERSION);
+    out.end_object();
+    out.end_object();
+}
+
+/// Marks the answer written from `start` as a stateless (2026-07-28) result: `resultType`, the
+/// server in `_meta`, and for lists and reads `ttlMs` 0 and `cacheScope` `private`, since what
+/// an agent sees depends on its grants. Errors and nothing written are left as they are.
+fn mark_stateless_result(out: &mut JsonWriter<'_>, start: usize, cacheable: bool) {
+    let written = out.as_bytes().get(start..).unwrap_or_default();
+    let is_error = written
+        .windows(16)
+        .any(|window| window == b"\"error\":{\"code\":");
+    if written.is_empty() || is_error || !written.ends_with(b"}}") {
+        return;
+    }
+    if !out.reopen_object() || !out.reopen_object() {
+        return;
+    }
+    out.key("resultType");
+    out.string("complete");
+    if cacheable {
+        out.key("ttlMs");
+        out.u64(0);
+        out.key("cacheScope");
+        out.string("private");
+    }
+    out.key("_meta");
+    write_server_meta(out);
+    out.end_object();
+    out.end_object();
+}
+
+fn write_unsupported_version(out: &mut JsonWriter<'_>, id: &[u8], requested: crate::json::Str<'_>) {
+    let mut asked = [0u8; 64];
+    let asked = requested.decode_prefix_into(&mut asked).0;
+    out.begin_object();
+    out.key("jsonrpc");
+    out.string("2.0");
+    out.key("id");
+    out.raw(id);
+    out.key("error");
+    out.begin_object();
+    out.key("code");
+    out.i64(rpc::UNSUPPORTED_PROTOCOL_VERSION);
+    out.key("message");
+    out.string("Unsupported protocol version");
+    out.key("data");
+    out.begin_object();
+    out.key("supported");
+    out.begin_array();
+    for version in session::DISCOVERED_VERSIONS {
+        out.string(version);
+    }
+    out.end_array();
+    out.key("requested");
+    out.string(asked);
+    out.end_object();
+    out.end_object();
+    out.end_object();
+}
+
+fn write_resource_not_found(out: &mut JsonWriter<'_>, id: &[u8], uri: &str) {
+    out.begin_object();
+    out.key("jsonrpc");
+    out.string("2.0");
+    out.key("id");
+    out.raw(id);
+    out.key("error");
+    out.begin_object();
+    out.key("code");
+    out.i64(INVALID_PARAMS);
+    out.key("message");
+    out.string("Resource not found");
+    out.key("data");
+    out.begin_object();
+    out.key("uri");
+    out.string(uri);
+    out.end_object();
+    out.end_object();
+    out.end_object();
+}
 
 fn write_capabilities(out: &mut JsonWriter<'_>) {
     out.begin_object();

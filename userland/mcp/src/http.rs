@@ -123,6 +123,12 @@ pub struct Request<'a> {
     pub host: Option<&'a [u8]>,
     /// The `Content-Type` header's value.
     pub content_type: Option<&'a [u8]>,
+    /// The `MCP-Protocol-Version` header's value.
+    pub protocol_version: Option<&'a [u8]>,
+    /// The `Mcp-Method` header's value.
+    pub mcp_method: Option<&'a [u8]>,
+    /// The `Mcp-Name` header's value.
+    pub mcp_name: Option<&'a [u8]>,
     /// The body.
     pub body: &'a [u8],
     /// Whether the client keeps the connection for another request.
@@ -203,6 +209,9 @@ pub fn parse(buffer: &[u8], max_body: usize) -> Parsed<'_> {
         origin: None,
         host: None,
         content_type: None,
+        protocol_version: None,
+        mcp_method: None,
+        mcp_name: None,
         body: &[],
         keep_alive: keep_alive_by_default,
     };
@@ -229,6 +238,12 @@ pub fn parse(buffer: &[u8], max_body: usize) -> Parsed<'_> {
             request.host = Some(value);
         } else if is(b"content-type") {
             request.content_type = Some(value);
+        } else if is(b"mcp-protocol-version") {
+            request.protocol_version = Some(value);
+        } else if is(b"mcp-method") {
+            request.mcp_method = Some(value);
+        } else if is(b"mcp-name") {
+            request.mcp_name = Some(value);
         } else if is(b"connection") {
             if value.eq_ignore_ascii_case(b"close") {
                 request.keep_alive = false;
@@ -327,6 +342,88 @@ pub fn route<'a>(request: &Request<'a>) -> Route<'a> {
     }
 }
 
+/// Whether an MCP message is a stateless (2026-07-28) one, and if so whether its headers say
+/// what its body does: `MCP-Protocol-Version` the version in `_meta`, `Mcp-Method` the method,
+/// and `Mcp-Name` the tool, prompt or resource for `tools/call`, `prompts/get` and
+/// `resources/read` (decoded first when sent as `=?base64?...?=`). `Ok(false)` for a message of
+/// the older versions, which have no such headers; `Err` with the mismatch to report.
+pub fn check_stateless_headers(request: &Request<'_>) -> Result<bool, &'static str> {
+    let Ok(parsed) = json::parse(request.body) else {
+        return Ok(false);
+    };
+    let params = parsed.value.get("params");
+    let Some(version) = params
+        .and_then(|params| params.get("_meta"))
+        .and_then(|meta| meta.get(crate::session::META_PROTOCOL_VERSION))
+        .and_then(|version| version.as_str())
+    else {
+        return Ok(false);
+    };
+    let matches = |header: Option<&[u8]>, text: json::Str<'_>| {
+        let mut decoded = [0u8; 256];
+        header.is_some_and(|header| {
+            let header = sentinel_decoded(header, &mut decoded).unwrap_or(header);
+            core::str::from_utf8(header).is_ok_and(|header| text.equals(header))
+        })
+    };
+    if !matches(request.protocol_version, version) {
+        return Err("MCP-Protocol-Version does not match the version in _meta");
+    }
+    let Some(method) = parsed
+        .value
+        .get("method")
+        .and_then(|method| method.as_str())
+    else {
+        return Ok(true);
+    };
+    if !matches(request.mcp_method, method) {
+        return Err("Mcp-Method does not match the method");
+    }
+    let named = if method.equals("tools/call") || method.equals("prompts/get") {
+        "name"
+    } else if method.equals("resources/read") {
+        "uri"
+    } else {
+        return Ok(true);
+    };
+    let Some(name) = params
+        .and_then(|params| params.get(named))
+        .and_then(|name| name.as_str())
+    else {
+        return Ok(true);
+    };
+    match matches(request.mcp_name, name) {
+        true => Ok(true),
+        false => Err("Mcp-Name does not match the tool, prompt or resource"),
+    }
+}
+
+fn sentinel_decoded<'o>(header: &[u8], out: &'o mut [u8; 256]) -> Option<&'o [u8]> {
+    let encoded = header.strip_prefix(b"=?base64?")?.strip_suffix(b"?=")?;
+    let mut length = 0;
+    let mut bits = 0u32;
+    let mut count = 0;
+    for &byte in encoded {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(value);
+        count += 6;
+        if count >= 8 {
+            count -= 8;
+            *out.get_mut(length)? = (bits >> count) as u8;
+            length += 1;
+        }
+    }
+    out.get(..length)
+}
+
 /// The code in a pairing request's body, `{"code": "ABCD-EFGH"}`, copied into `out`.
 pub fn pair_code<'o>(body: &[u8], out: &'o mut [u8; 32]) -> Option<&'o [u8]> {
     let parsed = json::parse(body).ok()?;
@@ -355,6 +452,27 @@ fn written(writer: &JsonWriter<'_>) -> usize {
     match writer.overflowed() {
         true => 0,
         false => writer.len(),
+    }
+}
+
+/// The body refusing a stateless message whose headers do not match it: a JSON-RPC error
+/// with code -32020, as MCP 2026-07-28 says.
+pub fn header_mismatch_body(message: &str, out: &mut [u8]) -> usize {
+    let mut writer = JsonWriter::new(out);
+    crate::rpc::write_error(&mut writer, None, crate::rpc::HEADER_MISMATCH, message);
+    written(&writer)
+}
+
+/// The HTTP status of a stateless message's answer: 404 for a method the server does not have,
+/// 400 for a version it does not speak or parameters it does not take, else 200.
+pub fn stateless_status(answer: &[u8]) -> Status {
+    let has = |code: &[u8]| answer.windows(code.len()).any(|window| window == code);
+    if has(b"\"error\":{\"code\":-32601") {
+        Status::NotFound
+    } else if has(b"\"error\":{\"code\":-32022") || has(b"\"error\":{\"code\":-32602") {
+        Status::BadRequest
+    } else {
+        Status::Ok
     }
 }
 

@@ -188,3 +188,60 @@ Connection: keep-alive\r\n\r\n"
             .contains("Allow: POST\r\n")
     );
 }
+
+const MODERN_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ls","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+
+#[test]
+fn stateless_messages_must_say_in_their_headers_what_their_body_does() {
+    let (request, _) = complete(MCP_POST);
+    assert_eq!(check_stateless_headers(&request), Ok(false));
+    let modern = Request {
+        body: MODERN_BODY,
+        protocol_version: Some(b"2026-07-28"),
+        mcp_method: Some(b"tools/call"),
+        mcp_name: Some(b"ls"),
+        ..request
+    };
+    assert_eq!(check_stateless_headers(&modern), Ok(true));
+    let encoded = Request {
+        mcp_name: Some(b"=?base64?bHM=?="),
+        ..modern
+    };
+    assert_eq!(check_stateless_headers(&encoded), Ok(true));
+    for wrong in [
+        Request {
+            protocol_version: None,
+            ..modern
+        },
+        Request {
+            mcp_method: Some(b"tools/list"),
+            ..modern
+        },
+        Request {
+            mcp_name: Some(b"cat"),
+            ..modern
+        },
+    ] {
+        assert!(check_stateless_headers(&wrong).is_err());
+    }
+    let mut out = [0u8; 256];
+    let length = header_mismatch_body("Mcp-Name does not match", &mut out);
+    let text = core::str::from_utf8(&out[..length]).unwrap();
+    assert!(text.contains("\"code\":-32020"), "{text}");
+}
+
+#[test]
+fn stateless_answers_carry_their_errors_in_the_http_status() {
+    assert_eq!(
+        stateless_status(br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"x"}}"#),
+        Status::NotFound
+    );
+    assert_eq!(
+        stateless_status(br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"x"}}"#),
+        Status::BadRequest
+    );
+    assert_eq!(
+        stateless_status(br#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete"}}"#),
+        Status::Ok
+    );
+}

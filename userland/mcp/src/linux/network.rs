@@ -596,7 +596,34 @@ fn serve_connection(
                 )
             }
             Route::Mcp(token_hash, body) => {
+                let stateless = match http::check_stateless_headers(&request) {
+                    Ok(stateless) => stateless,
+                    Err(message) => {
+                        let length = http::header_mismatch_body(message, &mut error);
+                        let refusal = error.get(..length).unwrap_or_default();
+                        let sent = answer(
+                            &mut session,
+                            socket,
+                            Status::BadRequest,
+                            refusal,
+                            keep_alive,
+                        );
+                        if !sent || !keep_alive {
+                            let _ = session.close(socket);
+                            return;
+                        }
+                        input.copy_within(used..filled, 0);
+                        filled -= used;
+                        continue;
+                    }
+                };
                 let (status, start, end) = exchange.mcp(&token_hash, body);
+                let status = match (stateless, status) {
+                    (true, Status::Ok) => http::stateless_status(
+                        exchange.response.get(start..end).unwrap_or_default(),
+                    ),
+                    (_, status) => status,
+                };
                 let body = exchange.response.get(start..end).unwrap_or_default();
                 match status {
                     Status::Unauthorized => {

@@ -4,8 +4,25 @@
 //! initialized ([`Session::restarted`]), because its client never repeats `initialize`. The
 //! client's capabilities say whether it can ask its user a question (elicitation, D137).
 
-/// The protocol versions this server implements, newest first.
+/// The protocol versions this server implements with `initialize`, newest first.
 pub const SUPPORTED_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
+
+/// The stateless protocol version (2026-07-28): no `initialize`; every request names the
+/// version and the client's capabilities in `params._meta`, and `server/discover` says what the
+/// server speaks.
+pub const STATELESS_VERSION: &str = "2026-07-28";
+
+/// Every version `server/discover` lists, newest first.
+pub const DISCOVERED_VERSIONS: [&str; 3] = [STATELESS_VERSION, "2025-11-25", "2025-06-18"];
+
+/// The `_meta` key naming a stateless request's protocol version.
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+/// The `_meta` key holding a stateless request's client capabilities.
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+/// The `_meta` key naming a stateless request's client.
+pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+/// The `_meta` key naming the server in a stateless result.
+pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
 
 /// The longest client name kept, in bytes; a longer one is cut and ends with `...`.
 pub const MAX_CLIENT_NAME_BYTES: usize = 128;
@@ -138,6 +155,26 @@ impl Session {
         });
         self.client_version = Bounded::new(version);
         self.version
+    }
+
+    /// Serves one stateless request (2026-07-28) from the client `name` at `version`: the
+    /// session counts as initialized at that protocol version, and never elicits, since a
+    /// stateless server sends no request of its own.
+    pub fn serve_stateless(&mut self, name: &str, version: &str) {
+        self.state = State::Initialized;
+        self.version = STATELESS_VERSION;
+        self.elicitation = false;
+        self.client_name = Bounded::new(if name.is_empty() {
+            UNNAMED_CLIENT
+        } else {
+            name
+        });
+        self.client_version = Bounded::new(version);
+    }
+
+    /// Whether the version in use is the stateless one.
+    pub fn is_stateless(&self) -> bool {
+        self.version == STATELESS_VERSION
     }
 
     /// The client left: the next one starts with `initialize`.

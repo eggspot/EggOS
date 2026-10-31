@@ -804,6 +804,24 @@ impl<'b> JsonWriter<'b> {
         self.close(b"}");
     }
 
+    /// Opens again the object written last, when nothing follows its `}`, so more members can
+    /// be added to it; whether it could.
+    pub fn reopen_object(&mut self) -> bool {
+        if self.overflowed || self.as_bytes().last() != Some(&b'}') {
+            return false;
+        }
+        self.length -= 1;
+        let empty = self.as_bytes().last() == Some(&b'{');
+        self.depth += 1;
+        let bit = 1u64 << self.depth.min(63);
+        match empty {
+            true => self.first |= bit,
+            false => self.first &= !bit,
+        }
+        self.after_key = false;
+        true
+    }
+
     /// `[`.
     pub fn begin_array(&mut self) {
         self.open(b"[");
