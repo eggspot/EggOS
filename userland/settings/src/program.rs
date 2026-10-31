@@ -7,9 +7,12 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use eggos_eggfs::CheckMode;
 use eggos_files::storage;
+use eggos_mcp::grant_files::{self, GrantFiles, SaveError};
+use eggos_mcp::grants;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
+use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
 use eggos_settings::settings_window::{
@@ -112,13 +115,18 @@ fn read_file(path: &str, buffer: &mut [u8]) -> Result<usize, Errno> {
 
 fn write_file(path: &str, bytes: &[u8]) -> Result<(), Errno> {
     let path = CPath::new(path);
+    let path = CStr::from_bytes_until_nul(&path.bytes).map_err(|_| Errno::EINVAL)?;
+    write_file_with_mode(path, FILE_MODE, bytes)
+}
+
+fn write_file_with_mode(path: &CStr, mode: usize, bytes: &[u8]) -> Result<(), Errno> {
     let fd = syscall(
         number::OPENAT,
         [
             AT_FDCWD,
-            path.pointer(),
+            path.as_ptr() as usize,
             O_WRONLY_CREATE_TRUNCATE,
-            FILE_MODE,
+            mode,
             0,
             0,
         ],
@@ -515,6 +523,64 @@ enum DiskWork {
 }
 
 const LABEL_BYTES: usize = 64;
+const COMMAND_LINE_BYTES: usize = 1024;
+
+struct LinuxGrantFiles;
+
+impl GrantFiles for LinuxGrantFiles {
+    fn read_whole(&mut self, path: &CStr, out: &mut [u8]) -> Result<usize, Errno> {
+        read_file(path.to_str().map_err(|_| Errno::EINVAL)?, out)
+    }
+
+    fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        syscall(
+            number::MKDIRAT,
+            [AT_FDCWD, path.as_ptr() as usize, mode as usize, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn write_new(&mut self, path: &CStr, mode: u32, bytes: &[u8]) -> Result<(), Errno> {
+        write_file_with_mode(path, mode as usize, bytes)
+    }
+
+    fn sync(&mut self) {
+        let _ = syscall(number::SYNC, [0; 6]);
+    }
+
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
+        syscall(
+            number::RENAMEAT2,
+            [
+                AT_FDCWD,
+                from.as_ptr() as usize,
+                AT_FDCWD,
+                to.as_ptr() as usize,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+}
+
+fn grants_read(on_disk: bool) -> GrantsRead {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let boot = match read_file(grants::COMMAND_LINE_PATH, &mut line) {
+        Ok(length) => grants::from_command_line(&line[..length]).0,
+        Err(_) => grants::Grants::NONE,
+    };
+    GrantsRead {
+        store: grant_files::load(&mut LinuxGrantFiles),
+        boot,
+        now: wall_clock().0,
+        on_disk,
+    }
+}
+
+fn write_grants(window: &SettingsWindow) -> Result<(), SaveError> {
+    grant_files::save(&mut LinuxGrantFiles, window.grants_to_write())
+}
 
 struct Settings {
     window: SettingsWindow,
@@ -556,6 +622,15 @@ impl Application<CAPACITY> for Settings {
             Some(Request::FormatDisk(device)) => {
                 let label = Text::from(self.window.format_label());
                 self.disk_work = Some(DiskWork::Format(device, label));
+            }
+            Some(Request::ReadGrants) => {
+                let read = grants_read(self.window.facts().on_disk);
+                self.window.show_grants(read);
+            }
+            Some(Request::WriteGrants) => {
+                let written = write_grants(&self.window);
+                let read = grants_read(self.window.facts().on_disk);
+                self.window.grants_written(written, read);
             }
             None => self.show_clock(now_ms),
         }

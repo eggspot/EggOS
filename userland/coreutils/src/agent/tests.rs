@@ -21,8 +21,14 @@ fn stored(fake: &Fake) -> GrantStore {
 #[test]
 fn the_paths_are_the_server_s() {
     assert_eq!(STORE.to_str().unwrap(), grants::STORE_PATH);
-    assert_eq!(STORE_TEMPORARY.to_str().unwrap(), grants::STORE_TEMPORARY_PATH);
-    assert_eq!(STORE_FOLDERS[2].to_str().unwrap(), grants::STORE_FOLDER);
+    assert_eq!(
+        grant_files::STORE_TEMPORARY.to_str().unwrap(),
+        grants::STORE_TEMPORARY_PATH
+    );
+    assert_eq!(
+        grant_files::STORE_FOLDERS[2].to_str().unwrap(),
+        grants::STORE_FOLDER
+    );
     assert_eq!(COMMAND_LINE.to_str().unwrap(), grants::COMMAND_LINE_PATH);
 }
 

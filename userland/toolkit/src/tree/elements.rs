@@ -60,6 +60,9 @@ impl<const N: usize> WidgetTree<N> {
         if self.node(id).is_some_and(|node| !node.enabled) {
             flags |= flags::DISABLED;
         }
+        if self.is_person_only(id) {
+            flags |= flags::PERSON_ONLY;
+        }
         flags
     }
 
@@ -129,9 +132,11 @@ impl<const N: usize> WidgetTree<N> {
         let Some(node) = self.node(id) else {
             return true;
         };
-        let disabled = match node.enabled {
-            true => 0,
-            false => flags::DISABLED,
+        let disabled = match (node.enabled, node.person_only) {
+            (true, false) => 0,
+            (false, false) => flags::DISABLED,
+            (true, true) => flags::PERSON_ONLY,
+            (false, true) => flags::DISABLED | flags::PERSON_ONLY,
         };
         let part = |part: usize, role: Role, rect: Rect, name: &'static str, selected: bool| {
             Element::new(part_element(id, part), element_of(id), role, bounds(rect))
@@ -217,6 +222,9 @@ impl<const N: usize> WidgetTree<N> {
         };
         if !self.is_shown(id) || !shown_part {
             return (Outcome::NoSuchElement, Response::Nothing);
+        }
+        if node.person_only {
+            return (Outcome::NotSupported, Response::Nothing);
         }
         if !node.enabled {
             return (Outcome::Disabled, Response::Nothing);

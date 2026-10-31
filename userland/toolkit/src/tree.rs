@@ -71,6 +71,7 @@ struct Node {
     visible: Rect,
     shown: bool,
     enabled: bool,
+    person_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +157,7 @@ impl<const N: usize> WidgetTree<N> {
             visible: Rect::default(),
             shown: true,
             enabled: true,
+            person_only: false,
         });
         self.count += 1;
         Some(id)
@@ -321,6 +323,19 @@ impl<const N: usize> WidgetTree<N> {
     /// Whether widget `id` is enabled.
     pub fn is_enabled(&self, id: WidgetId) -> bool {
         self.node(id).is_some_and(|node| node.enabled)
+    }
+
+    /// Marks widget `id` as one only a person operates (D193): [`Self::act`] refuses every
+    /// agent action on it and `wm show` lists it `person-only`; pointer and keys still work.
+    pub fn set_person_only(&mut self, id: WidgetId, person_only: bool) {
+        if let Some(node) = self.node_mut(id) {
+            node.person_only = person_only;
+        }
+    }
+
+    /// Whether widget `id` is one only a person operates.
+    pub fn is_person_only(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|node| node.person_only)
     }
 
     /// Makes push button `id` the window's default: Enter reaches it from widgets that do not

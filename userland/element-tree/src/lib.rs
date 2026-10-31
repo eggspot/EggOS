@@ -221,8 +221,11 @@ pub mod flags {
     pub const DEFAULT: u16 = 32;
     /// Its children are shown: an open tree item (D178).
     pub const EXPANDED: u16 = 64;
+    /// Only a person may operate it: an agent's action on it is refused (D193, the controls
+    /// that change agents' grants).
+    pub const PERSON_ONLY: u16 = 128;
     /// Every flag, with its name as `wm show` writes it, in order.
-    pub const NAMES: [(u16, &str); 7] = [
+    pub const NAMES: [(u16, &str); 8] = [
         (FOCUSED, "focused"),
         (FOCUSABLE, "focusable"),
         (DISABLED, "disabled"),
@@ -230,6 +233,7 @@ pub mod flags {
         (CHECKED, "checked"),
         (DEFAULT, "default"),
         (EXPANDED, "expanded"),
+        (PERSON_ONLY, "person-only"),
     ];
 }
 

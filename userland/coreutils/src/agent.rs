@@ -3,6 +3,7 @@ use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
 use eggos_commands::{CommandDefinition, commands, errors};
+use eggos_mcp::grant_files::{self, GrantFiles, STORE, SaveError};
 use eggos_mcp::grants::{
     self, AgentGrants, AgentId, AgentName, Grant, GrantStore, Grants, Permission, STORE_BYTES,
     StoreError, StoreState,
@@ -15,13 +16,8 @@ const USAGE: &[u8] = b"usage: agent list [--json] | show [--json] <id> | grant [
     revoke <id> [<grant>] | forget <id>";
 const USAGE_STATUS: i32 = 2;
 const HEADER: &[u8] = b"AGENT  NAME  VIEW  WRITE  INSTALL  RUN\n";
-const STORE: &CStr = c"/var/lib/eggos/agent-grants";
-const STORE_TEMPORARY: &CStr = c"/var/lib/eggos/agent-grants.new";
-const STORE_FOLDERS: [&CStr; 3] = [c"/var", c"/var/lib", c"/var/lib/eggos"];
 const COMMAND_LINE: &CStr = c"/proc/cmdline";
 const COMMAND_LINE_BYTES: usize = 1024;
-const STORE_MODE: u32 = 0o600;
-const FOLDER_MODE: u32 = 0o755;
 const RECORD_BYTES: usize = 1024;
 const SECONDS_PER: [(u8, u64); 4] = [(b's', 1), (b'm', 60), (b'h', 3600), (b'd', 86_400)];
 
@@ -153,20 +149,24 @@ fn read_whole<S: System>(
     path: &CStr,
     buffer: &mut [u8],
 ) -> Result<usize, Errno> {
-    let descriptor = output.system.open(path)?;
+    read_all(&mut output.system, path, buffer)
+}
+
+fn read_all<S: System>(system: &mut S, path: &CStr, buffer: &mut [u8]) -> Result<usize, Errno> {
+    let descriptor = system.open(path)?;
     let mut length = 0;
     let result = loop {
         let Some(free) = buffer.get_mut(length..).filter(|free| !free.is_empty()) else {
             break Ok(length);
         };
-        match output.system.read(descriptor, free) {
+        match system.read(descriptor, free) {
             Ok(0) => break Ok(length),
             Ok(count) => length += count,
             Err(Errno::EINTR) => {}
             Err(errno) => break Err(errno),
         }
     };
-    output.system.close(descriptor);
+    system.close(descriptor);
     result
 }
 
@@ -178,40 +178,42 @@ fn boot_grants<S: System>(output: &mut Output<S>) -> Grants {
     }
 }
 
+struct StoreFiles<'a, S: System>(&'a mut S);
+
+impl<S: System> GrantFiles for StoreFiles<'_, S> {
+    fn read_whole(&mut self, path: &CStr, out: &mut [u8]) -> Result<usize, Errno> {
+        read_all(self.0, path, out)
+    }
+
+    fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        self.0.make_directory(path, mode)
+    }
+
+    fn write_new(&mut self, path: &CStr, mode: u32, bytes: &[u8]) -> Result<(), Errno> {
+        let descriptor = self.0.create(path, mode, true)?;
+        let written = self.0.write(descriptor, bytes);
+        self.0.close(descriptor);
+        written
+    }
+
+    fn sync(&mut self) {
+        self.0.sync();
+    }
+
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
+        self.0.rename(from, to)
+    }
+}
+
 fn write_store<S: System>(output: &mut Output<S>, store: &GrantStore) -> Result<(), i32> {
-    let mut file = [0u8; STORE_BYTES];
-    let length = match store.encode(&mut file) {
-        Ok(length) => length,
-        Err(error) => return Err(store_error(output, error)),
-    };
-    for folder in STORE_FOLDERS {
-        match output.system.make_directory(folder, FOLDER_MODE) {
-            Ok(()) | Err(Errno::EEXIST) => {}
-            Err(errno) => {
-                output.file_error(folder, errno);
-                return Err(FAILURE);
-            }
+    match grant_files::save(&mut StoreFiles(&mut output.system), store) {
+        Ok(()) => Ok(()),
+        Err(SaveError::Store(error)) => Err(store_error(output, error)),
+        Err(SaveError::File(path, errno)) => {
+            output.file_error(path, errno);
+            Err(FAILURE)
         }
     }
-    let descriptor = match output.system.create(STORE_TEMPORARY, STORE_MODE, true) {
-        Ok(descriptor) => descriptor,
-        Err(errno) => {
-            output.file_error(STORE_TEMPORARY, errno);
-            return Err(FAILURE);
-        }
-    };
-    let written = output.system.write(descriptor, &file[..length]);
-    output.system.close(descriptor);
-    if let Err(errno) = written {
-        output.file_error(STORE_TEMPORARY, errno);
-        return Err(FAILURE);
-    }
-    output.system.sync();
-    if let Err(errno) = output.system.rename(STORE_TEMPORARY, STORE) {
-        output.file_error(STORE, errno);
-        return Err(FAILURE);
-    }
-    Ok(())
 }
 
 fn store_error<S: System>(output: &mut Output<S>, error: StoreError) -> i32 {

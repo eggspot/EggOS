@@ -704,6 +704,47 @@ fn every_shown_widget_option_card_and_row_is_an_element_of_the_tree() {
 }
 
 #[test]
+fn a_person_only_widget_refuses_every_agent_action_and_is_listed_so() {
+    let mut form = form();
+    form.tree.set_person_only(form.ok, true);
+    form.tree.set_person_only(form.cards, true);
+    assert!(form.tree.is_person_only(form.ok));
+    for action in [
+        Action::Invoke,
+        Action::Focus,
+        Action::SetText,
+        Action::Select,
+    ] {
+        assert_eq!(
+            form.tree.act(element_of(form.ok), action, "", 0),
+            (Outcome::NotSupported, Response::Nothing)
+        );
+    }
+    assert_eq!(
+        form.tree
+            .act(element_of(form.cards) + 3, Action::Invoke, "", 0),
+        (Outcome::NotSupported, Response::Nothing)
+    );
+    assert_ne!(form.tree.selected(form.cards), Some(2));
+    let listed = described(&form.tree);
+    let ok = listed
+        .iter()
+        .find(|element| element.0 == element_of(form.ok))
+        .unwrap();
+    assert_ne!(ok.3 & flags::PERSON_ONLY, 0);
+    let card = listed
+        .iter()
+        .find(|element| element.0 == element_of(form.cards) + 3)
+        .unwrap();
+    assert_ne!(card.3 & flags::PERSON_ONLY, 0);
+    assert_eq!(
+        form.tree
+            .act(element_of(form.field), Action::SetText, "egg", 0),
+        (Outcome::Done, Response::Edited(form.field))
+    );
+}
+
+#[test]
 fn acting_on_an_element_does_what_a_person_s_input_does() {
     let mut form = form();
     let cards = element_of(form.cards);

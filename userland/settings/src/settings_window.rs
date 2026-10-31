@@ -1,10 +1,11 @@
 //! The Settings window (docs/ux/desktop-v0.3-gui.md section 10, docs/ux/toolkit-v0.3.md
 //! section 11): the sidebar with its search and its panes, and the panes: Appearance with the
 //! profile picker, Display, Keyboard (D185, docs/ux/keyboard-v0.3.md), Mouse, Storage (D192,
-//! docs/ux/storage-v0.3.md), Date & time (D150, docs/ux/date-time-v0.3.md),
-//! Components and About. It holds only widgets and answers what the user does with what the
+//! docs/ux/storage-v0.3.md), Date & time (D150, docs/ux/date-time-v0.3.md), Agents (D193,
+//! docs/ux/agents-v0.3.md), Components and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
+use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::facts::Facts;
 use crate::storage_pane::{Reply, StoragePane};
@@ -13,6 +14,8 @@ use core::fmt::Write;
 use eggos_calendar::{ParseError, parse_setting};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::storage::{DiskRecord, StorageError};
+use eggos_mcp::grant_files::SaveError;
+use eggos_mcp::grants::GrantStore;
 use eggos_settings_file::KEYBOARD_LAYOUTS;
 use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
@@ -27,7 +30,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 96;
+pub const CAPACITY: usize = 114;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -84,13 +87,14 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 8] = [
+pub const PANES: [&str; 9] = [
     "Appearance",
     "Display",
     "Keyboard",
     "Mouse",
     "Storage",
     "Date & time",
+    "Agents",
     "Components",
     "About",
 ];
@@ -104,14 +108,16 @@ const MOUSE: usize = 3;
 pub const STORAGE: usize = 4;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
 pub const DATE_AND_TIME: usize = 5;
-const COMPONENTS: usize = 6;
+/// The `Agents` pane's place in [`PANES`] (D193, docs/ux/agents-v0.3.md).
+pub const AGENTS: usize = 6;
+const COMPONENTS: usize = 7;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 7;
+pub const ABOUT: usize = 8;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 8] = [
+const PANE_WORDS: [&[&str]; 9] = [
     &[
         "theme",
         "layout",
@@ -182,6 +188,33 @@ const PANE_WORDS: [&[&str]; 8] = [
         "Now",
         "Set to",
     ],
+    &[
+        "agent",
+        "AI",
+        "assistant",
+        "MCP",
+        "Claude",
+        "Copilot",
+        "grant",
+        "permission",
+        "privacy",
+        "security",
+        "allow",
+        "deny",
+        "ask",
+        "revoke",
+        "forget",
+        "audit",
+        "log",
+        "activity",
+        "view",
+        "write",
+        "install",
+        "run",
+        "Privacy & Security",
+        "Add",
+        "Revoke all",
+    ],
     &["layers", "apps", "Remove"],
     &[
         "version", "system", "licence", "license", "memory", "CPU", "uptime",
@@ -215,6 +248,11 @@ pub enum Request {
     /// Format this disk with the label [`SettingsWindow::format_label`], read the disks
     /// again, then show both ([`SettingsWindow::show_formatted`]).
     FormatDisk(&'static str),
+    /// Read the agents' grants and show them ([`SettingsWindow::show_grants`]) (D193).
+    ReadGrants,
+    /// Write [`SettingsWindow::grants_to_write`] as the grants file, read it again, then show
+    /// both ([`SettingsWindow::grants_written`]).
+    WriteGrants,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -265,6 +303,7 @@ pub struct SettingsWindow {
     tree: WidgetTree<CAPACITY>,
     widgets: Widgets,
     storage: StoragePane,
+    agents: AgentsPane,
     facts: Facts,
     pane: usize,
 }
@@ -657,6 +696,7 @@ impl SettingsWindow {
         );
 
         let storage = StoragePane::build(&mut tree, panes[STORAGE], set_button);
+        let agents = AgentsPane::build(&mut tree, panes[AGENTS], set_button);
         tree.set_enabled(radios, false);
         tree.set_enabled(set_button, false);
         tree.set_default_button(set_button);
@@ -691,6 +731,7 @@ impl SettingsWindow {
                 keyboard_line,
             },
             storage,
+            agents,
             facts,
             pane: APPEARANCE,
         };
@@ -742,7 +783,31 @@ impl SettingsWindow {
             self.storage.reset(&mut self.tree);
             return Some(Request::ReadDisks);
         }
+        if pane == AGENTS {
+            self.agents.reset(&mut self.tree);
+            return Some(Request::ReadGrants);
+        }
         None
+    }
+
+    /// Shows the agents' grants just read on the Agents pane (D193).
+    pub fn show_grants(&mut self, read: GrantsRead) {
+        self.agents.show_grants(&mut self.tree, read);
+    }
+
+    /// The grants file the Agents pane asks to write ([`Request::WriteGrants`]).
+    pub fn grants_to_write(&self) -> &GrantStore {
+        self.agents.store_to_write()
+    }
+
+    /// How writing the grants file went, and the grants read again after it.
+    pub fn grants_written(&mut self, written: Result<(), SaveError>, read: GrantsRead) {
+        self.agents.grants_written(&mut self.tree, written, read);
+    }
+
+    /// The Agents pane.
+    pub fn agents_pane(&self) -> &AgentsPane {
+        &self.agents
     }
 
     /// Shows the disks just read on the Storage pane (D192).
@@ -944,6 +1009,11 @@ impl SettingsWindow {
         if let Reply::Done(request) = self.storage.respond(&mut self.tree, response, now_ms) {
             return request;
         }
+        if let agents_pane::Reply::Done(request) =
+            self.agents.respond(&mut self.tree, response, now_ms)
+        {
+            return request;
+        }
         let widgets = self.widgets;
         match response {
             Response::Chosen(id, card) if id == widgets.cards => {
@@ -1073,7 +1143,7 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, 44 + 7 * 32 + 10);
+        click(&mut window, 40, 44 + 8 * 32 + 10);
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
