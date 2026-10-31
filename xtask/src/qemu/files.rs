@@ -34,6 +34,7 @@ use eggos_toolkit::input::{Input, Modifiers as Held, MouseButton};
 /// The text file the host folder holds for this test: its name and contents.
 pub const HOST_TEXT_FILE: (&str, &str) = ("notes.txt", "Notes from the host folder.\n");
 
+const SHELL_HISTORY_NAME: &str = ".eggsh_history";
 const TEST_DISK_BYTES: u64 = 64 << 20;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(20);
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(40);
@@ -466,7 +467,7 @@ fn check_the_image(arch: &Arch, image: &Path) -> Result<(), String> {
     let mut volume = image_volume(image).map_err(fail)?;
     let mut home = entries_at(&mut volume, "home/root").map_err(fail)?;
     home.sort();
-    if home != [".local", FOLDER_NAME] {
+    if home != [SHELL_HISTORY_NAME, ".local", FOLDER_NAME] {
         return Err(fail(format!("/home/root holds {home:?}")));
     }
     let work = entries_at(&mut volume, "home/root/work").map_err(fail)?;
