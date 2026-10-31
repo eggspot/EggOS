@@ -474,6 +474,7 @@ fn confirmation_is_one_rule_from_the_registry_and_a_dry_run_never_asks() {
     assert_eq!(
         commands,
         [
+            "agent grant",
             "app uninstall",
             "disk format",
             "disk repair",

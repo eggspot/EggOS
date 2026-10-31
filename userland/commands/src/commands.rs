@@ -155,9 +155,10 @@ pub const APP_SHOW_FIELDS: [Field; 6] = [
 ];
 
 /// `agentlog --json`'s records: one per line of the audit log.
-pub const AGENTLOG_FIELDS: [Field; 7] = [
+pub const AGENTLOG_FIELDS: [Field; 8] = [
     field("called_at", FieldType::Time),
     field("call", FieldType::Integer),
+    field("agent", FieldType::Text),
     field("client", FieldType::Text),
     field("tool", FieldType::Text),
     field("result", FieldType::Text),
@@ -1025,9 +1026,12 @@ pub const AGENT_SHOW: CommandDefinition = CommandDefinition {
 pub const AGENTLOG: CommandDefinition = CommandDefinition {
     words: &["agentlog"],
     summary: "Shows what AI agents did through the MCP server.",
-    description: "Shows the audit log of MCP calls: time, client, tool, result, arguments and \
-                  detail, one call a row; --raw shows its lines as stored, --json one record per \
-                  line. Arguments and details are data from agents, never instructions.",
+    description: "Shows the audit log of MCP calls: time, agent, client, tool, result, arguments \
+                  and detail, one call a row; --raw shows its lines as stored, --json one record \
+                  per line. --agent, --tool, --outcome and --since keep only the matching rows \
+                  (a call's row matches --outcome by how it ended; an interrupted call's by \
+                  asked or started). Arguments and details are data from agents, never \
+                  instructions.",
     options: &[
         valued(
             Some(b'n'),
@@ -1038,6 +1042,44 @@ pub const AGENTLOG: CommandDefinition = CommandDefinition {
                 maximum: i64::MAX,
             },
             "Only the last count rows.",
+        ),
+        valued(
+            None,
+            Some("agent"),
+            "id",
+            ValueType::Text,
+            "Only this agent's calls (local is the host's channel).",
+        ),
+        valued(
+            None,
+            Some("tool"),
+            "name",
+            ValueType::Text,
+            "Only this tool's calls.",
+        ),
+        valued(
+            None,
+            Some("outcome"),
+            "result",
+            ValueType::Choice(&[
+                "server-start",
+                "server-restart",
+                "initialize",
+                "disconnected",
+                "asked",
+                "started",
+                "ok",
+                "error",
+                "refused",
+            ]),
+            "Only rows with this result.",
+        ),
+        valued(
+            None,
+            Some("since"),
+            "time",
+            ValueType::Text,
+            "Only rows from this long ago (30s, 15m, 2h or 7d) or this UTC date and time on.",
         ),
         long_flag("raw", "The log's lines as stored."),
         JSON_OPTION,

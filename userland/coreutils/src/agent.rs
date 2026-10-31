@@ -401,7 +401,7 @@ impl Row<'_> {
     }
 }
 
-fn duration_seconds(text: &[u8]) -> Option<u64> {
+pub(crate) fn duration_seconds(text: &[u8]) -> Option<u64> {
     let (&unit, digits) = text.split_last()?;
     let &(_, scale) = SECONDS_PER.iter().find(|&&(letter, _)| letter == unit)?;
     if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {

@@ -212,6 +212,10 @@ const SHELL_GRANTS: &str = "$mcp_allow";
 
 const POWERSHELL_GRANTS: &str = "$McpAllowList";
 
+const SHELL_AGENT: &str = "$mcp_agent";
+
+const POWERSHELL_AGENT: &str = "$McpAgent";
+
 const POWERSHELL_CONSOLE_LOG: &str = "$ConsoleLog";
 
 const SHELL_COMMAND_LINE: &str = "$command_line";
@@ -312,7 +316,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--work <image>] [--memory <size>]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install] [--mcp-agent <id>]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--work <image>] [--memory <size>]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -323,6 +327,8 @@ mcp=''
 no_window=''
 mcp_allow=''
 mcp_allow_given=''
+mcp_agent=''
+mcp_agent_given=''
 apps=''
 disk=''
 no_disk=''
@@ -340,6 +346,11 @@ while [ "$#" -gt 0 ]; do
       shift
       mcp_allow="$1"
       mcp_allow_given=yes ;;
+    --mcp-agent)
+      if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
+      shift
+      mcp_agent="$1"
+      mcp_agent_given=yes ;;
     --apps)
       if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
       shift
@@ -365,9 +376,19 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-if [ -n "$no_window$mcp_allow_given" ] && [ -z "$mcp" ]; then
+if [ -n "$no_window$mcp_allow_given$mcp_agent_given" ] && [ -z "$mcp" ]; then
   echo "$usage" >&2
   exit 2
+fi
+if [ -n "$mcp_agent_given" ]; then
+  case "$mcp_agent" in
+    '' | local | *[!A-Za-z0-9._-]*) mcp_agent_bad=yes ;;
+    *) mcp_agent_bad='' ;;
+  esac
+  if [ -n "$mcp_agent_bad" ] || [ "${{#mcp_agent}}" -gt {max_agent_id} ]; then
+    echo "run-eggos.sh: --mcp-agent takes an agent's id: 1 to {max_agent_id} letters, digits, '.', '_' or '-', not local" >&2
+    exit 2
+  fi
 fi
 if [ -n "$memory" ]; then
   digits=${{memory%[MG]}}
@@ -513,6 +534,10 @@ if [ -n "$mcp_allow" ]; then
   command_line="${{command_line:+$command_line }}{grant_word}"
   say "run-eggos.sh: the MCP client may also: $mcp_allow (run can do anything a program can)."
 fi
+if [ -n "$mcp_agent" ]; then
+  command_line="${{command_line:+$command_line }}{agent_word}"
+  say "run-eggos.sh: the MCP client speaks for agent $mcp_agent, which has only what you grant it in EggOS (agent grant $mcp_agent view)."
+fi
 if [ -n "$command_line" ]; then
   set -- "$@" {command_line_args}
 fi
@@ -538,6 +563,8 @@ exec "$qemu" "$@" -kernel "$image"
         disk_bytes = qemu::DISK_IMAGE_BYTES,
         offscreen_word = qemu::OFFSCREEN_WORD,
         grant_word = qemu::grant_word(SHELL_GRANTS),
+        agent_word = qemu::agent_word(SHELL_AGENT),
+        max_agent_id = qemu::MAX_AGENT_ID_BYTES,
         command_line_args = double_quoted(&qemu::command_line_args(SHELL_COMMAND_LINE)),
         minimum_memory = qemu::MINIMUM_MEMORY_MEBIBYTES,
     )
@@ -594,12 +621,13 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         r#"$ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-Work <image>] [-Memory <size>]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install] [-McpAgent <id>]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-Work <image>] [-Memory <size>]"
 $Arch = ''
 $Serial = $false
 $Mcp = $false
 $NoWindow = $false
 $McpAllow = $null
+$McpAgent = $null
 $Apps = ''
 $Disk = ''
 $NoDisk = $false
@@ -628,6 +656,9 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
     }} elseif ($argument -in @('-McpAllow', '--mcp-allow') -and $null -ne $value) {{
         $McpAllow = $value
         $i++
+    }} elseif ($argument -in @('-McpAgent', '--mcp-agent') -and $null -ne $value) {{
+        $McpAgent = $value
+        $i++
     }} elseif ($argument -in @('-Apps', '--apps') -and $null -ne $value) {{
         $Apps = $value
         $i++
@@ -653,8 +684,12 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
     }}
 }}
 $Arch = $Arch.ToLowerInvariant()
-if ($UsageError -or ($Arch -and $Arches -notcontains $Arch) -or ($NoDisk -and ($Disk -or $FormatDisk)) -or ($NoWindow -and -not $Mcp) -or ($Mcp -and $Serial) -or (($null -ne $McpAllow) -and -not $Mcp)) {{
+if ($UsageError -or ($Arch -and $Arches -notcontains $Arch) -or ($NoDisk -and ($Disk -or $FormatDisk)) -or ($NoWindow -and -not $Mcp) -or ($Mcp -and $Serial) -or (($null -ne $McpAllow) -and -not $Mcp) -or (($null -ne $McpAgent) -and -not $Mcp)) {{
     [Console]::Error.WriteLine("run-eggos.ps1: $Usage")
+    exit 2
+}}
+if (($null -ne $McpAgent) -and (($McpAgent -cnotmatch '^[A-Za-z0-9._-]{{1,{max_agent_id}}}$') -or ($McpAgent -ceq 'local'))) {{
+    [Console]::Error.WriteLine("run-eggos.ps1: -McpAgent takes an agent's id: 1 to {max_agent_id} letters, digits, '.', '_' or '-', not local")
     exit 2
 }}
 if ($Memory -and (($Memory -cnotmatch '^[1-9][0-9]*[MG]$') -or (($Memory -cmatch 'M$') -and [long]$Memory.TrimEnd('M') -lt {minimum_memory}))) {{
@@ -782,6 +817,10 @@ if ($McpAllowList) {{
     $CommandLineWords += "{grant_word}"
     Say "run-eggos.ps1: the MCP client may also: $McpAllowList (run can do anything a program can)."
 }}
+if ($McpAgent) {{
+    $CommandLineWords += "{agent_word}"
+    Say "run-eggos.ps1: the MCP client speaks for agent $McpAgent, which has only what you grant it in EggOS (agent grant $McpAgent view)."
+}}
 if ($CommandLineWords.Count -gt 0) {{
     $CommandLine = $CommandLineWords -join ' '
     $QemuArgs += @({command_line_args})
@@ -806,6 +845,8 @@ exit $LASTEXITCODE
         disk_bytes = qemu::DISK_IMAGE_BYTES,
         offscreen_word = qemu::OFFSCREEN_WORD,
         grant_word = qemu::grant_word(POWERSHELL_GRANTS),
+        agent_word = qemu::agent_word(POWERSHELL_AGENT),
+        max_agent_id = qemu::MAX_AGENT_ID_BYTES,
         command_line_args = double_quoted(&qemu::command_line_args(POWERSHELL_COMMAND_LINE))
             .replace("\" \"", "\", \""),
         choices = arches
@@ -1165,7 +1206,9 @@ mod tests {
         assert!(shell.contains("printf '%s\\n' \"$*\" >&2"));
         assert!(shell.contains("--mcp) mcp=yes ;;"));
         assert!(
-            shell.contains("if [ -n \"$no_window$mcp_allow_given\" ] && [ -z \"$mcp\" ]; then")
+            shell.contains(
+                "if [ -n \"$no_window$mcp_allow_given$mcp_agent_given\" ] && [ -z \"$mcp\" ]; then"
+            )
         );
         assert!(shell.contains("qemu-io -f raw -c quit \"$disk\""));
         assert!(shell.contains("another EggOS is using the disk image $disk"));
@@ -1209,7 +1252,9 @@ mod tests {
         let powershell = powershell_script(&arches);
         assert!(shell.contains("    --mcp-allow)\n"));
         assert!(
-            shell.contains("if [ -n \"$no_window$mcp_allow_given\" ] && [ -z \"$mcp\" ]; then")
+            shell.contains(
+                "if [ -n \"$no_window$mcp_allow_given$mcp_agent_given\" ] && [ -z \"$mcp\" ]; then"
+            )
         );
         assert!(shell.contains("    *,,*)\n"));
         assert!(shell.contains("      view | write | run | install) ;;\n"));
@@ -1243,6 +1288,36 @@ mod tests {
         ] {
             assert!(qemu::check_grants(wrong).is_err(), "{wrong}");
         }
+    }
+
+    #[test]
+    fn the_agent_reaches_the_kernel_command_line_only_with_mcp_and_a_valid_id() {
+        let arches = script_arches();
+        let shell = shell_script(&arches);
+        let powershell = powershell_script(&arches);
+        assert!(shell.contains("[--mcp-agent <id>]]"));
+        assert!(shell.contains("    --mcp-agent)\n"));
+        assert!(shell.contains("    '' | local | *[!A-Za-z0-9._-]*) mcp_agent_bad=yes ;;\n"));
+        assert!(shell.contains("[ \"${#mcp_agent}\" -gt 32 ]"));
+        assert!(shell.contains(
+            "if [ -n \"$mcp_agent\" ]; then\n  command_line=\"${command_line:+$command_line }eggos.mcp_agent=$mcp_agent\"\n"
+        ));
+        assert!(
+            shell.find("eggos.mcp_allow=$mcp_allow").unwrap()
+                < shell.find("eggos.mcp_agent=$mcp_agent").unwrap()
+        );
+        assert!(powershell.contains("[-McpAgent <id>]]"));
+        assert!(powershell.contains(
+            "    } elseif ($argument -in @('-McpAgent', '--mcp-agent') -and $null -ne $value) {\n"
+        ));
+        assert!(powershell.contains("(($null -ne $McpAgent) -and -not $Mcp)"));
+        assert!(powershell.contains(
+            "-cnotmatch '^[A-Za-z0-9._-]{1,32}$') -or ($McpAgent -ceq 'local')"
+        ));
+        assert!(powershell.contains(
+            "if ($McpAgent) {\n    $CommandLineWords += \"eggos.mcp_agent=$McpAgent\"\n"
+        ));
+        assert_eq!(qemu::MAX_AGENT_ID_BYTES, 32);
     }
 
     #[test]
@@ -1318,7 +1393,7 @@ mod tests {
         ] {
             assert!(powershell.contains(&format!("$argument -in @('-{switch}', '--")));
         }
-        for option in ["McpAllow", "Apps", "Disk", "Work", "Arch"] {
+        for option in ["McpAllow", "McpAgent", "Apps", "Disk", "Work", "Arch"] {
             assert!(powershell.contains(&format!("$argument -in @('-{option}', '--")));
         }
     }

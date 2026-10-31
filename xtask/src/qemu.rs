@@ -3726,6 +3726,17 @@ pub fn grant_word(list: &str) -> String {
     format!("eggos.mcp_allow={list}")
 }
 
+/// The most bytes of an agent's id, as EggOS's MCP server takes it (D193); `--mcp-agent`
+/// checks it.
+pub const MAX_AGENT_ID_BYTES: usize = 32;
+
+/// The kernel command line's word that makes the MCP channel speak for the agent `id`
+/// (checked, or a script's variable holding it), for clients that cannot name their agent in
+/// `initialize` (D193).
+pub fn agent_word(id: &str) -> String {
+    format!("eggos.mcp_agent={id}")
+}
+
 /// QEMU's arguments that make `line` (words separated by spaces) the kernel command line. QEMU
 /// keeps only the last `-append`, so a boot passes every word in this one (D144). `-append`
 /// takes a plain string: commas stay single.
@@ -3925,6 +3936,7 @@ mod tests {
         );
         assert_eq!(OFFSCREEN_WORD, "eggos.display=offscreen");
         assert_eq!(grant_word("view,run"), "eggos.mcp_allow=view,run");
+        assert_eq!(agent_word("phone"), "eggos.mcp_agent=phone");
     }
 
     #[test]

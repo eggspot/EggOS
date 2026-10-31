@@ -180,6 +180,38 @@ pub fn from_command_line(line: &[u8]) -> (Grants, Unknown) {
     (grants, unknown)
 }
 
+/// The kernel command line's word naming the agent the local channel speaks for (D193).
+pub const AGENT_PARAMETER: &[u8] = b"eggos.mcp_agent=";
+
+/// The agent the kernel command line says the local channel speaks for, for clients that
+/// cannot name their agent in `initialize` (`run-eggos.sh --mcp-agent <id>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelAgent {
+    /// No [`AGENT_PARAMETER`] word, or `local`: the local agent, unless the client names
+    /// another in `initialize`.
+    Local,
+    /// The channel speaks for this agent, and no client on it can name another.
+    Pinned(AgentId),
+    /// The word's value is not an agent's id: the channel is given no grants, so it only
+    /// reads, rather than falling back to the local agent's.
+    Invalid,
+}
+
+/// The agent the first [`AGENT_PARAMETER`] word of the kernel command line `line` names.
+pub fn agent_from_command_line(line: &[u8]) -> ChannelAgent {
+    let Some(id) = line
+        .split(u8::is_ascii_whitespace)
+        .find_map(|word| word.strip_prefix(AGENT_PARAMETER))
+    else {
+        return ChannelAgent::Local;
+    };
+    match AgentId::new(id) {
+        Some(agent) => ChannelAgent::Pinned(agent),
+        None if id == LOCAL_AGENT_ID => ChannelAgent::Local,
+        None => ChannelAgent::Invalid,
+    }
+}
+
 /// Where the user's per-agent grants are kept: on the disk, outside every folder a tool can
 /// write, so no agent can raise its own grants by writing a file.
 pub const STORE_PATH: &str = "/var/lib/eggos/agent-grants";
@@ -921,5 +953,35 @@ mod tests {
         let long = format!("eggos.mcp_allow={}", "x".repeat(300));
         let (_, unknown) = from_command_line(long.as_bytes());
         assert_eq!(unknown.as_bytes().len(), MAX_UNKNOWN_BYTES);
+    }
+
+    #[test]
+    fn the_command_line_can_pin_the_channel_s_agent() {
+        let phone = AgentId::new(b"phone").unwrap();
+        for line in [
+            &b"eggos.mcp_allow=write eggos.mcp_agent=phone\n"[..],
+            b"eggos.mcp_agent=phone eggos.mcp_agent=tablet",
+            b"quiet\teggos.mcp_agent=phone",
+        ] {
+            assert_eq!(agent_from_command_line(line), ChannelAgent::Pinned(phone));
+        }
+        for line in [
+            &b""[..],
+            b"eggos.mcp_allow=run",
+            b"eggos.mcp_agent=local",
+            b"xeggos.mcp_agent=phone",
+        ] {
+            assert_eq!(agent_from_command_line(line), ChannelAgent::Local);
+        }
+        let too_long = format!("eggos.mcp_agent={}", "x".repeat(MAX_AGENT_ID_BYTES + 1));
+        for line in [
+            &b"eggos.mcp_agent="[..],
+            b"eggos.mcp_agent=two,words",
+            too_long.as_bytes(),
+        ] {
+            assert_eq!(agent_from_command_line(line), ChannelAgent::Invalid);
+        }
+        let (grants, _) = from_command_line(b"eggos.mcp_agent=phone");
+        assert_eq!(grants, Grants::NONE);
     }
 }

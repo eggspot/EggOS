@@ -219,7 +219,9 @@ fn the_tools_are_listed_once_initialized() {
             "disk_list",
             "disk_check",
             "disk_repair",
-            "disk_format"
+            "disk_format",
+            "agent_list",
+            "agent_show"
         ]
     );
 }
@@ -3239,4 +3241,117 @@ fn a_question_names_an_agent_other_than_the_local_one() {
         "{}",
         lines[0]
     );
+}
+
+fn initialize_as(harness: &mut Harness, id: u64, agent: &str) -> String {
+    harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"initialize","params":{{"protocolVersion":"2025-11-25","capabilities":{{}},"clientInfo":{{"name":"test-client","version":"1.0"}},"_meta":{{"org.eggos/agent":{agent}}}}}}}"#
+        ))
+        .unwrap()
+}
+
+#[test]
+fn a_client_names_its_agent_in_initialize_and_keeps_it_for_the_connection() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("phone", &[(Grant::Write, Permission::Allow)]),
+    );
+    let answer = initialize_as(&mut harness, 1, r#"{"id":"phone","name":"Phone"}"#);
+    assert!(parsed(&answer).get("result").is_some(), "{answer}");
+    assert_eq!(harness.server.agent(), AgentId::new(b"phone").unwrap());
+    harness.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+    let answer = harness.call(2, "run", r#"{"program":"/bin/uname"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("run needs the run grant, which the user has not given"),
+        "{answer}"
+    );
+    let record = parse_line(harness.system.audit.last().unwrap().as_bytes()).unwrap();
+    assert_eq!(record.agent, b"phone");
+    let answer = initialize_as(&mut harness, 3, r#"{"id":"tablet"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(answer.contains("this connection speaks for agent phone"), "{answer}");
+    assert_eq!(harness.server.agent(), AgentId::new(b"phone").unwrap());
+}
+
+#[test]
+fn a_bad_agent_in_initialize_is_refused_and_no_agent_is_the_local_one() {
+    for agent in [
+        r#"{"id":"local"}"#,
+        r#"{"id":"two words"}"#,
+        r#"{"id":""}"#,
+        r#"{"name":"Phone"}"#,
+        r#""phone""#,
+    ] {
+        let mut harness = Harness::with_grants(Grants::ALL);
+        let answer = initialize_as(&mut harness, 1, agent);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{agent}: {answer}");
+        assert!(harness.server.agent().is_local(), "{agent}");
+    }
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.initialize("{}");
+    assert!(harness.server.agent().is_local());
+}
+
+#[test]
+fn an_agent_without_grants_lists_no_tools_and_is_told_how_to_get_them() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let answer = initialize_as(&mut harness, 1, r#"{"id":"stranger"}"#);
+    assert!(answer.contains("agent grant stranger view"), "{answer}");
+    let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+    let answer = harness.send(list).unwrap();
+    let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
+        panic!("tools: {answer}");
+    };
+    assert_eq!(tools.elements().count(), 0, "{answer}");
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("stranger", &[(Grant::View, Permission::Allow)]),
+    );
+    let answer = harness.send(list).unwrap();
+    let Some(Value::Array(tools)) = parsed(&answer).get("result").unwrap().get("tools") else {
+        panic!("tools: {answer}");
+    };
+    assert_eq!(tools.elements().count(), tools::TOOLS.len(), "{answer}");
+}
+
+#[test]
+fn agent_show_shows_the_calling_agent_s_own_grants_and_agent_list_needs_view() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.system.outputs.insert(
+        "/bin/agent".into(),
+        (b"{\"id\":\"phone\"}\n".to_vec(), Vec::new(), Ended::Exited(0)),
+    );
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("phone", &[(Grant::Write, Permission::Allow)]),
+    );
+    initialize_as(&mut harness, 1, r#"{"id":"phone"}"#);
+    let answer = harness.call(2, "agent_show", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/agent", "show", "--json", "--", "phone"]
+    );
+    let answer = harness.call(3, "agent_show", r#"{"id":"local"}"#);
+    assert!(is_error(&answer), "{answer}");
+    let answer = harness.call(4, "agent_list", "{}");
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("agent_list needs the view grant"), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "agent_show", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/agent", "show", "--json", "--", "local"]
+    );
+    let answer = harness.call(2, "agent_list", "{}");
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("--mcp-allow view"), "{answer}");
 }

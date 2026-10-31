@@ -6,7 +6,7 @@
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::{GENERATIONS, LOG_FOLDER, LOG_PATH, RECORD_BYTES, ROTATE_BYTES, ROTATED_PATHS};
 use crate::framing::{Line, LineReader};
-use crate::grants::{self, COMMAND_LINE_PATH, Grant, STORE_PATH};
+use crate::grants::{self, COMMAND_LINE_PATH, ChannelAgent, Grant, Grants, STORE_PATH};
 use crate::paths::{HOME, MAX_PATH_BYTES};
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
@@ -181,8 +181,16 @@ fn read_grants(server: &mut Server) {
         }
     }
     close(file);
-    let (grants, unknown) = grants::from_command_line(line.get(..length).unwrap_or_default());
-    server.set_grants(grants, unknown);
+    let words = line.get(..length).unwrap_or_default();
+    let (grants, unknown) = grants::from_command_line(words);
+    match grants::agent_from_command_line(words) {
+        ChannelAgent::Local => server.set_grants(grants, unknown),
+        ChannelAgent::Pinned(agent) => {
+            server.set_grants(grants, unknown);
+            server.set_agent(agent);
+        }
+        ChannelAgent::Invalid => server.set_grants(Grants::NONE, unknown),
+    }
 }
 
 fn wait_for_channel(channel: usize, deadline_ms: u64) -> bool {

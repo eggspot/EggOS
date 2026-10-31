@@ -386,3 +386,29 @@ fn ln_makes_links_below_the_home_folder_with_its_twin_never_replacing() {
     assert_eq!((hard.name, hard.roots), ("target", link.roots));
     assert!(!tool.takes("confirm") && !tool.takes("dry_run"));
 }
+
+#[test]
+fn the_agent_tools_read_grants_and_only_agent_show_names_the_caller() {
+    let list = find("agent_list").unwrap();
+    let show = find("agent_show").unwrap();
+    assert_eq!((list.kind, show.kind), (Kind::AgentList, Kind::AgentShow));
+    assert_eq!((list.grant, show.grant), (Some(Grant::View), None));
+    for tool in [list, show] {
+        assert!(tool.hints.read_only, "{}", tool.name);
+        assert_eq!(tool.twin.program, Program::Fixed("/bin/agent"));
+        assert_eq!(
+            schema_of(tool),
+            r#"{"type":"object","properties":{},"additionalProperties":false}"#
+        );
+    }
+    assert_eq!(list.twin.words, ["list", "--json"]);
+    assert_eq!(list.twin.operand, Operand::None);
+    assert_eq!(show.twin.words, ["show", "--json"]);
+    assert_eq!(show.twin.operand, Operand::CallingAgent);
+    let calling: Vec<&str> = TOOLS
+        .iter()
+        .filter(|tool| tool.twin.operand == Operand::CallingAgent)
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(calling, ["agent_show"]);
+}

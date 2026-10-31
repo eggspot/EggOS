@@ -30,9 +30,12 @@
 //!    first word and `wm_type` replace, Files opened by name, a new folder found as a
 //!    list item in its element tree and opened by `wm_click`'s double-click (D162); then
 //!    uninstalling the app; then, with a
-//!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
-//!    which must show every call. The disk image read back must hold the audit log, with
-//!    `asked` records and no written content.
+//!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; then `agentlog` through `run`,
+//!    which must show every call, then `agent_list`, `/bin/agent revoke local` through `run`
+//!    (D193), a `tee` refused because its grant was taken back and `agent_show` with every
+//!    grant denied. The disk image read back must hold the audit log, with
+//!    `asked` records, the refused `tee` and no written content, and the agent grants with
+//!    every grant taken from `local`.
 
 use super::persistent::{contents, image_volume};
 use super::settings::settings_window_images;
@@ -70,12 +73,17 @@ const WM_LIST_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
 /// The Linux GUI program the check installs from the host folder.
 pub const LINUX_GUI_PROGRAM: &str = "linux-paint";
 const SETTINGS_SCALE: u32 = 2;
+const REVOKED_EVERY_GRANT: &str = "took every grant back from local; it keeps reading";
+const REVOKED_TEE_ARGUMENTS: &str = r#"{"path":"/home/root/after-revoke","content":"x"}"#;
+const GRANT_TAKEN_BACK: &str =
+    "tee needs the write grant, which the user has not given this agent or has taken back";
+const REVOKED_LOCAL_LINE: &[u8] = b"\nlocal\tdeny\tdeny\tdeny\tdeny\tlocal\n";
 const CAPTURE_POLL: Duration = Duration::from_secs(1);
 
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 15] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 16] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -103,6 +111,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 15] = [
     ("getprop", r#"{"name":"eggos.mcp.unset"}"#, ""),
     ("logcat", r#"{"tag":"eggos-mcp-unset"}"#, ""),
     ("disk_list", "{}", ""),
+    ("agent_show", "{}", r#""id":"local""#),
 ];
 
 /// Every call of a reading tool whose result depends on the network the machine was started
@@ -124,7 +133,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 33] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 34] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
@@ -214,6 +223,7 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 33] = [
         r#"{"device":"/dev/vdd","confirm":true}"#,
         "write",
     ),
+    ("agent_list", "{}", "view"),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -1099,7 +1109,23 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         !log.contains(CONTENT_MARKER),
         arch,
         "agentlog shows content a call wrote",
-    )
+    )?;
+    revoke_everything(client)
+}
+
+fn revoke_everything(client: &mut Client) -> Result<(), String> {
+    succeeds(client, "agent_list", "{}", r#""id":"local""#)?;
+    let revoked = run_program(client, &["/bin/agent", "revoke", "local"])?;
+    expect(
+        revoked.all().contains(REVOKED_EVERY_GRANT),
+        client.arch,
+        &format!(
+            "agent revoke local did not take every grant back: {}",
+            revoked.all()
+        ),
+    )?;
+    refused(client, "tee", REVOKED_TEE_ARGUMENTS, GRANT_TAKEN_BACK)?;
+    succeeds(client, "agent_show", "{}", r#""run":"deny""#).map(|_| ())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1761,6 +1787,27 @@ pub fn check(
             .any(|window| window == CONTENT_MARKER.as_bytes()),
         arch.name,
         "the audit log on the disk holds content a call wrote",
+    )?;
+    expect(
+        records.iter().any(|record| {
+            record.tool == b"tee"
+                && record.outcome == eggos_mcp::audit::Outcome::Refused
+                && record
+                    .detail
+                    .windows(GRANT_TAKEN_BACK.len())
+                    .any(|window| window == GRANT_TAKEN_BACK.as_bytes())
+        }),
+        arch.name,
+        "the audit log on the disk holds no tee refused after its grant was taken back",
+    )?;
+    let store = contents(&mut volume, eggos_mcp::grants::STORE_PATH)?
+        .ok_or_else(|| format!("{}: MCP check: the disk holds no agent grants", arch.name))?;
+    expect(
+        store
+            .windows(REVOKED_LOCAL_LINE.len())
+            .any(|window| window == REVOKED_LOCAL_LINE),
+        arch.name,
+        "the agent grants on the disk do not take every grant back from local",
     )?;
     eprintln!("xtask: {}: MCP boot test passed", arch.name);
     Ok(())
