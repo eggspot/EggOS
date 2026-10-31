@@ -16448,3 +16448,27 @@ the license, by an explicit instruction recorded here.
   AArch64; IST stacks for NMI, double fault and machine check; guard pages under kernel thread
   stacks; KPTI, MDS and Retbleed mitigations chosen per CPU; `PROT_BTI`; `RLIMIT_DATA` and
   `RLIMIT_AS`.
+
+## D202 The power button shuts EggOS down cleanly, first slice: ACPI's fixed-feature button on x86_64 (batch part 53; M5, M13; extends D106, D183) — Decided by the build loop
+
+- When the FADT says the power button is ACPI's fixed feature (its `PWR_BUTTON` flag clear),
+  the HAL switches the machine to ACPI mode if needed (the FADT's `ACPI_ENABLE` to its SMI
+  command port, as powering off already does), clears a stale press, sets `PWRBTN_EN` in the
+  PM1a enable register and routes the system control interrupt's ISA line, as the MADT
+  overrides it, through the I/O APIC to the boot CPU on its own vector after the device
+  lines' (0x53). A press sets `PWRBTN_STS`; the handler clears it and hands
+  `Interrupt::PowerButton` to the kernel, which sends init `SIGRTMIN + 4`, the signal
+  `poweroff` sends: init stops every program (`SIGTERM`, then `SIGKILL`) and the machine
+  powers off after the file systems are synced (D183, D106). The boot says `power button:
+  ready` or why not; only the init boot turns it on.
+- `Platform::enable_power_button` has a default that says there is no button, so AArch64,
+  RISC-V and the test platforms answer that until their buttons come (a GPIO key on `virt`,
+  an SBI system suspend notification).
+- Choices made without research: no AML interpreter for this slice: QEMU's `pc` and `q35`
+  describe the fixed-feature button, which needs none; a control-method button (its `_PRW`,
+  `Notify`) waits for the interpreter.
+- Check. Host test: the FADT's power button fields, and a control-method button found as none.
+  QEMU: the boot line on x86_64.
+- Not yet: the AML interpreter and ACPI devices from the DSDT, a control-method power button,
+  the power button on AArch64 and RISC-V, a QEMU check that QMP's `system_powerdown` ends in a
+  clean power-off, the sleep button.
