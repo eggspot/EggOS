@@ -560,6 +560,27 @@ impl NetworkView {
         tree.set_shown(self.widgets.panel, false);
     }
 
+    /// Opens the pairing panel's ask step filled in with agent `id` and `name`, as `settings
+    /// --pair` asks; the person still presses Pair.
+    pub fn ask_to_pair(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        id: &str,
+        name: &str,
+        now_ms: u32,
+        rows: &[AgentGrants],
+        full: bool,
+    ) {
+        self.status = None;
+        self.open_panel(tree, now_ms);
+        tree.set_text(self.widgets.id_field, id);
+        tree.set_text(self.widgets.name_field, name);
+        self.refresh_panel(tree, rows, full);
+        if tree.is_enabled(self.widgets.primary) {
+            tree.set_focus(Some(self.widgets.primary), now_ms);
+        }
+    }
+
     /// Updates the ask step's hint and `Pair` after the fields or the agents changed.
     pub fn refresh_panel(&self, tree: &mut WidgetTree<CAPACITY>, rows: &[AgentGrants], full: bool) {
         if self.step != Some(Step::Ask) {

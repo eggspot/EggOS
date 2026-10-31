@@ -195,6 +195,21 @@ struct Linux {
     no_symlinks: bool,
     time_zone: Option<([u8; TIME_ZONE_BYTES], usize)>,
     environment: *const *const core::ffi::c_char,
+    started_environment: [*const u8; STARTED_VARIABLES + 1],
+}
+
+const STARTED_ARGUMENTS: usize = 8;
+const STARTED_VARIABLES: usize = 64;
+const O_CLOEXEC: usize = 0o2_000_000;
+
+fn started_environment<'a>(
+    environment: impl IntoIterator<Item = &'a CStr>,
+) -> [*const u8; STARTED_VARIABLES + 1] {
+    let mut pointers = [core::ptr::null(); STARTED_VARIABLES + 1];
+    for (slot, variable) in pointers[..STARTED_VARIABLES].iter_mut().zip(environment) {
+        *slot = variable.as_ptr().cast();
+    }
+    pointers
 }
 
 const TIME_ZONE_BYTES: usize = 64;
@@ -583,6 +598,35 @@ impl System for Linux {
         .map(|_| ())
     }
 
+    fn start_program(&mut self, program: &CStr, arguments: &[&CStr]) -> Result<(), Errno> {
+        use eggos_runtime::process::{ChildStack, Spawn, spawn};
+        if arguments.len() > STARTED_ARGUMENTS {
+            return Err(Errno::E2BIG);
+        }
+        let mut pointers = [core::ptr::null::<u8>(); STARTED_ARGUMENTS + 1];
+        for (slot, argument) in pointers.iter_mut().zip(arguments) {
+            *slot = argument.as_ptr().cast();
+        }
+        let mut pipe = [0i32; 2];
+        call(
+            number::PIPE2,
+            [pipe.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0],
+        )?;
+        let (reading, writing) = (pipe[0] as usize, pipe[1] as usize);
+        let request = Spawn::new(
+            program,
+            &pointers[..=arguments.len()],
+            &self.started_environment,
+            [reading, writing, writing],
+        )
+        .in_own_session();
+        let mut stack = ChildStack::new();
+        let started = spawn(&mut stack, &request);
+        let _ = call(number::CLOSE, [reading, 0, 0, 0, 0, 0]);
+        let _ = call(number::CLOSE, [writing, 0, 0, 0, 0, 0]);
+        started.map(|_| ())
+    }
+
     fn execute(&mut self, program: &CStr, arguments: &[&CStr]) -> Errno {
         let mut pointers =
             [core::ptr::null::<core::ffi::c_char>(); crate::utilities::MAX_ARGUMENTS + 1];
@@ -935,6 +979,7 @@ pub fn run(startup: &Startup) -> i32 {
         no_symlinks: refuses_symbolic_links(startup.environment()),
         time_zone: time_zone_of(startup.environment()),
         environment: startup.environment_block(),
+        started_environment: started_environment(startup.environment()),
     };
     utilities::run(system, &arguments[..count])
 }

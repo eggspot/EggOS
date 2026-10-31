@@ -1049,7 +1049,11 @@ impl Desktop {
             return Err(WindowError::Invalid);
         }
         let window = self.window_mut(slot);
+        let was_view_only = window.is_person_view_only();
         window.flags = (window.flags & !mask) | values;
+        if !was_view_only && window.is_person_view_only() {
+            window.view_only_turns = window.view_only_turns.wrapping_add(1);
+        }
         Ok(())
     }
 

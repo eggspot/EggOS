@@ -111,6 +111,9 @@ pub(super) struct Window {
     pub hidden_by_show_desktop: bool,
     /// The virtual desktop a normal window is on, from 0 (D204).
     pub desktop: u8,
+    /// How many times [`flags::PERSON_VIEW_ONLY`] has turned on, so a capture that copied
+    /// while it was off can tell it turned on meanwhile (D193).
+    pub view_only_turns: u32,
 }
 
 impl Window {
@@ -145,6 +148,7 @@ impl Window {
             focus_serial: 0,
             hidden_by_show_desktop: false,
             desktop: 0,
+            view_only_turns: 0,
         }
     }
 

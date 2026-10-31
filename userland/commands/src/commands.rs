@@ -1139,7 +1139,11 @@ pub const AGENT_PAIR: CommandDefinition = CommandDefinition {
                   place of any old one, and shows a code the agent's client sends once to \
                   https://<this machine>:8443/pair within 5 minutes to get that token. Five \
                   wrong codes burn it, and a new code can then be made after 30 seconds. Only \
-                  the person pairs: no MCP tool does. --name sets the name the user sees.",
+                  the person pairs: no MCP tool does. --name sets the name the user sees. The \
+                  code is shown only on the serial console: run in a terminal window, or with \
+                  its output piped or sent to a file, it makes no code and opens Settings > \
+                  Agents > Network for the agent instead, where the code appears once the person \
+                  presses Pair.",
     options: &[valued(
         None,
         Some("name"),
@@ -2795,8 +2799,24 @@ pub const SETTINGS: CommandDefinition = CommandDefinition {
     summary: "Opens the Settings window.",
     description: "Opens Settings, where the desktop's layout, the date and time and what the \
                   machine is are shown and set; settings list, get and set do the same from the \
-                  command line.",
-    options: &[],
+                  command line. --pair opens it at Agents > Network, ready to pair that agent \
+                  (agent pair does so from a terminal window); the person presses Pair.",
+    options: &[
+        valued(
+            None,
+            Some("pair"),
+            "id",
+            ValueType::Text,
+            "Opens the pairing of this agent, which the person starts.",
+        ),
+        valued(
+            None,
+            Some("name"),
+            "name",
+            ValueType::Text,
+            "With --pair, the name the user sees, at most 64 bytes.",
+        ),
+    ],
     operands: &[],
     outputs: NOTHING,
     max_effect: Effect::Change,

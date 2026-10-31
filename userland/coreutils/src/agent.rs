@@ -5,8 +5,8 @@ use core::ffi::CStr;
 use eggos_commands::{CommandDefinition, commands, errors};
 use eggos_mcp::grant_files::{self, GrantFiles, STORE, SaveError};
 use eggos_mcp::grants::{
-    self, AgentGrants, AgentId, AgentName, Grant, GrantStore, Grants, Permission, STORE_BYTES,
-    StoreError, StoreState,
+    self, AgentGrants, AgentId, AgentName, Grant, GrantStore, Grants, MAX_AGENT_ID_BYTES,
+    MAX_AGENT_NAME_BYTES, Permission, STORE_BYTES, StoreError, StoreState,
 };
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::pairing::{
@@ -24,6 +24,11 @@ const COMMAND_LINE: &CStr = c"/proc/cmdline";
 const COMMAND_LINE_BYTES: usize = 1024;
 const RECORD_BYTES: usize = 1024;
 const SECONDS_PER: [(u8, u64); 4] = [(b's', 1), (b'm', 60), (b'h', 3600), (b'd', 86_400)];
+const STANDARD_OUTPUT_LINK: &CStr = c"/proc/self/fd/1";
+const CONSOLE: &[u8] = b"/dev/console";
+const SETTINGS_PROGRAM: &CStr = c"/bin/settings";
+const DISPLAY_OPTION: &[u8] = b"eggos.display=";
+const OFFSCREEN: &[u8] = b"offscreen";
 
 pub fn agent<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let rest = arguments.get(1..).unwrap_or_default();
@@ -668,6 +673,9 @@ fn pair<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(None) => return usage(output),
         None => None,
     };
+    if !writes_to_the_console(&mut output.system) {
+        return pair_in_settings(output, id, name);
+    }
     let now = output.system.now();
     let code = match pairing::begin_pairing(&mut StoreFiles(&mut output.system), id, name, now) {
         Ok(code) => code,
@@ -717,6 +725,7 @@ fn pair<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     output.write(b"/pair\n  ");
     output.write(&pairing::code_text(&code));
     output.write(b"\n");
+    output.write(b"the code is shown here, on the console, only\n");
     describe_certificate(output);
     if state == NetworkState::Off {
         output
@@ -725,6 +734,108 @@ fn pair<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     output.write(b"the agent gets nothing until you grant it: agent grant ");
     output.write(id.as_bytes());
     output.write(b" view\n");
+    0
+}
+
+fn writes_to_the_console<S: System>(system: &mut S) -> bool {
+    let mut target = [0u8; 32];
+    system
+        .read_link(STANDARD_OUTPUT_LINK, &mut target)
+        .is_ok_and(|length| &target[..length] == CONSOLE)
+}
+
+fn display_is_offscreen<S: System>(output: &mut Output<S>) -> bool {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let Ok(length) = read_whole(output, COMMAND_LINE, &mut line) else {
+        return false;
+    };
+    line[..length]
+        .split(|byte| byte.is_ascii_whitespace())
+        .find_map(|word| word.strip_prefix(DISPLAY_OPTION))
+        .is_some_and(|value| {
+            value
+                .strip_prefix(OFFSCREEN)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(b":"))
+        })
+}
+
+fn shows_a_desktop<S: System>(output: &mut Output<S>) -> bool {
+    if display_is_offscreen(output) {
+        return false;
+    }
+    match output.system.open(crate::wm::DEVICE) {
+        Ok(descriptor) => {
+            output.system.close(descriptor);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn with_nul<'a>(text: &[u8], held: &'a mut [u8]) -> Option<&'a CStr> {
+    let slot = held.get_mut(..=text.len())?;
+    slot[..text.len()].copy_from_slice(text);
+    slot[text.len()] = 0;
+    let slot: &'a [u8] = slot;
+    CStr::from_bytes_with_nul(slot).ok()
+}
+
+fn pair_in_settings<S: System>(
+    output: &mut Output<S>,
+    id: AgentId,
+    name: Option<AgentName>,
+) -> i32 {
+    if !shows_a_desktop(output) {
+        output.coded(
+            &errors::FAILED,
+            &[
+                b"pairing is the person's, and its code is shown only where no agent can read \
+                  it: run agent pair ",
+                id.as_bytes(),
+                b" on the serial console",
+            ],
+        );
+        return FAILURE;
+    }
+    let mut held_id = [0u8; MAX_AGENT_ID_BYTES + 1];
+    let mut held_name = [0u8; MAX_AGENT_NAME_BYTES + 1];
+    let Some(id_text) = with_nul(id.as_bytes(), &mut held_id) else {
+        return usage(output);
+    };
+    let name_text = match name {
+        Some(name) => match with_nul(name.as_bytes(), &mut held_name) {
+            Some(text) => Some(text),
+            None => return usage(output),
+        },
+        None => None,
+    };
+    let arguments: [&CStr; 5] = [
+        c"settings",
+        c"--pair",
+        id_text,
+        c"--name",
+        name_text.unwrap_or(c""),
+    ];
+    let count = match name_text {
+        Some(_) => 5,
+        None => 3,
+    };
+    if let Err(errno) = output
+        .system
+        .start_program(SETTINGS_PROGRAM, &arguments[..count])
+    {
+        output.coded(
+            &errors::FAILED,
+            &[b"could not open Settings to pair: ", errno.message()],
+        );
+        return FAILURE;
+    }
+    output.write(b"pairing is the person's: Settings > Agents > Network is open for ");
+    output.write(id.as_bytes());
+    output.write(
+        b", where its code appears once you press Pair; the code is never shown here, where an \
+          agent could read it\n",
+    );
     0
 }
 

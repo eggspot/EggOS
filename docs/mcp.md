@@ -91,7 +91,11 @@ view):
 agent pair --name "My laptop" laptop
 ```
 
-It prints a one-time code, `ABCD-EFGH`, good for 5 minutes. On the agent's machine, check the
+On the serial console it prints a one-time code, `ABCD-EFGH`, good for 5 minutes. Anywhere
+else (a Terminal window, a pipe, a file) it makes no code: it opens Settings > Agents > Network
+with the agent filled in, and the code appears there once you press `Pair`. On an offscreen
+display, where no one sees Settings, it asks you to run it on the serial console. On the agent's
+machine, check the
 certificate's fingerprint against the one EggOS showed, then trade the code for the agent's
 token once:
 
@@ -105,7 +109,9 @@ the agent's identity, and EggOS keeps only its hash. Five wrong codes burn the c
 can be made 30 seconds later. Pairing again gives the agent a new token and ends the old one;
 `agent forget laptop` ends it too. The code is for your eyes only: while Settings shows it,
 `wm_show` leaves its text out and `wm_capture` of that window is refused, so an agent that has
-only `view` cannot read it and pair first.
+only `view` cannot read it and pair first; a Terminal window has no such protection (its rows
+are in its element tree, its scrollback and what you copy), which is why `agent pair` shows the
+code only on the serial console, whose output no program in EggOS reads back.
 
 A paired agent has no grants until you give them (`agent grant laptop view`, or Settings'
 Agents pane). Connect the client with the token as a header, trusting the certificate file:

@@ -987,6 +987,24 @@ impl SettingsWindow {
             .paired(&mut self.tree, agent, outcome, grants, network, now_ms);
     }
 
+    /// Shows the Agents pane's Network view with its pairing panel filled in with agent `id`
+    /// and `name` (empty for none), from `grants` and `network` just read, as `settings --pair`
+    /// asks (D193): nothing is paired until the person presses Pair.
+    pub fn open_pairing(
+        &mut self,
+        id: &str,
+        name: &str,
+        grants: GrantsRead,
+        network: NetworkRead,
+        now_ms: u32,
+    ) {
+        self.tree.set_selected(self.widgets.list, AGENTS);
+        self.show_pane(AGENTS);
+        self.agents.show_grants(&mut self.tree, grants);
+        self.agents
+            .ask_to_pair(&mut self.tree, id, name, network, now_ms);
+    }
+
     /// Whether the Agents pane's pairing panel counts a code down, so the window wants a tick
     /// each second.
     pub fn pairing_counting_down(&self) -> bool {

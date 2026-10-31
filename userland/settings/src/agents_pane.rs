@@ -661,6 +661,26 @@ impl AgentsPane {
         self.refresh(tree);
     }
 
+    /// Shows the `Network` view with `network` just read and its pairing panel filled in with
+    /// agent `id` and `name`, waiting for the person to press Pair.
+    pub fn ask_to_pair(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        id: &str,
+        name: &str,
+        network: NetworkRead,
+        now_ms: u32,
+    ) {
+        tree.set_selected(self.widgets.view, NETWORK_VIEW);
+        self.show_view(tree);
+        self.status = None;
+        self.network.show(tree, network);
+        let full = self.store_full();
+        self.network
+            .ask_to_pair(tree, id, name, now_ms, &self.rows, full);
+        self.refresh(tree);
+    }
+
     /// Whether the pairing panel shows a code, so the program reads the network each second.
     pub fn pairing_counting_down(&self) -> bool {
         self.network.counting_down()

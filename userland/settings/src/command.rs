@@ -14,8 +14,8 @@ use eggos_settings_file::{InputPreferences, KeyAccessibility, PATH};
 use eggos_toolkit::text::Text;
 
 /// The command's usage, printed for a usage error.
-pub const USAGE: &str =
-    "usage: settings [list [--json] | get [--json] <key> | set [--dry-run] <key> <value>]\n";
+pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | list [--json] | get \
+                         [--json] <key> | set [--dry-run] <key> <value>]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -63,6 +63,45 @@ pub trait Machine {
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
     fn write_error(&mut self, bytes: &[u8]);
+}
+
+/// The option that opens the window at the Agents pane's pairing panel, ready to pair an
+/// agent (D193): `settings --pair <id> [--name <name>]`, what `agent pair` runs from a terminal.
+pub const PAIR_OPTION: &str = "--pair";
+/// With [`PAIR_OPTION`], the name the user sees.
+pub const NAME_OPTION: &str = "--name";
+
+/// The agent `settings --pair` fills the pairing panel in with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairingAsked<'a> {
+    pub id: &'a str,
+    /// Empty for none.
+    pub name: &'a str,
+}
+
+/// What the words after `settings` ask of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAsked<'a> {
+    /// Not the window with a pairing: the other verbs, or the plain window with no words.
+    Other,
+    /// The window at the pairing panel, filled in.
+    Pairing(PairingAsked<'a>),
+    /// `--pair` or `--name` without what they need.
+    Usage,
+}
+
+/// Reads `settings --pair <id> [--name <name>]` (the options in either order) from
+/// `arguments`, the words after the program's name.
+pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
+    let asked = |id, name| WindowAsked::Pairing(PairingAsked { id, name });
+    match *arguments {
+        [PAIR_OPTION, id] => asked(id, ""),
+        [PAIR_OPTION, id, NAME_OPTION, name] | [NAME_OPTION, name, PAIR_OPTION, id] => {
+            asked(id, name)
+        }
+        [first, ..] if first == PAIR_OPTION || first == NAME_OPTION => WindowAsked::Usage,
+        _ => WindowAsked::Other,
+    }
 }
 
 /// Runs `settings` with `arguments`, the words after its name (at least one: with none the
@@ -268,6 +307,30 @@ fn text_of(bytes: &[u8]) -> &str {
 mod tests {
     use super::*;
     use eggos_commands::COMMANDS;
+
+    #[test]
+    fn pair_opens_the_window_filled_in_and_anything_else_with_it_is_a_usage_error() {
+        let pairing = |id, name| WindowAsked::Pairing(PairingAsked { id, name });
+        assert_eq!(window_asked(&["--pair", "phone"]), pairing("phone", ""));
+        assert_eq!(
+            window_asked(&["--pair", "phone", "--name", "My phone"]),
+            pairing("phone", "My phone")
+        );
+        assert_eq!(
+            window_asked(&["--name", "My phone", "--pair", "phone"]),
+            pairing("phone", "My phone")
+        );
+        for wrong in [
+            &["--pair"][..],
+            &["--name", "x"],
+            &["--pair", "a", "--name"],
+            &["--pair", "a", "b"],
+        ] {
+            assert_eq!(window_asked(wrong), WindowAsked::Usage, "{wrong:?}");
+        }
+        assert_eq!(window_asked(&["list"]), WindowAsked::Other);
+        assert_eq!(window_asked(&[]), WindowAsked::Other);
+    }
 
     #[derive(Debug, Default)]
     struct Fake {

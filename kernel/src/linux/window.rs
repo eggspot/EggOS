@@ -701,11 +701,12 @@ fn capture<P: Platform>(
     buffer: u64,
     length: u64,
 ) -> Result<CapturedRows, Errno> {
-    let (layout, pixels) = on_windows::<P, _>(|desktop, buffers, damage, _| {
+    let (layout, pixels, view_only_turns) = on_windows::<P, _>(|desktop, buffers, damage, _| {
         let layout = desktop.content_layout(window)?;
+        let turns = desktop.person_view_only_turns(window)?;
         let id = WindowId::try_from(window).map_err(|_| WindowError::NoSuchWindow)?;
         desktop.note_agent_action(damage);
-        Ok((layout, buffers.shared(id)))
+        Ok((layout, buffers.shared(id), turns))
     })?;
     let rows = layout
         .height
@@ -729,6 +730,11 @@ fn capture<P: Platform>(
                 .map_err(|_| Errno::EFAULT)
         },
     )?;
+    let turns_after =
+        on_windows::<P, _>(|desktop, _, _, _| desktop.person_view_only_turns(window))?;
+    if turns_after != view_only_turns {
+        return Err(Errno::EACCES);
+    }
     Ok(CapturedRows {
         width: layout.width,
         height: layout.height,

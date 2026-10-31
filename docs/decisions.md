@@ -16329,6 +16329,12 @@ the license, by an explicit instruction recorded here.
     `ask` call answered without `elicitation/create` instead); the server reads the port with
     `grants::seconds` where the CLI and pane use `pairing::parse_port`; `AGENT_SURFACE` still
     says the agent commands have no GUI though Settings > Agents and its Network view shipped.
+    From round 2's review: an on-screen confirmation the person gives before any pairing code
+    is made, wherever it is asked from; `shown_string` cutting a question's strings at 64
+    bytes so the person can approve a `write` whose shown path is the unresolved prefix (show
+    the resolved target first, always, and "(cut)" when `cut` is set); the
+    ephemeral-port bitmap allocated with `try_reserve_exact` instead of through
+    `heap::may_grow_for_user`.
   - Slice 41d6 (Settings): the Agents pane's third view, `Network` (the `Off` `On` switch
     written at once with "from EggOS's next start", where agents connect, the certificate's
     PEM path and its fingerprint in two halves), and the pairing panel (an id and an optional
@@ -16342,12 +16348,32 @@ the license, by an explicit instruction recorded here.
     label's text, are left out of element trees (control names stay, so the panel still reads);
     and the window server gains the window flag `PERSON_VIEW_ONLY` (8): `CAPTURE_WINDOW` of a
     window flagged so fails with `EACCES` (`wm capture` names the refusal, as it does the
-    kernel's terminal), whoever asks, the person's own tools included. A live window changes it
+    kernel's terminal), whoever asks, the person's own tools included; since round 2's review
+    so does a capture whose copy the flag turned on during (each window counts the times the
+    flag turned on, and the capture keeps its copy only when the count it read under the lock
+    before copying is the one it reads after). A live window changes it
     with the new request `CHANGE_FLAGS` (37: window, mask, values; only `PERSON_VIEW_ONLY` may
     change), the toolkit's `Window::set_person_view_only`; the event loop asks the program
     (`Application::person_view_only`) each turn, turns the flag on before drawing and off only
     after the drawing that removed the content, and Settings answers true while its Agents pane
     shows a code. Nothing visible changes.
+    The CLI's code is protected too (review round 2, decided by research): `agent pair` shows a
+    code only when its standard output is the serial console (`/proc/self/fd/1` names
+    `/dev/console`, as on installs without a display), where it also says the code is shown on
+    the console only; no program in EggOS reads the console's output back (reading
+    `/dev/console` gives its input, the kernel keeps no log of it, and the desktop's console
+    window, which mirrors it, is one agents can neither capture nor read as an element tree).
+    Anywhere else (a Terminal window's pseudo-terminal, whose rows are in its element tree, its
+    scrollback and what the person copies; a pipe; a file) it begins no pairing, so no code
+    exists in that process: it starts Settings in a session of its own with `settings --pair
+    <id> [--name <name>]`, which opens the Agents pane's `Network` view with the pairing panel
+    filled in, says pairing is the person's and that the code appears there once they press
+    `Pair`, and exits 0; the panel makes the code on that click and protects it as above. On an
+    offscreen display (`eggos.display=offscreen`), or with no window server, nobody sees
+    Settings, so it fails and says to run `agent pair` on the serial console. Rejected: a
+    terminal-side `PERSON_VIEW_ONLY` for the code's rows (it would still leak through the
+    scrollback, the clipboard and the element tree's rows), and an extra on-screen
+    confirmation before a code is shown (worth a later slice, on the "Not yet" list).
     `agent pair` and `agent network` and the pane share one code path,
     `eggos_mcp::pairing::{begin_pairing, turn_network, network_state, certificate_fingerprint,
     pending}` over `PairingFiles`; the Settings tree's `CAPACITY` is 140 (the installer's

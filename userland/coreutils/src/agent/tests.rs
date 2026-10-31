@@ -15,6 +15,10 @@ fn started_with(grants: &str) -> Fake {
         .with_file("/proc/cmdline", 0o444, line.as_bytes(), 0)
 }
 
+fn on_the_console(fake: Fake) -> Fake {
+    fake.with_link("/proc/self/fd/1", "/dev/console")
+}
+
 fn stored(fake: &Fake) -> GrantStore {
     GrantStore::decode(&fake.contents("/var/lib/eggos/agent-grants")).unwrap()
 }
@@ -147,7 +151,7 @@ fn json_writes_one_record_an_agent() {
 
 #[test]
 fn pairing_adds_the_agent_with_its_tokens_hash_and_leaves_a_code_for_the_server() {
-    let mut fake = started_with("view").with_directory("/run", 0);
+    let mut fake = on_the_console(started_with("view").with_directory("/run", 0));
     assert_eq!(run(&mut fake, &[c"pair", c"--name", c"Phone", c"phone"]), 0);
     let shown = fake.output();
     assert!(
@@ -158,6 +162,11 @@ fn pairing_adds_the_agent_with_its_tokens_hash_and_leaves_a_code_for_the_server(
         "{shown}"
     );
     assert!(shown.contains("network server is off"), "{shown}");
+    assert!(
+        shown.contains("shown here, on the console, only"),
+        "{shown}"
+    );
+    assert!(fake.started.is_empty());
     assert!(shown.ends_with("agent grant phone view\n"), "{shown}");
     let store = stored(&fake);
     let phone = store.get(&AgentId::new(b"phone").unwrap()).unwrap();
@@ -185,7 +194,7 @@ fn pairing_adds_the_agent_with_its_tokens_hash_and_leaves_a_code_for_the_server(
 
 #[test]
 fn a_burned_code_holds_the_next_pairing_back() {
-    let mut fake = started_with("view").with_directory("/run", 0);
+    let mut fake = on_the_console(started_with("view").with_directory("/run", 0));
     assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 0);
     let mut waiting = PendingPairing::decode(&fake.contents("/run/eggos/agent-pairing")).unwrap();
     let now = fake.now();
@@ -201,6 +210,61 @@ fn a_burned_code_holds_the_next_pairing_back() {
         "{}",
         fake.errors()
     );
+}
+
+#[test]
+fn pairing_from_a_terminal_window_or_a_pipe_shows_no_code_and_opens_settings() {
+    for standard_output in ["/dev/pts/0", "pipe:[42]"] {
+        let mut fake = started_with("view")
+            .with_directory("/run", 0)
+            .with_file("/dev/window", 0o666, b"", 0)
+            .with_link("/proc/self/fd/1", standard_output);
+        assert_eq!(run(&mut fake, &[c"pair", c"--name", c"Phone", c"phone"]), 0);
+        let shown = fake.output();
+        assert!(
+            shown.contains("Settings > Agents > Network is open for phone"),
+            "{shown}"
+        );
+        assert!(!shown.contains("BCDE-FGHJ"), "{shown}");
+        let made = |path: &str| fake.nodes.contains_key(path.as_bytes());
+        assert!(!made("/run/eggos/agent-pairing"), "no pairing began");
+        assert!(!made("/var/lib/eggos/agent-grants"), "no agent was added");
+        assert_eq!(
+            fake.started,
+            [b"/bin/settings settings --pair phone --name Phone".to_vec()]
+        );
+    }
+    let mut fake = started_with("view")
+        .with_file("/dev/window", 0o666, b"", 0)
+        .with_link("/proc/self/fd/1", "/home/root/out.txt");
+    assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 0);
+    assert_eq!(
+        fake.started,
+        [b"/bin/settings settings --pair phone".to_vec()]
+    );
+}
+
+#[test]
+fn pairing_without_a_display_anyone_sees_points_to_the_serial_console() {
+    let line = b"console=ttyS0 eggos.display=offscreen:1024x768 eggos.mcp_allow=view\n";
+    let offscreen = Fake::default()
+        .with_directory("/proc", 0)
+        .with_file("/proc/cmdline", 0o444, line, 0)
+        .with_file("/dev/window", 0o666, b"", 0)
+        .with_link("/proc/self/fd/1", "/dev/pts/0");
+    let headless = started_with("view").with_link("/proc/self/fd/1", "pipe:[7]");
+    for mut fake in [offscreen, headless] {
+        assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 1);
+        assert!(
+            fake.errors()
+                .contains("run agent pair phone on the serial console"),
+            "{}",
+            fake.errors()
+        );
+        assert!(fake.output().is_empty());
+        assert!(fake.started.is_empty());
+        assert!(!fake.nodes.contains_key(&b"/run/eggos/agent-pairing"[..]));
+    }
 }
 
 #[test]

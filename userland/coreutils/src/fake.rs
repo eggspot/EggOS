@@ -201,6 +201,7 @@ pub struct Fake {
     pub affinity: Option<u64>,
     pub signals_sent: Vec<(i32, u32)>,
     pub executed: Vec<Vec<u8>>,
+    pub started: Vec<Vec<u8>>,
     pub clipboard_serial: u32,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
@@ -267,6 +268,7 @@ impl Default for Fake {
             affinity: None,
             signals_sent: Vec::new(),
             executed: Vec::new(),
+            started: Vec::new(),
             clipboard_serial: 0,
             capture_fails_at: None,
             resized_at: None,
@@ -1071,6 +1073,16 @@ impl System for Fake {
         }
         self.executed.push(line);
         Errno::ENOENT
+    }
+
+    fn start_program(&mut self, program: &CStr, arguments: &[&CStr]) -> Result<(), Errno> {
+        let mut line = program.to_bytes().to_vec();
+        for argument in arguments {
+            line.push(b' ');
+            line.extend_from_slice(argument.to_bytes());
+        }
+        self.started.push(line);
+        Ok(())
     }
 
     fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno> {

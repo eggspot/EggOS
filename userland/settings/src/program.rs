@@ -19,7 +19,9 @@ use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
 use eggos_settings::activity::read_activity;
 use eggos_settings::agents_pane::GrantsRead;
-use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
+use eggos_settings::command::{
+    self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
+};
 use eggos_settings::facts::Facts;
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::{InputChange, KeysChange};
@@ -1133,7 +1135,7 @@ fn grant_prompt() -> i32 {
     view.finish()
 }
 
-fn open_window() -> i32 {
+fn open_window(pairing: Option<PairingAsked<'_>>) -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
         Ok(window) => window,
@@ -1151,6 +1153,12 @@ fn open_window() -> i32 {
         unsaved_profile: None,
         disk_work: None,
     };
+    if let Some(asked) = pairing {
+        let grants = grants_read(settings.window.facts().on_disk);
+        settings
+            .window
+            .open_pairing(asked.id, asked.name, grants, network_read(), now_ms());
+    }
     let served = application::run(&mut window, &mut settings);
     settings.save_unsaved();
     match served {
@@ -1397,8 +1405,16 @@ pub fn run(startup: &Startup) -> i32 {
         arguments[count] = argument;
         count += 1;
     }
+    match command::window_asked(&arguments[..count]) {
+        WindowAsked::Pairing(asked) => return open_window(Some(asked)),
+        WindowAsked::Usage => {
+            write_all(STANDARD_ERROR, USAGE.as_bytes());
+            return USAGE_STATUS;
+        }
+        WindowAsked::Other => {}
+    }
     match count {
-        0 => open_window(),
+        0 => open_window(None),
         _ => {
             let mut machine = Machine {
                 server: WindowServer::open().ok(),

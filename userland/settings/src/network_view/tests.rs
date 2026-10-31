@@ -263,6 +263,49 @@ fn pairing_asks_for_a_valid_id_then_shows_the_code_until_it_is_used() {
 }
 
 #[test]
+fn settings_pair_opens_the_panel_filled_in_and_waits_for_the_person_to_press_pair() {
+    let mut window = SettingsWindow::new(Facts::example());
+    window.open_pairing(
+        "phone",
+        "My phone",
+        grants(),
+        network(NetworkState::Off, None),
+        0,
+    );
+    assert_eq!(window.pane(), AGENTS);
+    let widgets = ids(&window);
+    let pane = window.agents_pane();
+    assert!(pane.showing_network(window.widgets()));
+    assert!(pane.network().panel_open());
+    assert!(
+        !window.pairing_counting_down(),
+        "no code is made before Pair"
+    );
+    assert_eq!(window.widgets().text_of(widgets.id_field), Some("phone"));
+    assert_eq!(
+        window.widgets().text_of(widgets.name_field),
+        Some("My phone")
+    );
+    assert_eq!(
+        window
+            .agents_pane()
+            .network()
+            .panel_lines(window.widgets())
+            .unwrap()[1],
+        "phone is listed: a new token, and its grants stay."
+    );
+    assert!(window.widgets().is_enabled(widgets.primary));
+    assert_eq!(window.widgets().focus(), Some(widgets.primary));
+    assert_eq!(
+        press_button(&mut window, widgets.primary),
+        Some(Request::BeginPairing)
+    );
+    let (agent, name) = window.to_pair().unwrap();
+    assert_eq!(agent.as_bytes(), b"phone");
+    assert_eq!(name.unwrap().as_bytes(), b"My phone");
+}
+
+#[test]
 fn a_burned_code_holds_pairing_back_and_counts_wrong_tries() {
     let mut pending = waiting("phone", NOW - 10);
     for _ in 0..MAX_WRONG_CODES {

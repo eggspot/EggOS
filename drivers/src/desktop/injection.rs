@@ -297,6 +297,17 @@ impl Desktop {
         })
     }
 
+    /// How many times window `window`'s `PERSON_VIEW_ONLY` flag has turned on; a capture
+    /// reads it before and after copying the content and keeps the copy only when it did not
+    /// change. [`WindowError::PersonViewOnly`] while the flag is on.
+    pub fn person_view_only_turns(&self, window: u32) -> Result<u32, WindowError> {
+        let window = self.window_at(self.any_window(window)?);
+        if window.is_person_view_only() {
+            return Err(WindowError::PersonViewOnly);
+        }
+        Ok(window.view_only_turns)
+    }
+
     /// Whether a person is using the machine: a button is held, a window is dragged or
     /// resized, or their last input was less than [`PERSON_WINS_MS`] ago.
     pub fn person_is_active(&self) -> bool {

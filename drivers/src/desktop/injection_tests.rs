@@ -983,6 +983,7 @@ fn a_window_for_the_person_s_eyes_only_refuses_capture_while_the_flag_is_on() {
         .commit(CLIENT, window, &[], &mut Damage::new(), &mut DiscardEvents)
         .unwrap();
     assert!(desktop.content_layout(window).is_ok());
+    let before = desktop.person_view_only_turns(window).unwrap();
     let view_only = protocol::flags::PERSON_VIEW_ONLY;
     assert_eq!(
         desktop.change_flags(CLIENT, window, view_only, view_only),
@@ -992,8 +993,22 @@ fn a_window_for_the_person_s_eyes_only_refuses_capture_while_the_flag_is_on() {
         desktop.content_layout(window),
         Err(WindowError::PersonViewOnly)
     );
+    assert_eq!(
+        desktop.person_view_only_turns(window),
+        Err(WindowError::PersonViewOnly)
+    );
     assert_eq!(desktop.change_flags(CLIENT, window, view_only, 0), Ok(()));
     assert!(desktop.content_layout(window).is_ok());
+    assert_eq!(
+        desktop.person_view_only_turns(window),
+        Ok(before.wrapping_add(1)),
+        "a capture that copied before the flag went on and after it went off sees it turned"
+    );
+    assert_eq!(desktop.change_flags(CLIENT, window, view_only, 0), Ok(()));
+    assert_eq!(
+        desktop.person_view_only_turns(window),
+        Ok(before.wrapping_add(1))
+    );
     let fixed = protocol::flags::FIXED_SIZE;
     assert_eq!(
         desktop.change_flags(CLIENT, window, fixed, fixed),
