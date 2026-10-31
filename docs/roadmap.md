@@ -532,7 +532,11 @@ D16):
     `clock_set` read and set it; setting the clock writes the hardware clock too. All UTC. A
     QEMU test checks on all three architectures that `date`, a new file's time and `hwclock`
     are within minutes of the host's clock and that `date -s` reaches the hardware clock.
-    Next: time zones, network time, `/dev/rtc0`, alarms.
+    Time zones (D194, written, unchecked): `TZ` and `settings set time.zone` choose one of the
+    419 IANA zones, which `date`, `ls -l` and the Windows and macOS layers' local-time calls
+    follow; `/dev/rtc0`'s time and alarm `ioctl`s; the alarm clocks; absolute wall-clock sleeps
+    re-measured when the clock is set. Next: the zone picker in Settings, the desktop's clock
+    in local time, waiting for the alarm on `/dev/rtc0`.
 
 The release path (the release-path review's issues #141-#145, after the items above):
 - #141 **done** — users who download the release can install and open Windows and macOS apps

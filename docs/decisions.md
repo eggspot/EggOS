@@ -16166,3 +16166,49 @@ the license, by an explicit instruction recorded here.
     pagination, an agent named in a stateless request's `_meta`, `MCP-Protocol-Version` on the
     local channel's older eras.
 
+
+## D194 Time zones, `/dev/rtc0` and the alarm clocks: every IANA zone's current rule, `TZ` and the `time.zone` setting for `date`, `ls`, Settings and the Windows and macOS layers' local time; the real-time clock's device and its alarm; sleeps until a wall-clock time measured again when the clock is set (batch part 42; roadmap item 29's "Next"; extends D150, D163, D185) — Decided by the build loop (the zone table's source by the loop from tzdata itself; the zone picker designed by Claude Fable)
+
+- **Zones** (`eggos_calendar::zone`). A zone is its current POSIX TZ rule (POSIX.1-2017
+  section 8.3, with RFC 8536's hours from -167 to 167): standard time, and daylight saving time
+  with its start and end as `Mm.w.d`, `Jn` or `n` and a time. The 419 zones of tzdata 2026e's
+  `zone.tab` and `UTC` are a sorted table of names and rules (`zone::ZONES`), taken from the
+  footers of the TZif files tzdata itself ships (public domain), so a local time before a zone's
+  last change of rules is shown with today's rule. `zone::zone(text)` takes an IANA name (with
+  or without a leading `:`) or a POSIX rule; `Rule::at(utc)` gives the offset, abbreviation and
+  whether daylight saving time is in force, and `Rule::to_utc(local)` the instant a local time
+  names (the earlier one when the clocks went back). The clock stays in UTC.
+- **Which zone.** `TZ` in a program's environment comes first, then the settings file's
+  `time.zone` (`/home/root/.config/eggos/settings`), then UTC; an unknown zone is UTC. `date`
+  shows its time (`%Z` the abbreviation, `%z` the offset; `-u` UTC), `ls -l` its file times,
+  `settings set time.zone Europe/Paris` and MCP's `settings_set` set it (any IANA name or
+  `UTC`; `settings list` shows it), and the layers answer in it: Windows's `GetLocalTime`,
+  `FileTimeToLocalFileTime`, `LocalFileTimeToFileTime` and `GetTimeZoneInformation` (the
+  standard and daylight abbreviations as names, the rules as month, week and weekday), and
+  macOS's `localtime_r`, `localtime`, `mktime` and `tzset` (`tm_zone`, `tm_gmtoff`,
+  `tm_isdst`).
+- **`/dev/rtc0`** (`kernel/src/linux/rtc_device.rs`), listed on a machine with a real-time
+  clock: `RTC_RD_TIME`, `RTC_SET_TIME` (privileged), `RTC_ALM_SET`/`RTC_ALM_READ` (a time of
+  day, its next occurrence), `RTC_WKALM_SET`/`RTC_WKALM_RD` (a whole date, on or off, pending
+  once passed) and `RTC_AIE_ON`/`RTC_AIE_OFF`, each a `struct rtc_time` in UTC.
+- **Alarm clocks and setting the clock.** `CLOCK_REALTIME_ALARM` and `CLOCK_BOOTTIME_ALARM` are
+  their plain clocks, as EggOS never suspends, for a privileged process on a machine with a
+  real-time clock (else `EOPNOTSUPP`, and `EPERM` unprivileged, as Linux). A `clock_nanosleep`
+  until a time on the realtime, TAI or realtime alarm clock now measures its deadline again each
+  time the clock is set (`clock_settime`, `settimeofday`, `RTC_SET_TIME`), as Linux does: up to
+  64 such sleepers are woken through their sleep word (`thread::sleep_once_until`), and one past
+  them sleeps as the clock read when it started.
+- Choices made without research: the zone table from the TZif footers of the host's tzdata
+  2026e, generated once and kept in the tree as data; abbreviations as Windows's zone names;
+  `date -s` and the Settings pane still set the clock in UTC; the alarm is kept and reported,
+  and reading `/dev/rtc0` to wait for it is not answered yet; the layers read the settings
+  file at each call (Windows) or once until `tzset` (macOS).
+- Check. Host tests: every zone's rule reads; Berlin, New York, Sydney, Nuuk (a change at
+  -1:00) and Kolkata at their changes; Julian-day rules in a leap year; month rules for Windows;
+  local times back to instants; `date` with `TZ`, with `time.zone`, with `-u` and with an unknown
+  zone; `settings set time.zone`; `struct rtc_time` both ways and an alarm's next time of day.
+  QEMU: the shell session runs `TZ=Asia/Kolkata date +...%Z%z` and expects `IST+0530`.
+- Not yet: the zone picker in Settings' Date & time pane (Claude Fable's design,
+  docs/ux/date-time-v0.3.md), the desktop's clock in local time, the C runtime's `localtime`
+  and `_tzset` in the Windows layer, past rules of a zone, reading `/dev/rtc0` for its alarm and
+  `poll` on it, `timerfd` on the alarm clocks, the real-time clock's own interrupt.

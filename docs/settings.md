@@ -125,6 +125,7 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
 | `keyboard.layout` | `us` (the default), `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `de`, `it`, `no`, `br`, `es` or `se` (D185, the Keyboard pane, docs/ux/keyboard-v0.3.md) | yes |
+| `time.zone` | `UTC` (the default) or any IANA zone such as `Europe/Paris`, `America/New_York` or `Asia/Kolkata` (D194); `date`, `ls -l` and the Windows and macOS layers show times in it unless `TZ` names another | yes |
 | `system.version`, `system.arch`, `system.cpus`, `system.memory_mb`, `system.uptime_s` | facts about the machine | no |
 
 ## The settings file

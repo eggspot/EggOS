@@ -515,3 +515,6 @@ shortcuts), kept on the disk across reboots. Not yet:
   Alt with a letter types nothing (AltGr and, in the macOS profile, Option type the layout's
   third level, D185);
 - copy and paste of text, and scaling for high-density displays.
+- Time zones (D194): a zone is its current rule, so times before its last change of rules show
+  with today's rule; the desktop's clock and Settings' Date & time pane still show UTC, and
+  `date -s` takes UTC; reading `/dev/rtc0` to wait for its alarm is not answered yet.
