@@ -285,7 +285,7 @@ fn the_store_reads_back_what_was_written() {
     store.add(id("idle"), name("idle")).unwrap();
     let file = encoded(&store);
     let text = String::from_utf8(file.clone()).unwrap();
-    assert!(text.starts_with("eggos-agent-grants 1\nclaude-code.1\tdeny\tallow@1767225600\t"));
+    assert!(text.starts_with("eggos-agent-grants 2\nclaude-code.1\tdeny\tallow@1767225600\t"));
     assert!(text.contains("phone_agent\task\tdeny\tdeny\tallow@18446744073709551615\tTéléphone\n"));
     assert!(text.contains("idle\tdeny\tdeny\tdeny\tdeny\tidle\n"));
     assert_eq!(GrantStore::decode(&file), Ok(store));
@@ -331,7 +331,7 @@ fn a_cut_changed_or_foreign_file_is_refused() {
     );
     assert_eq!(GrantStore::decode(b""), Err(StoreError::Checksum));
     assert_eq!(
-        GrantStore::decode(&signed("eggos-agent-grants 2\n")),
+        GrantStore::decode(&signed("eggos-agent-grants 3\n")),
         Err(StoreError::Version)
     );
     assert_eq!(
@@ -452,5 +452,57 @@ fn an_agent_that_names_itself_never_gets_more_than_eggos_was_started_with() {
     assert_eq!(
         policy.check(&id("stranger"), Some(Grant::Write), 0),
         Decision::Deny(Denial::UnknownAgent)
+    );
+}
+
+#[test]
+fn paired_agents_keep_only_their_tokens_hash_and_older_stores_still_read() {
+    let mut store = GrantStore::new();
+    store
+        .add(id("phone"), name("Phone"))
+        .unwrap()
+        .set_token_hash(Some([0xab; TOKEN_HASH_BYTES]));
+    store.add(id("laptop"), name("Laptop")).unwrap();
+    let file = encoded(&store);
+    let text = String::from_utf8(file.clone()).unwrap();
+    assert!(text.contains(&format!("\tPhone\t{}\n", "ab".repeat(32))));
+    assert!(text.contains("\tLaptop\n"));
+    let read = GrantStore::decode(&file).unwrap();
+    assert_eq!(read, store);
+    assert_eq!(
+        read.agent_with_token(&[0xab; TOKEN_HASH_BYTES])
+            .map(|agent| *agent.id()),
+        Some(id("phone"))
+    );
+    assert!(read.agent_with_token(&[0xac; TOKEN_HASH_BYTES]).is_none());
+
+    let older = signed("eggos-agent-grants 1\nidle\tdeny\tdeny\tdeny\tdeny\tidle\n");
+    assert!(
+        GrantStore::decode(&older)
+            .unwrap()
+            .get(&id("idle"))
+            .is_some()
+    );
+    let token_in_older = signed(&format!(
+        "eggos-agent-grants 1\nidle\tdeny\tdeny\tdeny\tdeny\tidle\t{}\n",
+        "ab".repeat(32)
+    ));
+    assert_eq!(
+        GrantStore::decode(&token_in_older),
+        Err(StoreError::Malformed)
+    );
+    for bad in ["ab".repeat(31), "AB".repeat(32), "-".to_string()] {
+        let file = signed(&format!(
+            "eggos-agent-grants 2\nidle\tdeny\tdeny\tdeny\tdeny\tidle\t{bad}\n"
+        ));
+        assert_eq!(GrantStore::decode(&file), Err(StoreError::Malformed));
+    }
+    let local_with_token = signed(&format!(
+        "eggos-agent-grants 2\nlocal\tdeny\tdeny\tdeny\tdeny\tlocal\t{}\n",
+        "ab".repeat(32)
+    ));
+    assert_eq!(
+        GrantStore::decode(&local_with_token),
+        Err(StoreError::Malformed)
     );
 }

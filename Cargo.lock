@@ -243,6 +243,7 @@ name = "eggos-mcp"
 version = "0.2.0"
 dependencies = [
  "eggos-commands",
+ "eggos-crypto",
  "eggos-runtime",
 ]
 

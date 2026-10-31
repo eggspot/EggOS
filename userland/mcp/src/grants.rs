@@ -221,7 +221,7 @@ pub const STORE_TEMPORARY_PATH: &str = "/var/lib/eggos/agent-grants.new";
 /// The folder the store is in.
 pub const STORE_FOLDER: &str = "/var/lib/eggos";
 /// The most bytes a store file takes; a larger file is refused as unreadable.
-pub const STORE_BYTES: usize = 4096;
+pub const STORE_BYTES: usize = 8192;
 /// The most agents the store keeps.
 pub const MAX_AGENTS: usize = 16;
 /// The most bytes of an agent's id.
@@ -232,12 +232,16 @@ pub const MAX_AGENT_NAME_BYTES: usize = 64;
 pub const LOCAL_AGENT_ID: &[u8] = b"local";
 
 const STORE_MAGIC: &[u8] = b"eggos-agent-grants ";
-const STORE_VERSION: &[u8] = b"1";
+const STORE_VERSION: &[u8] = b"2";
+const FIRST_STORE_VERSION: &[u8] = b"1";
 const SUM_PREFIX: &[u8] = b"sum ";
 const SUM_DIGITS: usize = 16;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const STORE_FIELDS: usize = 6;
+const STORE_FIELDS_WITH_TOKEN: usize = 7;
+/// The bytes of a token's SHA-256 hash, the only form of a token the store keeps.
+pub const TOKEN_HASH_BYTES: usize = 32;
 
 /// An agent's stable id: given when it is paired or connects, 1 to [`MAX_AGENT_ID_BYTES`]
 /// ASCII letters, digits, `.`, `_` or `-`.
@@ -454,6 +458,7 @@ pub struct AgentGrants {
     write: ClassGrant,
     install: ClassGrant,
     run: ClassGrant,
+    token_hash: Option<[u8; TOKEN_HASH_BYTES]>,
 }
 
 impl AgentGrants {
@@ -466,6 +471,7 @@ impl AgentGrants {
             write: ClassGrant::DENIED,
             install: ClassGrant::DENIED,
             run: ClassGrant::DENIED,
+            token_hash: None,
         }
     }
 
@@ -477,6 +483,16 @@ impl AgentGrants {
     /// The agent's name.
     pub fn name(&self) -> &AgentName {
         &self.name
+    }
+
+    /// The SHA-256 hash of the token the agent connects over the network with, once paired.
+    pub fn token_hash(&self) -> Option<&[u8; TOKEN_HASH_BYTES]> {
+        self.token_hash.as_ref()
+    }
+
+    /// Gives the agent the token whose hash is `hash` (replacing any it had), or none.
+    pub fn set_token_hash(&mut self, hash: Option<[u8; TOKEN_HASH_BYTES]>) {
+        self.token_hash = hash;
     }
 
     /// What the user set for `grant`.
@@ -603,10 +619,26 @@ impl GrantStore {
         self.agents().any(AgentGrants::has_expiry)
     }
 
+    /// The agent whose token hashes to `hash`, compared in constant time; `local` never has
+    /// one.
+    pub fn agent_with_token(&self, hash: &[u8; TOKEN_HASH_BYTES]) -> Option<&AgentGrants> {
+        let mut found = None;
+        for agent in self.agents() {
+            if let Some(own) = &agent.token_hash
+                && eggos_crypto::constant_time::equal(own, hash)
+                && !agent.id.is_local()
+            {
+                found = Some(agent);
+            }
+        }
+        found
+    }
+
     /// Writes the store as its file into `out` ([`STORE_BYTES`] is always enough): a header
-    /// line, one tab-separated line per agent (id, `view`, `write`, `install`, `run`, name;
-    /// each permission a word with `@` and the second it ends at when it ends) and a last line
-    /// with the FNV-1a checksum of everything before it.
+    /// line, one tab-separated line per agent (id, `view`, `write`, `install`, `run`, name and,
+    /// for a paired agent, its token's hash in hex; each permission a word with `@` and the
+    /// second it ends at when it ends) and a last line with the FNV-1a checksum of everything
+    /// before it.
     pub fn encode(&self, out: &mut [u8]) -> Result<usize, StoreError> {
         let mut writer = Writer { out, length: 0 };
         writer.put(STORE_MAGIC)?;
@@ -626,6 +658,10 @@ impl GrantStore {
             }
             writer.put(b"\t")?;
             writer.put(agent.name.as_bytes())?;
+            if let Some(hash) = &agent.token_hash {
+                writer.put(b"\t")?;
+                writer.put(&hex_digest(hash))?;
+            }
             writer.put(b"\n")?;
         }
         let sum = fnv1a(writer.out.get(..writer.length).unwrap_or_default());
@@ -656,9 +692,11 @@ impl GrantStore {
             .position(|&byte| byte == b'\n')
             .ok_or(StoreError::Version)?;
         let header = content.get(..header_end).ok_or(StoreError::Version)?;
-        if header.strip_prefix(STORE_MAGIC) != Some(STORE_VERSION) {
-            return Err(StoreError::Version);
-        }
+        let tokens = match header.strip_prefix(STORE_MAGIC) {
+            Some(STORE_VERSION) => true,
+            Some(FIRST_STORE_VERSION) => false,
+            _ => return Err(StoreError::Version),
+        };
         let sum_line = body.get(sum_start..).ok_or(StoreError::Checksum)?;
         let written = sum_line
             .strip_prefix(SUM_PREFIX)
@@ -675,7 +713,7 @@ impl GrantStore {
             .split(|&byte| byte == b'\n')
             .filter(|line| !line.is_empty())
         {
-            let agent = agent_line(line).ok_or(StoreError::Malformed)?;
+            let agent = agent_line(line, tokens).ok_or(StoreError::Malformed)?;
             if store.get(&agent.id).is_some() {
                 return Err(StoreError::Malformed);
             }
@@ -685,18 +723,24 @@ impl GrantStore {
     }
 }
 
-fn agent_line(line: &[u8]) -> Option<AgentGrants> {
-    let mut fields = [&b""[..]; STORE_FIELDS];
+fn agent_line(line: &[u8], tokens: bool) -> Option<AgentGrants> {
+    let mut fields = [&b""[..]; STORE_FIELDS_WITH_TOKEN];
     let mut count = 0;
     for field in line.split(|&byte| byte == b'\t') {
         *fields.get_mut(count)? = field;
         count += 1;
     }
-    let [id, view, write, install, run, name] = fields;
-    if count != STORE_FIELDS {
+    let [id, view, write, install, run, name, token] = fields;
+    let token_hash = match (count, tokens) {
+        (STORE_FIELDS, _) => None,
+        (STORE_FIELDS_WITH_TOKEN, true) => Some(digest_from_hex(token)?),
+        _ => return None,
+    };
+    let mut agent = AgentGrants::new(AgentId::stored(id)?, AgentName::new(name)?);
+    if token_hash.is_some() && agent.id.is_local() {
         return None;
     }
-    let mut agent = AgentGrants::new(AgentId::stored(id)?, AgentName::new(name)?);
+    agent.token_hash = token_hash;
     for (grant, field) in Grant::ALL.into_iter().zip([view, write, install, run]) {
         let (word, until) = match field.iter().position(|&byte| byte == b'@') {
             Some(at) => (field.get(..at)?, Some(seconds(field.get(at + 1..)?)?)),
@@ -711,7 +755,7 @@ fn agent_line(line: &[u8]) -> Option<AgentGrants> {
     Some(agent)
 }
 
-fn seconds(digits: &[u8]) -> Option<u64> {
+pub(crate) fn seconds(digits: &[u8]) -> Option<u64> {
     if digits.is_empty() || digits.len() > 20 {
         return None;
     }
@@ -721,7 +765,7 @@ fn seconds(digits: &[u8]) -> Option<u64> {
     })
 }
 
-fn hex_value(digits: &[u8]) -> Option<u64> {
+pub(crate) fn hex_value(digits: &[u8]) -> Option<u64> {
     if digits.len() != SUM_DIGITS {
         return None;
     }
@@ -735,13 +779,49 @@ fn hex_value(digits: &[u8]) -> Option<u64> {
     })
 }
 
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn hex_digest(hash: &[u8; TOKEN_HASH_BYTES]) -> [u8; 2 * TOKEN_HASH_BYTES] {
+    let digit = |value: u8| {
+        b"0123456789abcdef"
+            .get(usize::from(value))
+            .copied()
+            .unwrap_or(b'0')
+    };
+    let mut text = [0u8; 2 * TOKEN_HASH_BYTES];
+    for (pair, byte) in text.chunks_exact_mut(2).zip(hash) {
+        if let [high, low] = pair {
+            *high = digit(byte >> 4);
+            *low = digit(byte & 15);
+        }
+    }
+    text
+}
+
+pub(crate) fn digest_from_hex(text: &[u8]) -> Option<[u8; TOKEN_HASH_BYTES]> {
+    if text.len() != 2 * TOKEN_HASH_BYTES {
+        return None;
+    }
+    let mut hash = [0u8; TOKEN_HASH_BYTES];
+    let digit = |value: u8| match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    };
+    for (byte, pair) in hash.iter_mut().zip(text.chunks_exact(2)) {
+        let [high, low] = pair else {
+            return None;
+        };
+        *byte = (digit(*high)? << 4) | digit(*low)?;
+    }
+    Some(hash)
+}
+
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(FNV_OFFSET, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
     })
 }
 
-fn decimal(mut value: u64, digits: &mut [u8; 20]) -> &[u8] {
+pub(crate) fn decimal(mut value: u64, digits: &mut [u8; 20]) -> &[u8] {
     let mut start = digits.len();
     while start > 0 {
         start -= 1;

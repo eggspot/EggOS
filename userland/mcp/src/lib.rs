@@ -20,6 +20,7 @@ pub mod grants;
 pub mod json;
 #[cfg(target_env = "musl")]
 pub mod linux;
+pub mod pairing;
 pub mod paths;
 pub mod rpc;
 pub mod server;
