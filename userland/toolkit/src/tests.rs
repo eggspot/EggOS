@@ -1007,3 +1007,71 @@ fn a_double_click_takes_a_word() {
     assert_eq!(field.word_at(9), (8, 15));
     assert_eq!(field.word_at(19), (16, 19));
 }
+
+const LAYOUTS: &[&str] = &["US", "UK", "German", "Swedish"];
+
+fn dropdown_tree() -> (WidgetTree<4>, WidgetId) {
+    let mut tree = WidgetTree::<4>::new();
+    let root = tree
+        .add(None, Place::fill(), Kind::panel(colour::MENU))
+        .unwrap();
+    let dropdown = tree
+        .add(
+            Some(root),
+            Place::at(16, 60, Length::Px(160), Length::Px(28)),
+            Kind::dropdown("Layout", LAYOUTS, 0),
+        )
+        .unwrap();
+    tree.resize(320, 300);
+    (tree, dropdown)
+}
+
+#[test]
+fn a_dropdown_opens_below_and_a_click_on_a_row_chooses_it() {
+    let (mut tree, dropdown) = dropdown_tree();
+    let Some(Kind::Dropdown(closed)) = tree.kind(dropdown).copied() else {
+        panic!("a dropdown");
+    };
+    assert_eq!(
+        closed.popup(tree.rect(dropdown).unwrap(), (320, 300)),
+        (Rect::new(4, 92, 184, 130), 4)
+    );
+    assert_eq!(left(&mut tree, 100, 74, true), Response::Nothing);
+    assert_eq!(left(&mut tree, 100, 74, false), Response::Nothing);
+    assert!(matches!(tree.kind(dropdown), Some(Kind::Dropdown(open)) if open.open));
+    assert_eq!(left(&mut tree, 50, 140, true), Response::Nothing);
+    assert_eq!(
+        left(&mut tree, 50, 140, false),
+        Response::Chosen(dropdown, 1)
+    );
+    assert_eq!(tree.selected(dropdown), Some(1));
+    left(&mut tree, 100, 74, true);
+    left(&mut tree, 100, 74, false);
+    assert_eq!(left(&mut tree, 300, 280, true), Response::Nothing);
+    assert!(matches!(tree.kind(dropdown), Some(Kind::Dropdown(closed)) if !closed.open));
+}
+
+#[test]
+fn a_dropdown_answers_its_keys_open_and_closed() {
+    let (mut tree, dropdown) = dropdown_tree();
+    tree.set_focus(Some(dropdown), 0);
+    let mut key = |code, character| {
+        tree.handle(
+            Input::Key {
+                code,
+                pressed: true,
+                modifiers: Modifiers::default(),
+                character,
+            },
+            0,
+        )
+    };
+    assert_eq!(key(key::DOWN, 0), Response::Chosen(dropdown, 1));
+    assert_eq!(key(31, 's' as u32), Response::Chosen(dropdown, 3));
+    assert_eq!(key(key::SPACE, ' ' as u32), Response::Nothing);
+    assert_eq!(key(key::HOME, 0), Response::Nothing);
+    assert_eq!(key(key::ENTER, 0), Response::Chosen(dropdown, 0));
+    assert_eq!(key(key::ENTER, 0), Response::Nothing);
+    assert_eq!(key(key::ESC, 0), Response::Nothing);
+    assert_eq!(tree.selected(dropdown), Some(0));
+}

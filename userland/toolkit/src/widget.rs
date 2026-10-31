@@ -51,6 +51,23 @@ pub const SLIDER_READOUT: i32 = 48;
 pub const SLIDER_GAP: i32 = 8;
 /// How many steps PageUp and PageDown move a slider.
 pub const SLIDER_PAGE_STEPS: i32 = 10;
+/// Where a dropdown's chosen option starts, from its left edge (docs/ux/toolkit-v0.4.md
+/// section 3).
+pub const DROPDOWN_TEXT_X: i32 = 12;
+/// The room a dropdown keeps at its right for its chevron.
+pub const DROPDOWN_ARROW_ROOM: i32 = 32;
+/// A dropdown popup's row height.
+pub const POPUP_ROW_HEIGHT: i32 = 32;
+/// The most rows a dropdown's popup shows at once.
+pub const POPUP_ROWS: usize = 8;
+/// The gap between a dropdown and its popup.
+pub const POPUP_GAP: i32 = 4;
+/// How far a popup reaches past its dropdown on each side.
+pub const POPUP_OUTSET: i32 = 12;
+/// Where a popup row's `>` goes, from the popup's left edge.
+pub const POPUP_MARK_X: i32 = 8;
+/// Where a popup row's text goes, from the popup's left edge.
+pub const POPUP_TEXT_X: i32 = 24;
 
 /// Where a widget's left edge goes in its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +255,9 @@ pub enum Kind {
     Progress { permille: u16 },
     /// A slider setting a number in a range (docs/ux/toolkit-v0.4.md section 2).
     Slider(Slider),
+    /// A button showing one of its options that opens a list of them (docs/ux/toolkit-v0.4.md
+    /// section 3).
+    Dropdown(Dropdown),
     /// Something the program draws itself, with a word of its own data.
     Custom { painter: Painter, data: u32 },
 }
@@ -380,12 +400,28 @@ impl Kind {
         Self::Slider(slider)
     }
 
+    /// A dropdown named `name` for agents, choosing among `options` (at most [`MAX_ROWS`]),
+    /// `selected` chosen.
+    pub fn dropdown(name: &'static str, options: &'static [&'static str], selected: usize) -> Self {
+        let options = &options[..options.len().min(MAX_ROWS)];
+        let selected = selected.min(options.len().saturating_sub(1));
+        Self::Dropdown(Dropdown {
+            name,
+            options,
+            selected,
+            open: false,
+            highlighted: selected,
+            offset: 0,
+        })
+    }
+
     /// Whether Tab stops on it.
     pub fn is_focusable(&self) -> bool {
         matches!(
             self,
             Self::Button { .. }
                 | Self::Slider(_)
+                | Self::Dropdown(_)
                 | Self::Checkbox { .. }
                 | Self::Radios { .. }
                 | Self::Cards { .. }
@@ -453,6 +489,18 @@ impl Kind {
                 ),
                 false => (SLIDER_MIN_TRACK, CONTROL_HEIGHT),
             },
+            Self::Dropdown(dropdown) => {
+                let widest = dropdown
+                    .options
+                    .iter()
+                    .map(|option| text::width(option))
+                    .max()
+                    .unwrap_or(0);
+                (
+                    (DROPDOWN_TEXT_X + widest + DROPDOWN_ARROW_ROOM).max(BUTTON_MIN_WIDTH),
+                    CONTROL_HEIGHT,
+                )
+            }
             Self::Panel { .. }
             | Self::Column { .. }
             | Self::ScrollView { .. }
@@ -1150,6 +1198,153 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
     }
 }
 
+/// A dropdown's options and its popup (docs/ux/toolkit-v0.4.md section 3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dropdown {
+    /// Its name for agents: the words of the label before it.
+    pub name: &'static str,
+    pub options: &'static [&'static str],
+    pub selected: usize,
+    /// Whether its popup is open.
+    pub open: bool,
+    /// The popup's row the keys and the pointer are on.
+    pub highlighted: usize,
+    /// The popup's first row shown.
+    pub offset: usize,
+}
+
+impl Dropdown {
+    /// The popup's rectangle for a dropdown at `rect` in a window `window` big, and how many
+    /// rows it shows: below the dropdown when it fits, else above, else below and cut.
+    pub fn popup(&self, rect: Rect, window: (i32, i32)) -> (Rect, usize) {
+        let mut rows = self.options.len().min(POPUP_ROWS);
+        let height = |rows: usize| 2 + rows as i32 * POPUP_ROW_HEIGHT;
+        let width = (rect.width + 2 * POPUP_OUTSET).min(window.0);
+        let x = (rect.x - POPUP_OUTSET).clamp(0, (window.0 - width).max(0));
+        let below = rect.bottom() + POPUP_GAP;
+        let y = if below + height(rows) <= window.1 {
+            below
+        } else if rect.y - POPUP_GAP - height(rows) >= 0 {
+            rect.y - POPUP_GAP - height(rows)
+        } else {
+            rows = ((window.1 - rect.bottom() - 6) / POPUP_ROW_HEIGHT).max(1) as usize;
+            below
+        };
+        (Rect::new(x, y, width, height(rows)), rows)
+    }
+
+    /// The option at popup row `row` from the top of the rows shown.
+    pub fn option_at_row(&self, row: usize) -> Option<usize> {
+        let option = self.offset + row;
+        (option < self.options.len()).then_some(option)
+    }
+
+    /// The scroll that keeps `option` among `rows` rows shown.
+    pub fn offset_showing(&self, option: usize, rows: usize) -> usize {
+        match option {
+            option if option < self.offset => option,
+            option if option >= self.offset + rows => option + 1 - rows,
+            _ => self.offset,
+        }
+    }
+
+    /// The next option after `from` whose text starts with `letter`, ignoring case, cycling.
+    pub fn next_starting_with(&self, from: usize, letter: char) -> Option<usize> {
+        let count = self.options.len();
+        (1..=count)
+            .map(|step| (from + step) % count)
+            .find(|&index| {
+                self.options[index]
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.eq_ignore_ascii_case(&letter))
+            })
+    }
+}
+
+fn paint_dropdown(canvas: &mut Canvas<'_>, dropdown: &Dropdown, rect: Rect, look: Look) {
+    let fill = match (
+        look.enabled,
+        dropdown.open || look.pressed.is_some(),
+        look.hovered,
+    ) {
+        (false, _, _) => colour::BUTTON,
+        (true, true, _) => colour::BUTTON_PRESSED,
+        (true, false, Some(_)) => colour::BUTTON_HOVER,
+        (true, false, None) => colour::BUTTON,
+    };
+    let ink = if look.enabled {
+        colour::TEXT
+    } else {
+        colour::TEXT_DIM
+    };
+    canvas.rounded(rect, &INSET_R4, fill);
+    canvas.outline(rect, &INSET_R4, 1, colour::BUTTON_BORDER);
+    let chosen = dropdown
+        .options
+        .get(dropdown.selected)
+        .copied()
+        .unwrap_or("");
+    let x = rect.x + DROPDOWN_TEXT_X;
+    let y = rect.y + (rect.height - LINE_HEIGHT) / 2;
+    line(
+        canvas,
+        x,
+        y,
+        rect.right() - DROPDOWN_ARROW_ROOM - x,
+        chosen,
+        ink,
+        1,
+    );
+    let (left, top) = (rect.right() - 22, rect.y + 11);
+    for index in 0..9 {
+        let down = (index - 4i32).abs();
+        canvas.fill(Rect::new(left + index, top + 4 - down, 2, 2), ink);
+    }
+    if look.focused {
+        ring(canvas, rect, 2, colour::FOCUS_RING);
+    }
+}
+
+/// Draws the open popup of `dropdown`, at `popup` showing `rows` rows, over everything.
+pub fn paint_popup(canvas: &mut Canvas<'_>, dropdown: &Dropdown, popup: Rect, rows: usize) {
+    canvas.rounded(popup, &INSET_R6, colour::MENU);
+    canvas.outline(popup, &INSET_R6, 1, colour::MENU_BORDER);
+    for row in 0..rows {
+        let Some(option) = dropdown.option_at_row(row) else {
+            break;
+        };
+        let row_rect = Rect::new(
+            popup.x + 1,
+            popup.y + 1 + row as i32 * POPUP_ROW_HEIGHT,
+            popup.width - 2,
+            POPUP_ROW_HEIGHT,
+        );
+        if option == dropdown.highlighted {
+            canvas.fill(row_rect, colour::MENU_HOVER);
+        }
+        if option == dropdown.selected {
+            canvas.text(
+                popup.x + POPUP_MARK_X,
+                row_rect.y + 8,
+                ">",
+                colour::ACCENT,
+                1,
+            );
+        }
+        let x = popup.x + POPUP_TEXT_X;
+        line(
+            canvas,
+            x,
+            row_rect.y + 8,
+            popup.right() - 9 - x,
+            dropdown.options[option],
+            colour::TEXT,
+            1,
+        );
+    }
+}
+
 /// A slider's number and range (docs/ux/toolkit-v0.4.md section 2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slider {
@@ -1368,6 +1563,7 @@ pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
         Kind::TextField(field) => paint_field(canvas, field, rect, look),
         Kind::Progress { permille } => paint_progress(canvas, rect, *permille),
         Kind::Slider(slider) => paint_slider(canvas, slider, rect, look),
+        Kind::Dropdown(dropdown) => paint_dropdown(canvas, dropdown, rect, look),
         Kind::Custom { painter, data } => painter(canvas, rect, *data),
     }
 }

@@ -6,7 +6,7 @@
 use crate::canvas::Canvas;
 use crate::damage::Damage;
 use crate::geometry::Rect;
-use crate::input::{Input, MouseButton, key};
+use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::text::Text;
 use crate::widget::{
     self, Field, FieldKey, Horizontal, Kind, Length, List, Look, Place, THUMB, WHEEL_STEP,
@@ -112,9 +112,12 @@ pub struct WidgetTree<const N: usize> {
     drag: Option<Drag>,
     slide: Option<(WidgetId, i32)>,
     selecting: Option<WidgetId>,
+    popup: Option<WidgetId>,
+    popup_pressed: bool,
     clicks: u8,
     shift_held: bool,
     shortcut_held: bool,
+    alt_held: bool,
     copied: Text<255>,
     window_focused: bool,
     caret_epoch_ms: u32,
@@ -146,9 +149,12 @@ impl<const N: usize> WidgetTree<N> {
             drag: None,
             slide: None,
             selecting: None,
+            popup: None,
+            popup_pressed: false,
             clicks: 0,
             shift_held: false,
             shortcut_held: false,
+            alt_held: false,
             copied: Text::new(),
             window_focused: true,
             caret_epoch_ms: 0,
@@ -265,6 +271,7 @@ impl<const N: usize> WidgetTree<N> {
         match self.kind(id)? {
             Kind::Radios { selected, .. } | Kind::Cards { selected, .. } => Some(*selected),
             Kind::List(list) => Some(list.selected),
+            Kind::Dropdown(dropdown) => Some(dropdown.selected),
             Kind::Checkbox { checked, .. } => Some(usize::from(*checked)),
             _ => None,
         }
@@ -290,6 +297,10 @@ impl<const N: usize> WidgetTree<N> {
                 *ring = index;
             }
             Kind::List(list) if list.row_of(index).is_some() => list.selected = index,
+            Kind::Dropdown(dropdown) if index < dropdown.options.len() => {
+                dropdown.selected = index;
+                dropdown.highlighted = index;
+            }
             Kind::Checkbox { checked, .. } => *checked = index != 0,
             _ => {}
         });
@@ -590,6 +601,119 @@ impl<const N: usize> WidgetTree<N> {
             widget::paint(canvas, &node.kind, node.rect, self.look(id));
             canvas.restore(previous);
         }
+        if let Some((_, dropdown, popup, rows)) = self.popup_of() {
+            let previous = canvas.narrow(popup.intersection(&clip));
+            widget::paint_popup(canvas, &dropdown, popup, rows);
+            canvas.restore(previous);
+        }
+    }
+
+    fn popup_of(&self) -> Option<(WidgetId, widget::Dropdown, Rect, usize)> {
+        let id = self.popup?;
+        let Some(Kind::Dropdown(dropdown)) = self.kind(id).copied() else {
+            return None;
+        };
+        let (popup, rows) = dropdown.popup(self.rect(id)?, self.size);
+        Some((id, dropdown, popup, rows))
+    }
+
+    fn open_popup(&mut self, id: WidgetId) {
+        let Some(rect) = self.rect(id) else {
+            return;
+        };
+        let size = self.size;
+        self.change(id, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                let (_, rows) = dropdown.popup(rect, size);
+                dropdown.open = true;
+                dropdown.highlighted = dropdown.selected;
+                dropdown.offset = dropdown.offset_showing(dropdown.selected, rows);
+            }
+        });
+        self.popup = Some(id);
+        if let Some((_, _, popup, _)) = self.popup_of() {
+            self.damage.add(popup);
+        }
+    }
+
+    fn close_popup(&mut self) {
+        let Some((id, _, popup, _)) = self.popup_of() else {
+            self.popup = None;
+            return;
+        };
+        self.damage.add(popup);
+        self.popup = None;
+        self.popup_pressed = false;
+        self.change(id, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                dropdown.open = false;
+            }
+        });
+    }
+
+    pub(crate) fn choose_option(&mut self, id: WidgetId, option: usize) -> Response {
+        self.close_popup();
+        let Some(Kind::Dropdown(dropdown)) = self.kind(id).copied() else {
+            return Response::Nothing;
+        };
+        if option == dropdown.selected || option >= dropdown.options.len() {
+            return Response::Nothing;
+        }
+        self.change(id, |kind| {
+            if let Kind::Dropdown(dropdown) = kind {
+                dropdown.selected = option;
+                dropdown.highlighted = option;
+            }
+        });
+        Response::Chosen(id, option)
+    }
+
+    fn highlight(&mut self, option: usize) {
+        let Some((id, dropdown, popup, rows)) = self.popup_of() else {
+            return;
+        };
+        let option = option.min(dropdown.options.len().saturating_sub(1));
+        if option == dropdown.highlighted {
+            return;
+        }
+        if let Some(node) = self.node_mut(id)
+            && let Kind::Dropdown(held) = &mut node.kind
+        {
+            held.highlighted = option;
+            held.offset = held.offset_showing(option, rows);
+        }
+        self.damage.add(popup);
+    }
+
+    fn popup_option_at(&self, x: i32, y: i32) -> Option<usize> {
+        let (_, dropdown, popup, rows) = self.popup_of()?;
+        if !popup.contains(x, y) {
+            return None;
+        }
+        let row = ((y - popup.y - 1) / widget::POPUP_ROW_HEIGHT).max(0) as usize;
+        (row < rows).then(|| dropdown.option_at_row(row)).flatten()
+    }
+
+    fn popup_key(&mut self, id: WidgetId, dropdown: widget::Dropdown, code: u16, character: u32) {
+        let last = dropdown.options.len().saturating_sub(1);
+        let page = self
+            .popup_of()
+            .map_or(1, |(_, _, _, rows)| rows.saturating_sub(1).max(1));
+        let here = dropdown.highlighted;
+        let next = match code {
+            key::UP => here.saturating_sub(1),
+            key::DOWN => (here + 1).min(last),
+            key::HOME => 0,
+            key::END => last,
+            key::PAGE_UP => here.saturating_sub(page),
+            key::PAGE_DOWN => (here + page).min(last),
+            _ => match char::from_u32(character).filter(char::is_ascii_alphanumeric) {
+                Some(letter) => dropdown.next_starting_with(here, letter).unwrap_or(here),
+                None => return,
+            },
+        };
+        let _ = id;
+        self.highlight(next);
     }
 
     /// Draws the whole window into `pixels`, `width` by `height` at `scale`: what a test
@@ -768,6 +892,12 @@ impl<const N: usize> WidgetTree<N> {
     pub fn handle(&mut self, input: Input, time_ms: u32) -> Response {
         match input {
             Input::PointerMove { x, y } => {
+                if self.popup.is_some() {
+                    if let Some(option) = self.popup_option_at(x, y) {
+                        self.highlight(option);
+                    }
+                    return Response::Nothing;
+                }
                 if let Some((id, grab)) = self.slide {
                     return self.slide_to(id, x - grab);
                 }
@@ -799,6 +929,19 @@ impl<const N: usize> WidgetTree<N> {
             },
             Input::Button { .. } => Response::Nothing,
             Input::Wheel { x, y, notches } => {
+                if let Some((id, dropdown, popup, rows)) = self.popup_of() {
+                    if popup.contains(x, y) {
+                        let most = dropdown.options.len().saturating_sub(rows);
+                        let offset = (dropdown.offset as i32 - notches * 2).clamp(0, most as i32);
+                        if let Some(node) = self.node_mut(id)
+                            && let Kind::Dropdown(held) = &mut node.kind
+                        {
+                            held.offset = offset as usize;
+                        }
+                        self.damage.add(popup);
+                    }
+                    return Response::Nothing;
+                }
                 self.wheel(x, y, notches);
                 Response::Nothing
             }
@@ -811,6 +954,7 @@ impl<const N: usize> WidgetTree<N> {
                 true => {
                     self.shift_held = modifiers.shift() || matches!(code, LEFT_SHIFT | RIGHT_SHIFT);
                     self.shortcut_held = modifiers.control_or_super();
+                    self.alt_held = modifiers.0 & Modifiers::ALT != 0;
                     self.key_down(
                         code,
                         modifiers.shift(),
@@ -828,6 +972,9 @@ impl<const N: usize> WidgetTree<N> {
             },
             Input::FocusIn | Input::FocusOut => {
                 let focused = input == Input::FocusIn;
+                if !focused {
+                    self.close_popup();
+                }
                 if self.window_focused != focused {
                     self.window_focused = focused;
                     if let Some(id) = self.focus {
@@ -929,10 +1076,28 @@ impl<const N: usize> WidgetTree<N> {
     }
 
     fn left_pressed(&mut self, x: i32, y: i32, time_ms: u32) -> Response {
+        if self.popup.is_some() {
+            match self.popup_option_at(x, y) {
+                Some(option) => {
+                    self.highlight(option);
+                    self.popup_pressed = true;
+                }
+                None => self.close_popup(),
+            }
+            return Response::Nothing;
+        }
         let Some(target) = self.hit(x, y) else {
             return Response::Nothing;
         };
         let id = target.widget;
+        if matches!(self.kind(id), Some(Kind::Dropdown(_))) {
+            if self.focusable(id) {
+                self.set_focus(Some(id), time_ms);
+            }
+            self.open_popup(id);
+            self.popup_pressed = true;
+            return Response::Nothing;
+        }
         if self.focusable(id) {
             self.set_focus(Some(id), time_ms);
         }
@@ -1120,6 +1285,13 @@ impl<const N: usize> WidgetTree<N> {
 
     fn left_released(&mut self, x: i32, y: i32) -> Response {
         self.selecting = None;
+        if let Some(id) = self.popup {
+            let pressed = core::mem::take(&mut self.popup_pressed);
+            return match (pressed, self.popup_option_at(x, y)) {
+                (true, Some(option)) => self.choose_option(id, option),
+                _ => Response::Nothing,
+            };
+        }
         if let Some((id, _)) = self.slide.take() {
             self.damage_widget(id);
             self.set_hover(self.hit(x, y));
@@ -1189,7 +1361,16 @@ impl<const N: usize> WidgetTree<N> {
         time_ms: u32,
     ) -> Response {
         if code == key::TAB && !command {
+            self.close_popup();
             self.move_focus(shift, time_ms);
+            return Response::Nothing;
+        }
+        if let Some((id, dropdown, _, _)) = self.popup_of() {
+            match code {
+                key::ESC => self.close_popup(),
+                key::ENTER | key::SPACE => return self.choose_option(id, dropdown.highlighted),
+                _ => self.popup_key(id, dropdown, code, character),
+            }
             return Response::Nothing;
         }
         let unused = Response::Unused { code, shift };
@@ -1210,6 +1391,31 @@ impl<const N: usize> WidgetTree<N> {
                 _ => unused,
             },
             Kind::Checkbox { .. } if code == key::SPACE => self.activate(id, 0),
+            Kind::Dropdown(dropdown) => {
+                let last = dropdown.options.len().saturating_sub(1);
+                let here = dropdown.selected;
+                let next = match code {
+                    key::SPACE | key::ENTER => {
+                        self.open_popup(id);
+                        return Response::Nothing;
+                    }
+                    key::DOWN | key::UP if self.alt_held => {
+                        self.open_popup(id);
+                        return Response::Nothing;
+                    }
+                    key::UP | key::LEFT => here.saturating_sub(1),
+                    key::DOWN | key::RIGHT => (here + 1).min(last),
+                    key::HOME => 0,
+                    key::END => last,
+                    _ => match char::from_u32(character).filter(char::is_ascii_alphanumeric) {
+                        Some(letter) if !command => {
+                            dropdown.next_starting_with(here, letter).unwrap_or(here)
+                        }
+                        _ => return self.default_or(code, unused),
+                    },
+                };
+                self.choose_option(id, next)
+            }
             Kind::Slider(slider) => {
                 let page = slider.step * widget::SLIDER_PAGE_STEPS;
                 let wanted = match code {

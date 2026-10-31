@@ -133,6 +133,15 @@ impl<const N: usize> WidgetTree<N> {
                             .valued(range.as_str().as_bytes())
                     }
                 }
+                Kind::Dropdown(dropdown) => Element {
+                    role: Role::ComboBox,
+                    ..here.named(dropdown.name.as_bytes()).valued(
+                        dropdown
+                            .options
+                            .get(dropdown.selected)
+                            .map_or(&b""[..], |option| option.as_bytes()),
+                    )
+                },
                 Kind::Custom { .. } => Element {
                     role: Role::Graphic,
                     ..here
@@ -269,6 +278,12 @@ impl<const N: usize> WidgetTree<N> {
             (Action::Invoke, Kind::List(_), Some(item)) => {
                 self.set_selected(id, item);
                 (Outcome::Done, Response::Opened(id, item))
+            }
+            (Action::SetText, Kind::Dropdown(dropdown), None) => {
+                match dropdown.options.iter().position(|option| *option == text) {
+                    Some(option) => (Outcome::Done, self.choose_option(id, option)),
+                    None => (Outcome::NotSupported, Response::Nothing),
+                }
             }
             (Action::SetText, Kind::Slider(_), None) => match text.trim().parse::<i32>() {
                 Ok(wanted) => (Outcome::Done, self.adjust(id, wanted)),
