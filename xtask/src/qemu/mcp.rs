@@ -629,9 +629,10 @@ fn session(client: &mut Client) -> Result<(), String> {
     client.send(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#)?;
     let probe = client.receive(FIRST_ANSWER_TIMEOUT)?;
     expect(
-        error_code(&probe) == Some(-32601),
+        result_field(&probe, "resultType").as_deref() == Some("complete")
+            && probe.contains(r#""supportedVersions":["2026-07-28","2025-11-25","2025-06-18"]"#),
         arch,
-        "server/discover is not METHOD_NOT_FOUND",
+        &format!("server/discover does not list the three versions: {probe}"),
     )?;
     let answer = client.request(
         "initialize",
@@ -1613,7 +1614,10 @@ fn editor_session(client: &mut Client, editor: u32) -> Result<(), String> {
         std::thread::sleep(CAPTURE_POLL);
     };
     let row = y + EDITOR_FIRST_ROW_CENTRE;
-    let column = |columns: u32| x + columns * eggos_editor::editor_window::CELL_WIDTH as u32;
+    let column = |columns: u32| {
+        x + eggos_editor::editor_window::TEXT_LEFT as u32
+            + columns * eggos_editor::editor_window::CELL_WIDTH as u32
+    };
     succeeds(
         client,
         "wm_drag",
@@ -1653,7 +1657,8 @@ fn editor_session(client: &mut Client, editor: u32) -> Result<(), String> {
     }
 }
 
-const EDITOR_FIRST_ROW_CENTRE: u32 = 4 + eggos_editor::editor_window::ROW_HEIGHT as u32 / 2;
+const EDITOR_FIRST_ROW_CENTRE: u32 = eggos_editor::editor_window::TEXT_TOP as u32
+    + eggos_editor::editor_window::ROW_HEIGHT as u32 / 2;
 
 fn element_bounds(tree: &str, role: &str) -> Option<(u32, u32, u32, u32)> {
     tree.lines().find_map(|line| {

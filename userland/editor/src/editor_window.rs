@@ -55,8 +55,10 @@ pub const CELL_WIDTH: i32 = 8;
 pub(crate) const TOOLBAR_HEIGHT: i32 = 32;
 pub(crate) const BAR_HEIGHT: i32 = 32;
 pub(crate) const STATUS_HEIGHT: i32 = 24;
-pub(crate) const TEXT_TOP: i32 = 4;
-pub(crate) const TEXT_LEFT: i32 = 8;
+/// The gap above the first row of text in the text view, in pixels.
+pub const TEXT_TOP: i32 = 4;
+/// The gap between the text view's left edge and the first column, in pixels.
+pub const TEXT_LEFT: i32 = 8;
 pub(crate) const TOOL_WIDTH: i32 = 64;
 pub(crate) const TOOL_HEIGHT: i32 = 28;
 const TOOL_PITCH: i32 = 68;
