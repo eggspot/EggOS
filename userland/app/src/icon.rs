@@ -7,6 +7,7 @@
 //! largest smaller, and one that fails to decode gives way to the next. Every step is "try,
 //! else next": an app whose icon cannot be read has none, and its install goes on.
 
+mod binary_plist;
 mod bitmap;
 mod icns;
 mod pe;
@@ -393,14 +394,14 @@ pub fn bundle_of(program: &[u8]) -> Option<&[u8]> {
         .then_some(bundle)
 }
 
-/// The value of `CFBundleIconFile` in an XML property list, its XML entities decoded into
-/// `name`, if it is a plain file name.
+/// The value of `CFBundleIconFile` in an XML or binary property list (its XML entities decoded)
+/// into `name`, if it is a plain file name.
 pub fn plist_icon_file<'n>(plist: &[u8], name: &'n mut [u8; PLIST_NAME_BYTES]) -> Option<&'n [u8]> {
     plist_file_name(plist, ICON_KEY, name)
 }
 
-/// The value of `CFBundleExecutable` in an XML property list, its XML entities decoded into
-/// `name`, if it is a plain file name.
+/// The value of `CFBundleExecutable` in an XML or binary property list (its XML entities
+/// decoded) into `name`, if it is a plain file name.
 pub fn plist_executable<'n>(
     plist: &[u8],
     name: &'n mut [u8; PLIST_NAME_BYTES],
@@ -426,11 +427,22 @@ fn decode_entities<'n>(raw: &[u8], out: &'n mut [u8]) -> Option<&'n [u8]> {
     Some(&out[..length])
 }
 
+fn is_plain_name(name: &[u8]) -> bool {
+    !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && !name.contains(&0)
+}
+
 fn plist_file_name<'n>(
     plist: &[u8],
     key_element: &[u8],
     out: &'n mut [u8; PLIST_NAME_BYTES],
 ) -> Option<&'n [u8]> {
+    if plist.starts_with(binary_plist::MAGIC) {
+        let key = key_element
+            .strip_prefix(b"<key>")
+            .and_then(|key| key.strip_suffix(b"</key>"))?;
+        let name = binary_plist::dictionary_string(plist, key, out)?;
+        return is_plain_name(name).then_some(name);
+    }
     let key = plist
         .windows(key_element.len())
         .position(|window| window == key_element)?;
@@ -441,12 +453,7 @@ fn plist_file_name<'n>(
         .windows(STRING_END.len())
         .position(|window| window == STRING_END)?;
     let name = decode_entities(value[..end].trim_ascii(), out)?;
-    let plain = !name.is_empty()
-        && name != b"."
-        && name != b".."
-        && !name.contains(&b'/')
-        && !name.contains(&0);
-    plain.then_some(name)
+    is_plain_name(name).then_some(name)
 }
 
 fn is_file(files: &mut impl Files, path: &Path) -> bool {
