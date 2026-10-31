@@ -250,6 +250,9 @@ unsafe extern "efiapi" fn gdip_create_bitmap_from_scan0(
         return status::NOT_IMPLEMENTED;
     }
     let (width, height) = (width as u32, height as u32);
+    if width > dib::LARGEST_SIDE || height > dib::LARGEST_SIDE {
+        return status::INVALID_PARAMETER;
+    }
     let bitmap = |pixels: usize, stride: isize, owned: usize| GpBitmap {
         magic: BITMAP_MAGIC,
         format,
@@ -260,7 +263,7 @@ unsafe extern "efiapi" fn gdip_create_bitmap_from_scan0(
         owned,
     };
     if !scan0.is_null() {
-        if stride.unsigned_abs() < width * 4 {
+        if u64::from(stride.unsigned_abs()) < u64::from(width) * 4 {
             return status::INVALID_PARAMETER;
         }
         return finish(new_bitmap(bitmap(scan0 as usize, stride as isize, 0)), out);

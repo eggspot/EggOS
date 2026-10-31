@@ -303,7 +303,7 @@ unsafe extern "efiapi" fn connect(socket: usize, address: *const u8, length: i32
         Ok(fd) => fd,
         Err(error) => return fail(error, SOCKET_ERROR),
     };
-    if address.is_null() || (length as usize) < SOCKADDR_IN_SIZE {
+    if address.is_null() || length < SOCKADDR_IN_SIZE as i32 {
         return fail(code::WSAEFAULT, SOCKET_ERROR);
     }
     let mut bytes = [0u8; SOCKADDR_IN_SIZE];

@@ -225,7 +225,7 @@ pub unsafe extern "efiapi" fn read(
         // SAFETY: the caller's duty: `buffer` holds `count` >= `taken` bytes, apart from ours.
         unsafe { ptr::copy_nonoverlapping(bytes[start..].as_ptr(), buffer, taken) };
     }
-    stream.position = (start + taken) as u64;
+    stream.position = stream.position.saturating_add(taken as u64);
     if !read.is_null() {
         // SAFETY: the caller's duty.
         unsafe { read.write_unaligned(taken as u32) };
@@ -496,6 +496,26 @@ mod tests {
             S_OK
         );
         assert_eq!(read_all(stream), b"hellO, world\0\0\0!");
+        // SAFETY: as above.
+        assert_eq!(unsafe { release(stream) }, 0);
+    }
+
+    #[test]
+    fn a_read_past_the_end_leaves_the_seek_pointer_where_it_was() {
+        let stream = new_stream_over(b"abc");
+        let mut at = 0;
+        // SAFETY: a live stream from here on.
+        assert_eq!(unsafe { seek(stream, 10, STREAM_SEEK_SET, &mut at) }, S_OK);
+        let (mut buffer, mut got) = ([0u8; 4], 1);
+        assert_eq!(
+            // SAFETY: as above.
+            unsafe { read(stream, buffer.as_mut_ptr(), 4, &mut got) },
+            S_OK
+        );
+        assert_eq!(got, 0);
+        // SAFETY: as above.
+        assert_eq!(unsafe { seek(stream, 0, STREAM_SEEK_CUR, &mut at) }, S_OK);
+        assert_eq!(at, 10);
         // SAFETY: as above.
         assert_eq!(unsafe { release(stream) }, 0);
     }

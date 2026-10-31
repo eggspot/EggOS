@@ -66,16 +66,43 @@ struct MenuInfo {
     data: usize,
 }
 
-fn info_of<'a>(info: *mut MenuItemInfo) -> Result<&'a mut MenuItemInfo, u32> {
-    if info.is_null() {
-        return Err(error::INVALID_PARAMETER);
+struct ProgramInfo {
+    at: *mut MenuItemInfo,
+    copied: usize,
+    value: MenuItemInfo,
+}
+
+impl ProgramInfo {
+    fn read(at: *mut MenuItemInfo) -> Result<Self, u32> {
+        if at.is_null() {
+            return Err(error::INVALID_PARAMETER);
+        }
+        // SAFETY: every caller passes the program's readable `MENUITEMINFOW`, which starts with
+        // its size.
+        let size = unsafe { (&raw const (*at).size).read_unaligned() } as usize;
+        if size < SMALLEST_INFO {
+            return Err(error::INVALID_PARAMETER);
+        }
+        let copied = size.min(core::mem::size_of::<MenuItemInfo>());
+        // SAFETY: an all-zero `MENUITEMINFOW` is valid: integers and a null pointer.
+        let mut value: MenuItemInfo = unsafe { core::mem::zeroed() };
+        // SAFETY: the program's structure holds `size` >= `copied` readable bytes, and `value`
+        // is a different, local one of at least `copied` bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(at.cast::<u8>(), (&raw mut value).cast::<u8>(), copied)
+        };
+        Ok(Self { at, copied, value })
     }
-    // SAFETY: every caller passes the program's readable and writable `MENUITEMINFOW`; only
-    // the fields its size covers are reached (`hbmpItem` only when it is there).
-    let info = unsafe { &mut *info };
-    match info.size as usize >= SMALLEST_INFO {
-        true => Ok(info),
-        false => Err(error::INVALID_PARAMETER),
+
+    fn write_back(&self) {
+        // SAFETY: the program's structure holds `copied` writable bytes, as `read` found.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (&raw const self.value).cast::<u8>(),
+                self.at.cast::<u8>(),
+                self.copied,
+            )
+        };
     }
 }
 
@@ -167,7 +194,7 @@ unsafe extern "efiapi" fn insert_menu_item_w(
     info: *mut MenuItemInfo,
 ) -> Bool {
     let inserted = try_with(|gui| {
-        let info = info_of(info)?;
+        let info = ProgramInfo::read(info)?;
         let table = table_mut(gui).ok_or(error::NOT_ENOUGH_MEMORY)?;
         let (owner, index) = match by_position != 0 {
             true => {
@@ -177,7 +204,7 @@ unsafe extern "efiapi" fn insert_menu_item_w(
             false => locate(table, menu, item, false)?,
         };
         let mut new = MenuItem::new(0, 0, 0, &[]);
-        change(&mut new, info);
+        change(&mut new, &info.value);
         match table
             .get_mut(owner)
             .ok_or(error::INVALID_MENU_HANDLE)?
@@ -200,14 +227,14 @@ unsafe extern "efiapi" fn set_menu_item_info_w(
     info: *mut MenuItemInfo,
 ) -> Bool {
     let changed = try_with(|gui| {
-        let info = info_of(info)?;
+        let info = ProgramInfo::read(info)?;
         let table = table_mut(gui).ok_or(error::INVALID_MENU_HANDLE)?;
         let (owner, index) = locate(table, menu, item, by_position != 0)?;
         let entry = table
             .get_mut(owner)
             .and_then(|menu| menu.item_mut(index))
             .ok_or(error::MENU_ITEM_NOT_FOUND)?;
-        change(entry, info);
+        change(entry, &info.value);
         Ok(())
     });
     match changed {
@@ -223,14 +250,15 @@ unsafe extern "efiapi" fn get_menu_item_info_w(
     info: *mut MenuItemInfo,
 ) -> Bool {
     let found = try_with(|gui| {
-        let info = info_of(info)?;
+        let mut info = ProgramInfo::read(info)?;
         let table = table(gui).ok_or(error::INVALID_MENU_HANDLE)?;
         let (owner, index) = locate(table, menu, item, by_position != 0)?;
         let entry = table
             .get(owner)
             .and_then(|menu| menu.items().get(index))
             .ok_or(error::MENU_ITEM_NOT_FOUND)?;
-        describe(entry, info);
+        describe(entry, &mut info.value);
+        info.write_back();
         Ok(())
     });
     match found {

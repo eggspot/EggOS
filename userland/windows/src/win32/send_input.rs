@@ -300,11 +300,14 @@ unsafe extern "efiapi" fn get_cursor_info(out: *mut CursorInfo) -> Bool {
     if out.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    // SAFETY: the caller passes a readable and writable `CURSORINFO`.
-    let info = unsafe { &mut *out };
-    if info.size as usize != core::mem::size_of::<CursorInfo>() {
+    // SAFETY: the caller passes a readable `CURSORINFO`, which starts with its size.
+    let size = unsafe { (&raw const (*out).size).read_unaligned() };
+    if size as usize != core::mem::size_of::<CursorInfo>() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
+    // SAFETY: the caller passes a readable and writable `CURSORINFO` of the size it states,
+    // which is the whole structure.
+    let info = unsafe { &mut *out };
     let Some((x, y)) = cursor_position() else {
         return fail(error::ACCESS_DENIED, FALSE);
     };
@@ -330,11 +333,14 @@ unsafe extern "efiapi" fn get_last_input_info(out: *mut LastInputInfo) -> Bool {
     if out.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    // SAFETY: the caller passes a readable and writable `LASTINPUTINFO`.
-    let info = unsafe { &mut *out };
-    if info.size as usize != core::mem::size_of::<LastInputInfo>() {
+    // SAFETY: the caller passes a readable `LASTINPUTINFO`, which starts with its size.
+    let size = unsafe { (&raw const (*out).size).read_unaligned() };
+    if size as usize != core::mem::size_of::<LastInputInfo>() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
+    // SAFETY: the caller passes a readable and writable `LASTINPUTINFO` of the size it states,
+    // which is the whole structure.
+    let info = unsafe { &mut *out };
     match with(|gui| gui.last_input) {
         Some(time) => {
             info.time = time;
@@ -382,11 +388,14 @@ unsafe extern "efiapi" fn get_gui_thread_info(thread: u32, out: *mut GuiThreadIn
     if out.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    // SAFETY: the caller passes a readable and writable `GUITHREADINFO`.
-    let info = unsafe { &mut *out };
-    if info.size as usize != core::mem::size_of::<GuiThreadInfo>() {
+    // SAFETY: the caller passes a readable `GUITHREADINFO`, which starts with its size.
+    let size = unsafe { (&raw const (*out).size).read_unaligned() };
+    if size as usize != core::mem::size_of::<GuiThreadInfo>() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
+    // SAFETY: the caller passes a readable and writable `GUITHREADINFO` of the size it states,
+    // which is the whole structure.
+    let info = unsafe { &mut *out };
     if thread != 0 && !is_own_thread(thread) {
         return fail(error::INVALID_PARAMETER, FALSE);
     }

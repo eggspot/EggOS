@@ -115,7 +115,18 @@ pub unsafe extern "efiapi" fn next(
         // SAFETY: the enumerator's values are valid VARIANTs.
         let copy = match unsafe { variant::duplicate(value) } {
             Ok(copy) => copy,
-            Err(code) => return code,
+            Err(code) => {
+                for made in 0..index {
+                    // SAFETY: this call wrote a copy it owns at `made`, inside the caller's
+                    // room for `count` VARIANTs.
+                    unsafe { variant::clear(values.wrapping_add(made)) };
+                }
+                if !fetched.is_null() {
+                    // SAFETY: the caller's duty.
+                    unsafe { fetched.write_unaligned(0) };
+                }
+                return code;
+            }
         };
         // SAFETY: the caller's duty: room for `count` VARIANTs.
         unsafe { values.wrapping_add(index).write_unaligned(copy) };
