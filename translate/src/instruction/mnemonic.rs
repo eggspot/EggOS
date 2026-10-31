@@ -509,6 +509,18 @@ pub enum Mnemonic {
     Pextrw,
     /// `pmovmskb`.
     Pmovmskb,
+    /// `pextrb` (SSE4.1).
+    Pextrb,
+    /// `pextrd` (SSE4.1).
+    Pextrd,
+    /// `pextrq` (SSE4.1).
+    Pextrq,
+    /// `pinsrb` (SSE4.1).
+    Pinsrb,
+    /// `pmovzxbq` (SSE4.1).
+    Pmovzxbq,
+    /// `ptest` (SSE4.1).
+    Ptest,
     /// `maskmovdqu`, storing through `rdi`.
     Maskmovdqu,
     /// `paddb`.

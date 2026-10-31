@@ -1,4 +1,4 @@
-use super::form::{Form, Immediate, SizeRule, Spec, V, W};
+use super::form::{D, Form, Immediate, SizeRule, Spec, V, W};
 use super::modrm::{is_register_form, reg_field};
 use super::prefix::{Mandatory, Prefixes};
 use super::{DecodeErrorKind, Refusal};
@@ -285,6 +285,48 @@ fn to_general(mnemonic: Mnemonic, source: Width) -> Form {
         .with(Spec::Reg(V))
         .with(Spec::RmXmm(source))
         .sse()
+}
+
+/// The `0F 38` map's forms EggOS translates (SSE4.1's `ptest` and `pmovzxbq`); the rest are
+/// refused.
+pub(super) fn map_0f38(opcode: u8, prefixes: &Prefixes) -> Form {
+    match (opcode, prefixes.mandatory()) {
+        (0x17, Mandatory::OperandSize) => packed(Mnemonic::Ptest),
+        (0x32, Mandatory::OperandSize) => xmm(Mnemonic::Pmovzxbq, Width::Word),
+        _ => Form::refused(Refusal::ThreeByteMap).modrm(),
+    }
+}
+
+/// The `0F 3A` map's forms EggOS translates (SSE4.1's `pextrb`, `pextrd`, `pextrq` and
+/// `pinsrb`); the rest are refused.
+pub(super) fn map_0f3a(opcode: u8, prefixes: &Prefixes) -> Form {
+    let byte = Spec::Imm(Immediate::UnsignedByte);
+    let form = match (opcode, prefixes.mandatory()) {
+        (0x14, Mandatory::OperandSize) => {
+            Form::new(Mnemonic::Pextrb, SizeRule::Fixed(Width::Dword))
+                .with(Spec::Rm(D))
+                .with(Spec::RegXmm)
+                .sse()
+        }
+        (0x16, Mandatory::OperandSize) => {
+            let mnemonic = match prefixes.rex_w() {
+                true => Mnemonic::Pextrq,
+                false => Mnemonic::Pextrd,
+            };
+            Form::new(mnemonic, SizeRule::Normal)
+                .with(Spec::Rm(V))
+                .with(Spec::RegXmm)
+                .sse()
+        }
+        (0x20, Mandatory::OperandSize) => {
+            Form::new(Mnemonic::Pinsrb, SizeRule::Fixed(Width::Dword))
+                .with(Spec::RegXmm)
+                .with(Spec::Rm(D))
+                .sse()
+        }
+        _ => Form::refused(Refusal::ThreeByteMap).modrm(),
+    };
+    form.with(byte)
 }
 
 fn mmx() -> Form {

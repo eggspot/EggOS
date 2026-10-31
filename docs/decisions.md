@@ -16590,3 +16590,15 @@ the license, by an explicit instruction recorded here.
   page, so there are no pages to probe in order.
 - **Follow-up.** The macOS layer's `___chkstk_darwin` for x86_64 programs takes its size in
   `rax` the same way; bind it to the same bridge when a translated macOS program needs it.
+
+## D209 The translator's first SSE4.1 forms: `ptest`, `pmovzxbq`, `pextrb`/`pextrd`/`pextrq`, `pinsrb` — Decided by the build loop (engineering; brings part of translation.md's next step forward)
+- **Why.** Rust and clang build x86_64 macOS code for Penryn (SSE4.1) by default, so a
+  translated macOS program meets SSE4.1 without asking `cpuid`: `macos-other` stopped at a
+  `ptest` in its `main`. Its code uses exactly these five (scanned with `objdump`).
+- **Decision.** The decoder reads the third opcode byte of the `0F 38` and `0F 3A` maps and
+  decodes these forms (with a `66` prefix); the rest of both maps stay refused. `ptest` sets ZF
+  and CF from `and`/`bic` of the two registers folded to 64 bits and clears SF, OF, AF and PF;
+  `pmovzxbq` is three `zip1`s with a zero register; the extracts are `umov` (a register
+  destination is zero-extended, a memory one gets the element's size) and `pinsrb` is `ins`.
+  `cpuid` still reports no SSE3 or SSE4.1, since the rest is missing.
+- **Follow-up.** The rest of SSE3, SSSE3 and SSE4.1/4.2, as translation.md plans.

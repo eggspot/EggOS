@@ -17,7 +17,6 @@ use core::fmt;
 
 use cursor::Cursor;
 pub use cursor::MAX_INSTRUCTION_LENGTH;
-use form::{Form, Immediate, Spec};
 use prefix::Prefixes;
 
 use crate::instruction::Instruction;
@@ -145,18 +144,16 @@ fn escape(
     address: u64,
 ) -> Result<Instruction, DecodeErrorKind> {
     let opcode = cursor.byte()?;
-    let form = match opcode {
+    let (opcode, form) = match opcode {
         0x38 => {
-            cursor.byte()?;
-            Form::refused(Refusal::ThreeByteMap).modrm()
+            let opcode = cursor.byte()?;
+            (opcode, sse::map_0f38(opcode, prefixes))
         }
         0x3A => {
-            cursor.byte()?;
-            Form::refused(Refusal::ThreeByteMap)
-                .modrm()
-                .with(Spec::Imm(Immediate::UnsignedByte))
+            let opcode = cursor.byte()?;
+            (opcode, sse::map_0f3a(opcode, prefixes))
         }
-        _ => two_byte::form(opcode, cursor.peek(), prefixes)?,
+        _ => (opcode, two_byte::form(opcode, cursor.peek(), prefixes)?),
     };
     operands::build(cursor, prefixes, opcode, form, address)
 }

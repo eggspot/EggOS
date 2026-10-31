@@ -175,6 +175,7 @@ pub fn effect(instruction: &Instruction) -> FlagEffect {
         M::Lzcnt => FlagEffect::writes(Flags::CF.union(Flags::ZF), Flags::ALL),
         M::Popcnt => FlagEffect::writes(Flags::ALL, Flags::ALL),
         M::Cmpxchg8b | M::Cmpxchg16b => FlagEffect::writes(Flags::ZF, Flags::ZF),
+        M::Ptest => FlagEffect::writes(Flags::ALL, Flags::ALL),
         M::Comiss | M::Comisd | M::Ucomiss | M::Ucomisd => {
             FlagEffect::writes(Flags::ALL, Flags::ALL)
         }

@@ -1,6 +1,6 @@
 use super::{
     CarrySense, Flags, Instruction, Logic, Lowered, Lowerer, Mnemonic, Operand, Place, Reg,
-    SCRATCH, Shift, Size, T0, Width, encode, size, state, state_access,
+    SCRATCH, Shift, Size, T0, T1, Width, encode, size, state, state_access,
 };
 use crate::codegen::aarch64::encode::{AddSub, Barrier, LoadStore};
 use crate::codegen::aarch64::simd::{
@@ -286,6 +286,32 @@ impl Lowerer {
                 };
                 self.emit(simd::insert_general(Element::H, d, index, value));
             }
+            M::Pextrb | M::Pextrd | M::Pextrq => self.extract(instruction)?,
+            M::Pinsrb => {
+                let d = self.xmm_destination(instruction)?;
+                let index = self.immediate(instruction, 2)? as u8 & 15;
+                let value = match self.place(&self.operand(instruction, 1)?)? {
+                    Place::Memory { address, .. } => self.load(
+                        Place::Memory {
+                            address,
+                            width: Width::Byte,
+                        },
+                        SCRATCH,
+                    ),
+                    Place::Full(host) | Place::Low32(host) => host,
+                    place => self.load(place, SCRATCH),
+                };
+                self.emit(simd::insert_general(Element::B, d, index, value));
+            }
+            M::Pmovzxbq => {
+                let d = self.xmm_destination(instruction)?;
+                let s = self.vector_source(instruction, 1, V0)?;
+                self.emit(simd::zero(V2));
+                self.emit(simd::permute(Permute::Zip1, Element::B, V1, s, V2));
+                self.emit(simd::permute(Permute::Zip1, Element::H, V1, V1, V2));
+                self.emit(simd::permute(Permute::Zip1, Element::S, d, V1, V2));
+            }
+            M::Ptest => self.test_bits(instruction)?,
             M::Cvtsi2ss | M::Cvtsi2sd => self.convert_from_integer(instruction)?,
             M::Cvtss2sd | M::Cvtsd2ss => {
                 let d = self.xmm_destination(instruction)?;
@@ -702,6 +728,87 @@ impl Lowerer {
         if let Kind::Scalar(_) = kind {
             self.emit(simd::insert_element(element(float), d, 0, V1, 0));
         }
+        Ok(())
+    }
+
+    fn extract(&mut self, instruction: &Instruction) -> Lowered {
+        let s = self.vector_source(instruction, 1, V0)?;
+        let index = self.immediate(instruction, 2)? as u8;
+        let (element, index, width) = match instruction.mnemonic {
+            Mnemonic::Pextrb => (Element::B, index & 15, Width::Byte),
+            Mnemonic::Pextrd => (Element::S, index & 3, Width::Dword),
+            _ => (Element::D, index & 1, Width::Qword),
+        };
+        self.emit(simd::move_to_general(element, T0, s, index));
+        let place = match self.place(&self.operand(instruction, 0)?)? {
+            Place::Memory { address, .. } => Place::Memory { address, width },
+            place => place,
+        };
+        self.store(place, T0);
+        Ok(())
+    }
+
+    fn test_bits(&mut self, instruction: &Instruction) -> Lowered {
+        let d = self.xmm_destination(instruction)?;
+        let s = self.vector_source(instruction, 1, V0)?;
+        let live = self.defined_and_live(instruction);
+        if live.any(Flags::PF) {
+            self.move_immediate(Size::W, SCRATCH, 1);
+            self.emit(state_access(LoadStore::Strb, SCRATCH, state::PARITY));
+        }
+        if live.any(Flags::AF) {
+            self.emit(state_access(LoadStore::Strb, Reg::ZR, state::ADJUST));
+        }
+        if !live.any(Flags::NZCV) {
+            return Ok(());
+        }
+        self.emit(simd::vector_logic(VectorLogic::And, V1, d, s));
+        self.emit(simd::vector_logic(VectorLogic::Bic, V2, s, d));
+        for (vector, into) in [(V1, T0), (V2, T1)] {
+            self.emit(simd::move_to_general(Element::D, into, vector, 0));
+            self.emit(simd::move_to_general(Element::D, SCRATCH, vector, 1));
+            self.emit(encode::logical_shifted(
+                Logic::Orr,
+                false,
+                Size::X,
+                into,
+                into,
+                SCRATCH,
+                Shift::Lsl,
+                0,
+            ));
+            self.emit(encode::add_sub_immediate(
+                AddSub::Subs,
+                Size::X,
+                Reg::ZR,
+                into,
+                0,
+                false,
+            ));
+            self.emit(encode::cset(Size::W, into, Cond::Eq));
+        }
+        self.emit(encode::logical_shifted(
+            Logic::Orr,
+            false,
+            Size::W,
+            SCRATCH,
+            Reg::ZR,
+            T0,
+            Shift::Lsl,
+            30,
+        ));
+        self.emit(encode::logical_shifted(
+            Logic::Orr,
+            false,
+            Size::W,
+            SCRATCH,
+            SCRATCH,
+            T1,
+            Shift::Lsl,
+            29,
+        ));
+        self.emit(encode::msr_nzcv(SCRATCH));
+        self.carry = CarrySense::Direct;
         Ok(())
     }
 

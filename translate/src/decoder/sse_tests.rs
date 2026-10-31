@@ -353,6 +353,58 @@ fn shuffles_shifts_and_extracts_take_an_immediate() {
         ],
     );
     check(
+        &[0x66, 0x0F, 0x38, 0x17, 0xC1],
+        Mnemonic::Ptest,
+        Width::Dqword,
+        &[xmm(0), xmm(1)],
+    );
+    check(
+        &[0x66, 0x0F, 0x38, 0x32, 0xC1],
+        Mnemonic::Pmovzxbq,
+        Width::Word,
+        &[xmm(0), xmm(1)],
+    );
+    check(
+        &[0x66, 0x0F, 0x3A, 0x14, 0xC8, 0x03],
+        Mnemonic::Pextrb,
+        Width::Dword,
+        &[
+            general(Gpr::RAX, Width::Dword),
+            xmm(1),
+            Operand::Immediate(3),
+        ],
+    );
+    check(
+        &[0x66, 0x0F, 0x3A, 0x16, 0xC8, 0x02],
+        Mnemonic::Pextrd,
+        Width::Dword,
+        &[
+            general(Gpr::RAX, Width::Dword),
+            xmm(1),
+            Operand::Immediate(2),
+        ],
+    );
+    check(
+        &[0x66, 0x48, 0x0F, 0x3A, 0x16, 0xC8, 0x01],
+        Mnemonic::Pextrq,
+        Width::Qword,
+        &[
+            general(Gpr::RAX, Width::Qword),
+            xmm(1),
+            Operand::Immediate(1),
+        ],
+    );
+    check(
+        &[0x66, 0x0F, 0x3A, 0x20, 0xC1, 0x05],
+        Mnemonic::Pinsrb,
+        Width::Dword,
+        &[
+            xmm(0),
+            general(Gpr::RCX, Width::Dword),
+            Operand::Immediate(5),
+        ],
+    );
+    check(
         &[0x0F, 0xC6, 0xC1, 0x44],
         Mnemonic::Shufps,
         Width::Dqword,
