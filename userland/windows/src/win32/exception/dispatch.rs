@@ -4,7 +4,8 @@
 //! frame calling each termination handler and returns the target frame's registers, which the
 //! caller resumes at the target address. A fault reaches `dispatch` through the signal
 //! handler, which rewrites its frame so the thread leaves the handler into `dispatch_fault`
-//! with the exception's record and `CONTEXT` on its own stack, below the faulting frame.
+//! on its own stack below the whole signal frame, which `dispatch_fault` reads the faulting
+//! registers from and builds the exception's record and `CONTEXT` below.
 
 use super::super::thread_environment::{self, teb};
 use super::context::{
@@ -22,6 +23,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 static UNHANDLED_EXCEPTION_FILTER: AtomicUsize = AtomicUsize::new(0);
 const STACK_GAP: u64 = 128;
+const SIGINFO_SIZE: usize = 128;
 /// No state to unwind a C++ frame to: the frame is left, so every state is undone.
 pub const NO_STATE: i32 = i32::MIN;
 
@@ -124,7 +126,7 @@ pub fn dispatch(record: *mut ExceptionRecord, context: *mut Context, origin: Ori
     loop {
         match walk.next() {
             Event::End => break,
-            Event::Bridge(_) => {}
+            Event::Bridge | Event::Catch { .. } => {}
             Event::Frame(frame) => {
                 let Some(handler) = frame.handler else {
                     continue;
@@ -232,12 +234,14 @@ pub fn unwind(
                 },
                 start.pc(),
             ),
-            Event::Bridge(bridge) => {
-                if let Some(catch) = bridge.catch.as_ref() {
-                    cxx::leave_catch(catch, record);
-                    if catch.parent_frame == target.frame {
-                        break catch.parent_context;
-                    }
+            Event::Bridge => {}
+            Event::Catch {
+                catch,
+                function_skipped,
+            } => {
+                cxx::leave_catch(catch, record);
+                if function_skipped && catch.parent_frame == target.frame {
+                    break catch.parent_context;
                 }
             }
             Event::Frame(frame) => {
@@ -283,51 +287,83 @@ pub fn unwind(
     reached
 }
 
-/// Points the faulting thread of the signal frame `ucontext` at the dispatch of `exception`:
-/// its record and `CONTEXT` go on the thread's stack below the faulting frame, and the frame
-/// is rewritten so that returning from the signal handler enters `dispatch_fault` with them.
-pub fn deliver_fault(ucontext: *mut u8, exception: &fault::Exception, signal: i32) {
-    // SAFETY: the kernel's `ucontext_t` for this signal.
-    let mut context = unsafe { Context::from_signal(ucontext) };
-    context.set_pc(exception.address);
-    let parameters = &exception.parameters[..exception.parameter_count as usize];
-    let record = ExceptionRecord::new(exception.code, 0, exception.address, parameters);
-    let context_size = core::mem::size_of::<Context>() as u64;
-    let block_size =
-        (context_size + core::mem::size_of::<ExceptionRecord>() as u64).next_multiple_of(16);
-    let block = context.sp().wrapping_sub(STACK_GAP + block_size) & !15;
-    let context_at = block as *mut Context;
-    let record_at = (block + context_size) as *mut ExceptionRecord;
-    // SAFETY: the block lies on the thread's stack below the faulting frame's stack pointer
-    // (and the gap Windows' conventions leave free), which nothing uses; it is 16-byte aligned.
-    unsafe { context_at.write(context) };
-    // SAFETY: as above.
-    unsafe { record_at.write(record) };
-    let arguments = [record_at as u64, context_at as u64, signal as u64];
-    let put = |offset: usize, value: u64| {
-        // SAFETY: the offsets are the frame's `sp`, `pc` and argument registers, which
-        // `rt_sigreturn` loads back.
-        unsafe {
-            ucontext
-                .wrapping_add(offset)
-                .cast::<u64>()
-                .write_unaligned(value)
-        };
+/// The registers `deliver_fault` rewrites in a signal frame's `ucontext_t`: `sp`, `pc` and the
+/// first three argument registers.
+const REWRITTEN: [usize; 5] = [
+    UCONTEXT_SP,
+    UCONTEXT_PC,
+    UCONTEXT_ARGUMENTS[0],
+    UCONTEXT_ARGUMENTS[1],
+    UCONTEXT_ARGUMENTS[2],
+];
+
+/// What `deliver_fault` keeps in the signal frame's `siginfo_t` for `dispatch_fault`: the
+/// exception, and the faulting values of the registers it rewrites.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DeliveredFault {
+    exception: fault::Exception,
+    rewritten: [u64; REWRITTEN.len()],
+}
+
+const _: () = assert!(core::mem::size_of::<DeliveredFault>() <= SIGINFO_SIZE);
+
+fn ucontext_word(ucontext: *mut u8, offset: usize) -> *mut u64 {
+    ucontext.wrapping_add(offset).cast::<u64>()
+}
+
+/// Points the faulting thread of the signal frame whose `ucontext_t` is `ucontext` and whose
+/// `siginfo_t` is `info` at the dispatch of `exception`: the exception and the faulting values
+/// of the registers rewritten here go into the frame's `siginfo_t`, which nothing reads once
+/// the handler has, and the frame is rewritten so that returning from the signal handler
+/// enters `dispatch_fault` with its stack pointer below the whole frame. The frame then stays
+/// intact, above the stack pointer, for `dispatch_fault` to read; nothing is written below it
+/// while the handler, whose own frames are there, runs.
+pub fn deliver_fault(ucontext: *mut u8, info: *mut u8, exception: &fault::Exception, signal: i32) {
+    let mut delivered = DeliveredFault {
+        exception: *exception,
+        rewritten: [0; REWRITTEN.len()],
     };
-    put(UCONTEXT_SP, block);
-    put(UCONTEXT_PC, fault_entry as *const () as u64);
-    for (offset, value) in UCONTEXT_ARGUMENTS.iter().zip(arguments) {
-        put(*offset, value);
+    for (saved, offset) in delivered.rewritten.iter_mut().zip(REWRITTEN) {
+        // SAFETY: the kernel's `ucontext_t` for this signal holds these registers.
+        *saved = unsafe { ucontext_word(ucontext, offset).read_unaligned() };
+    }
+    // SAFETY: the kernel's `siginfo_t` for this signal, `SIGINFO_SIZE` bytes in the signal
+    // frame, which `DeliveredFault` fits; `rt_sigreturn` reads only the `ucontext_t`.
+    unsafe { info.cast::<DeliveredFault>().write_unaligned(delivered) };
+    let frame_bottom = (ucontext as u64).min(info as u64);
+    let values = [
+        frame_bottom.wrapping_sub(STACK_GAP) & !15,
+        fault_entry as *const () as u64,
+        info as u64,
+        ucontext as u64,
+        signal as u64,
+    ];
+    for (offset, value) in REWRITTEN.into_iter().zip(values) {
+        // SAFETY: as above; `rt_sigreturn` loads these registers back.
+        unsafe { ucontext_word(ucontext, offset).write_unaligned(value) };
     }
 }
 
-/// Where a fault's dispatch starts (through `fault_entry`).
-pub extern "C" fn dispatch_fault(
-    record: *mut ExceptionRecord,
-    context: *mut Context,
-    signal: i32,
-) -> ! {
-    dispatch(record, context, Origin::Fault(signal))
+/// Where a fault's dispatch starts (through `fault_entry`), on the stack below the signal
+/// frame whose `ucontext_t` is `ucontext` and whose `siginfo_t` (`delivered`) holds what
+/// `deliver_fault` kept of the fault.
+pub(super) extern "C" fn dispatch_fault(delivered: *const u8, ucontext: *mut u8, signal: i32) -> ! {
+    // SAFETY: `deliver_fault` wrote it there, in the signal frame above this stack.
+    let delivered = unsafe { delivered.cast::<DeliveredFault>().read_unaligned() };
+    for (saved, offset) in delivered.rewritten.into_iter().zip(REWRITTEN) {
+        // SAFETY: the signal frame's `ucontext_t`, intact above this stack and no longer the
+        // kernel's, gets back the faulting registers `deliver_fault` rewrote.
+        unsafe { ucontext_word(ucontext, offset).write_unaligned(saved) };
+    }
+    let exception = delivered.exception;
+    // SAFETY: as above: the kernel's `ucontext_t` for the fault, with its faulting registers.
+    let mut context = unsafe { Context::from_signal(ucontext) };
+    context.set_pc(exception.address);
+    let count = (exception.parameter_count as usize).min(exception.parameters.len());
+    let parameters = &exception.parameters[..count];
+    let mut record = ExceptionRecord::new(exception.code, 0, exception.address, parameters);
+    dispatch(&raw mut record, &raw mut context, Origin::Fault(signal))
 }
 
 capturing_entry!(pub(super) raise_exception_entry => raise_exception);

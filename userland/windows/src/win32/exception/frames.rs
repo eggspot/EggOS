@@ -5,6 +5,10 @@
 //! where the layer calls back into the program (a language handler, a filter, a catch block,
 //! a destructor) it goes through a bridge, which records where that call returns, so a walk
 //! that reaches the layer's frames continues from the program frame the bridge names instead.
+//! A walk that leaves a running catch block's funclet continues in the catch's function, whose
+//! handler then searches and unwinds it from the state around the catch's try block; when the
+//! funclet's own `__CxxFrameHandler3` handler already stood in for the function (its data is
+//! the function's, its states the function's), the walk continues in the function's caller.
 
 use super::super::thread_environment::{self, teb};
 use super::context::{Context, unwinder};
@@ -118,7 +122,8 @@ pub struct Bridge {
     return_address: u64,
     stack: u64,
     /// Where a walk continues once it leaves the program code this bridge called; none ends
-    /// the walk.
+    /// the walk. A walk that leaves a catch block's bridge continues in the catch's function
+    /// or its caller instead (`Event::Catch`).
     pub resume: Option<Context>,
     /// The catch block this bridge runs, if it runs one.
     pub catch: Option<CatchState>,
@@ -315,8 +320,23 @@ pub fn frame_pointer(_context: &Context) -> u64 {
 pub enum Event {
     Frame(Frame),
     /// It left the program code a bridge called and continued where the bridge says.
-    Bridge(&'static Bridge),
+    Bridge,
+    /// It left the funclet of the running catch block `catch` and continued in the catch's
+    /// function, or in that function's caller when `function_skipped` (the funclet's handler
+    /// stood in for the function).
+    Catch {
+        catch: &'static CatchState,
+        function_skipped: bool,
+    },
     End,
+}
+
+/// Whether the handler of a running catch block's funclet stands in for the catch's function:
+/// a `__CxxFrameHandler3` funclet's handler data is its function's, so it searches and unwinds
+/// the function's states itself; a `__CxxFrameHandler4` funclet's data, if it has a handler at
+/// all, covers only its own locals.
+pub fn funclet_stands_in(catch: &CatchState, funclet_has_handler: bool) -> bool {
+    funclet_has_handler && !catch.data.compressed
 }
 
 /// A walk up the program's frames from a `CONTEXT`.
@@ -326,6 +346,7 @@ pub struct Walk {
     kinds: HandlerKinds,
     steps: usize,
     memory: ThreadMemory,
+    last_frame_had_handler: bool,
 }
 
 impl Walk {
@@ -339,6 +360,7 @@ impl Walk {
             kinds,
             steps: 0,
             memory: ThreadMemory::from_stack_pointer(context.sp()),
+            last_frame_had_handler: false,
         }
     }
 
@@ -356,11 +378,15 @@ impl Walk {
             && let Some(bridge) =
                 bridges().find(|bridge| bridge.return_address == pc && bridge.stack == sp)
         {
+            if let Some(catch) = bridge.catch.as_ref() {
+                return self.leave_catch(catch);
+            }
             return match bridge.resume {
                 Some(resume) => {
                     self.context = resume;
                     self.unwound = true;
-                    Event::Bridge(bridge)
+                    self.last_frame_had_handler = false;
+                    Event::Bridge
                 }
                 None => Event::End,
             };
@@ -417,7 +443,26 @@ impl Walk {
         };
         self.context = caller;
         self.unwound = true;
+        self.last_frame_had_handler = frame.handler.is_some();
         Event::Frame(frame)
+    }
+
+    fn leave_catch(&mut self, catch: &'static CatchState) -> Event {
+        let function_skipped = funclet_stands_in(catch, self.last_frame_had_handler);
+        let resume = match function_skipped {
+            true => caller_of(&catch.parent_context, true),
+            false => Some(catch.parent_context),
+        };
+        let Some(resume) = resume else {
+            return Event::End;
+        };
+        self.context = resume;
+        self.unwound = true;
+        self.last_frame_had_handler = false;
+        Event::Catch {
+            catch,
+            function_skipped,
+        }
     }
 }
 
@@ -445,7 +490,7 @@ pub fn caller_of(context: &Context, unwound: bool) -> Option<Context> {
     let mut walk = Walk::new(context, unwound, kinds);
     match walk.next() {
         Event::Frame(frame) => Some(frame.caller),
-        Event::Bridge(_) => Some(walk.context),
+        Event::Bridge | Event::Catch { .. } => Some(walk.context),
         Event::End => None,
     }
 }

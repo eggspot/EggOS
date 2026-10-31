@@ -3,7 +3,9 @@
 //! so MSVC's atomics helpers go on as their own handler lets them on Windows. Any other fault
 //! the CPU raised in the program's code, or in code the program made, becomes the Windows
 //! exception its cause stands for (`fault::delivery`), which the program's vectored and frame
-//! handlers get (`win32::deliver_fault`); `__fastfail` ends the program at once. A fault in the
+//! handlers get (`win32::deliver_fault`); `__fastfail` ends the program at once. A fetch from
+//! or a write to memory the program made writable and executable flips its page to what the
+//! access needs and resumes it (`win32::flip_write_execute_page`). A fault in the
 //! layer's own code, or one no handler took, is written to standard error with its address as
 //! the program's module and offset, and ends the process by the signal's default action. A
 //! trap or fault in the translated code of an x64 program on ARM64 (D191) ends the program with
@@ -168,6 +170,12 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     // SAFETY: and with its `ucontext_t` for the signal, which holds the interrupted `pc`.
     let pc = unsafe { word(context, UCONTEXT_PC).read() };
     let from_the_processor = code > 0;
+    if from_the_processor
+        && signal == fault::SIGSEGV
+        && win32::flip_write_execute_page(address as usize, access(context))
+    {
+        return;
+    }
     #[cfg(target_arch = "aarch64")]
     if signal == fault::SIGBUS
         && code == fault::BUS_ADRALN
@@ -208,7 +216,7 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
         };
         match fault::delivery(&signalled, cfg!(target_arch = "aarch64")) {
             Delivery::Exception(exception) => {
-                win32::deliver_fault(context, &exception, signal);
+                win32::deliver_fault(context, info.cast_mut(), &exception, signal);
                 return;
             }
             Delivery::FailFast => end_fail_fast(pc),

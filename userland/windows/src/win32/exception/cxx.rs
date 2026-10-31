@@ -8,7 +8,10 @@
 //! destroy the object, and resume the function where the funclet says. A catch block runs
 //! through a bridge that remembers its function, so `throw;` rethrows its object, and an
 //! exception thrown inside it is caught by the try blocks around it, in the same function or
-//! in its callers, with that function's destructors run once.
+//! in its callers, with that function's destructors run once: by the funclet's handler, which
+//! under `__CxxFrameHandler3` reads its function's data and states, or by the function's own
+//! handler from the state around the catch's try block, once a `__CxxFrameHandler4` funclet
+//! (whose data, if it has any, covers only its own locals) is left.
 
 use super::super::heap;
 use super::super::thread_environment::{self, teb};
@@ -39,6 +42,12 @@ fn terminate_with(reason: &[u8]) -> ! {
 
 fn innermost_catch() -> Option<&'static CatchState> {
     frames::bridges().find_map(|bridge| bridge.catch.as_ref())
+}
+
+fn running_catch(matching: impl Fn(&CatchState) -> bool) -> Option<CatchState> {
+    frames::bridges()
+        .find_map(|bridge| bridge.catch.as_ref().filter(|catch| matching(catch)))
+        .copied()
 }
 
 fn slot(offset: usize) -> *mut u64 {
@@ -267,7 +276,7 @@ fn catch(
         enclosing_state,
         data,
     };
-    let mut bridge = Bridge::new(frames::caller_of(&parent, true), Some(state));
+    let mut bridge = Bridge::new(None, Some(state));
     let frame_pointer = frames::frame_pointer(&parent);
     let caught = bridge
         .catch
@@ -374,37 +383,47 @@ unsafe fn frame_handler(
     };
     let pc = dispatcher.control_rva();
     let begin_address = image.base + u64::from(function_begin);
-    let running = frames::bridges()
-        .find_map(|bridge| {
-            bridge
-                .catch
-                .as_ref()
-                .filter(|catch| catch.funclet == begin_address)
-        })
-        .copied();
+    // SAFETY: the handler's contract.
+    let unwinding = unsafe { (*record).flags } & (flag::UNWINDING | flag::EXIT_UNWIND) != 0;
     // SAFETY: the dispatcher context's `CONTEXT` holds the frame's registers.
     let own_context = unsafe { &*dispatcher.context_record };
-    let (frame, frame_pointer, state, data) = match running {
-        Some(catch) => {
-            let state = match own_function.state_at(pc, function_begin) {
-                -1 => catch.enclosing_state,
-                state => state,
-            };
-            let frame_pointer = frames::frame_pointer(&catch.parent_context);
-            (catch.parent_frame, frame_pointer, state, catch.data)
-        }
-        None if own_function.is_catch_funclet() => return disposition::CONTINUE_SEARCH,
-        None => {
-            let state = own_function.state_at(pc, function_begin);
-            (establisher, frames::frame_pointer(own_context), state, own)
-        }
-    };
+    let own_state = own_function.state_at(pc, function_begin);
+    let (frame, frame_pointer, state, data) =
+        match running_catch(|catch| catch.funclet == begin_address) {
+            Some(catch) if frames::funclet_stands_in(&catch, true) => {
+                let state = match own_state {
+                    -1 => catch.enclosing_state,
+                    state => state,
+                };
+                let frame_pointer = frames::frame_pointer(&catch.parent_context);
+                (catch.parent_frame, frame_pointer, state, catch.data)
+            }
+            Some(catch) => {
+                if unwinding {
+                    let frame_pointer = frames::frame_pointer(&catch.parent_context);
+                    unwind_states(
+                        &own_function,
+                        catch.parent_frame,
+                        frame_pointer,
+                        own_state,
+                        -1,
+                    );
+                }
+                return disposition::CONTINUE_SEARCH;
+            }
+            None if own_function.is_catch_funclet() => return disposition::CONTINUE_SEARCH,
+            None => {
+                let state = match running_catch(|catch| catch.parent_frame == establisher) {
+                    Some(catch) => catch.enclosing_state,
+                    None => own_state,
+                };
+                (establisher, frames::frame_pointer(own_context), state, own)
+            }
+        };
     let Some(function) = function_data(data) else {
         return disposition::CONTINUE_SEARCH;
     };
-    // SAFETY: the handler's contract.
-    let flags = unsafe { (*record).flags };
-    if flags & (flag::UNWINDING | flag::EXIT_UNWIND) != 0 {
+    if unwinding {
         let to = match dispatch::unwind_target() {
             Some(target) if target.frame == frame && target.state != NO_STATE => target.state,
             _ => -1,

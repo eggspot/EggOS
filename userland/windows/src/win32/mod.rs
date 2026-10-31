@@ -105,6 +105,7 @@ pub use console::set_gui_program;
 pub use crt::set_processor_features;
 pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_exception_image};
 pub use heap::{allocate as heap_allocate, free as heap_free, process_heap};
+pub use memory::flip_write_execute_page;
 pub use process::set_process;
 pub use thread::finish as end_thread;
 

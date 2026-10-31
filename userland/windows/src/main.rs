@@ -108,6 +108,8 @@ mod user_shared_data;
 mod version_info;
 #[cfg(runs_windows_programs)]
 mod win32;
+#[cfg(any(test, runs_windows_programs))]
+mod write_execute;
 
 #[cfg(runs_windows_programs)]
 eggos_runtime::main!(start::run);

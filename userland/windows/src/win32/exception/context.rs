@@ -305,8 +305,8 @@ mod arch {
     pub(in crate::win32::exception) use capturing_entry;
 
     /// Where a fault's dispatch starts once the signal handler returns: the handler pointed
-    /// the thread here with the record, the `CONTEXT` and the signal in the first three
-    /// argument registers and `rsp` 16-byte aligned below them.
+    /// the thread here with the exception, the signal frame's `ucontext_t` and the signal in
+    /// the first three argument registers and `rsp` 16-byte aligned below the signal frame.
     ///
     /// # Safety
     /// Only a signal handler's rewritten frame enters it.
@@ -619,8 +619,8 @@ mod arch {
     pub(in crate::win32::exception) use capturing_entry;
 
     /// Where a fault's dispatch starts once the signal handler returns: the handler pointed
-    /// the thread here with the record, the `CONTEXT` and the signal in `x0` to `x2` and `sp`
-    /// 16-byte aligned below them.
+    /// the thread here with the exception, the signal frame's `ucontext_t` and the signal in
+    /// `x0` to `x2` and `sp` 16-byte aligned below the signal frame.
     ///
     /// # Safety
     /// Only a signal handler's rewritten frame enters it.

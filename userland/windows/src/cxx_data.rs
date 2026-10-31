@@ -88,7 +88,8 @@ pub struct TryBlock {
 }
 
 /// One catch handler: what it catches (no type descriptor for `catch (...)`), where its
-/// catch object lives relative to the frame (0 for none), its funclet and, for
+/// catch object lives relative to the frame (a displacement the frame address wraps by, which
+/// is negative on ARM64; 0 for none), its funclet and, for
 /// `__CxxFrameHandler4`, the continuation addresses its funclet may name by index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Handler {
@@ -477,7 +478,7 @@ impl<'a> FunctionData<'a> {
                 Some(Handler {
                     adjectives: word(0)?,
                     type_descriptor: address(&self.image, u64::from(word(4)?)),
-                    catch_object: u64::from(word(8)?),
+                    catch_object: i64::from(word(8)? as i32) as u64,
                     funclet: address(&self.image, u64::from(word(12)?)),
                     continuations: [0; 2],
                     continuation_count: 0,
@@ -744,6 +745,12 @@ mod tests {
         assert_eq!(handler.funclet, BASE + 0x1600);
         assert_eq!(data.handler(&block, 1, 0x1000), None);
         assert_eq!(data.try_block(1), None);
+        let mut below_the_frame = bytes.clone();
+        put(&mut below_the_frame, 0x268, &[(-16i32) as u32]);
+        let data = FunctionData::fixed(image(&below_the_frame), 0x100).unwrap();
+        let handler = data.handler(&block, 0, 0x1000).unwrap();
+        let frame = 0xffff_fff6_f660u64;
+        assert_eq!(frame.wrapping_add(handler.catch_object), 0xffff_fff6_f650);
         let mut wrong = bytes.clone();
         put(&mut wrong, 0x100, &[0x1234]);
         assert!(FunctionData::fixed(image(&wrong), 0x100).is_none());
