@@ -389,7 +389,8 @@ mod tests {
     fn the_typed_lines_install_compile_open_and_read_back() {
         assert!(install_line().starts_with(
             "app install --entry mousepad --environment 'XDG_DATA_DIRS=/Applications/mousepad/share \
-             NO_AT_BRIDGE=1' --arguments '--disable-server /tmp/note.txt' /media/host/mousepad.zip;"
+             NO_AT_BRIDGE=1 XKB_CONFIG_ROOT=/Applications/mousepad/xkb' --arguments \
+             '--disable-server /tmp/note.txt' /media/host/mousepad.zip;"
         ));
         assert!(schemas_line("aarch64").starts_with(
             "/Applications/mousepad/lib/ld-musl-aarch64.so.1 --library-path \

@@ -7,12 +7,14 @@
 //! GTK 3.24.52, which draws with cairo into `wl_shm` buffers and needs no GPU, GLib, Pango,
 //! cairo, HarfBuzz, fontconfig, FreeType, GtkSourceView 4, the accessibility and X11
 //! libraries GTK is linked against (loaded, never used on Wayland), Wayland's client
-//! libraries, `libxkbcommon` and musl's loader. They are packed into `mousepad.zip`: the
-//! editor at `mousepad`, GLib's `glib-compile-schemas` at `libexec/`, musl's loader and every
-//! library at `lib/`, the GSettings schemas of Mousepad and GTK at `share/glib-2.0/schemas`,
-//! GtkSourceView's languages and styles at `share/gtksourceview-4` and four DejaVu fonts at
-//! `share/fonts`, which the installer links into `/Applications/.fonts`, where EggOS's
-//! `/etc/fonts/fonts.conf` points fontconfig ([`crate::qemu::gtk_app`] boots it).
+//! libraries, `libxkbcommon` with the keyboard data it compiles GTK's default keymap from
+//! (`xkeyboard-config`) and musl's loader. They are packed into `mousepad.zip`: the editor at
+//! `mousepad`, GLib's `glib-compile-schemas` at `libexec/`, musl's loader and every library at
+//! `lib/`, the keyboard data at `xkb/`, which `XKB_CONFIG_ROOT` names, the GSettings schemas
+//! of Mousepad and GTK at `share/glib-2.0/schemas`, GtkSourceView's languages and styles at
+//! `share/gtksourceview-4` and four DejaVu fonts at `share/fonts`, which the installer links
+//! into `/Applications/.fonts`, where EggOS's `/etc/fonts/fonts.conf` points fontconfig
+//! ([`crate::qemu::gtk_app`] boots it).
 
 use crate::sdl_app::{Package, create, fetch_pinned, fresh, read, untar};
 use crate::zip::{self, Member};
@@ -37,6 +39,10 @@ pub const SCHEMA_COMPILER: &str = "libexec/glib-compile-schemas";
 pub const SCHEMA_FOLDER: &str = "share/glib-2.0/schemas";
 /// The fonts' folder inside the app's folder, the one the installer links.
 pub const FONTS_FOLDER: &str = "share/fonts";
+/// The keyboard data's folder inside the app's folder: the one `XKB_CONFIG_ROOT` names, where
+/// `libxkbcommon` finds the rules, keycodes, types, compatibility and symbols it compiles
+/// GTK's default keymap from when GDK's Wayland backend starts.
+pub const XKB_FOLDER: &str = "xkb";
 /// The file the check edits.
 pub const NOTE: &str = "/tmp/note.txt";
 
@@ -46,6 +52,7 @@ const SCHEMAS_IN_PACKAGE: &str = "usr/share/glib-2.0/schemas";
 const SOURCE_VIEW_IN_PACKAGE: &str = "usr/share/gtksourceview-4";
 const SOURCE_VIEW_FOLDER: &str = "share/gtksourceview-4";
 const FONTS_IN_PACKAGE: &str = "usr/share/fonts/dejavu";
+const XKB_IN_PACKAGE: &str = "usr/share/X11/xkb";
 const FONTS: [&str; 4] = [
     "DejaVuSans.ttf",
     "DejaVuSans-Bold.ttf",
@@ -59,7 +66,7 @@ const PROGRAM_MODE: u32 = 0o100_755;
 
 /// The packages, pinned by research (D176): Mousepad and the closure of the libraries its
 /// program and theirs name (`DT_NEEDED`), with DejaVu's fonts.
-pub const PACKAGES: [Package; 57] = [
+pub const PACKAGES: [Package; 58] = [
     Package {
         repository: "main",
         name: "at-spi2-core-libs",
@@ -447,6 +454,13 @@ pub const PACKAGES: [Package; 57] = [
     },
     Package {
         repository: "main",
+        name: "xkeyboard-config",
+        version: "2.47-r0",
+        x86_64: "8c8f9af2b78f8e955480aa88103e495d2637edac659a417075e877c88a41fed0",
+        aarch64: "a78c94324d215f874a6e6f29c3aa889f0755596ea952865f98ef64c06806a1c1",
+    },
+    Package {
+        repository: "main",
         name: "xz-libs",
         version: "5.8.4-r0",
         x86_64: "ab362dd515ead04c31a6c302163248da7aa4813e283c971e6dd3f789b453a1d9",
@@ -569,8 +583,8 @@ fn folder(name: &str) -> Member {
 }
 
 /// The archive's members for `arch`, from the packages unpacked at `packages`: the editor,
-/// the schema compiler, musl's loader, the libraries, the schemas, GtkSourceView's data and
-/// the fonts.
+/// the schema compiler, musl's loader, the libraries, the keyboard data, the schemas,
+/// GtkSourceView's data and the fonts.
 pub fn members(arch: &str, packages: &Path) -> Result<Vec<Member>, String> {
     let mut members = vec![
         Member {
@@ -598,6 +612,7 @@ pub fn members(arch: &str, packages: &Path) -> Result<Vec<Member>, String> {
             mode: FILE_MODE,
         });
     }
+    members.extend(zip::folder_members(&packages.join(XKB_IN_PACKAGE), XKB_FOLDER)?);
     members.extend([folder("share"), folder("share/glib-2.0")]);
     members.extend(zip::folder_members(
         &packages.join(SCHEMAS_IN_PACKAGE),
@@ -619,10 +634,14 @@ pub fn members(arch: &str, packages: &Path) -> Result<Vec<Member>, String> {
 }
 
 /// What the app is installed with, as `app install --environment` takes it: where GLib finds
-/// the schemas and GtkSourceView its data (the app's `share`), and no accessibility bus, as
-/// EggOS has no D-Bus.
+/// the schemas and GtkSourceView its data (the app's `share`), no accessibility bus, as EggOS
+/// has no D-Bus, and where `libxkbcommon` finds the keyboard data (the app's `xkb`). The
+/// launch line, environment first, must stay within the catalogue's 256 bytes.
 pub fn install_environment() -> String {
-    format!("XDG_DATA_DIRS=/Applications/{APP}/share NO_AT_BRIDGE=1")
+    format!(
+        "XDG_DATA_DIRS=/Applications/{APP}/share NO_AT_BRIDGE=1 \
+         XKB_CONFIG_ROOT=/Applications/{APP}/{XKB_FOLDER}"
+    )
 }
 
 /// What the app is installed with, as `app install --arguments` takes it: no D-Bus service
@@ -701,6 +720,7 @@ mod tests {
             packages.join(SCHEMAS_IN_PACKAGE),
             packages.join(SOURCE_VIEW_IN_PACKAGE).join("styles"),
             packages.join(FONTS_IN_PACKAGE),
+            packages.join(XKB_IN_PACKAGE).join("rules"),
         ] {
             std::fs::create_dir_all(folder).unwrap();
         }
@@ -727,6 +747,7 @@ mod tests {
         for font in FONTS {
             std::fs::write(packages.join(FONTS_IN_PACKAGE).join(font), b"font").unwrap();
         }
+        std::fs::write(packages.join(XKB_IN_PACKAGE).join("rules/evdev"), b"! model").unwrap();
         let members = members("aarch64", &packages).unwrap();
         std::fs::remove_dir_all(&scratch).unwrap();
         let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
@@ -739,6 +760,7 @@ mod tests {
             "share/glib-2.0/schemas/org.xfce.mousepad.gschema.xml",
             "share/gtksourceview-4/styles/classic.xml",
             "share/fonts/DejaVuSansMono.ttf",
+            "xkb/rules/evdev",
         ] {
             assert!(names.contains(&wanted), "{wanted}");
         }
@@ -749,9 +771,19 @@ mod tests {
         assert_eq!(programs, 3);
         assert_eq!(
             install_environment(),
-            "XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1"
+            "XDG_DATA_DIRS=/Applications/mousepad/share NO_AT_BRIDGE=1 \
+             XKB_CONFIG_ROOT=/Applications/mousepad/xkb"
         );
         assert_eq!(install_arguments(), "--disable-server /tmp/note.txt");
+        let launch_line = format!(
+            "{} /Applications/{APP}/{LIBRARY_FOLDER}/{} --library-path \
+             /Applications/{APP}/{LIBRARY_FOLDER} /Applications/{APP}/{APP} {}",
+            install_environment(),
+            musl_loader("aarch64"),
+            install_arguments()
+        );
+        assert_eq!(launch_line.len(), 253);
+        assert!(launch_line.len() <= eggos_drivers::desktop::COMMAND_CAPACITY);
         assert!(eggos_app_manifest::is_environment(
             install_environment().as_bytes()
         ));
