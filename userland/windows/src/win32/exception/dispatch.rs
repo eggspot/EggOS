@@ -287,8 +287,6 @@ pub fn unwind(
     reached
 }
 
-/// The registers `deliver_fault` rewrites in a signal frame's `ucontext_t`: `sp`, `pc` and the
-/// first three argument registers.
 const REWRITTEN: [usize; 5] = [
     UCONTEXT_SP,
     UCONTEXT_PC,
@@ -297,8 +295,6 @@ const REWRITTEN: [usize; 5] = [
     UCONTEXT_ARGUMENTS[2],
 ];
 
-/// What `deliver_fault` keeps in the signal frame's `siginfo_t` for `dispatch_fault`: the
-/// exception, and the faulting values of the registers it rewrites.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct DeliveredFault {

@@ -33,8 +33,6 @@ static RESERVATIONS: SpinLock<[(usize, usize); MAX_RESERVATIONS]> =
 static WRITE_EXECUTE: Ranges<MAX_WRITE_EXECUTE_RANGES> = Ranges::new();
 static WRITE_EXECUTE_CHANGES: SpinLock<()> = SpinLock::new(());
 
-/// The pages' protection on Linux, and whether the program asked for them to be writable and
-/// executable at once, which they become in turn (`write_execute`), writable first.
 fn protection(protect: u32) -> Option<(usize, bool)> {
     Some(match protect & 0xff {
         0x01 => (PROT_NONE, false),
