@@ -29,11 +29,15 @@ struct Address {
 }
 
 impl Address {
-    fn of(parts: &[&[u8]]) -> Option<Self> {
-        let mut address = Self {
+    const fn empty() -> Self {
+        Self {
             bytes: [0; MAX_URL_BYTES],
             length: 0,
-        };
+        }
+    }
+
+    fn of(parts: &[&[u8]]) -> Option<Self> {
+        let mut address = Self::empty();
         for part in parts {
             let end = address.length.checked_add(part.len())?;
             address
@@ -62,7 +66,7 @@ struct Request<'a> {
 
 enum Answer {
     Saved,
-    Redirect(Address),
+    Redirected,
 }
 
 pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
@@ -118,6 +122,7 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.error(&[b"the URL is longer than 2048 bytes"]);
         return FAILURE;
     };
+    let mut redirect = Address::empty();
     for _ in 0..=MAX_REDIRECTS {
         let url = match http::parse_url(address.as_bytes()) {
             Ok(url) => url,
@@ -126,9 +131,9 @@ pub fn fetch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
                 return FAILURE;
             }
         };
-        match get(output, &url, &request) {
+        match get(output, &url, &request, &mut redirect) {
             Ok(Answer::Saved) => return 0,
-            Ok(Answer::Redirect(next)) => address = next,
+            Ok(Answer::Redirected) => core::mem::swap(&mut address, &mut redirect),
             Err(status) => return status,
         }
     }
@@ -292,6 +297,7 @@ fn get<S: System>(
     output: &mut Output<S>,
     url: &Url<'_>,
     request: &Request<'_>,
+    redirect: &mut Address,
 ) -> Result<Answer, i32> {
     let address = resolve(output, url.host)?;
     let descriptor = match output.system.open_stream_socket() {
@@ -305,7 +311,15 @@ fn get<S: System>(
         true => Some(Buffers::new()),
         false => None,
     };
-    let answer = exchange(output, descriptor, address, url, request, buffers.as_mut());
+    let answer = exchange(
+        output,
+        descriptor,
+        address,
+        url,
+        request,
+        buffers.as_mut(),
+        redirect,
+    );
     output.system.close(descriptor);
     answer
 }
@@ -317,6 +331,7 @@ fn exchange<S: System>(
     url: &Url<'_>,
     request: &Request<'_>,
     buffers: Option<&mut Buffers>,
+    redirect: &mut Address,
 ) -> Result<Answer, i32> {
     let shown = authority(url);
     let connected = output
@@ -392,7 +407,10 @@ fn exchange<S: System>(
             }
         };
         return match next {
-            Some(next) => Ok(Answer::Redirect(next)),
+            Some(next) => {
+                *redirect = next;
+                Ok(Answer::Redirected)
+            }
             None => {
                 output.error(&[b"the redirect's URL is longer than 2048 bytes"]);
                 Err(FAILURE)

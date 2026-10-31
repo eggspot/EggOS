@@ -381,6 +381,10 @@ impl<T: System + ?Sized> System for &mut T {
         (**self).now()
     }
 
+    fn time_zone_variable(&self) -> Option<&[u8]> {
+        (**self).time_zone_variable()
+    }
+
     fn now_with_nanoseconds(&mut self) -> Duration {
         (**self).now_with_nanoseconds()
     }
@@ -517,6 +521,29 @@ impl<T: System + ?Sized> System for &mut T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_statfs_record_is_read_at_linux_s_offsets() {
+        let mut bytes = [0u8; STATFS_SIZE];
+        bytes[8..16].copy_from_slice(&4096u64.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&1000u64.to_ne_bytes());
+        bytes[24..32].copy_from_slice(&400u64.to_ne_bytes());
+        bytes[32..40].copy_from_slice(&300u64.to_ne_bytes());
+        bytes[80..88].copy_from_slice(&STATFS_READ_ONLY.to_ne_bytes());
+        let usage = FileSystemUsage::from_statfs(&bytes);
+        assert_eq!(
+            usage,
+            FileSystemUsage {
+                block_size: 4096,
+                blocks: 1000,
+                free: 400,
+                available: 300,
+                read_only: true,
+            }
+        );
+        bytes[72..80].copy_from_slice(&1024u64.to_ne_bytes());
+        assert_eq!(FileSystemUsage::from_statfs(&bytes).block_size, 1024);
+    }
 
     #[test]
     fn a_statx_record_is_read_at_linux_s_offsets() {

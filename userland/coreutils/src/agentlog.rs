@@ -139,13 +139,13 @@ fn number(bytes: &[u8]) -> Option<usize> {
 }
 
 fn filter_option(argument: &[u8]) -> Option<(FilterOption, Option<&[u8]>)> {
-    FILTER_OPTIONS.iter().find_map(|&(name, option)| {
-        match argument.strip_prefix(name)? {
+    FILTER_OPTIONS
+        .iter()
+        .find_map(|&(name, option)| match argument.strip_prefix(name)? {
             [] => Some((option, None)),
             [b'=', value @ ..] => Some((option, Some(value))),
             _ => None,
-        }
-    })
+        })
 }
 
 fn narrow<'f, S: System>(

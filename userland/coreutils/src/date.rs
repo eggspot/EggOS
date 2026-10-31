@@ -594,8 +594,9 @@ mod tests {
                 b"eggos-settings 1\ntime.zone=Asia/Kolkata\n",
                 0,
             );
-        let (_, out, _, settings) = run(settings, &[c"+%H:%M %Z"]);
+        let (_, out, _, mut settings) = run(settings, &[c"+%H:%M %Z"]);
         assert_eq!(out, "06:30 IST\n");
+        settings.standard_output.clear();
         let (_, out, _, _) = run(settings, &[c"-u", c"+%H:%M %Z %z"]);
         assert_eq!(out, "01:00 UTC +0000\n");
         let mut unknown = Fake::default();

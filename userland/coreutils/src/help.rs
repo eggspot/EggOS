@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(status, 0);
         assert!(
             output.starts_with(
-                "usage: ls [-a] [-A] [-l] [-d] [-1] [--json] [--limit <count>] \
+                "usage: ls [-a] [-A] [-l] [-d] [-1] [-C] [--json] [--limit <count>] \
                  [--after <cursor>] [<path>...]\n"
             ),
             "{output}"

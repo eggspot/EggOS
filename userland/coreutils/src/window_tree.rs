@@ -401,7 +401,8 @@ mod tests {
     fn show_json_writes_one_record_an_element() {
         let (status, fake) = run(&[c"show", c"--json", c"--", c"129"], settings());
         assert_eq!(status, 0);
-        let lines: Vec<&str> = fake.output().lines().collect();
+        let written = fake.output();
+        let lines: Vec<&str> = written.lines().collect();
         assert_eq!(lines.len(), 4);
         assert_eq!(
             lines[2],

@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn typing_refuses_control_characters_and_other_text() {
-        for text in [c"", c"line\r", c"tab\there", c"caf\xc3\xa9"] {
+        for text in [c"", c"line\r", c"tab\there", c"caf\xe9"] {
             let (status, fake) = run(&[c"type", c"129", text], machine());
             assert_eq!(status, 2, "{text:?}");
             assert!(fake.sent_input.is_empty());

@@ -229,11 +229,11 @@ fn write_summary<S: System>(output: &mut Output<S>, host: &[u8], tally: &Tally, 
     output.write(b"% packet loss, time ");
     output.write_number(elapsed_ms, 0);
     output.write(b"ms\n");
-    if tally.received > 0 {
+    if let Some(average_us) = tally.total_us.checked_div(tally.received) {
         output.write(b"rtt min/avg/max = ");
         output.write(milliseconds(tally.fastest_us).as_bytes());
         output.write(b"/");
-        output.write(milliseconds(tally.total_us / tally.received).as_bytes());
+        output.write(milliseconds(average_us).as_bytes());
         output.write(b"/");
         output.write(milliseconds(tally.slowest_us).as_bytes());
         output.write(b" ms\n");

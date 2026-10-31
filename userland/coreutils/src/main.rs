@@ -102,6 +102,7 @@ mod window_desktop;
 mod window_input;
 #[cfg(any(test, target_env = "musl"))]
 mod window_menu;
+#[cfg(any(test, target_env = "musl"))]
 mod window_tree;
 #[cfg(any(test, target_env = "musl"))]
 mod wm;

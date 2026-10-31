@@ -129,7 +129,7 @@ mod tests {
             fake.init_signal_error = Some(Errno::ESRCH);
             let (status, fake) = run_with(fake, &[], command);
             assert_eq!(fake.init_signals, vec![signal]);
-            assert_eq!((status, fake.rebooted), (0, vec![command]));
+            assert_eq!((status, &fake.rebooted), (0, &vec![command]));
             assert!(fake.slept.is_empty(), "no init: nothing to wait for");
             assert_eq!(fake.errors(), "");
         }

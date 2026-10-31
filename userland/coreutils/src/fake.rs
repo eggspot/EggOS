@@ -641,8 +641,12 @@ impl System for Fake {
 
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno> {
         self.slept.push(duration);
-        self.network.monotonic_us +=
-            duration.seconds * 1_000_000 + u64::from(duration.nanoseconds) / 1000;
+        self.network.monotonic_us = self.network.monotonic_us.saturating_add(
+            duration
+                .seconds
+                .saturating_mul(1_000_000)
+                .saturating_add(u64::from(duration.nanoseconds) / 1000),
+        );
         Ok(())
     }
 
@@ -937,7 +941,7 @@ impl System for Fake {
                     .find(|(parent, _)| *parent == request[0])
                     .map(|&(_, dialog)| dialog);
                 let (receiver, outcome) = match dialog {
-                    Some(dialog) if pointer || request[1] == 2 => (dialog, 2),
+                    Some(dialog) if pointer || request[1] == 2 => (dialog, 2u32),
                     Some(dialog) => (dialog, 1),
                     None => (request[0], 0),
                 };
@@ -1305,7 +1309,7 @@ impl Fake {
         match self.nodes.get(directory) {
             Some((Node::Directory, _)) => Ok(()),
             Some(_) => Err(Errno::ENOTDIR),
-            None if directory == b"." => Ok(()),
+            None if directory == b"." || directory == b"/" => Ok(()),
             None => Err(Errno::ENOENT),
         }
     }

@@ -1,13 +1,15 @@
 use crate::output::{FAILURE, Output, error_for};
-use crate::system::System;
+use crate::system::{Duration, System};
 use core::ffi::CStr;
-use core::time::Duration;
 use eggos_android_log::{self as log, Buffer, Entry, LOG_PATH, priority};
 use eggos_commands::errors;
 use eggos_runtime::errno::Errno;
 
 const MOST_FILTERS: usize = 16;
-const FOLLOW_INTERVAL: Duration = Duration::from_millis(250);
+const FOLLOW_INTERVAL: Duration = Duration {
+    seconds: 0,
+    nanoseconds: 250_000_000,
+};
 const TAG_COLUMN: usize = 8;
 const SECONDS_PER_DAY: u32 = 86_400;
 

@@ -26,8 +26,7 @@ pub fn tee<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return FAILURE;
     };
     let mut targets: [Option<Target<'_>>; MAX_FILES] = [const { None }; MAX_FILES];
-    let mut count = 0;
-    for &argument in operands.all() {
+    for (count, &argument) in operands.all().iter().enumerate() {
         if count == MAX_FILES {
             output.error(&[b"too many files"]);
             return FAILURE;
@@ -36,7 +35,6 @@ pub fn tee<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             path: argument,
             descriptor: None,
         });
-        count += 1;
     }
     let mut status = 0;
     for target in targets.iter_mut().flatten() {

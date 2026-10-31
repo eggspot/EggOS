@@ -197,4 +197,11 @@ mod tests {
         assert_eq!(run(&mut Fake::default(), &[c"paste"]), USAGE_STATUS);
         assert_eq!(run(&mut Fake::default(), &[c"get", c"x"]), USAGE_STATUS);
     }
+
+    #[test]
+    fn the_requests_are_the_window_server_s() {
+        use eggos_drivers::desktop::protocol::request;
+        assert_eq!(SET_CLIPBOARD, request::SET_CLIPBOARD);
+        assert_eq!(GET_CLIPBOARD, request::GET_CLIPBOARD);
+    }
 }

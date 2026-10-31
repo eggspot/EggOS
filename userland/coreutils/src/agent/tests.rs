@@ -1,6 +1,6 @@
 use super::*;
-use eggos_mcp::pairing::{PAIRING_BYTES, PendingPairing};
 use crate::fake::Fake;
+use eggos_mcp::pairing::{PAIRING_BYTES, PendingPairing};
 
 fn run(fake: &mut Fake, arguments: &[&CStr]) -> i32 {
     let mut output = Output::new(fake, b"agent");
@@ -213,6 +213,7 @@ fn the_network_server_is_turned_on_and_off_by_its_file() {
     );
     assert_eq!(run(&mut fake, &[c"network", c"--port", c"9443", c"on"]), 0);
     assert_eq!(fake.contents("/var/lib/eggos/agent-network"), b"9443\n");
+    fake.standard_output.clear();
     assert_eq!(run(&mut fake, &[c"network", c"show"]), 0);
     assert!(
         fake.output().starts_with(
@@ -224,6 +225,7 @@ fn the_network_server_is_turned_on_and_off_by_its_file() {
     );
     assert_eq!(run(&mut fake, &[c"network", c"--port", c"0", c"on"]), 2);
     assert_eq!(run(&mut fake, &[c"network", c"off"]), 0);
+    fake.standard_output.clear();
     assert_eq!(run(&mut fake, &[c"network", c"show"]), 0);
     assert_eq!(
         fake.output(),
