@@ -3,14 +3,15 @@
 //! a civil date and time and back ([`DateTime`]), what a person types to set the clock
 //! ([`parse_setting`]) and the texts the clock is shown in ([`format`]). Days are counted from
 //! 1970-01-01 with the days-from-civil and civil-from-days algorithms over eras of 400 years,
-//! which hold for every year an `i64` count of seconds reaches. There are no time zones: EggOS
-//! keeps UTC.
+//! which hold for every year an `i64` count of seconds reaches. EggOS keeps the clock in UTC;
+//! time zones ([`zone`]) change how a time is shown and read.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod format;
 mod parse;
+pub mod zone;
 
 pub use parse::{ParseError, parse_proc_driver_rtc, parse_setting};
 
