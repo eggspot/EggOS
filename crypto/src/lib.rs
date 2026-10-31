@@ -4,11 +4,12 @@
 //! [`poly1305`], [`chacha20poly1305`]), X25519 (RFC 7748, [`x25519`]), and the checks of
 //! signatures that certificates and TLS servers make: ECDSA on P-256 and P-384 (FIPS 186-5,
 //! [`ecdsa`]) and RSA with PKCS #1 v1.5 and PSS padding (RFC 8017, [`rsa`]), over
-//! [`bignum`]'s modular arithmetic.
+//! [`bignum`]'s modular arithmetic, and signing with ECDSA on P-256 for EggOS's own TLS server
+//! ([`p256`]).
 //!
-//! Code that handles secrets (hashing, MACs, AES, GCM, ChaCha20, Poly1305, X25519) takes the
-//! same time and touches the same memory whatever the secret is: no branch and no table
-//! index depends on it ([`constant_time`]). Signature checks only handle public values and
+//! Code that handles secrets (hashing, MACs, AES, GCM, ChaCha20, Poly1305, X25519, P-256
+//! signing) takes the same time and touches the same memory whatever the secret is: no branch
+//! and no table index depends on it ([`constant_time`]). Signature checks only handle public values and
 //! are not constant-time. Nothing here allocates.
 
 #![cfg_attr(not(test), no_std)]
@@ -23,6 +24,7 @@ pub mod constant_time;
 pub mod ecdsa;
 pub mod gcm;
 pub mod hmac;
+pub mod p256;
 pub mod poly1305;
 pub mod rsa;
 pub mod sha2;
