@@ -19,6 +19,10 @@ pub fn handle<P: Platform>(interrupt: Interrupt) {
         console::receive_input::<P>();
         return;
     }
+    if interrupt == Interrupt::PowerButton {
+        crate::linux::reboot::power_button::<P>();
+        return;
+    }
     if let Interrupt::Device(line) = interrupt {
         devices::interrupts::handle::<P>(line);
         return;

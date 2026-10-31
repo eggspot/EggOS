@@ -15,6 +15,7 @@ mod exception;
 mod fp;
 mod message_interrupts;
 mod port;
+mod power_button;
 mod random;
 mod thread;
 mod timer;
@@ -540,6 +541,10 @@ impl Platform for X86_64 {
         console_input::enable()?;
         com1().enable_receive_interrupt();
         Ok(())
+    }
+
+    fn enable_power_button() -> Result<(), &'static str> {
+        power_button::enable()
     }
 
     fn message_interrupt() -> Result<(crate::DeviceLine, crate::InterruptMessage), &'static str> {

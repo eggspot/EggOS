@@ -146,6 +146,45 @@ pub fn parse_fadt(fadt: &[u8]) -> Option<Fadt> {
     })
 }
 
+const FADT_SCI_INT: usize = 46;
+const FADT_PM1A_EVT_BLK: usize = 56;
+const FADT_PM1_EVT_LEN: usize = 88;
+const FADT_FLAGS: usize = 112;
+const FADT_FLAG_POWER_BUTTON_IS_METHOD: u32 = 1 << 4;
+/// The PM1 status and enable registers' power button bit (ACPI 6.5, tables 4.13 and 4.14).
+pub const PM1_POWER_BUTTON: u16 = 1 << 8;
+
+/// What a FADT says about the power button when it is ACPI's fixed feature (D202).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerButton {
+    /// The ISA line of the system control interrupt.
+    pub sci_line: u8,
+    /// The I/O port of the PM1a status register; its enable register follows it.
+    pub pm1a_status_port: u16,
+    /// The I/O port of the PM1a enable register.
+    pub pm1a_enable_port: u16,
+}
+
+/// The fixed-feature power button a validated FADT describes; `None` when the button is a
+/// control method (defined in AML) or the PM1a event block is missing or not in I/O space.
+pub fn power_button(fadt: &[u8]) -> Option<PowerButton> {
+    let flags = read_u32(fadt, FADT_FLAGS)?;
+    if flags & FADT_FLAG_POWER_BUTTON_IS_METHOD != 0 {
+        return None;
+    }
+    let sci = u8::try_from(read_u16(fadt, FADT_SCI_INT)?).ok()?;
+    let block = u16::try_from(read_u32(fadt, FADT_PM1A_EVT_BLK)?).ok()?;
+    let length = *fadt.get(FADT_PM1_EVT_LEN)?;
+    if block == 0 || length < 4 {
+        return None;
+    }
+    Some(PowerButton {
+        sci_line: sci,
+        pm1a_status_port: block,
+        pm1a_enable_port: block + u16::from(length / 2),
+    })
+}
+
 const FADT_CENTURY: usize = 108;
 const FADT_IAPC_BOOT_ARCH: usize = 109;
 const IAPC_BOOT_ARCH_CMOS_RTC_NOT_PRESENT: u16 = 1 << 5;
@@ -379,6 +418,10 @@ fn checksum_ok(bytes: &[u8]) -> bool {
     bytes.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)) == 0
 }
 
+fn read_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+}
+
 fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
@@ -598,6 +641,27 @@ mod tests {
         let mut corrupt = facp.clone();
         corrupt[TABLE_HEADER_LENGTH] ^= 1;
         assert!(!table_ok(&corrupt, b"FACP"));
+    }
+
+    #[test]
+    fn a_fixed_power_button_is_found_and_a_method_one_is_not() {
+        let mut body = vec![0u8; 244 - TABLE_HEADER_LENGTH];
+        let at = |offset: usize| offset - TABLE_HEADER_LENGTH;
+        body[at(FADT_SCI_INT)..at(FADT_SCI_INT) + 2].copy_from_slice(&9u16.to_le_bytes());
+        body[at(FADT_PM1A_EVT_BLK)..at(FADT_PM1A_EVT_BLK) + 4]
+            .copy_from_slice(&0x600u32.to_le_bytes());
+        body[at(FADT_PM1_EVT_LEN)] = 4;
+        let fadt = table(b"FACP", &body);
+        assert_eq!(
+            power_button(&fadt),
+            Some(PowerButton {
+                sci_line: 9,
+                pm1a_status_port: 0x600,
+                pm1a_enable_port: 0x602,
+            })
+        );
+        body[at(FADT_FLAGS)] = 1 << 4;
+        assert_eq!(power_button(&table(b"FACP", &body)), None);
     }
 
     #[test]

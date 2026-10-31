@@ -24,6 +24,9 @@ pub enum Interrupt {
     /// returns: the HAL ends the interrupt at its controller only then, so the UART stops
     /// asserting it first.
     ConsoleInput,
+    /// The machine's power button was pressed, once [`crate::Platform::enable_power_button`]
+    /// turned its interrupt on (D202).
+    PowerButton,
     /// A device interrupt the kernel routed with [`crate::Platform::route_device_interrupt`] or
     /// [`crate::Platform::message_interrupt`], by the line the call gave. The kernel quiets the
     /// device before it returns (a level-triggered line stays asserted until then); the HAL

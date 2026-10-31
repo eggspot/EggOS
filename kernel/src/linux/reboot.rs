@@ -15,6 +15,23 @@ use crate::process::Process;
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
 
+/// The signal `poweroff` sends init to have it stop every program and power the machine off,
+/// `SIGRTMIN + 4`, as systemd and BusyBox's init read it.
+pub const INIT_POWERS_OFF: u32 = 38;
+
+/// The power button was pressed (D202): init is asked to power off, as `poweroff` asks it, so
+/// every program gets `SIGTERM`, then `SIGKILL`, and the file systems are synced before the
+/// machine goes down. Called from the button's interrupt.
+pub fn power_button<P: Platform>() {
+    let init = super::process_table::TABLE.lock().describe(1);
+    if let Some((_, Some(running))) = init {
+        super::wait::send_to_running::<P>(
+            &running,
+            super::signals::Info::from_kernel(INIT_POWERS_OFF),
+        );
+    }
+}
+
 /// `LINUX_REBOOT_MAGIC1`.
 pub const MAGIC1: u32 = 0xfee1_dead;
 

@@ -56,6 +56,13 @@ pub trait Platform: 'static {
     /// when the machine's description gives no way to route it.
     fn enable_console_input() -> Result<(), &'static str>;
 
+    /// Turns on the power button's interrupt, [`Interrupt::PowerButton`] (D202), where the
+    /// machine has one the HAL answers: ACPI's fixed-feature button on x86_64. An error says why
+    /// not.
+    fn enable_power_button() -> Result<(), &'static str> {
+        Err("this machine has no power button EggOS answers yet")
+    }
+
     /// Routes the device interrupt `specifier` names (a device-tree interrupt of the machine's
     /// interrupt controller: a GIC shared peripheral interrupt, a PLIC source) to the boot CPU and
     /// enables it: from then on it raises [`Interrupt::Device`] with the line returned. A
