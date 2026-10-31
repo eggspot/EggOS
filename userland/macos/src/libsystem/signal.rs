@@ -209,9 +209,12 @@ extern "C" fn deliver(
     if handler == SIG_DFL || handler == SIG_IGN {
         return;
     }
-    if flags & action::RESETHAND != 0 {
+    if flags & action::RESETHAND != 0
+        && HANDLERS[index]
+            .compare_exchange(handler, SIG_DFL, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
         FLAGS[index].store(flags & !action::SIGINFO, Ordering::Relaxed);
-        HANDLERS[index].store(SIG_DFL, Ordering::Release);
         let linux_signal = linux_signal as usize;
         if crate::callback::translated_fault_handler(linux_signal).is_some() {
             RESETS_RUNNING.fetch_add(1, Ordering::SeqCst);
