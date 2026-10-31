@@ -381,7 +381,8 @@ impl Desktop {
     /// [`WindowError::Busy`] while [`Self::person_is_active`], [`WindowError::Invalid`] for a
     /// point outside the content or a character no key types, [`WindowError::Unsupported`] for
     /// pointer input or sideways scrolling in the terminal, [`WindowError::QueueFull`] when the
-    /// client's queue lacks room for the whole step (nothing is sent).
+    /// client's queue lacks room for the whole step (nothing is sent), [`WindowError::NotAllowed`]
+    /// for a window that takes only the person's input (D193's grant prompt).
     pub fn send_input(
         &mut self,
         window: u32,
@@ -389,6 +390,9 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Result<Injected, WindowError> {
         let slot = self.any_window(window)?;
+        if self.window_at(slot).takes_person_input_only() {
+            return Err(WindowError::NotAllowed);
+        }
         if self.person_is_active() {
             return Err(WindowError::Busy);
         }
@@ -443,6 +447,9 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Result<(), WindowError> {
         let target = *self.window_at(slot);
+        if target.takes_person_input_only() {
+            return Err(WindowError::NotAllowed);
+        }
         if target.client == KERNEL_CLIENT {
             return Err(WindowError::Unsupported);
         }

@@ -206,6 +206,10 @@ impl Window {
         self.flags & flags::TAKES_CTRL_KEYS != 0
     }
 
+    pub fn takes_person_input_only(&self) -> bool {
+        self.flags & flags::PERSON_INPUT_ONLY != 0
+    }
+
     pub fn is_resizable(&self) -> bool {
         self.role == Role::Normal && !self.maximised && !self.is_fixed_size()
     }

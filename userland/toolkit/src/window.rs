@@ -28,6 +28,12 @@ const KEYBOARD_FLAG: u32 = 2;
 /// The window flag that has every Ctrl key reach the window, as a terminal needs (`CREATE`'s
 /// `TAKES_CTRL_KEYS`, docs/windows.md).
 pub const TAKES_CTRL_KEYS: u32 = 2;
+/// The window flag that keeps its size: no resize zones, no maximise (`CREATE`'s `FIXED_SIZE`).
+pub const FIXED_SIZE: u32 = 1;
+/// The window flag that refuses injected input (`wm click`, `wm type`, `wm key`, a menu
+/// chosen for an agent): only the person's own pointer and keys reach it (`CREATE`'s
+/// `PERSON_INPUT_ONLY`, D193's grant prompt).
+pub const PERSON_INPUT_ONLY: u32 = 4;
 
 const TITLE_CAPACITY: usize = 64;
 const AT_FDCWD: usize = -100isize as usize;

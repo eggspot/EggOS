@@ -33,6 +33,9 @@ pub struct FakeSystem {
     pub capture_read_fails_after: Option<usize>,
     pub capture_events: Vec<String>,
     pub capture_open: Option<(Vec<u8>, usize)>,
+    pub screen: bool,
+    pub prompts: Vec<Vec<u8>>,
+    pub prompts_ended: usize,
 }
 
 impl System for FakeSystem {
@@ -206,6 +209,18 @@ impl System for FakeSystem {
         Ok(length)
     }
 
+    fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
+        if !self.screen {
+            return Err(Errno::ENXIO);
+        }
+        self.prompts.push(question.to_vec());
+        Ok(())
+    }
+
+    fn end_grant_prompt(&mut self) {
+        self.prompts_ended += 1;
+    }
+
     fn now(&mut self) -> u64 {
         self.clock += 1;
         self.clock
@@ -319,6 +334,17 @@ impl Harness {
         let length = self
             .server
             .expire(now_ms, &mut self.system, &mut scratch, response);
+        split(&response[..length])
+    }
+
+    pub fn prompt_answered(
+        &mut self,
+        answer: Option<crate::grant_prompt::PromptAnswer>,
+    ) -> Vec<String> {
+        let (mut scratch, response) = self.buffers.scratch();
+        let length = self
+            .server
+            .prompt_answered(answer, &mut self.system, &mut scratch, response);
         split(&response[..length])
     }
 

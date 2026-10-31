@@ -134,6 +134,16 @@ pub trait System {
         let _ = out;
         Err(Errno::ENOENT)
     }
+    /// Shows the grant prompt on EggOS's own screen ([`crate::grant_prompt`]) with `question`,
+    /// one JSON line; the answer comes later, to [`crate::server::Server::prompt_answered`].
+    /// An error when there is no desktop or the prompt cannot start: the server then asks
+    /// through the client.
+    fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
+        let _ = question;
+        Err(Errno::ENODEV)
+    }
+    /// Closes the grant prompt if one is shown, unanswered or not.
+    fn end_grant_prompt(&mut self) {}
     /// The wall clock's seconds.
     fn now(&mut self) -> u64;
     /// A clock that never goes back, in milliseconds.

@@ -926,3 +926,50 @@ fn a_character_no_key_types_comes_as_a_key_record_of_code_0() {
         Ok(Injected::ForTerminal(TerminalInput::Character('€')))
     );
 }
+
+#[test]
+fn a_window_that_takes_only_the_person_s_input_refuses_injected_input() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let created = desktop
+        .create(CLIENT, 0, 0, 480, 200, protocol::flags::PERSON_INPUT_ONLY)
+        .unwrap();
+    desktop
+        .commit(
+            CLIENT,
+            u32::from(created.window),
+            &[],
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    desktop.set_time(QUIET_MS);
+    let mut events = Recorded::default();
+    for input in [
+        InjectedInput::Click {
+            x: 10,
+            y: 20,
+            button: crate::input::button::LEFT,
+        },
+        InjectedInput::Key {
+            code: 28,
+            modifiers: Modifiers::default(),
+        },
+        InjectedInput::Character('y'),
+    ] {
+        assert_eq!(
+            send(&mut desktop, created.window, input, &mut events),
+            Err(WindowError::NotAllowed)
+        );
+    }
+    assert!(events.take().is_empty());
+    let other = shown(&mut desktop, 300, 200);
+    let click = InjectedInput::Click {
+        x: 10,
+        y: 20,
+        button: crate::input::button::LEFT,
+    };
+    assert_eq!(
+        send(&mut desktop, other, click, &mut events),
+        Ok(Injected::Queued)
+    );
+}

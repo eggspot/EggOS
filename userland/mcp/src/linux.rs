@@ -6,6 +6,7 @@
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::{GENERATIONS, LOG_FOLDER, LOG_PATH, RECORD_BYTES, ROTATE_BYTES, ROTATED_PATHS};
 use crate::framing::{Line, LineReader};
+use crate::grant_prompt::{ANSWER_BYTES, PROMPT_OPTION, PROMPT_PROGRAM, PromptAnswer};
 use crate::grants::{self, COMMAND_LINE_PATH, ChannelAgent, Grant, Grants, STORE_PATH};
 use crate::paths::{HOME, MAX_PATH_BYTES};
 use crate::server::{
@@ -29,6 +30,7 @@ pub const WORKING_DIRECTORY: &CStr = c"/home";
 pub const REAP_GRACE_MS: u64 = 1000;
 
 const CHANNEL: &CStr = c"/dev/agent";
+const WINDOW_DEVICE: &CStr = c"/dev/window";
 const RESTARTED: &[u8] = b"--restarted";
 const AT_FDCWD: usize = -100isize as usize;
 const O_RDONLY: usize = 0;
@@ -193,30 +195,46 @@ fn read_grants(server: &mut Server) {
     }
 }
 
-fn wait_for_channel(channel: usize, deadline_ms: u64) -> bool {
+enum Woke {
+    Channel,
+    Prompt,
+    Timeout,
+}
+
+fn wait_for_channel(channel: usize, prompt: Option<usize>, deadline_ms: u64) -> Woke {
     let left = deadline_ms.saturating_sub(now_ms());
     if left == 0 {
-        return false;
+        return Woke::Timeout;
     }
-    let mut watched = [PollDescriptor {
-        descriptor: channel as i32,
+    let mut watched = [channel, prompt.unwrap_or(channel)].map(|descriptor| PollDescriptor {
+        descriptor: descriptor as i32,
         events: POLLIN,
         returned_events: 0,
-    }];
+    });
+    let count = match prompt {
+        Some(_) => 2,
+        None => 1,
+    };
     let timeout = [(left / 1000) as i64, (left % 1000 * 1_000_000) as i64];
-    match call(
+    let polled = call(
         number::PPOLL,
         [
             watched.as_mut_ptr() as usize,
-            1,
+            count,
             timeout.as_ptr() as usize,
             0,
             8,
             0,
         ],
-    ) {
-        Ok(ready) => ready > 0,
-        Err(_) => true,
+    );
+    let prompt_ready = prompt.is_some()
+        && watched
+            .get(1)
+            .is_some_and(|ready| ready.returned_events != 0);
+    match polled {
+        Ok(0) => Woke::Timeout,
+        Ok(_) if prompt_ready => Woke::Prompt,
+        Ok(_) | Err(_) => Woke::Channel,
     }
 }
 
@@ -290,6 +308,7 @@ pub fn run(startup: &Startup) -> i32 {
     let mut system = Linux {
         child_stack,
         command_words,
+        prompt: None,
     };
     let mut server = match restarted {
         true => Server::restarted(),
@@ -309,12 +328,19 @@ pub fn run(startup: &Startup) -> i32 {
     server.start(restarted, &mut system, &mut scratch);
     let mut reader = LineReader::new(input);
     loop {
-        if let Some(deadline) = server.waiting_until()
-            && !wait_for_channel(channel, deadline)
-        {
-            let length = server.expire(now_ms(), &mut system, &mut scratch, response);
-            send(channel, response.get(..length).unwrap_or_default());
-            continue;
+        if let Some(deadline) = server.waiting_until() {
+            let length = match wait_for_channel(channel, system.prompt_answer(), deadline) {
+                Woke::Channel => None,
+                Woke::Prompt => {
+                    let answer = system.read_prompt_answer();
+                    Some(server.prompt_answered(answer, &mut system, &mut scratch, response))
+                }
+                Woke::Timeout => Some(server.expire(now_ms(), &mut system, &mut scratch, response)),
+            };
+            if let Some(length) = length {
+                send(channel, response.get(..length).unwrap_or_default());
+                continue;
+            }
         }
         let space = reader.free_space();
         let read = call(
@@ -354,6 +380,40 @@ pub fn run(startup: &Startup) -> i32 {
 struct Linux {
     child_stack: &'static mut ChildStack,
     command_words: &'static mut [u8; MAX_WORD_BYTES],
+    prompt: Option<Prompt>,
+}
+
+struct Prompt {
+    child: usize,
+    answer: usize,
+}
+
+impl Linux {
+    fn prompt_answer(&self) -> Option<usize> {
+        self.prompt.as_ref().map(|prompt| prompt.answer)
+    }
+
+    fn read_prompt_answer(&self) -> Option<PromptAnswer> {
+        let prompt = self.prompt.as_ref()?;
+        let mut line = [0u8; ANSWER_BYTES];
+        let read = loop {
+            match call(
+                number::READ,
+                [
+                    prompt.answer,
+                    line.as_mut_ptr() as usize,
+                    line.len(),
+                    0,
+                    0,
+                    0,
+                ],
+            ) {
+                Err(Errno::EINTR) => continue,
+                other => break other,
+            }
+        };
+        PromptAnswer::from_line(line.get(..read.ok()?)?)
+    }
 }
 
 #[repr(C)]
@@ -879,6 +939,66 @@ impl System for Linux {
             (true, Ok(_)) => Ok(()),
             (false, _) => Err(Errno::EIO),
             (true, Err(error)) => Err(error),
+        }
+    }
+
+    fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
+        self.end_grant_prompt();
+        close(open(WINDOW_DEVICE, O_RDWR | O_CLOEXEC, 0)?);
+        let mut program = [0u8; 32];
+        let program = c_path(PROMPT_PROGRAM, &mut program).ok_or(Errno::EINVAL)?;
+        let mut option = [0u8; 32];
+        let option = c_path(PROMPT_OPTION, &mut option).ok_or(Errno::EINVAL)?;
+        let arguments = [
+            program.as_ptr().cast::<u8>(),
+            option.as_ptr().cast(),
+            core::ptr::null(),
+        ];
+        let mut environment = [core::ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+        for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+            *slot = variable.as_ptr().cast();
+        }
+        let input = pipe()?;
+        let output = pipe().inspect_err(|_| {
+            close(input[0]);
+            close(input[1]);
+        })?;
+        let request = Spawn::new(
+            program,
+            &arguments,
+            &environment,
+            [input[0], output[1], CONSOLE],
+        )
+        .in_directory(WORKING_DIRECTORY)
+        .in_own_process_group();
+        let started = spawn(self.child_stack, &request);
+        close(input[0]);
+        close(output[1]);
+        let child = started.inspect_err(|_| {
+            close(input[1]);
+            close(output[0]);
+        })?;
+        let written = syscall::write_all(input[1], question);
+        close(input[1]);
+        self.prompt = Some(Prompt {
+            child,
+            answer: output[0],
+        });
+        if !written {
+            self.end_grant_prompt();
+            return Err(Errno::EPIPE);
+        }
+        Ok(())
+    }
+
+    fn end_grant_prompt(&mut self) {
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        close(prompt.answer);
+        if wait_until(prompt.child, now_ms()).is_none() {
+            let _ = stop_group(prompt.child);
+            let _ = wait_until(prompt.child, now_ms().saturating_add(REAP_GRACE_MS));
         }
     }
 

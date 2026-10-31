@@ -15,6 +15,7 @@ pub mod framing;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
 pub mod grant_files;
+pub mod grant_prompt;
 pub mod grants;
 pub mod json;
 #[cfg(target_env = "musl")]

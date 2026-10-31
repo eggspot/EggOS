@@ -25,6 +25,7 @@
 
 use crate::arguments::{self, Button, Checked, Decoded};
 use crate::audit::{self, BUDGET_BYTES, Entry, Outcome};
+use crate::grant_prompt::{self, GRANT_PROMPT_TIMEOUT_S, PromptAnswer, QUESTION_BYTES, Question};
 use crate::grants::{
     AgentId, AgentName, Decision, Denial, Grant, Grants, MAX_AGENT_ID_BYTES, MAX_AGENT_NAME_BYTES,
     Policy, STORE_BYTES, STORE_PATH, StoreState, Unknown,
@@ -183,6 +184,7 @@ struct Pending {
     state: FileState,
     deadline_ms: u64,
     agent: AgentId,
+    on_screen: bool,
 }
 
 /// The server: the session, the grants, the calls' count, a call waiting for the user, and
@@ -199,6 +201,7 @@ pub struct Server {
     started_ms: u64,
     questions: u64,
     pending: Option<Pending>,
+    session_classes: [bool; Grant::ALL.len()],
     audit_written: u64,
     budget: u64,
     budget_spent: bool,
@@ -217,6 +220,7 @@ impl Default for Server {
             started_ms: 0,
             questions: 0,
             pending: None,
+            session_classes: [false; Grant::ALL.len()],
             audit_written: 0,
             budget: BUDGET_BYTES,
             budget_spent: false,
@@ -243,6 +247,9 @@ enum Approval {
     NotNeeded,
     ConfirmFlag,
     User,
+    Once,
+    ForSession,
+    Always,
 }
 
 struct RunBuffers<'b> {
@@ -343,6 +350,7 @@ impl Server {
     /// next client starts with `initialize`.
     pub fn disconnected(&mut self, system: &mut impl System, scratch: &mut Scratch<'_>) {
         if let Some(pending) = self.pending.take() {
+            self.end_prompt_of(&pending, system);
             self.record_pending(
                 system,
                 scratch,
@@ -364,6 +372,7 @@ impl Server {
         );
         self.session.end();
         self.agent = self.channel_agent;
+        self.session_classes = [false; Grant::ALL.len()];
         self.agent_bound = false;
     }
 
@@ -435,7 +444,10 @@ impl Server {
             b"no answer from the user in 120 s",
         );
         let mut writer = JsonWriter::new(out);
-        self.cancel_question(&pending, "no answer in 120 s", &mut writer);
+        self.end_prompt_of(&pending, system);
+        if !pending.on_screen {
+            self.cancel_question(&pending, "no answer in 120 s", &mut writer);
+        }
         refused(
             &mut writer,
             pending.id.as_bytes(),
@@ -876,7 +888,7 @@ impl Server {
         let mut ask_user = false;
         match self.policy.check(&self.agent, tool.grant, now) {
             Decision::Allow => {}
-            Decision::AskUser => ask_user = true,
+            Decision::AskUser => ask_user = !self.allowed_for_session(tool.grant),
             Decision::Deny(denial) => {
                 let mut message = [0u8; 480];
                 let length = denied(tool, denial, &mut message);
@@ -1003,18 +1015,21 @@ impl Server {
             return;
         }
         let replaces = !checked.append && state != FileState::Missing;
-        let needs_yes = ask_user || tool.confirmation.needed(replaces, checked.dry_run);
+        let destructive = tool.confirmation.needed(replaces, checked.dry_run);
+        let needs_yes = ask_user || destructive;
         let mut approval = Approval::NotNeeded;
         if needs_yes {
-            if self.session.elicits() {
+            let on_screen =
+                self.pending.is_none() && self.show_prompt(tool, destructive, shown, system);
+            if on_screen || self.session.elicits() {
                 self.ask(
                     id,
                     number,
                     tool,
-                    checked,
-                    state,
+                    (checked, state),
                     target_length,
                     shown,
+                    on_screen,
                     system,
                     scratch,
                     out,
@@ -1222,15 +1237,21 @@ impl Server {
         id: &[u8],
         number: u64,
         tool: &'static Tool,
-        checked: Checked,
-        state: FileState,
+        (checked, state): (Checked, FileState),
         target_length: usize,
         shown: &[u8],
+        on_screen: bool,
         system: &mut impl System,
         scratch: &mut Scratch<'_>,
         out: &mut JsonWriter<'_>,
     ) {
+        if let Some(earlier) = self.pending.take() {
+            self.end_prompt_of(&earlier, system);
+        }
         let Some(id_copy) = IdCopy::of(id) else {
+            if on_screen {
+                system.end_grant_prompt();
+            }
             refused(
                 out,
                 id,
@@ -1251,6 +1272,7 @@ impl Server {
             state,
             deadline_ms: system.monotonic_ms().saturating_add(ELICITATION_TIMEOUT_MS),
             agent: self.agent,
+            on_screen,
         };
         let mut question = [0u8; 64];
         let question_length = self.question_id(pending.question, &mut question);
@@ -1265,6 +1287,7 @@ impl Server {
             question.as_bytes(),
         );
         if !asked {
+            self.end_prompt_of(&pending, system);
             refused(
                 out,
                 id,
@@ -1283,6 +1306,9 @@ impl Server {
             place.copy_from_slice(shown.get(..pending.arguments_length).unwrap_or_default());
         }
         self.pending = Some(pending);
+        if on_screen {
+            return;
+        }
         let target = target_text(tool, scratch.held_path, target_length).unwrap_or("");
         let mut message = [0u8; 2048];
         let length = question_text(tool, &checked, state, target, &self.agent, &mut message);
@@ -1394,7 +1420,10 @@ impl Server {
         }
         self.pending = None;
         self.record_pending(system, scratch, &pending, b"the client cancelled the call");
-        self.cancel_question(&pending, "the client cancelled the call", out);
+        self.end_prompt_of(&pending, system);
+        if !pending.on_screen {
+            self.cancel_question(&pending, "the client cancelled the call", out);
+        }
     }
 
     fn answered(
@@ -1406,7 +1435,7 @@ impl Server {
         out: &mut JsonWriter<'_>,
     ) -> Option<IdCopy> {
         let pending = self.pending?;
-        if !self.is_our_question(&pending, id) {
+        if pending.on_screen || !self.is_our_question(&pending, id) {
             return None;
         }
         self.pending = None;
@@ -1443,6 +1472,18 @@ impl Server {
             refused(out, pending.id.as_bytes(), error, message);
             return Some(pending.id);
         }
+        self.resume(&pending, Approval::User, system, scratch, out);
+        Some(pending.id)
+    }
+
+    fn resume(
+        &mut self,
+        pending: &Pending,
+        approval: Approval,
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut JsonWriter<'_>,
+    ) {
         let now = self.refresh_policy(system);
         if let Decision::Deny(denial) = self.policy.check(&pending.agent, pending.tool.grant, now) {
             let mut message = [0u8; 480];
@@ -1451,17 +1492,17 @@ impl Server {
             self.record_pending(
                 system,
                 scratch,
-                &pending,
+                pending,
                 b"the grant was taken back while the user was asked",
             );
             refused(out, pending.id.as_bytes(), &errors::NEEDS_GRANT, message);
-            return Some(pending.id);
+            return;
         }
-        if !self.unchanged(&pending, system, scratch) {
+        if !self.unchanged(pending, system, scratch) {
             self.record_pending(
                 system,
                 scratch,
-                &pending,
+                pending,
                 b"the target changed while waiting",
             );
             refused(
@@ -1470,7 +1511,7 @@ impl Server {
                 &errors::TARGET_CHANGED,
                 "Refused: the target changed while the user was asked; nothing was done.",
             );
-            return Some(pending.id);
+            return;
         }
         let target = target_text(pending.tool, scratch.held_path, pending.path_length);
         let prepared = Prepared {
@@ -1482,7 +1523,7 @@ impl Server {
                 .held_arguments
                 .get(..pending.arguments_length)
                 .unwrap_or_default(),
-            approval: Approval::User,
+            approval,
         };
         let mut buffers = RunBuffers {
             stdout: scratch.stdout,
@@ -1492,7 +1533,131 @@ impl Server {
             words: scratch.words,
         };
         self.execute(pending.id.as_bytes(), &prepared, system, &mut buffers, out);
-        Some(pending.id)
+    }
+
+    /// The grant prompt on EggOS's screen answered `answer` (`None`: it ended without one)
+    /// for the call waiting on it: runs or refuses that call, `session` keeping its class
+    /// allowed until the client disconnects. Writes the call's answer into `out`
+    /// ([`RESPONSE_BYTES`]) and returns its length; 0 when no call waits on the screen.
+    pub fn prompt_answered(
+        &mut self,
+        answer: Option<PromptAnswer>,
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut [u8],
+    ) -> usize {
+        let Some(pending) = self.pending.filter(|pending| pending.on_screen) else {
+            return 0;
+        };
+        self.pending = None;
+        system.end_grant_prompt();
+        let approval = match answer {
+            Some(PromptAnswer::Once) => Approval::Once,
+            Some(PromptAnswer::Session) => {
+                self.allow_for_session(pending.tool.grant);
+                Approval::ForSession
+            }
+            Some(PromptAnswer::Always) => Approval::Always,
+            refusal => {
+                let (detail, error, message): (&[u8], &ErrorDefinition, &str) = match refusal {
+                    Some(PromptAnswer::Timeout) => (
+                        b"no answer in 90 s",
+                        &errors::CONFIRMATION_TIMED_OUT,
+                        "Refused: the user did not answer the question on EggOS's screen within \
+                         90 s.",
+                    ),
+                    Some(_) => (
+                        b"denied by the user",
+                        &errors::DECLINED_BY_USER,
+                        "Refused: the user denied the call on EggOS's screen.",
+                    ),
+                    None => (
+                        b"the grant prompt ended without an answer",
+                        &errors::CONFIRMATION_FAILED,
+                        "Refused: the question on EggOS's screen closed without an answer.",
+                    ),
+                };
+                self.record_pending(system, scratch, &pending, detail);
+                let mut writer = JsonWriter::new(out);
+                refused(&mut writer, pending.id.as_bytes(), error, message);
+                writer.end_line();
+                return writer.len();
+            }
+        };
+        let body = out.len().saturating_sub(ERROR_RESERVE);
+        let (length, overflowed) = {
+            let mut writer = JsonWriter::new(out.get_mut(..body).unwrap_or_default());
+            self.resume(&pending, approval, system, scratch, &mut writer);
+            if !writer.is_empty() {
+                writer.end_line();
+            }
+            (writer.len(), writer.overflowed())
+        };
+        if !overflowed {
+            return length;
+        }
+        let mut writer = JsonWriter::new(out);
+        rpc::write_error(
+            &mut writer,
+            Some(pending.id.as_bytes()),
+            INTERNAL_ERROR,
+            "the answer is too large to send",
+        );
+        writer.end_line();
+        writer.len()
+    }
+
+    fn show_prompt(
+        &self,
+        tool: &'static Tool,
+        destructive: bool,
+        shown: &[u8],
+        system: &mut impl System,
+    ) -> bool {
+        let agent = core::str::from_utf8(self.agent.as_bytes()).unwrap_or("?");
+        let name = match &self.policy.store {
+            StoreState::Loaded(store) => store
+                .get(&self.agent)
+                .and_then(|entry| core::str::from_utf8(entry.name().as_bytes()).ok())
+                .filter(|name| !name.is_empty()),
+            _ => None,
+        };
+        let question = Question {
+            agent,
+            name: name.unwrap_or(agent),
+            tool: tool.name,
+            title: tool.definition.title,
+            class: tool.grant,
+            destructive,
+            arguments: shown,
+            timeout_s: GRANT_PROMPT_TIMEOUT_S,
+        };
+        let mut line = [0u8; QUESTION_BYTES];
+        let length = grant_prompt::write_question(&question, &mut line);
+        length > 0
+            && system
+                .start_grant_prompt(line.get(..length).unwrap_or_default())
+                .is_ok()
+    }
+
+    fn end_prompt_of(&self, pending: &Pending, system: &mut impl System) {
+        if pending.on_screen {
+            system.end_grant_prompt();
+        }
+    }
+
+    fn allowed_for_session(&self, grant: Option<Grant>) -> bool {
+        grant
+            .and_then(|grant| Grant::ALL.iter().position(|&each| each == grant))
+            .and_then(|slot| self.session_classes.get(slot))
+            .is_some_and(|&allowed| allowed)
+    }
+
+    fn allow_for_session(&mut self, grant: Option<Grant>) {
+        let slot = grant.and_then(|grant| Grant::ALL.iter().position(|&each| each == grant));
+        if let Some(allowed) = slot.and_then(|slot| self.session_classes.get_mut(slot)) {
+            *allowed = true;
+        }
     }
 
     fn unchanged(
@@ -1544,6 +1709,9 @@ impl Server {
             Approval::NotNeeded => {}
             Approval::ConfirmFlag => text.put("; confirm: true (not the user's approval)"),
             Approval::User => text.put("; approved by the user"),
+            Approval::Once => text.put("; allowed once by the user on EggOS's screen"),
+            Approval::ForSession => text.put("; allowed for this session by the user"),
+            Approval::Always => text.put("; allowed always by the user"),
         }
         let detail_length = text.length;
         if !self.record_call(

@@ -3273,7 +3273,10 @@ fn a_client_names_its_agent_in_initialize_and_keeps_it_for_the_connection() {
     assert_eq!(record.agent, b"phone");
     let answer = initialize_as(&mut harness, 3, r#"{"id":"tablet"}"#);
     assert_eq!(error_code(&answer), INVALID_PARAMS);
-    assert!(answer.contains("this connection speaks for agent phone"), "{answer}");
+    assert!(
+        answer.contains("this connection speaks for agent phone"),
+        "{answer}"
+    );
     assert_eq!(harness.server.agent(), AgentId::new(b"phone").unwrap());
 }
 
@@ -3325,7 +3328,11 @@ fn agent_show_shows_the_calling_agent_s_own_grants_and_agent_list_needs_view() {
     let mut harness = Harness::with_grants(Grants::ALL);
     harness.system.outputs.insert(
         "/bin/agent".into(),
-        (b"{\"id\":\"phone\"}\n".to_vec(), Vec::new(), Ended::Exited(0)),
+        (
+            b"{\"id\":\"phone\"}\n".to_vec(),
+            Vec::new(),
+            Ended::Exited(0),
+        ),
     );
     harness.system.files.insert(
         STORE_PATH.into(),
@@ -3342,7 +3349,10 @@ fn agent_show_shows_the_calling_agent_s_own_grants_and_agent_list_needs_view() {
     assert!(is_error(&answer), "{answer}");
     let answer = harness.call(4, "agent_list", "{}");
     assert!(is_error(&answer));
-    assert!(texts(&answer)[0].contains("agent_list needs the view grant"), "{answer}");
+    assert!(
+        texts(&answer)[0].contains("agent_list needs the view grant"),
+        "{answer}"
+    );
     assert_eq!(harness.system.runs.len(), 1);
     let mut harness = Harness::initialized();
     let answer = harness.call(1, "agent_show", "{}");
@@ -3354,4 +3364,144 @@ fn agent_show_shows_the_calling_agent_s_own_grants_and_agent_list_needs_view() {
     let answer = harness.call(2, "agent_list", "{}");
     assert!(is_error(&answer));
     assert!(texts(&answer)[0].contains("--mcp-allow view"), "{answer}");
+}
+
+fn on_screen(capabilities: &str) -> Harness {
+    use crate::grants::Permission;
+    let mut harness = Harness::granted(Grants::ALL, capabilities);
+    harness.system.folders.push("/home/root".into());
+    harness.system.screen = true;
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("local", &[(Grant::Write, Permission::Ask)]),
+    );
+    harness
+}
+
+const NEW_FILE: &str = r#"{"path":"/home/root/new.txt","content":"x"}"#;
+
+#[test]
+fn the_screen_asks_the_person_and_once_runs_the_call() {
+    let mut harness = on_screen("{}");
+    let lines = harness.call_lines(1, "tee", NEW_FILE);
+    assert!(lines.is_empty(), "{lines:?}");
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(last_record(&harness).1, "asked");
+    assert_eq!(harness.system.prompts.len(), 1);
+    let question = crate::grant_prompt::read_question(&harness.system.prompts[0]).unwrap();
+    assert!(question.agent.equals("local"));
+    assert!(question.tool.equals("tee"));
+    assert_eq!(question.class, Some(Grant::Write));
+    assert!(!question.destructive);
+    assert_eq!(question.timeout_s, 90);
+    assert!(
+        question
+            .arguments
+            .get("path")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("/home/root/new.txt")
+    );
+    let lines = harness.prompt_answered(Some(PromptAnswer::Once));
+    assert_eq!(lines.len(), 1);
+    assert_eq!(parsed(&lines[0]).get("id").unwrap().raw(), b"1");
+    assert!(!is_error(&lines[0]), "{}", lines[0]);
+    assert_eq!(harness.system.runs.len(), 1);
+    let started =
+        parse_line(harness.system.audit[harness.system.audit.len() - 2].as_bytes()).unwrap();
+    assert_eq!(started.outcome, Outcome::Started);
+    assert!(
+        std::str::from_utf8(started.detail)
+            .unwrap()
+            .ends_with("allowed once by the user on EggOS's screen")
+    );
+    assert_eq!(harness.system.prompts_ended, 1);
+    assert_eq!(harness.server.waiting_until(), None);
+    assert!(harness.prompt_answered(Some(PromptAnswer::Once)).is_empty());
+    assert!(harness.call_lines(2, "tee", NEW_FILE).is_empty());
+    assert_eq!(harness.system.prompts.len(), 2);
+}
+
+#[test]
+fn a_session_answer_keeps_the_class_until_the_client_disconnects() {
+    let mut harness = on_screen("{}");
+    assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
+    let lines = harness.prompt_answered(Some(PromptAnswer::Session));
+    assert!(!is_error(&lines[0]), "{}", lines[0]);
+    let answer = harness.call(2, "tee", NEW_FILE);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 2);
+    assert_eq!(harness.system.prompts.len(), 1);
+    {
+        let (mut scratch, _) = harness.buffers.scratch();
+        harness
+            .server
+            .disconnected(&mut harness.system, &mut scratch);
+    }
+    harness.initialize("{}");
+    assert!(harness.call_lines(3, "tee", NEW_FILE).is_empty());
+    assert_eq!(harness.system.prompts.len(), 2);
+}
+
+#[test]
+fn deny_no_answer_and_a_closed_prompt_refuse_the_call() {
+    for (answer, detail) in [
+        (Some(PromptAnswer::Deny), "denied by the user"),
+        (Some(PromptAnswer::Timeout), "no answer in 90 s"),
+        (None, "the grant prompt ended without an answer"),
+    ] {
+        let mut harness = on_screen("{}");
+        assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
+        let lines = harness.prompt_answered(answer);
+        assert_eq!(lines.len(), 1);
+        assert!(is_error(&lines[0]), "{}", lines[0]);
+        assert!(harness.system.runs.is_empty());
+        let (_, outcome, _, logged) = last_record(&harness);
+        assert_eq!((outcome.as_str(), logged.as_str()), ("refused", detail));
+        assert_eq!(harness.server.waiting_until(), None);
+    }
+}
+
+#[test]
+fn the_client_cannot_answer_a_question_shown_on_the_screen() {
+    let mut harness = on_screen(r#"{"elicitation":{}}"#);
+    assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
+    assert_eq!(harness.system.prompts.len(), 1);
+    let lines = reply(
+        &mut harness,
+        "eggos-elicit-0-1",
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(lines.iter().all(|line| is_error(line)), "{lines:?}");
+    assert!(harness.system.runs.is_empty());
+    assert!(harness.server.waiting_until().is_some());
+    let lines = harness.expire(ELICITATION_TIMEOUT_MS);
+    assert_eq!(
+        lines.len(),
+        1,
+        "no cancellation is sent for a screen question: {lines:?}"
+    );
+    assert!(is_error(&lines[0]));
+    assert_eq!(harness.system.prompts_ended, 1);
+}
+
+#[test]
+fn a_destructive_call_is_asked_on_the_screen_without_always() {
+    let mut harness = on_screen("{}");
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    assert!(
+        harness
+            .call_lines(1, "trash", r#"{"path":"/home/root/a.txt"}"#)
+            .is_empty()
+    );
+    let question = crate::grant_prompt::read_question(&harness.system.prompts[0]).unwrap();
+    assert!(question.destructive);
+    assert!(!crate::grant_prompt::offers_always(
+        question.class,
+        question.destructive
+    ));
 }

@@ -188,8 +188,11 @@ pub mod flags {
     pub const FIXED_SIZE: u32 = 1;
     /// The window takes every Ctrl key the shell's shortcuts would otherwise take.
     pub const TAKES_CTRL_KEYS: u32 = 2;
+    /// The window takes input from the person only: `SendInput` and `ChooseMenu` aimed at it
+    /// are refused with `NotAllowed` (the grant prompt, D193).
+    pub const PERSON_INPUT_ONLY: u32 = 4;
     /// Every flag there is.
-    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS;
+    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY;
 }
 
 /// The kinds of event records.
@@ -317,7 +320,8 @@ impl PointerShape {
 pub enum WindowError {
     /// No such window of the caller's, or an argument out of range (`EINVAL`).
     Invalid,
-    /// A role the caller may not create (`EPERM`).
+    /// A role the caller may not create, or input injected into a window that takes only the
+    /// person's input (`EPERM`).
     NotAllowed,
     /// The caller or the server holds as many windows as it may (`ENOSPC`).
     TableFull,
