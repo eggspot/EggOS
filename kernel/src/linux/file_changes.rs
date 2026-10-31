@@ -455,6 +455,18 @@ pub fn renameat2<P: Platform>(
     {
         return Err(Errno::EBUSY);
     }
+    let no_replace = flags & RENAME_NOREPLACE != 0;
+    rename_reported(from, from_name, to, to_name, no_replace, now::<P>()).map(|()| 0)
+}
+
+fn rename_reported(
+    from: Node,
+    from_name: &[u8],
+    to: Node,
+    to_name: &[u8],
+    no_replace: bool,
+    now: u64,
+) -> Result<(), Errno> {
     let moved = from.lookup(from_name).map_err(walk_error)?;
     let file_system = from.file_system();
     if !core::ptr::addr_eq(file_system, to.file_system())
@@ -462,18 +474,22 @@ pub fn renameat2<P: Platform>(
     {
         return Err(Errno::EXDEV);
     }
+    let replaced = match inotify::watching() && !no_replace {
+        true => to
+            .lookup(to_name)
+            .ok()
+            .filter(|replaced| *replaced != moved)
+            .map(|replaced| (replaced, replaced.attributes().links <= 1)),
+        false => None,
+    };
     file_system
-        .rename(
-            from.id(),
-            from_name,
-            to.id(),
-            to_name,
-            flags & RENAME_NOREPLACE != 0,
-            now::<P>(),
-        )
+        .rename(from.id(), from_name, to.id(), to_name, no_replace, now)
         .map_err(refused)?;
     inotify::moved(from, from_name, to, to_name, moved);
-    Ok(0)
+    if let Some((replaced, last_name)) = replaced {
+        inotify::replaced(replaced, last_name);
+    }
+    Ok(())
 }
 
 /// `symlinkat(target, newdirfd, linkpath)`: makes `linkpath` a symbolic link whose target is
@@ -766,6 +782,7 @@ mod tests {
     use super::*;
     use crate::vfs::tmpfs::{Budget, Tmpfs};
     use alloc::boxed::Box;
+    use alloc::vec::Vec;
 
     fn tmpfs() -> Node {
         let budget = Box::leak(Box::new(Budget::new(1 << 20)));
@@ -833,5 +850,35 @@ mod tests {
         drop(file);
         assert_eq!(fs.read_into(id, 0, &mut buffer), Ok(0));
         assert_eq!(fs.attributes(id).links, 0);
+    }
+
+    #[test]
+    fn a_rename_over_a_watched_file_ends_its_watch_as_its_last_name_goes() {
+        let root = tmpfs();
+        let fs = root.file_system();
+        for name in [&b"note.txt"[..], b"note.tmp"] {
+            fs.create(root.id(), name, NodeKind::Regular, 0o644, 0)
+                .unwrap();
+        }
+        let note = root.lookup(b"note.txt").unwrap();
+        let instance = inotify::Inotify::new();
+        let wanted = watched::ATTRIB | watched::DELETE_SELF | watched::MOVE_SELF;
+        let descriptor = instance.add_watch(note, wanted).unwrap();
+        rename_reported(root, b"note.tmp", root, b"note.txt", false, 2).unwrap();
+        let bytes = instance.take(4096).unwrap().unwrap();
+        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        let records: Vec<(i32, u32)> = (0..bytes.len() / inotify::EVENT_SIZE)
+            .map(|index| index * inotify::EVENT_SIZE)
+            .map(|at| (word(at) as i32, word(at + 4)))
+            .collect();
+        assert_eq!(
+            records,
+            [
+                (descriptor, watched::ATTRIB),
+                (descriptor, watched::DELETE_SELF),
+                (descriptor, watched::IGNORED),
+            ]
+        );
+        assert_eq!(instance.remove_watch(descriptor), Err(Errno::EINVAL));
     }
 }

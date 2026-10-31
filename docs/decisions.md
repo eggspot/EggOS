@@ -12902,11 +12902,14 @@ the license, by an explicit instruction recorded here.
   `IN_MASK_ADD` adds to a watch's mask, `IN_MASK_CREATE` refuses an existing one with
   `EEXIST`, `IN_ONLYDIR` wants a directory, `IN_DONT_FOLLOW` keeps the last link) and its
   records (16 384 at most, then one `IN_Q_OVERFLOW`; a record the same as the last one is not
-  queued again). The calls that change files report to it after they succeed: a name made in
+  queued again). Each record and watch asks the heap's user reserve first (D155): a record
+  refused is an `IN_Q_OVERFLOW`, a watch refused `ENOSPC`. `inotify_add_watch` wants read
+  permission on what it watches (`EACCES`). The calls that change files report to it after they succeed: a name made in
   a watched folder by `openat`'s `O_CREAT`, `mkdirat`, `symlinkat` or `linkat` (`IN_CREATE`,
   `IN_ISDIR` for a folder), moved by `renameat2` (`IN_MOVED_FROM` and `IN_MOVED_TO` with one
   cookie, `IN_MOVE_SELF` on what moved), removed by `unlinkat` (`IN_DELETE`; on what it named
-  `IN_DELETE_SELF` and `IN_IGNORED` when it was its last name, `IN_ATTRIB` otherwise); a watched
+  `IN_ATTRIB` for a file, then `IN_DELETE_SELF` and `IN_IGNORED` when it was its last name);
+  what a rename replaces gets the same as what `unlinkat` removes, its watches ended; a watched
   file written (`write`, `writev`, `pwrite64`) or truncated (`ftruncate`, `O_TRUNC`):
   `IN_MODIFY`; its mode or time changed or a name added: `IN_ATTRIB`; its description closed:
   `IN_CLOSE_WRITE` or `IN_CLOSE_NOWRITE`. `IN_ONESHOT` ends a watch after its first record.
@@ -12914,8 +12917,11 @@ the license, by an explicit instruction recorded here.
   bytes; `EINVAL` when the first does not fit), wait unless `IN_NONBLOCK`; `poll` and `epoll`
   see the instance readable through its wake list, and `ioctl(FIONREAD)`, which Qt asks before
   it reads, gives the bytes queued. While no instance watches anything a change costs one
-  relaxed load (`inotify::WATCHES`); with watches, it walks the instances, each under its own
-  lock, and wakes their waiters with no lock held.
+  relaxed load (`inotify::WATCHES`); with watches, a second load reads a counter of 1 024
+  that the node hashes to, kept by the watches added and ended, and only when it is not 0 does
+  the change walk the instances, each under its own lock, and wake their waiters with no lock
+  held. A new instance takes the slot of one gone in the instance list rather than compacting
+  it, so a walk never skips one.
 - **`/etc/passwd` and `/etc/group`** (`initramfs/etc`, 52 bytes): `root` (uid and gid 0, home
   `/home/root`, shell `/bin/eggsh`), so musl's `getpwuid_r` and `getgrgid_r` name the user
   and group that Qt's file dialog, GLib and `ls -l` in Linux programs ask for.
@@ -13012,7 +13018,9 @@ the license, by an explicit instruction recorded here.
   files' `IN_MODIFY`, `IN_ATTRIB`, `IN_OPEN` and `IN_CLOSE_*` (the open file would need the
   name it was opened by); `IN_ACCESS` and `IN_OPEN`; `IN_DELETE_SELF` at a removed file's last
   close; `IN_UNMOUNT`; `IN_EXCL_UNLINK`; limits per user rather than per instance and in
-  `/proc/sys/fs/inotify`; `fanotify`; scales other than 1 and outputs' physical size (part
+  `/proc/sys/fs/inotify` (one user's thousands of instances and watches on many nodes still
+  make every change walk them all: an index from node to instances); records charged to a
+  budget per process rather than the heap's shared user reserve; `fanotify`; scales other than 1 and outputs' physical size (part
   43); `zxdg_output_manager_v1`, `xdg_wm_dialog_v1`, `xdg_toplevel_icon_v1` and pointer
   gestures; D-Bus (notifications, accessibility, portals); an icon theme for Qt apps; Qt 5;
   `PR_SET_NAME` and `/proc/<pid>/task/<tid>/comm` (Qt and GLib name their threads and ignore

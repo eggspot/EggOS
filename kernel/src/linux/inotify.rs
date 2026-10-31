@@ -88,6 +88,9 @@ pub const MAX_WATCHES: usize = 8_192;
 
 /// How many watches every instance holds together: while it is 0, a change reports nothing.
 pub static WATCHES: AtomicUsize = AtomicUsize::new(0);
+const WATCHED_BUCKETS: usize = 1024;
+const WATCHED_BUCKET_SHIFT: u32 = u64::BITS - WATCHED_BUCKETS.trailing_zeros();
+static WATCHED: [AtomicU32; WATCHED_BUCKETS] = [const { AtomicU32::new(0) }; WATCHED_BUCKETS];
 #[expect(
     clippy::box_collection,
     reason = "a null box keeps the static all zeros, in .bss"
@@ -149,24 +152,30 @@ impl State {
         if self.records.back() == Some(&record) {
             return;
         }
-        let overflow = self.records.len() + 1 >= MAX_QUEUED_EVENTS;
-        if overflow
-            && self
-                .records
-                .back()
-                .is_some_and(|last| last.mask == mask::Q_OVERFLOW)
+        if self.records.len() >= MAX_QUEUED_EVENTS {
+            self.overflowed();
+            return;
+        }
+        self.queue(record);
+    }
+
+    fn overflowed(&mut self) {
+        if self
+            .records
+            .back()
+            .is_some_and(|last| last.mask == mask::Q_OVERFLOW)
         {
             return;
         }
-        let record = match overflow {
-            true => Record {
-                descriptor: -1,
-                mask: mask::Q_OVERFLOW,
-                cookie: 0,
-                name: Vec::new(),
-            },
-            false => record,
-        };
+        self.queue(Record {
+            descriptor: -1,
+            mask: mask::Q_OVERFLOW,
+            cookie: 0,
+            name: Vec::new(),
+        });
+    }
+
+    fn queue(&mut self, record: Record) {
         if self.records.try_reserve(1).is_err() {
             return;
         }
@@ -240,7 +249,12 @@ impl Inotify {
                 } & !mask::MASK_ADD;
                 (watch.descriptor, false)
             } else {
-                if state.watches.len() >= MAX_WATCHES || state.watches.try_reserve(1).is_err() {
+                let grows = state.watches.len() == state.watches.capacity();
+                let growth = size_of::<Watch>() * state.watches.len().max(4);
+                if state.watches.len() >= MAX_WATCHES
+                    || (grows && !crate::heap::may_grow_for_user(growth))
+                    || state.watches.try_reserve(1).is_err()
+                {
                     return Err(Errno::ENOSPC);
                 }
                 state.last_descriptor += 1;
@@ -254,7 +268,7 @@ impl Inotify {
             }
         };
         if added {
-            WATCHES.fetch_add(1, Ordering::Relaxed);
+            watch_began(node);
             self.register();
         }
         Ok(descriptor)
@@ -263,17 +277,18 @@ impl Inotify {
     /// Stops watch `descriptor` and queues its `IN_IGNORED` record. `EINVAL` if it is not one
     /// of this instance's watches.
     pub fn remove_watch(&self, descriptor: i32) -> Result<(), Errno> {
-        {
+        let node = {
             let mut state = self.state.lock();
             let at = state
                 .watches
                 .iter()
                 .position(|watch| watch.descriptor == descriptor)
                 .ok_or(Errno::EINVAL)?;
-            state.watches.swap_remove(at);
+            let watch = state.watches.swap_remove(at);
             state.ignored(descriptor);
-        }
-        WATCHES.fetch_sub(1, Ordering::Relaxed);
+            watch.node
+        };
+        watch_ended(node);
         self.wake_list.wake();
         Ok(())
     }
@@ -304,6 +319,7 @@ impl Inotify {
     fn report(&self, node: Node, event: u32, cookie: u32, name: &[u8], is_directory: bool) -> bool {
         let mut reported = false;
         let mut ended = 0usize;
+        let record_size = size_of::<Record>() + EVENT_SIZE + name.len();
         {
             let mut state = self.state.lock();
             let mut at = 0;
@@ -321,7 +337,11 @@ impl Inotify {
                         false => 0,
                     };
                     let mut copied = Vec::new();
-                    if copied.try_reserve_exact(name.len()).is_ok() {
+                    if !crate::heap::may_grow_for_user(record_size)
+                        || copied.try_reserve_exact(name.len()).is_err()
+                    {
+                        state.overflowed();
+                    } else {
                         copied.extend_from_slice(name);
                         state.push(Record {
                             descriptor: watch.descriptor,
@@ -329,8 +349,8 @@ impl Inotify {
                             cookie,
                             name: copied,
                         });
-                        reported = true;
                     }
+                    reported = true;
                 }
                 if ends || watch.mask & mask::ONESHOT != 0 {
                     state.watches.swap_remove(at);
@@ -342,8 +362,8 @@ impl Inotify {
                 }
             }
         }
-        if ended > 0 {
-            WATCHES.fetch_sub(ended, Ordering::Relaxed);
+        for _ in 0..ended {
+            watch_ended(node);
         }
         if reported {
             self.wake_list.wake();
@@ -361,21 +381,42 @@ impl Inotify {
         }
         let mut instances = INSTANCES.lock();
         let list = instances.get_or_insert_with(|| Box::new(Vec::new()));
-        list.retain(|instance| instance.strong_count() > 0);
-        if list.try_reserve(1).is_ok() {
-            list.push(Arc::downgrade(self));
+        let weak = Arc::downgrade(self);
+        if let Some(gone) = list
+            .iter_mut()
+            .find(|instance| instance.strong_count() == 0)
+        {
+            *gone = weak;
+        } else if list.try_reserve(1).is_ok() {
+            list.push(weak);
         }
     }
 }
 
 impl Drop for Inotify {
     fn drop(&mut self) {
-        let watches = self.state.get_mut().watches.len();
-        if watches > 0 {
-            WATCHES.fetch_sub(watches, Ordering::Relaxed);
+        for watch in &self.state.get_mut().watches {
+            watch_ended(watch.node);
         }
         self.wake_list.wake();
     }
+}
+
+fn watched_bucket(node: Node) -> &'static AtomicU32 {
+    let file_system = node.file_system() as *const dyn vfs::FileSystem as *const () as usize;
+    let mixed =
+        (node.id() ^ (file_system as u64).rotate_left(29)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    &WATCHED[(mixed >> WATCHED_BUCKET_SHIFT) as usize]
+}
+
+fn watch_began(node: Node) {
+    watched_bucket(node).fetch_add(1, Ordering::Relaxed);
+    WATCHES.fetch_add(1, Ordering::Relaxed);
+}
+
+fn watch_ended(node: Node) {
+    watched_bucket(node).fetch_sub(1, Ordering::Relaxed);
+    WATCHES.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Whether any instance watches anything: a caller that must look before a change to report it
@@ -406,7 +447,7 @@ fn each_instance(mut report: impl FnMut(&Inotify)) {
 /// directory holding what changed. One relaxed load while nothing is watched.
 #[inline]
 pub fn changed_in(node: Node, event: u32, cookie: u32, name: &[u8], is_directory: bool) {
-    if WATCHES.load(Ordering::Relaxed) == 0 {
+    if WATCHES.load(Ordering::Relaxed) == 0 || watched_bucket(node).load(Ordering::Relaxed) == 0 {
         return;
     }
     each_instance(|instance| {
@@ -430,18 +471,33 @@ pub fn created(directory: Node, name: &[u8], is_directory: bool) {
 }
 
 /// The name `name` of `node` was removed from `directory`: `IN_DELETE` there, and on `node`
-/// `IN_DELETE_SELF` when it was its last name (`last_name`), `IN_ATTRIB` otherwise.
+/// what [`replaced`] reports.
 pub fn removed(directory: Node, name: &[u8], node: Node, last_name: bool) {
     if WATCHES.load(Ordering::Relaxed) == 0 {
         return;
     }
     let is_directory = node.is_directory();
     changed_in(directory, mask::DELETE, 0, name, is_directory);
-    let event = match last_name || is_directory {
-        true => mask::DELETE_SELF,
-        false => mask::ATTRIB,
-    };
-    changed_in(node, event, 0, &[], is_directory);
+    lost_a_name(node, last_name, is_directory);
+}
+
+/// `node` lost a name, removed or replaced by a rename: on `node`, `IN_ATTRIB` for a file
+/// whose link count fell, then `IN_DELETE_SELF` (ending its watches with `IN_IGNORED`) when it
+/// was its last name (`last_name`) or a directory.
+pub fn replaced(node: Node, last_name: bool) {
+    if WATCHES.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    lost_a_name(node, last_name, node.is_directory());
+}
+
+fn lost_a_name(node: Node, last_name: bool, is_directory: bool) {
+    if !is_directory {
+        changed_in(node, mask::ATTRIB, 0, &[], false);
+    }
+    if last_name || is_directory {
+        changed_in(node, mask::DELETE_SELF, 0, &[], is_directory);
+    }
 }
 
 /// `node` moved from `from_name` in `from` to `to_name` in `to`: `IN_MOVED_FROM` and
@@ -533,6 +589,18 @@ pub fn inotify_add_watch<P: Platform>(
         vfs::resolve_as(root, start, path, process.id().get(), follow).map_err(walk_error)?;
     if wanted & mask::ONLYDIR != 0 && !node.is_directory() {
         return Err(Errno::ENOTDIR);
+    }
+    let may_read = {
+        let credentials = process.credentials_and_limits().lock();
+        super::stat::may_access(
+            &node.attributes(),
+            &credentials.credentials,
+            true,
+            super::stat::access_mode::READ,
+        )
+    };
+    if !may_read {
+        return Err(Errno::EACCES);
     }
     let wanted = wanted & !(mask::ONLYDIR | mask::DONT_FOLLOW | mask::EXCL_UNLINK);
     instance
@@ -773,6 +841,6 @@ mod tests {
             }
         }
         assert_eq!(overflows, 1);
-        assert_eq!(total, MAX_QUEUED_EVENTS);
+        assert_eq!(total, MAX_QUEUED_EVENTS + 1);
     }
 }
