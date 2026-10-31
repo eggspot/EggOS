@@ -83,6 +83,17 @@ log is read when the view shows and when a filter changes, never on a tick. Its 
 filter, so agents may use them; the CLI front-end is `agentlog`, and no MCP tool reads the log
 (agents read it through `run`).
 
+The `Network` view (D193 slice 41d, Claude Fable's docs/ux/agents-network-v0.3.md) turns MCP
+over HTTPS for agents on other machines `Off` or `On` (written at once; it takes effect at
+EggOS's next start, as `agent network on|off`), says where agents connect and shows the
+certificate's PEM path and its SHA-256 fingerprint in two halves. `Pair an agent...` opens a
+panel asking for the agent's id and an optional name, checked as `agent pair` checks them;
+`Pair` adds the agent with no grants (a listed one keeps its grants and gets a new token) and
+shows the one-time code at twice the size, the address its client sends it to, the
+fingerprint and a countdown, until the server takes the code (the panel closes and says
+`Paired tv: it gets nothing until you grant it.`) or it ends. The switch, the button, the
+fields and the panel's buttons are person-only: no agent turns the network on or pairs.
+
 **The grant prompt** (D193 slice 41c3, design section 5) is EggOS's own window, `An agent
 asks`, that the MCP server opens when it must ask you about a call (a grant set to `Ask`, or a
 call that removes or replaces something) and the desktop runs: `settings --grant-prompt` reads

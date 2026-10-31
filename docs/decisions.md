@@ -16109,8 +16109,19 @@ the license, by an explicit instruction recorded here.
   - Not yet: the specification's OAuth path; an event stream (`GET`) and
     `Mcp-Session-Id`; more than one connection at a time; turning the server on or off without
     a restart; certificate renewal when the machine's address changes (remove the files and
-    start again); mDNS; IPv6; the Agents pane's controls for pairing and the network
-    (slice 41d6).
+    start again); mDNS; IPv6; from Fable's network design (docs/ux/agents-network-v0.3.md):
+    the one-column and touch layouts, the panel's height following the window, and the
+    element tree's group names.
+  - Slice 41d6 (Settings): the Agents pane's third view, `Network` (the `Off` `On` switch
+    written at once with "from EggOS's next start", where agents connect, the certificate's
+    PEM path and its fingerprint in two halves), and the pairing panel (an id and an optional
+    name checked as the CLI checks them, then the code at 2x, the address, the fingerprint and
+    a countdown read again each second until the server takes the code), to Claude Fable's
+    design; the switch, `Pair an agent...`, the fields and the panel's buttons are person-only.
+    `agent pair` and `agent network` and the pane share one code path,
+    `eggos_mcp::pairing::{begin_pairing, turn_network, network_state, certificate_fingerprint,
+    pending}` over `PairingFiles`; the Settings tree's `CAPACITY` is 140 (the installer's
+    dialog follows).
   - QEMU check (`xtask/src/qemu/agent_network.rs`, every architecture): `agent network on` and a
     restart on the same disk, then the test pairs as the agent's client with our own TLS client
     pinning the certificate the console printed, sends `initialize` (no elicitation offered

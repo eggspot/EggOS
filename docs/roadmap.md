@@ -420,8 +420,8 @@ D16):
     HTTPS once the person turns it on (`agent network on`) and pairs them with a one-time code
     (`agent pair`), each with its own token and a certificate the client pins (written,
     unchecked, D193); clients get prompts and resources, and the stateless 2026-07-28 protocol
-    beside `initialize`'s versions (written, unchecked). Next: pairing from the Agents pane,
-    OAuth, `input_required`.
+    beside `initialize`'s versions (written, unchecked). Settings' Agents pane pairs them too (its `Network`
+    view). Next: OAuth, `input_required`.
 38. **done** — users can now run Linux programs that talk over local stream sockets, pass
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals

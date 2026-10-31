@@ -84,7 +84,8 @@ on` for another). The first start makes the server's key and its self-signed cer
 `.pem`); `agent network show` prints whether it is on, where agents connect and the
 certificate's SHA-256 fingerprint.
 
-Then pair each agent, on EggOS:
+Then pair each agent, on EggOS (or with `Pair an agent...` in Settings' Agents pane, `Network`
+view):
 
 ```
 agent pair --name "My laptop" laptop
@@ -483,6 +484,6 @@ Asking the client in the 2026-07-28 version (`input_required`), resources for fi
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
-terminal's window; OAuth sign-in, an event stream and session ids for MCP over the network, and pairing from Settings' Agents pane; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
+terminal's window; OAuth sign-in, an event stream and session ids for MCP over the network, ; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
 where the window server puts a new window). A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.
