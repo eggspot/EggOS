@@ -108,7 +108,12 @@ fn add(this: Id, object: Id) -> bool {
     let count = fields(this).items.len();
     let capacity = fields(this).slots.len();
     if count * 2 > capacity {
-        return rebuild(this);
+        if rebuild(this) {
+            return true;
+        }
+        fields(this).items.pop();
+        objc_release(object);
+        return false;
     }
     let hash = hash_of(object);
     place(fields(this).slots.as_mut_slice(), hash, count - 1);
@@ -370,12 +375,15 @@ extern "C" fn enumerate_with_block(this: Id, _: Sel, block: Id) {
     let function: extern "C" fn(Id, Id, *mut u8) =
         unsafe { core::mem::transmute(invoke_address(block)) };
     let mut objects = snapshot(this);
+    for &object in objects.as_slice() {
+        objc_retain(object);
+    }
     let mut stop = 0u8;
     for &object in objects.as_slice() {
-        function(block, object, &mut stop);
-        if stop != 0 {
-            break;
+        if stop == 0 {
+            function(block, object, &mut stop);
         }
+        objc_release(object);
     }
     objects.free();
 }
@@ -444,13 +452,23 @@ extern "C" fn minus_set(this: Id, _: Sel, other: Id) {
 }
 
 extern "C" fn intersect_set(this: Id, _: Sel, other: Id) {
+    let other_is_set = !other.is_null() && is_set(other);
+    let mut others = match other_is_set {
+        true => Buffer::new(),
+        false => objects_of(other),
+    };
     let mut objects = snapshot(this);
     for &object in objects.as_slice() {
-        if other.is_null() || position(other, object).is_none() {
+        let kept = match other_is_set {
+            true => position(other, object).is_some(),
+            false => others.as_slice().iter().any(|&each| equal(each, object)),
+        };
+        if !kept {
             remove(this, object);
         }
     }
     objects.free();
+    others.free();
 }
 
 extern "C" fn set_with_capacity(this: Id, _: Sel, _: usize) -> Id {

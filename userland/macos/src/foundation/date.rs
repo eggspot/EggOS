@@ -121,6 +121,11 @@ extern "C" fn since_date(this: Id, _: Sel, other: Id) -> f64 {
     if other.is_null() {
         return seconds_of(this);
     }
+    if !is_date(other) {
+        let seconds: extern "C" fn(Id, Sel) -> f64 = crate::objc::message::msg_send_as();
+        return seconds_of(this)
+            - seconds(other, crate::objc::sel!("timeIntervalSinceReferenceDate"));
+    }
     seconds_of(this) - seconds_of(other)
 }
 
@@ -173,7 +178,9 @@ extern "C" fn hash(this: Id, _: Sel) -> usize {
 pub fn describe(seconds: f64, buffer: &mut [u8; 32]) -> &[u8] {
     let since_1970 = seconds + REFERENCE_FROM_1970;
     let truncated = since_1970 as i64;
-    let unix = truncated - i64::from((truncated as f64) > since_1970);
+    let Some(unix) = truncated.checked_sub(i64::from((truncated as f64) > since_1970)) else {
+        return b"";
+    };
     let Some(broken) = calendar::from_seconds(unix) else {
         return b"";
     };
