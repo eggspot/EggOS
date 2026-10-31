@@ -246,6 +246,13 @@ again finds nothing. A damaged superblock cannot be repaired (there is no copy).
 mode runs the same work against a copy kept in memory, so it says what a repair would do
 and writes nothing.
 
+**From EggOS** (D192), a disk no file system holds is the file `/dev/vdX`, and `disk check`,
+`disk repair` and `disk format` (docs/coreutils.md), their MCP tools and Settings' Storage pane
+run the checker and the format on it through that file, 4096-byte blocks over `pread64` and
+`pwrite64`. A mounted disk is refused: there is no online check. The QEMU disks test formats
+a second disk from the shell, checks it clean, then boots again with its block bitmap zeroed
+by the host and repairs it.
+
 ## Version 1
 
 A version 1 disk is a version 2 disk without symbolic links, hard links or orphans: its

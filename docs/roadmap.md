@@ -351,8 +351,12 @@ D16):
     Since then: symbolic and hard links, on-disk version 2 (D170); a checker and repairer for
     unmounted disks (read-only or repairing, `lost+found`, idempotent), formatting part of a
     disk with a label, and an in-memory name index so directories of thousands of entries look
-    names up in one block (D192). Next: `disk check` and `disk format` from the CLI, MCP and the
-    Settings Storage pane, several requests in flight.
+    names up in one block (D192); then the disks as `/dev/vda` to `/dev/vdd` and
+    `/proc/driver/disks`, and listing, checking, repairing and formatting an unmounted disk
+    from the `disk` command, the MCP tools `disk_list`, `disk_check`, `disk_repair` and
+    `disk_format` and Settings' Storage pane (Claude Fable's docs/ux/storage-v0.3.md), with a
+    QEMU test that formats a second disk and repairs a damaged one (D192). Next: mounting a
+    disk from userland (a `mount` system call), several requests in flight.
 34. **done** — users can now open Settings, pick the Windows, macOS or Linux profile and keep
     it across reboots (D132, docs/settings.md): `userland/toolkit`, a native toolkit with no
     heap (a retained widget tree with layout, labels, buttons, checkboxes, radio groups, cards,

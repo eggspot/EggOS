@@ -128,11 +128,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   programs; local socket queues at most an eighth of memory together (a full queue makes its
   writer wait for the reader; an empty one that cannot grow is `ENOMEM`). Disks are read
   defensively: a damaged EggFS disk or a FAT volume whose cluster chain loops gives I/O errors
-  instead of hanging or crashing EggOS. EggFS disks can be checked and repaired offline
-  (`check_disk`, D192), so far only from code and host tests: the `disk check` and
-  `disk format` commands, their MCP tools and the Settings Storage pane come next; a damaged
-  superblock cannot be repaired (EggFS keeps no copy of it), and a directory's name index lives
-  in memory only, so the first lookup after mounting still reads the whole directory.
+  instead of hanging or crashing EggOS. EggFS disks can be listed, checked, repaired and
+  formatted (D192: `disk`, the MCP tools `disk_list`, `disk_check`, `disk_repair` and
+  `disk_format`, and Settings' Storage pane), but only while unmounted: the boot mounts the first
+  EggFS disk at `/home`, and there is no `mount` or `umount` system call yet, so a freshly
+  formatted second disk stays unmounted until a later version can mount it; at most 4 disks,
+  no partitions from the pane, no progress for a long check, and no hot-plug (the pane reads
+  the disks when it is shown and after each action). A mounted disk's label is not shown. A
+  damaged superblock cannot be repaired (EggFS keeps no copy of it), and a directory's name
+  index lives in memory only, so the first lookup after mounting still reads the whole
+  directory.
 - **Linux programs: static ones, and dynamic ones with their own libraries.** The kernel runs
   Linux programs through its own Linux system-call layer, from the host folder (`--apps`),
   installed as apps (`app install`), or built into an image by `cargo xtask image --add`

@@ -15649,3 +15649,50 @@ the license, by an explicit instruction recorded here.
   --label scratch /dev/vdb`, `disk check` clean, a damaged image with a wrong link count
   repaired then clean), docs/coreutils.md, docs/eggfs.md, limitations and roadmap item 25;
   mounting from userland (no `mount` system call yet).
+- **Slice 40d, the Storage pane and the QEMU test.** Settings' `Storage` pane
+  (`userland/settings/src/storage_pane.rs`, `StoragePane`, after `Mouse` in the sidebar:
+  `STORAGE` is 4, `DATE_AND_TIME` 5, `ABOUT` 7) follows Claude Fable's storage-v0.3.md: the
+  disk list (`/dev/vda` to `/dev/vdd`, rows of absent disks hidden, `No disks attached.`), the
+  selected disk's contents, sizes, place, `Read-only` and a used-space bar, `Check`, `Repair`
+  (enabled only after a check of the same disk found something repairable) and `Format...`,
+  the status line (why a button is disabled, `Checking /dev/vdb...`, the headline) and up to
+  five finding lines (`and 4 more: disk check /dev/vdb lists them all.`), and the format panel
+  (the erased contents, an optional label, `Format` enabled only once the short name is typed,
+  Esc or `Cancel` write nothing, the window's default button while it shows). The window asks
+  the program through `Request::ReadDisks`, `CheckDisk`, `RepairDisk` and `FormatDisk`; the
+  program reads the disks when the pane is shown and runs a check, repair or format at the
+  next tick, after the frame that says it is running is committed, then reads the disks again
+  (`SettingsWindow::show_disks`, `show_check`, `show_formatted`). The pane's words are the
+  capability's (`eggos_files::storage`: `allowed`, `idle_text`, `running_text`,
+  `formatting_text`, `formatted_text`, which `disk format` now prints too, `format_question`,
+  `erases_text`, `confirm_text`, `confirm_placeholder`, `more_findings_text`,
+  `used_permille`, `NO_DISKS`, `NOTHING_TO_DO`). The window's tree holds 96 widgets
+  (`CAPACITY`, and the installer's `eggos_app::dialog::CAPACITY` with it), room for Network's
+  and About's devices rows later; the toolkit gained `WidgetTree::is_enabled`.
+  - **QEMU** (`xtask/src/qemu/disks.rs`, after the work disk test): two blank 32 MiB images;
+    the kernel formats the first it finds for `/home`; the session lists the disks, finds the
+    other with `disk format --dry-run` (refused on a mounted disk), formats it with the label
+    `scratch` and checks it clean. On the host the image must be EggFS labelled `scratch` and
+    check clean; xtask writes `/notes.txt` into it with `eggos-eggfs`, zeroes its block bitmap
+    and checks that its own read-only check finds repairable problems; the second boot (same
+    disks, same order, so the same disk holds `/home`) checks it (`Found ...`), repairs it
+    (`Repaired ...`) and checks it clean, and on the host it checks clean and still holds the
+    file.
+- **Choices made without research (slice 40d).**
+  - The QEMU session finds the unmounted disk itself instead of naming `/dev/vdb`: QEMU's
+    virtio-mmio machines give the first `-device` the highest address, so which image is
+    `vda` differs between x86_64 and the Arm and RISC-V machines.
+  - The damaged image has a zeroed block bitmap, not a wrong link count: the inode layout is
+    private to `eggos-eggfs`, and a test helper in the crate's public API only for xtask was
+    not worth it; the link-count repair is covered by the crate's host tests.
+  - The format panel sits at a fixed y 64 in the pane (the minimum window's place), as the
+    design's acceptance test has it, rather than centred in a taller pane.
+  - A pane line longer than a label's 64 bytes is cut with `...` at 64 bytes; it is about the
+    width the 432 px line shows anyway.
+  - The Storage search words leave `disk` matching only Storage: About shows no devices yet.
+- **Not yet (after slice 40d).** Mounting a disk from userland (a `mount` system call), so a
+  freshly formatted disk can be used without a reboot; the element tree's list name `Disks`
+  and each row's value (`eggfs "Photos" 1.0 GB not-mounted rw`), which need a list name and
+  item values in the toolkit; the one-column layout under 448 px and touch-sized rows (D23);
+  a mounted disk's label in `/proc/driver/disks`; a progress bar and a cancel for long checks;
+  hot-plug.

@@ -13,7 +13,7 @@ is the installer's window instead ([Apps](apps.md), D134), so the toolkit is in 
 Open it from the dock (macOS profile), the launcher (Super, Cmd+Space or Start, then type
 `settings`, `control panel` or `preferences`), its desktop icon, or type `settings` at the
 prompt (D133). The window has a sidebar with a search field and the panes
-`Appearance`, `Display`, `Keyboard`, `Mouse`, `Date & time`, `Components` and `About`; typing in the search
+`Appearance`, `Display`, `Keyboard`, `Mouse`, `Storage`, `Date & time`, `Components` and `About`; typing in the search
 field keeps the panes whose name, synonyms (`Control Panel`, `Preferences`, `theme`, `HiDPI`,
 ...) or settings match. Tab moves between the search, the sidebar and the pane's controls;
 Down in the search goes to the sidebar.
@@ -43,6 +43,20 @@ rules as `date -s` and the MCP tool `clock_set`; Enter or `Set` sets the clock a
 clock, and the line under them says how it went (`Set, and saved to the hardware clock.`, or
 why not). There are no time zones: everything is UTC. Its command-line front-ends are `date`
 and `hwclock` (docs/coreutils.md), not `settings`.
+
+**Storage** (D192, Claude Fable's docs/ux/storage-v0.3.md) lists the disks attached
+(`/dev/vda` to `/dev/vdd`) and shows the selected one's contents (`EggFS "Photos"`, `Blank`,
+...), size, used and free space with a bar, where it is mounted and whether it is read-only,
+with the same words as `disk list` and the MCP tool `disk_list`. It reads the disks each time
+it is shown and after every action. `Check` checks an unmounted EggFS disk without writing and
+shows the headline (`Clean. 4,096 blocks, 3,900 free.` or `Found 3 problems: 2 repairable, 1
+not. ...`) and up to five findings; `Repair` is enabled once a check of the same disk found
+something repairable, and repairs what the check listed. `Format...` opens a panel that names
+what will be erased, takes an optional label (64 bytes at most) and enables `Format` only once
+the disk's short name (`vdb`) is typed; Esc or `Cancel` writes nothing. A mounted disk is not
+checked, repaired or formatted in this version, and the status line says why whenever a button
+is disabled. Its command-line front-end is `disk` (docs/coreutils.md), its MCP tools
+`disk_list`, `disk_check`, `disk_repair` and `disk_format`.
 
 ## The command
 
