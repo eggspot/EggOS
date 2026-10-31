@@ -1518,6 +1518,10 @@ const CR4_DENIED_TO_PROGRAMS: u64 = CR4_FSGSBASE | CR4_OSXSAVE | CR4_PKE | CR4_C
 /// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
+/// `CR4.SMEP` (D201): ring 0 faults on fetching an instruction from a user page.
+const CR4_SMEP: u64 = 1 << 20;
+/// `CPUID.(EAX=7,ECX=0):EBX` bit 7: the CPU has SMEP.
+const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 /// `rflags` bit 1, always set.
 const RFLAGS_FIXED: u64 = 1 << 1;
@@ -1640,6 +1644,24 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             set = in(reg) CR0_MP | CR0_TS | CR0_NE,
             options(nomem, nostack),
         );
+    }
+    let has_smep = core::arch::x86_64::__cpuid(0).eax >= 7
+        && core::arch::x86_64::__cpuid_count(7, 0).ebx & CPUID_SMEP != 0;
+    if has_smep {
+        // SAFETY: with SMEP the CPU refuses to run, in ring 0, an instruction from a page user
+        // mode may reach, which the kernel never does: its code is in the kernel half, mapped
+        // for the kernel alone. A kernel bug that jumps into a program's memory then faults
+        // instead of running what the program put there.
+        unsafe {
+            core::arch::asm!(
+                "mov {tmp}, cr4",
+                "or {tmp}, {set}",
+                "mov cr4, {tmp}",
+                tmp = out(reg) _,
+                set = in(reg) CR4_SMEP,
+                options(nomem, nostack),
+            );
+        }
     }
     // SAFETY: the `syscall` MSRs are architectural. EFER.SCE enables `syscall`, whose MSRs are
     // all set below before anything runs in ring 3.
