@@ -179,7 +179,7 @@ jobs:
       - name: Install the glibc target and cross compilers (test data only, never shipped)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu
+          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-arm64-cross libc6-dev-riscv64-cross
           rustup target add ${{ matrix.arch == 'riscv64' && 'riscv64gc' || matrix.arch }}-unknown-linux-gnu
 
       - uses: actions/cache/restore@v6
@@ -224,7 +224,7 @@ jobs:
       - name: Install the glibc target and cross compilers (test data only, never shipped)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libc6-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu
+          apt-get install -y --no-install-recommends libc6-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-arm64-cross libc6-dev-riscv64-cross
           rustup target add ${{ matrix.arch == 'riscv64' && 'riscv64gc' || matrix.arch }}-unknown-linux-gnu
 
       - uses: actions/cache/restore@v6
@@ -311,7 +311,7 @@ jobs:
       - name: Install xz and the aarch64 C library (test data only, never shipped)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Install the arm64 libraries rustc may load (test data only, never shipped)
         if: matrix.arch == 'aarch64'
@@ -369,7 +369,7 @@ jobs:
       - name: Install xz, the aarch64 C library and Linux's user-mode QEMU (test data and tools only, never shipped)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu qemu-user
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
 
       - name: Install the arm64 libraries the toolchain may load (test data only, never shipped)
         if: matrix.arch == 'aarch64'
@@ -427,7 +427,7 @@ jobs:
       - name: Install xz and the aarch64 C library (test data and tools only, never shipped)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu
+          apt-get install -y --no-install-recommends xz-utils gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Install the arm64 libraries the toolchain may load (test data only, never shipped)
         if: matrix.arch == 'aarch64'
