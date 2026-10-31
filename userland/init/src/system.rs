@@ -1,4 +1,7 @@
-use crate::agent_server::{AGENT_CHANNEL, AGENT_SERVER, AfterEnd, AgentServer, RESTARTED_ARGUMENT};
+use crate::agent_server::{
+    AGENT_CHANNEL, AGENT_SERVER, AfterEnd, AgentServer, NETWORK_ARGUMENT, NETWORK_ENABLED,
+    RESTARTED_ARGUMENT,
+};
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
@@ -53,6 +56,7 @@ const ENVIRONMENT: [&[u8]; 5] = [
 #[derive(Default)]
 struct Services {
     agent: AgentServer,
+    network: AgentServer,
     display: AgentServer,
 }
 
@@ -141,6 +145,9 @@ pub fn run(_startup: &Startup) -> i32 {
     let mut services = Services::default();
     if exists(AGENT_CHANNEL) && exists(AGENT_SERVER) {
         start_agent_server(&mut services.agent, false);
+    }
+    if exists(NETWORK_ENABLED) && exists(AGENT_SERVER) {
+        start_network_server(&mut services.network);
     }
     if exists(DISPLAY_SERVER) && exists(DISPLAY_DEVICE) {
         start_display_server(&mut services.display);
@@ -257,7 +264,14 @@ fn shut_down(request: Request) -> ! {
     let requests = shutdown_requests();
     call(
         number::RT_SIGPROCMASK,
-        [SIG_BLOCK, &raw const requests as usize, 0, SIGNAL_SET_SIZE, 0, 0],
+        [
+            SIG_BLOCK,
+            &raw const requests as usize,
+            0,
+            SIGNAL_SET_SIZE,
+            0,
+            0,
+        ],
     );
     kill(EVERY_OTHER_PROCESS, SIGTERM);
     kill(EVERY_OTHER_PROCESS, SIGCONT);
@@ -443,6 +457,39 @@ fn start_agent_server(agent: &mut AgentServer, restarted: bool) {
     }
 }
 
+fn start_network_server(network: &mut AgentServer) {
+    let program = AGENT_SERVER.as_ptr();
+    let arguments = [program, NETWORK_ARGUMENT.as_ptr(), ptr::null()];
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => {
+            set_signal_actions(SIG_DFL);
+            call(number::SETSID, [0; 6]);
+            call(
+                number::EXECVE,
+                [
+                    program as usize,
+                    arguments.as_ptr() as usize,
+                    environment.as_ptr() as usize,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            syscall::exit(COMMAND_NOT_RUN)
+        }
+        1.. => {
+            network.started(child as usize, now_ms());
+            say(&[b"init: started the MCP server for agents on the network\n"]);
+        }
+        _ => say(&[b"init: could not start the MCP server for the network\n"]),
+    }
+}
+
 fn start_display_server(display: &mut AgentServer) {
     let program = DISPLAY_SERVER.as_ptr();
     let arguments = [program, ptr::null()];
@@ -482,6 +529,13 @@ fn notice_end(services: &mut Services, ended: isize) {
         Some(AfterEnd::GiveUp) => {
             say(&[b"init: eggmcpd keeps ending; the agent channel is closed\n"])
         }
+        None => {}
+    }
+    match services.network.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_network_server(&mut services.network),
+        Some(AfterEnd::GiveUp) => say(&[
+            b"init: eggmcpd --network keeps ending; agents on the network are not answered\n",
+        ]),
         None => {}
     }
     match services.display.ended(ended as usize, now_ms()) {

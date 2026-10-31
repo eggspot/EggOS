@@ -15,7 +15,9 @@ fuzz = []
 [dependencies]
 eggos-commands = { path = "../commands" }
 eggos-crypto = { path = "../../crypto" }
+eggos-net = { path = "../../net" }
 eggos-runtime = { path = "../runtime" }
+eggos-tls = { path = "../../tls" }
 
 [lints]
 workspace = true

@@ -22,6 +22,8 @@ use eggos_runtime::process::{ChildStack, Spawn, spawn};
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 
+pub mod network;
+
 /// The longest message taken, in bytes; a longer line is dropped and answered with an error.
 pub const MAX_MESSAGE_BYTES: usize = 1 << 20;
 /// Where every command starts.
@@ -255,6 +257,12 @@ fn send(channel: usize, answer: &[u8]) {
 /// Opens the channel, reads the grants, records the start and answers messages until the
 /// machine stops.
 pub fn run(startup: &Startup) -> i32 {
+    if startup
+        .arguments()
+        .any(|argument| argument.to_bytes() == network::NETWORK_OPTION)
+    {
+        return network::run();
+    }
     let restarted = startup
         .arguments()
         .any(|argument| argument.to_bytes() == RESTARTED);
