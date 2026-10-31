@@ -17,6 +17,10 @@
 //! entry says so until its parent's wait reports it (`WUNTRACED`, `WCONTINUED`), and the end
 //! of a process that leaves a process group orphaned with stopped members hangs that group up
 //! (`SIGHUP`, then `SIGCONT`), as POSIX requires.
+//!
+//! A child's end, stop or continuation that sends its parent a signal is hidden from the
+//! parent's waits until [`Table::announce`]: the signal is queued first, outside the lock, so a
+//! wait that reports the change finds it pending already, as on Linux.
 
 use super::Errno;
 use super::descriptors::WeakDescriptors;
@@ -26,6 +30,7 @@ use crate::sync::SpinLock;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::Any;
+use core::num::NonZeroU32;
 
 /// `SIGCHLD`, the signal a child's end sends its parent unless `clone` named another.
 pub const SIGCHLD: u8 = super::signal::SIGCHLD as u8;
@@ -78,9 +83,15 @@ struct Entry {
     no_stop_notices: bool,
     executed: bool,
     job: JobState,
+    unannounced: Option<Announcement>,
     running: Option<Running>,
     name: Name,
 }
+
+/// A child's change whose signal its parent is still to be sent: until [`Table::announce`]
+/// with it, the changes it names are hidden from the parent's waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Announcement(NonZeroU32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobState {
@@ -119,6 +130,7 @@ pub struct JobNotice {
     pub uid: u32,
     pub change: JobChange,
     pub signal: bool,
+    pub announcement: Option<Announcement>,
 }
 
 /// What a stop signal's delivery did to a process (D181).
@@ -221,6 +233,9 @@ pub enum Found {
     Stopped { id: u32, uid: u32, signal: u8 },
     /// A child that `SIGCONT` continued (D181); reported once unless the wait only looked.
     Continued { id: u32, uid: u32 },
+    /// A child whose change the wait would report, hidden until its parent's signal for it is
+    /// queued ([`Table::announce`]), which is under way: the wait looks again in a moment.
+    Announcing,
     /// Children that may be waited for, none of them ended yet.
     Running,
     /// No child the wait may wait for (`ECHILD`).
@@ -237,6 +252,7 @@ pub struct Notice {
     pub child: u32,
     pub uid: u32,
     pub exit: ProcessExit,
+    pub announcement: Option<Announcement>,
 }
 
 /// What the end of a process leaves to be done once the table's lock is released.
@@ -274,6 +290,7 @@ pub struct Table {
     init: u32,
     controlled: Vec<Controlled>,
     stopped: u32,
+    announcements: u32,
 }
 
 impl Table {
@@ -284,6 +301,27 @@ impl Table {
             init: 0,
             controlled: Vec::new(),
             stopped: 0,
+            announcements: 0,
+        }
+    }
+
+    fn next_announcement(&mut self) -> Announcement {
+        self.announcements = self.announcements.wrapping_add(1);
+        let number = NonZeroU32::new(self.announcements).unwrap_or(NonZeroU32::MIN);
+        self.announcements = number.get();
+        Announcement(number)
+    }
+
+    fn announcement_if(&mut self, signal_sent: bool) -> Option<Announcement> {
+        signal_sent.then(|| self.next_announcement())
+    }
+
+    /// Shows the parent's waits the changes `announcement` names, once their signal is queued.
+    pub fn announce(&mut self, announcement: Announcement) {
+        for entry in &mut self.entries {
+            if entry.unannounced == Some(announcement) {
+                entry.unannounced = None;
+            }
         }
     }
 
@@ -353,6 +391,7 @@ impl Table {
             no_stop_notices: inherited.is_some_and(|parent| parent.no_stop_notices),
             executed: false,
             job: JobState::Running,
+            unannounced: None,
             running: None,
             name: inherited.map_or([0; NAME_LENGTH], |parent| parent.name),
         };
@@ -524,18 +563,24 @@ impl Table {
             0 => None,
             parent => self.entry(parent),
         };
-        if let Some(parent_entry) = parent_entry {
+        let reaped = Self::reaped_by(parent_entry, exit_signal);
+        let parent_running = parent_entry.map(|parent| parent.running.clone());
+        let signal_sent = exit_signal != 0 && !reaped && matches!(parent_running, Some(Some(_)));
+        let announcement = self.announcement_if(signal_sent);
+        if let Some(running) = parent_running {
             ended.to_parent = Some(Notice {
                 parent,
-                running: parent_entry.running.clone(),
+                running,
                 signal: exit_signal,
                 child: id,
                 uid,
                 exit,
+                announcement,
             });
         }
-        if Self::reaped_by(parent_entry, exit_signal) {
-            self.remove_at(index);
+        match reaped {
+            true => self.remove_at(index),
+            false => self.entries[index].unannounced = announcement,
         }
         let mut hung_up_group = 0;
         if session == id
@@ -624,7 +669,7 @@ impl Table {
         entry.uid = uid;
         let parent = entry.parent;
         self.stopped += 1;
-        Stopping::Stopped(self.job_notice(parent, id, uid, JobChange::Stopped(signal)))
+        Stopping::Stopped(self.job_notice(index, parent, uid, JobChange::Stopped(signal)))
     }
 
     /// For `SIGCONT` sent to process `id` (D181): continues it if it is stopped, and says whom
@@ -638,24 +683,33 @@ impl Table {
         entry.job = JobState::Continued;
         let (parent, uid) = (entry.parent, entry.uid);
         self.stopped = self.stopped.saturating_sub(1);
-        self.job_notice(parent, id, uid, JobChange::Continued)
+        self.job_notice(index, parent, uid, JobChange::Continued)
     }
 
     fn job_notice(
-        &self,
+        &mut self,
+        index: usize,
         parent: u32,
-        child: u32,
         uid: u32,
         change: JobChange,
     ) -> Option<JobNotice> {
-        let entry = self.entry(parent).filter(|entry| entry.exit.is_none())?;
+        let told = self
+            .entry(parent)
+            .filter(|entry| entry.exit.is_none())
+            .map(|entry| (entry.running.clone(), !entry.no_stop_notices));
+        let signal_sent = matches!(told, Some((Some(_), true)));
+        let announcement = self.announcement_if(signal_sent);
+        let child = &mut self.entries[index];
+        child.unannounced = announcement;
+        let (running, signal) = told?;
         Some(JobNotice {
             parent,
-            running: entry.running.clone(),
-            child,
+            running,
+            child: child.id,
             uid,
             change,
-            signal: !entry.no_stop_notices,
+            signal,
+            announcement,
         })
     }
 
@@ -710,6 +764,7 @@ impl Table {
                     child: id,
                     uid: 0,
                     exit: ProcessExit::Exited(0),
+                    announcement: None,
                 });
             }
             self.remove_at(index);
@@ -728,6 +783,13 @@ impl Table {
         entry.children = 0;
         let new_parent = self.new_parent_for_children_of(id);
         let reaped = self.reaps_at_end(new_parent, SIGCHLD);
+        let running = match new_parent {
+            0 => None,
+            new_parent => self
+                .entry(new_parent)
+                .and_then(|entry| entry.running.clone()),
+        };
+        let announcement = self.announcement_if(!reaped && running.is_some());
         let mut first_ended = None;
         let mut kept = 0;
         self.entries.retain_mut(|entry| {
@@ -739,6 +801,9 @@ impl Table {
             if let (None, Some(exit)) = (first_ended, entry.exit) {
                 first_ended = Some((entry.id, entry.uid, exit));
             }
+            if entry.exit.is_some() {
+                entry.unannounced = announcement;
+            }
             let keep = !(reaped && entry.exit.is_some());
             kept += u32::from(keep);
             keep
@@ -747,15 +812,14 @@ impl Table {
             entry.children += kept;
         }
         let (child, uid, exit) = first_ended?;
-        (new_parent != 0).then(|| Notice {
+        (new_parent != 0).then_some(Notice {
             parent: new_parent,
-            running: self
-                .entry(new_parent)
-                .and_then(|entry| entry.running.clone()),
+            running,
             signal: SIGCHLD,
             child,
             uid,
             exit,
+            announcement,
         })
     }
 
@@ -768,7 +832,7 @@ impl Table {
     /// The wait of process `parent` for one of its children that `selector` and `kind` name:
     /// the first of them that has ended, reaped or not as `ends` says, or that stopped or
     /// continued since a wait last said so, if `reports` asks for those (D181); otherwise
-    /// whether any of them is running.
+    /// whether such a change is about to be announced, or any of them is running.
     pub fn wait_for_change(
         &mut self,
         parent: u32,
@@ -794,33 +858,38 @@ impl Table {
             return Found::NoChild;
         }
         let mut running = false;
+        let mut announcing = false;
         let mut found = None;
         for (index, entry) in self.entries.iter().enumerate() {
             if !matches(entry) {
                 continue;
             }
             let (id, uid) = (entry.id, entry.uid);
-            match (entry.exit, entry.job) {
-                (Some(_), _) if ends == Ends::Ignore => {}
-                (Some(exit), _) => {
-                    found = Some((index, Found::Ended { id, uid, exit }));
-                    break;
-                }
+            let reportable = match (entry.exit, entry.job) {
+                (Some(_), _) if ends == Ends::Ignore => None,
+                (Some(exit), _) => Some(Found::Ended { id, uid, exit }),
                 (
                     None,
                     JobState::Stopped {
                         signal,
                         reported: false,
                     },
-                ) if reports.stopped => {
-                    found = Some((index, Found::Stopped { id, uid, signal }));
-                    break;
-                }
+                ) if reports.stopped => Some(Found::Stopped { id, uid, signal }),
                 (None, JobState::Continued) if reports.continued => {
-                    found = Some((index, Found::Continued { id, uid }));
+                    Some(Found::Continued { id, uid })
+                }
+                (None, _) => {
+                    running = true;
+                    None
+                }
+            };
+            match (reportable, entry.unannounced) {
+                (Some(_), Some(_)) => announcing = true,
+                (Some(reportable), None) => {
+                    found = Some((index, reportable));
                     break;
                 }
-                (None, _) => running = true,
+                (None, _) => {}
             }
         }
         match found {
@@ -840,6 +909,7 @@ impl Table {
                 }
                 found
             }
+            None if announcing => Found::Announcing,
             None if running => Found::Running,
             None => Found::NoChild,
         }
@@ -1715,5 +1785,63 @@ mod tests {
         assert_eq!(listed, [1, 300, 500]);
         assert_eq!(table.add(300, Some(1)), Err(Errno::EAGAIN));
         assert_eq!(table.add(500, None), Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn a_signalled_change_is_hidden_from_waits_until_its_signal_is_announced() {
+        let mut table = table_with(&[
+            (210, None),
+            (211, Some(210)),
+            (212, Some(211)),
+            (213, Some(210)),
+        ]);
+        table.set_running(210, running());
+        table.set_child_subreaper(210, true);
+        let reaping = |table: &mut Table| {
+            table.wait_for_change(
+                210,
+                Selector::Any,
+                ChildKind::Sigchld,
+                Ends::Reap,
+                STOPPED_AND_CONTINUED,
+            )
+        };
+        let Stopping::Stopped(Some(stop)) = table.stop(213, 19, 0) else {
+            panic!("the child did not stop");
+        };
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(stop.announcement.unwrap());
+        assert!(matches!(
+            reaping(&mut table),
+            Found::Stopped { id: 213, .. }
+        ));
+        let resumed = table.resume(213).unwrap();
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(resumed.announcement.unwrap());
+        assert_eq!(reaping(&mut table), Found::Continued { id: 213, uid: 0 });
+        table.end(212, EXITED, 0);
+        let ended = table.end(211, EXITED, 0);
+        let own = ended.to_parent.unwrap().announcement.unwrap();
+        let handed_over = ended.to_new_parent.unwrap().announcement.unwrap();
+        assert_ne!(own, handed_over);
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(own);
+        assert!(matches!(reaping(&mut table), Found::Ended { id: 211, .. }));
+        assert_eq!(reaping(&mut table), Found::Announcing);
+        table.announce(handed_over);
+        assert!(matches!(reaping(&mut table), Found::Ended { id: 212, .. }));
+        table.set_exit_signal(213, 0);
+        assert!(
+            table
+                .end(213, EXITED, 0)
+                .to_parent
+                .unwrap()
+                .announcement
+                .is_none()
+        );
+        assert!(matches!(
+            table.wait(210, Selector::Any, ChildKind::All, Ends::Reap),
+            Found::Ended { id: 213, .. }
+        ));
     }
 }

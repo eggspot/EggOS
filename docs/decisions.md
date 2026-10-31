@@ -5087,7 +5087,10 @@ the license, by an explicit instruction recorded here.
   `CLD_KILLED`, `si_pid`, `si_uid`, `si_status`), queued for the process and delivered by the
   first thread that does not block it (`signals::send_from_outside`, which generalises D100's
   terminal sender: the target's first thread's wait slot from the table, the others' from its
-  signal state). Its default action ignores it. `SA_NOCLDSTOP` is kept but changes nothing:
+  signal state). The signal is queued before the end (or D181's stop or continuation) is shown
+  to the parent's waits (`Table::announce`), so a wait that reaps the child finds its signal
+  pending already, as on Linux, and a late one never stands in for the next child's. Its
+  default action ignores it. `SA_NOCLDSTOP` is kept but changes nothing:
   processes do not stop yet (below).
 - **Orphans (decided by research).** A process that ends hands its children to the nearest
   living ancestor that set `PR_SET_CHILD_SUBREAPER`, else to init, else to the kernel (parent 0,

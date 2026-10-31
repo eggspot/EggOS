@@ -11,7 +11,8 @@
 
 use super::futex::{self, Key};
 use super::process_table::{
-    self, ChildKind, Ends, Found, JobChange, JobNotice, JobReports, Notice, Selector, TABLE,
+    self, Announcement, ChildKind, Ends, Found, JobChange, JobNotice, JobReports, Notice, Selector,
+    TABLE,
 };
 use super::signals::{self, Info, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
@@ -98,11 +99,9 @@ pub fn wake_child_waiters<P: Platform>(id: u32) {
     futex::wake::<P>(child_wait_key(id), u32::MAX, u32::MAX);
 }
 
-/// Wakes `notice`'s parent from its waits for its children and sends it the notice's signal,
-/// if any.
+/// Sends `notice`'s parent the notice's signal, if any, then shows the child's end to its waits
+/// for its children and wakes them, so a wait that reaps the child finds the signal pending.
 pub fn notify<P: Platform>(notice: Notice) {
-    CHILD_CHANGES.fetch_add(1, Ordering::Release);
-    futex::wake::<P>(child_wait_key(notice.parent), u32::MAX, u32::MAX);
     if notice.signal != 0
         && let Some(running) = &notice.running
     {
@@ -114,22 +113,30 @@ pub fn notify<P: Platform>(notice: Notice) {
         );
         send_to_running::<P>(running, info);
     }
+    announce::<P>(notice.parent, notice.announcement);
 }
 
-/// Wakes `notice`'s parent from its waits for its children, which look again, for a child's
-/// stop or continuation (D181), and sends it `SIGCHLD` with `CLD_STOPPED` or `CLD_CONTINUED`
-/// unless it set `SA_NOCLDSTOP`.
+fn announce<P: Platform>(parent: u32, announcement: Option<Announcement>) {
+    if let Some(announcement) = announcement {
+        TABLE.lock().announce(announcement);
+    }
+    CHILD_CHANGES.fetch_add(1, Ordering::Release);
+    futex::wake::<P>(child_wait_key(parent), u32::MAX, u32::MAX);
+}
+
+/// Sends `notice`'s parent `SIGCHLD` with `CLD_STOPPED` or `CLD_CONTINUED` for a child's stop
+/// or continuation (D181), unless it set `SA_NOCLDSTOP`, then shows the change to its waits for
+/// its children and wakes them, which look again.
 #[cold]
 #[inline(never)]
 pub fn notify_job_change<P: Platform>(notice: JobNotice) {
-    CHILD_CHANGES.fetch_add(1, Ordering::Release);
-    futex::wake::<P>(child_wait_key(notice.parent), u32::MAX, u32::MAX);
     if notice.signal
         && let Some(running) = &notice.running
     {
         let info = Info::child_job_change(notice.child, notice.uid, notice.change);
         send_to_running::<P>(running, info);
     }
+    announce::<P>(notice.parent, notice.announcement);
 }
 
 /// Sends the signal `info` describes to the process `running` names, if it still runs.
@@ -382,7 +389,11 @@ fn wait_or_sleep<P: Platform>(
             }
             Found::Continued { id, uid } => Some((id, uid, Reported::Job(JobChange::Continued))),
             Found::NoChild => return ControlFlow::Continue(Some(Err(Errno::ECHILD))),
-            Found::Running => None,
+            Found::Announcing if !process.has_ended() => {
+                crate::thread::yield_now::<P>();
+                continue;
+            }
+            Found::Announcing | Found::Running => None,
         };
         match reported {
             Some(reported) => return ControlFlow::Continue(Some(Ok(Some(reported)))),
