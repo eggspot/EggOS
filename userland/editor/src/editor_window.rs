@@ -243,6 +243,7 @@ pub struct EditorWindow<'a> {
     caret_shown: bool,
     drag_scrolled_at: u32,
     now_ms: u32,
+    copied: bool,
     title: Text<64>,
     title_changed: bool,
     closing: bool,
@@ -345,6 +346,7 @@ impl<'a> EditorWindow<'a> {
             caret_shown: true,
             drag_scrolled_at: now_ms,
             now_ms,
+            copied: false,
             title: Text::new(),
             title_changed: true,
             closing: false,
@@ -361,6 +363,18 @@ impl<'a> EditorWindow<'a> {
     /// The editing.
     pub fn editor(&self) -> &Editor<'a> {
         &self.editor
+    }
+
+    /// The text copied or cut since the last call, for the clipboard every app shares (D197).
+    pub fn take_copied(&mut self) -> Option<&[u8]> {
+        let copied = core::mem::take(&mut self.copied);
+        (copied && self.editor.can_paste()).then(|| self.editor.copied())
+    }
+
+    /// Takes the clipboard every app shares as what Paste inserts
+    /// ([`Editor::take_shared_clipboard`]).
+    pub fn take_shared_clipboard(&mut self, fill: impl FnOnce(&mut [u8]) -> Option<usize>) {
+        self.editor.take_shared_clipboard(fill);
     }
 
     /// The document's path, if it has one.
@@ -1395,9 +1409,13 @@ impl<'a> EditorWindow<'a> {
             }
             item::CUT => {
                 self.editor.cut();
+                self.copied = true;
                 self.changed();
             }
-            item::COPY => self.editor.copy(),
+            item::COPY => {
+                self.editor.copy();
+                self.copied = true;
+            }
             item::PASTE => {
                 let pasted = self.editor.paste();
                 self.edited(pasted);

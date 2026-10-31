@@ -17,7 +17,7 @@ use eggos_toolkit::damage::Damage;
 use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::tree::PointerShape;
-use eggos_toolkit::window::{Window, now_ms};
+use eggos_toolkit::window::{Window, WindowServer, now_ms};
 
 const PROT_READ_WRITE: usize = 0x1 | 0x2;
 const MAP_PRIVATE_ANONYMOUS: usize = 0x02 | 0x20;
@@ -87,6 +87,38 @@ pub fn absolute(path: &[u8]) -> Option<Path> {
 struct Program<'a> {
     window: EditorWindow<'a>,
     files: LinuxFiles,
+    server: Option<WindowServer>,
+    clipboard_serial: Option<u32>,
+}
+
+impl Program<'_> {
+    fn take_shared_clipboard(&mut self) {
+        let Some(server) = self.server.as_ref() else {
+            return;
+        };
+        let Ok((_, serial)) = server.clipboard(0, &mut []) else {
+            return;
+        };
+        if self.clipboard_serial == Some(serial) {
+            return;
+        }
+        self.clipboard_serial = Some(serial);
+        self.window.take_shared_clipboard(|room| {
+            let (length, _) = server.clipboard(0, room).ok()?;
+            Some(length)
+        });
+    }
+
+    fn give_copied(&mut self) {
+        let (Some(server), Some(copied)) = (self.server.as_ref(), self.window.take_copied()) else {
+            return;
+        };
+        if let Ok(text) = core::str::from_utf8(copied)
+            && server.set_clipboard(text).is_ok()
+        {
+            self.clipboard_serial = server.clipboard(0, &mut []).ok().map(|(_, serial)| serial);
+        }
+    }
 }
 
 impl View for Program<'_> {
@@ -95,7 +127,15 @@ impl View for Program<'_> {
     }
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
-        self.window.handle(&mut self.files, input, time_ms)
+        if matches!(
+            input,
+            Input::Key { pressed: true, .. } | Input::Button { pressed: true, .. }
+        ) {
+            self.take_shared_clipboard();
+        }
+        let handled = self.window.handle(&mut self.files, input, time_ms);
+        self.give_copied();
+        handled
     }
 
     fn take_damage(&mut self) -> Damage {
@@ -173,6 +213,8 @@ pub fn run(startup: &Startup) -> i32 {
     let mut program = Program {
         window: view,
         files,
+        server: WindowServer::open().ok(),
+        clipboard_serial: None,
     };
     match application::run_view(&mut window, &mut program) {
         Ok(()) => 0,

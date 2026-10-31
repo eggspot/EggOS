@@ -207,6 +207,22 @@ impl<'a> Editor<'a> {
         self.clipboard_length > 0
     }
 
+    /// The text last copied or cut, to give the clipboard every app shares (D197).
+    pub fn copied(&self) -> &[u8] {
+        &self.clipboard[..self.clipboard_length]
+    }
+
+    /// Takes the clipboard every app shares as the text to paste: `fill` writes it into the
+    /// room it is given and says how many bytes it wrote; text that does not fit a document,
+    /// or is not UTF-8, leaves nothing to paste.
+    pub fn take_shared_clipboard(&mut self, fill: impl FnOnce(&mut [u8]) -> Option<usize>) {
+        let length = fill(self.clipboard).filter(|&length| length <= self.clipboard.len());
+        self.clipboard_length = match length {
+            Some(length) if core::str::from_utf8(&self.clipboard[..length]).is_ok() => length,
+            _ => 0,
+        };
+    }
+
     /// Puts the caret at `caret` and the anchor at `anchor`, both clamped to the text and
     /// moved back to character boundaries; the step being typed ends.
     pub fn select(&mut self, anchor: usize, caret: usize) {
@@ -500,6 +516,29 @@ pub(crate) mod tests {
         assert!(!editor.is_modified());
         editor.undo();
         assert!(editor.is_modified());
+    }
+
+    #[test]
+    fn the_shared_clipboard_becomes_what_paste_inserts_when_it_is_utf8() {
+        let mut owned = Owned::new(64);
+        let mut editor = owned.editor();
+        editor.take_shared_clipboard(|room| {
+            room[..5].copy_from_slice(b"hello");
+            Some(5)
+        });
+        assert_eq!(editor.copied(), b"hello");
+        editor.paste().unwrap();
+        assert_eq!(text(&editor), "hello");
+        editor.take_shared_clipboard(|room| {
+            room[..2].copy_from_slice(&[0xff, 0xfe]);
+            Some(2)
+        });
+        assert!(!editor.can_paste());
+        editor.take_shared_clipboard(|room| Some(room.len() + 1));
+        assert!(!editor.can_paste());
+        editor.select(0, 2);
+        editor.copy();
+        assert_eq!(editor.copied(), b"he");
     }
 
     #[test]
