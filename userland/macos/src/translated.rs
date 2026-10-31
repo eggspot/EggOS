@@ -401,8 +401,8 @@ pub fn va_list_argument(name: &[u8]) -> Option<u8> {
 }
 
 /// Whether the import `name` is `___chkstk_darwin`, the stack probe that takes its size in
-/// `rax` and must change no register: translated code gets a bridge that returns at once, as
-/// a translated thread's guest stack is mapped whole, its one guard page below it (D208).
+/// `rax` and must change no register: translated code gets the translator's stack probe
+/// bridge, which probes the guest stack page by page down to the guard page below it (D208).
 pub fn is_stack_probe(name: &[u8]) -> bool {
     STACK_PROBES.contains(&name)
 }

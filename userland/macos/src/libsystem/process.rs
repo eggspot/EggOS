@@ -154,20 +154,61 @@ pub fn fail(message: &[u8]) -> ! {
     abort()
 }
 
+#[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     ".text",
     ".p2align 2",
     ".globl eggos_macos_chkstk_darwin",
     ".hidden eggos_macos_chkstk_darwin",
     "eggos_macos_chkstk_darwin:",
+    "mov x16, sp",
+    "subs x17, x16, x9",
+    "csel x17, xzr, x17, lo",
+    "and x16, x16, #-4096",
+    "2:",
+    "cmp x16, x17",
+    "b.ls 3f",
+    "sub x16, x16, #4096",
+    "ldrb wzr, [x16]",
+    "b 2b",
+    "3:",
+    "ret",
+);
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 4",
+    ".globl eggos_macos_chkstk_darwin",
+    ".hidden eggos_macos_chkstk_darwin",
+    "eggos_macos_chkstk_darwin:",
+    "push rcx",
+    "push rax",
+    "lea rcx, [rsp + 24]",
+    "sub rcx, rax",
+    "jae 2f",
+    "xor ecx, ecx",
+    "2:",
+    "lea rax, [rsp + 24]",
+    "and rax, -4096",
+    "3:",
+    "cmp rax, rcx",
+    "jbe 4f",
+    "sub rax, 4096",
+    "test byte ptr [rax], 0",
+    "jmp 3b",
+    "4:",
+    "pop rax",
+    "pop rcx",
     "ret",
 );
 
 unsafe extern "C" {
-    /// `___chkstk_darwin`, the stack probe Swift's large and dynamically sized frames call
-    /// first, which must keep every register: it touches nothing, since a stack's reserve is
-    /// mapped on demand below its top and only a frame larger than the guard gap below it could
-    /// pass the gap unnoticed (D180).
+    /// `___chkstk_darwin`, the stack probe Apple's compilers call before a frame of a page or
+    /// more (size in bytes in `x9` on arm64, `rax` on x86_64): it touches every page from the
+    /// stack pointer down to the new frame's bottom, so a frame larger than a thread's guard
+    /// page faults on the guard instead of landing in the mapping below. It keeps every
+    /// register but `x16`, `x17` and the flags on arm64 and the flags on x86_64 (D208).
     pub fn eggos_macos_chkstk_darwin();
 }
 

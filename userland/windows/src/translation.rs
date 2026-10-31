@@ -134,7 +134,7 @@ pub fn install(
         let native = read_u64(image, slot.rva as usize).map_err(|_| FAILED)?;
         let moves = bridge::argument_moves(slot.arguments());
         let words = match slot.function == STACK_PROBE {
-            true => bridge::return_bridge(0),
+            true => bridge::stack_probe_bridge(0),
             false => bridge::forward_bridge(&moves, native, 0),
         }
         .map_err(|_| FAILED)?;

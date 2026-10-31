@@ -18,13 +18,14 @@ use super::entries::{EMPTY_KEY, EntriesTable};
 use super::link::{ImageError, TranslatedImage};
 use super::runtime;
 use crate::codegen::aarch64::emit::{Assembler, EmitError, Literal};
-use crate::codegen::aarch64::encode::{self, AddSub, Bitfield, LoadStore, Logic, Pair};
+use crate::codegen::aarch64::encode::{self, AddSub, Bitfield, LoadStore, Logic, Pair, Select};
 use crate::codegen::aarch64::simd::{self, VectorLoadStore, vector_load_store};
-use crate::codegen::aarch64::{Reg, Shift, Size};
+use crate::codegen::aarch64::{Cond, Reg, Shift, Size};
 use crate::codegen::registers::{
-    ADDRESS, GS_BASE, GUEST_STACK, SCRATCH, SHADOW_STACK, STATE, TEMPORARIES,
+    self, ADDRESS, GS_BASE, GUEST_STACK, SCRATCH, SHADOW_STACK, STATE, TEMPORARIES,
 };
 use crate::codegen::state;
+use crate::instruction::Gpr;
 
 /// The byte offsets of the per-thread block `x21` points to: the guest state block of
 /// [`crate::codegen::state`], then the fields the bridges keep.
@@ -59,6 +60,7 @@ const SAVED_GENERAL_BYTES: u32 = 80;
 const SAVED_VECTOR_BYTES: u32 = 160;
 const FIRST_SAVED_VECTOR: u8 = 6;
 const SP: Reg = Reg(31);
+const GUEST_PAGE_BYTES: u64 = 4096;
 const LINK_TARGET: Reg = SCRATCH;
 const STACK_BASE: Reg = ADDRESS;
 
@@ -295,15 +297,76 @@ pub fn forward_bridge(
     bridge(moves, native, dispatch, Convention::Win64)
 }
 
-/// The bridge for an import whose work translated code never needs: `__chkstk`, whose page
-/// probes a translated thread's guest stack does not need, as it is mapped whole, with one
-/// guard page below it. It changes no guest register and returns to the guest at once, through the shadow
+/// The bridge for a stack probe import, `__chkstk` (Windows) or `___chkstk_darwin` (macOS),
+/// which takes the frame's size in bytes in `rax`: it reads one byte of every guest page from
+/// the caller's `rsp` after the return down to that `rsp` less `rax`, so a frame larger than
+/// the guest stack's guard page faults on the guard instead of landing in the mapping below.
+/// It changes no guest register but the flags and returns to the guest, through the shadow
 /// stack when its pair matches, else through the dispatch at `dispatch` (a literal at the end,
 /// as in [`forward_bridge`]).
-pub fn return_bridge(dispatch: u64) -> Result<Vec<u32>, EmitError> {
+pub fn stack_probe_bridge(dispatch: u64) -> Result<Vec<u32>, EmitError> {
     let mut asm = Assembler::new();
     let dispatch = asm.literal(dispatch);
+    let size = registers::guest(Gpr::RAX);
+    let page = ADDRESS;
+    let bottom = SCRATCH;
+    let probe = asm.label();
+    let probed = asm.label();
     let miss = asm.label();
+    asm.emit(encode::add_sub_immediate(
+        AddSub::Add,
+        Size::X,
+        page,
+        GUEST_STACK,
+        8,
+        false,
+    ));
+    asm.emit(encode::add_sub_shifted(
+        AddSub::Subs,
+        Size::X,
+        bottom,
+        page,
+        size,
+        Shift::Lsl,
+        0,
+    ));
+    asm.emit(encode::select(
+        Select::Csel,
+        Size::X,
+        bottom,
+        Reg::ZR,
+        bottom,
+        Cond::Cc,
+    ));
+    asm.emit(
+        encode::logical_immediate(Logic::And, Size::X, page, page, !(GUEST_PAGE_BYTES - 1))
+            .ok_or(EmitError::OutOfRange { at: 0 })?,
+    );
+    asm.bind(probe);
+    asm.emit(encode::add_sub_shifted(
+        AddSub::Subs,
+        Size::X,
+        Reg::ZR,
+        page,
+        bottom,
+        Shift::Lsl,
+        0,
+    ));
+    asm.b_cond(Cond::Ls, probed);
+    asm.emit(encode::add_sub_immediate(
+        AddSub::Sub,
+        Size::X,
+        page,
+        page,
+        (GUEST_PAGE_BYTES >> 12) as u16,
+        true,
+    ));
+    asm.emit(
+        encode::load_store(LoadStore::Ldrb, Reg::ZR, page, 0)
+            .ok_or(EmitError::OutOfRange { at: 0 })?,
+    );
+    asm.b(probe);
+    asm.bind(probed);
     emit_return_to_guest(&mut asm, miss)?;
     asm.bind(miss);
     asm.load_literal(LINK_TARGET, dispatch);
@@ -765,14 +828,37 @@ mod tests {
     }
 
     #[test]
-    fn a_return_bridge_pops_the_return_address_and_writes_no_other_guest_register() {
+    fn a_stack_probe_bridge_reads_each_page_down_to_rsp_less_rax_and_writes_no_guest_register() {
         let dispatch = 0x0000_7E00_0000_0040;
-        let words = return_bridge(dispatch).unwrap();
+        let words = stack_probe_bridge(dispatch).unwrap();
         let (code, pool) = words.split_at(words.len() - 2);
         assert_eq!(pool, [dispatch as u32, (dispatch >> 32) as u32]);
-        assert_eq!(code[0], load(ADDRESS, GUEST_STACK, 0).unwrap());
+        assert_eq!(
+            code[0],
+            encode::add_sub_immediate(AddSub::Add, Size::X, ADDRESS, GUEST_STACK, 8, false)
+        );
         assert_eq!(
             code[1],
+            encode::add_sub_shifted(
+                AddSub::Subs,
+                Size::X,
+                SCRATCH,
+                ADDRESS,
+                Reg(0),
+                Shift::Lsl,
+                0
+            )
+        );
+        let probe = encode::load_store(LoadStore::Ldrb, Reg::ZR, ADDRESS, 0).unwrap();
+        let next_page = encode::add_sub_immediate(AddSub::Sub, Size::X, ADDRESS, ADDRESS, 1, true);
+        let at_probe = code.iter().position(|&word| word == probe).unwrap();
+        assert_eq!(code[at_probe - 1], next_page);
+        assert!(code[at_probe + 1] & 0xFC00_0000 == 0x1400_0000);
+        let pop = load(ADDRESS, GUEST_STACK, 0).unwrap();
+        let at_pop = code.iter().position(|&word| word == pop).unwrap();
+        assert!(at_probe < at_pop);
+        assert_eq!(
+            code[at_pop + 1],
             encode::add_sub_immediate(AddSub::Add, Size::X, GUEST_STACK, GUEST_STACK, 8, false)
         );
         let branch = |word: u32| {
@@ -781,9 +867,12 @@ mod tests {
                 || word & 0xFF00_0010 == 0x5400_0000
                 || word & 0x7E00_0000 == 0x3400_0000
         };
-        let guest_written = code[2..]
+        let guest_written = code
             .iter()
-            .filter(|&&word| !branch(word) && word & 0x1F < 16)
+            .enumerate()
+            .filter(|&(at, &word)| {
+                at != at_pop + 1 && !branch(word) && word != probe && word & 0x1F < 16
+            })
             .count();
         assert_eq!(guest_written, 0);
         assert!(code.contains(&encode::br(TEMPORARIES[0])));
@@ -1023,7 +1112,7 @@ mod tests {
         let bridges = [
             forward_bridge(&moves, 1, dispatch).unwrap(),
             sysv_forward_bridge(&moves, 1, dispatch).unwrap(),
-            return_bridge(dispatch).unwrap(),
+            stack_probe_bridge(dispatch).unwrap(),
             sysv_variadic_bridge(1, 1, dispatch).unwrap(),
             sysv_variadic_bridge(MAX_VARIADIC_NAMED, 1, dispatch).unwrap(),
             sysv_va_list_bridge(&moves, 1, 1, dispatch).unwrap(),
