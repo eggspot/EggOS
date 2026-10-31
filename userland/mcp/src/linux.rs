@@ -163,15 +163,14 @@ fn now_ms() -> u64 {
     time[0] as u64 * 1000 + time[1] as u64 / 1_000_000
 }
 
-fn read_grants(server: &mut Server) {
+fn read_command_line(line: &mut [u8; COMMAND_LINE_BYTES]) -> usize {
     let mut path = [0u8; 32];
     let Some(path) = c_path(COMMAND_LINE_PATH, &mut path) else {
-        return;
+        return 0;
     };
     let Ok(file) = open(path, O_RDONLY, 0) else {
-        return;
+        return 0;
     };
-    let mut line = [0u8; COMMAND_LINE_BYTES];
     let mut length = 0;
     while let Some(free) = line.get_mut(length..).filter(|free| !free.is_empty()) {
         match call(
@@ -185,6 +184,18 @@ fn read_grants(server: &mut Server) {
         }
     }
     close(file);
+    length
+}
+
+fn screen_has_a_person() -> bool {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let length = read_command_line(&mut line);
+    !grants::display_is_offscreen(line.get(..length).unwrap_or_default())
+}
+
+fn read_grants(server: &mut Server) {
+    let mut line = [0u8; COMMAND_LINE_BYTES];
+    let length = read_command_line(&mut line);
     let words = line.get(..length).unwrap_or_default();
     let (grants, unknown) = grants::from_command_line(words);
     match grants::agent_from_command_line(words) {
@@ -322,6 +333,7 @@ pub fn run(startup: &Startup) -> i32 {
         child_stack,
         command_words,
         prompt: None,
+        prompts_on_screen: screen_has_a_person(),
     };
     let mut server = match restarted {
         true => Server::restarted(),
@@ -394,6 +406,7 @@ struct Linux {
     child_stack: &'static mut ChildStack,
     command_words: &'static mut [u8; MAX_WORD_BYTES],
     prompt: Option<Prompt>,
+    prompts_on_screen: bool,
 }
 
 struct Prompt {
@@ -957,6 +970,9 @@ impl System for Linux {
 
     fn start_grant_prompt(&mut self, question: &[u8]) -> Result<(), Errno> {
         self.end_grant_prompt();
+        if !self.prompts_on_screen {
+            return Err(Errno::ENODEV);
+        }
         close(open(WINDOW_DEVICE, O_RDWR | O_CLOEXEC, 0)?);
         let mut program = [0u8; 32];
         let program = c_path(PROMPT_PROGRAM, &mut program).ok_or(Errno::EINVAL)?;

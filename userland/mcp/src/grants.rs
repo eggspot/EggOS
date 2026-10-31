@@ -156,6 +156,19 @@ impl Unknown {
     }
 }
 
+/// The kernel command line's word that asks for a display in memory, which no person sees.
+pub const OFFSCREEN_DISPLAY_PARAMETER: &[u8] = b"eggos.display=offscreen";
+
+/// Whether the kernel command line `line` asks for the offscreen display
+/// (`eggos.display=offscreen`, with or without a mode): EggOS's screen is then in memory, and
+/// no person is there to answer a grant prompt on it.
+pub fn display_is_offscreen(line: &[u8]) -> bool {
+    line.split(u8::is_ascii_whitespace).any(|word| {
+        word.strip_prefix(OFFSCREEN_DISPLAY_PARAMETER)
+            .is_some_and(|mode| mode.is_empty() || mode.starts_with(b":"))
+    })
+}
+
 /// The grants the kernel command line `line` gives: the value of its first
 /// `eggos.mcp_allow=` word, comma-separated names; empty names are skipped, unknown ones grant
 /// nothing and are returned.
@@ -1011,6 +1024,19 @@ mod tests {
         }
         let (grants, _) = from_command_line(b"eggos.display=offscreen");
         assert_eq!(grants, Grants::NONE);
+    }
+
+    #[test]
+    fn only_the_offscreen_display_parameter_says_no_person_sees_the_screen() {
+        assert!(display_is_offscreen(
+            b"eggos.display=offscreen eggos.mcp_allow=run"
+        ));
+        assert!(display_is_offscreen(
+            b"quiet eggos.display=offscreen:1920x1080\n"
+        ));
+        assert!(!display_is_offscreen(b"eggos.mcp_allow=run"));
+        assert!(!display_is_offscreen(b"eggos.display=offscreenish"));
+        assert!(!display_is_offscreen(b"x-eggos.display=offscreen"));
     }
 
     #[test]

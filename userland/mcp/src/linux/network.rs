@@ -714,6 +714,7 @@ pub fn run() -> i32 {
             child_stack,
             command_words,
             prompt: None,
+            prompts_on_screen: super::screen_has_a_person(),
         },
         scratch: Scratch {
             stdout,

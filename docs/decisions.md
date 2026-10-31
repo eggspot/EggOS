@@ -16615,3 +16615,15 @@ the license, by an explicit instruction recorded here.
   program still cannot read the physical counter or reprogram or stop the kernel's timer.
   The counter gives a program no more than `clock_gettime(CLOCK_MONOTONIC)` already does, at
   the same resolution; x86_64 user mode already reads `rdtsc` (`CR4.TSD` clear).
+
+## D211 The grant prompt shows only on a screen a person can see: not on the offscreen display — Decided by the build loop (engineering; refines D193 slice 41c3)
+- **Why.** D193's grant prompt (slice 41c3) opens on EggOS's own screen whenever `/dev/window`
+  opens, and only "without the desktop" falls back to the client's elicitation or a refusal.
+  `run-eggos.sh --mcp` boots with the offscreen display (D144), a desktop in memory where apps
+  open for the agent and no person looks, so every call that needed a yes waited 90 s for a
+  prompt nobody could answer: the QEMU MCP check's `clock_set` without `confirm` timed out
+  instead of being refused, and its elicitation checks could not run.
+- **Decision.** `eggmcpd` (local and `--network`) reads the kernel command line once at start;
+  with `eggos.display=offscreen` (any mode) `start_grant_prompt` fails at once, so the server
+  asks through the client's elicitation when it can and refuses as before when it cannot.
+  A real display, attached or not, still gets the prompt.
