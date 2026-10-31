@@ -875,6 +875,9 @@ impl System for Fake {
         request: u32,
         argument: &mut [u8],
     ) -> Result<(), Errno> {
+        if !crate::system::argument_fits(request, argument.len()) {
+            return Err(Errno::EINVAL);
+        }
         let path = self.file(descriptor)?.path.clone();
         if path == eggos_android_properties::AREA_PATH.to_bytes() {
             return self.set_property(&path, request, argument);

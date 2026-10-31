@@ -8,6 +8,26 @@ pub const STANDARD_OUTPUT: usize = 1;
 pub const STANDARD_ERROR: usize = 2;
 
 pub const STATX_SIZE: usize = 256;
+
+const SIZELESS_REQUESTS: [(u32, usize); 2] = [
+    (
+        eggos_android_log::SNAPSHOT_REQUEST,
+        eggos_android_log::SNAPSHOT_SIZE,
+    ),
+    (eggos_android_log::CLEAR_REQUEST, 0),
+];
+
+/// Whether an argument of `length` bytes is what the kernel reads or writes for `request`:
+/// the size the request encodes, or for one of the requests that encode none, the size the
+/// kernel is known to use for it; any other sizeless request is refused.
+pub fn argument_fits(request: u32, length: usize) -> bool {
+    match (request >> 16) & 0x3fff {
+        0 => SIZELESS_REQUESTS
+            .iter()
+            .any(|&(known, size)| known == request && size == length),
+        encoded => encoded as usize == length,
+    }
+}
 pub const UTSNAME_FIELD: usize = 65;
 pub const UTSNAME_SIZE: usize = 6 * UTSNAME_FIELD;
 
@@ -521,6 +541,19 @@ impl<T: System + ?Sized> System for &mut T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_request_takes_only_the_argument_size_the_kernel_uses() {
+        let encoded = 0x4004_7709;
+        assert!(argument_fits(encoded, 4));
+        assert!(!argument_fits(encoded, 3));
+        let snapshot = eggos_android_log::SNAPSHOT_REQUEST;
+        assert!(argument_fits(snapshot, eggos_android_log::SNAPSHOT_SIZE));
+        assert!(!argument_fits(snapshot, 16));
+        assert!(argument_fits(eggos_android_log::CLEAR_REQUEST, 0));
+        assert!(!argument_fits(eggos_android_log::CLEAR_REQUEST, 8));
+        assert!(!argument_fits(0x4c03, 0));
+    }
 
     #[test]
     fn a_statfs_record_is_read_at_linux_s_offsets() {

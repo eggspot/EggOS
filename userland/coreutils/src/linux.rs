@@ -522,8 +522,7 @@ impl System for Linux {
         request: u32,
         argument: &mut [u8],
     ) -> Result<(), Errno> {
-        let encoded_size = (request >> 16) & 0x3fff;
-        if encoded_size != 0 && encoded_size != argument.len() as u32 {
+        if !crate::system::argument_fits(request, argument.len()) {
             return Err(Errno::EINVAL);
         }
         let pointer = argument.as_mut_ptr() as usize;
