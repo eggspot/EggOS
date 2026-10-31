@@ -1,6 +1,6 @@
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::RECORD_BYTES;
-use crate::grants::Grants;
+use crate::grants::{Grants, STORE_PATH};
 use crate::paths::MAX_PATH_BYTES;
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
@@ -197,6 +197,13 @@ impl System for FakeSystem {
         }
         self.audit.push(String::from_utf8(record.to_vec()).unwrap());
         Ok(())
+    }
+
+    fn read_grant_store(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let file = self.files.get(STORE_PATH).ok_or(Errno::ENOENT)?;
+        let length = file.len().min(out.len());
+        out[..length].copy_from_slice(&file[..length]);
+        Ok(length)
     }
 
     fn now(&mut self) -> u64 {

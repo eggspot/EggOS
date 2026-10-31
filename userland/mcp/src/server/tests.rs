@@ -3000,3 +3000,243 @@ fn only_the_twins_of_path_tools_refuse_symbolic_links() {
         [true, true, true, false, false, false]
     );
 }
+
+fn store_file(agent: &str, grants: &[(Grant, crate::grants::Permission)]) -> Vec<u8> {
+    let mut store = crate::grants::GrantStore::new();
+    let entry = store
+        .add(
+            AgentId::stored(agent.as_bytes()).unwrap(),
+            crate::grants::AgentName::new(agent.as_bytes()).unwrap(),
+        )
+        .unwrap();
+    for &(grant, permission) in grants {
+        entry.set(grant, permission, None);
+    }
+    let mut out = [0u8; STORE_BYTES];
+    let length = store.encode(&mut out).unwrap();
+    out[..length].to_vec()
+}
+
+#[test]
+fn the_user_takes_a_grant_back_and_the_next_call_is_refused() {
+    use crate::grants::Permission;
+    let mut harness = writer();
+    let answer = harness.call(1, "tee", r#"{"path":"/home/root/a.txt","content":"one"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file(
+            "local",
+            &[
+                (Grant::View, Permission::Allow),
+                (Grant::Install, Permission::Allow),
+            ],
+        ),
+    );
+    let answer = harness.call(2, "tee", r#"{"path":"/home/root/b.txt","content":"two"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0]
+            .contains("tee needs the write grant, which the user has not given this agent"),
+        "{answer}"
+    );
+    let (tool, outcome, _, _) = last_record(&harness);
+    assert_eq!((tool.as_str(), outcome.as_str()), ("tee", "refused"));
+    assert_eq!(harness.system.runs.len(), 1);
+    let answer = harness.call(3, "cat", r#"{"path":"/home/root/a.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    harness.system.files.remove(STORE_PATH);
+    let answer = harness.call(4, "tee", r#"{"path":"/home/root/b.txt","content":"two"}"#);
+    assert!(!is_error(&answer), "{answer}");
+}
+
+#[test]
+fn the_store_never_gives_the_local_agent_more_than_eggos_was_started_with() {
+    use crate::grants::Permission;
+    let mut harness = Harness::initialized();
+    harness.system.folders.push("/home/root".into());
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("local", &[(Grant::Run, Permission::Allow)]),
+    );
+    let answer = harness.call(1, "tee", r#"{"path":"/home/root/a.txt","content":"x"}"#);
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("--mcp-allow write"), "{answer}");
+    assert!(harness.system.runs.is_empty());
+}
+
+#[test]
+fn an_agent_the_user_never_added_cannot_even_read_and_is_logged_under_its_id() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_agent(AgentId::new(b"stranger").unwrap());
+    harness.initialize("{}");
+    harness
+        .system
+        .files
+        .insert("/home/a.txt".into(), b"a".to_vec());
+    let answer = harness.call(1, "cat", r#"{"path":"/home/a.txt"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("EggOS does not know this agent"),
+        "{answer}"
+    );
+    let record = parse_line(harness.system.audit.last().unwrap().as_bytes()).unwrap();
+    assert_eq!(record.agent, b"stranger");
+    assert_eq!(record.outcome, Outcome::Refused);
+    assert!(harness.system.runs.is_empty());
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("stranger", &[(Grant::Write, Permission::Allow)]),
+    );
+    let answer = harness.call(2, "cat", r#"{"path":"/home/a.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    let answer = harness.call(3, "run", r#"{"program":"/bin/uname"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("run needs the run grant, which the user has not given"),
+        "{answer}"
+    );
+}
+
+#[test]
+fn a_grant_set_to_ask_asks_the_user_even_for_a_call_that_needs_no_confirmation() {
+    use crate::grants::Permission;
+    let ask = store_file("local", &[(Grant::Write, Permission::Ask)]);
+    let mut harness = asking();
+    harness.system.files.insert(STORE_PATH.into(), ask.clone());
+    let lines = harness.call_lines(1, "tee", r#"{"path":"/home/root/new.txt","content":"x"}"#);
+    assert_eq!(lines.len(), 1);
+    let question = question_of(&lines[0]);
+    assert!(harness.system.runs.is_empty());
+    assert_eq!(last_record(&harness).1, "asked");
+    let lines = reply(
+        &mut harness,
+        &question,
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert!(!is_error(lines.last().unwrap()), "{lines:?}");
+    assert_eq!(harness.system.runs.len(), 1);
+    let mut plain = writer();
+    plain.system.files.insert(STORE_PATH.into(), ask);
+    let answer = plain.call(2, "tee", r#"{"path":"/home/root/new.txt","content":"x"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("this client cannot ask the user"),
+        "{answer}"
+    );
+    assert!(plain.system.runs.is_empty());
+}
+
+#[test]
+fn a_grant_taken_back_while_the_user_is_asked_stops_the_call() {
+    let mut harness = asking();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    let lines = harness.call_lines(7, "trash", r#"{"path":"/home/root/a.txt"}"#);
+    let question = question_of(&lines[0]);
+    harness
+        .system
+        .files
+        .insert(STORE_PATH.into(), store_file("local", &[]));
+    let lines = reply(
+        &mut harness,
+        &question,
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    );
+    assert_eq!(lines.len(), 1);
+    assert!(is_error(&lines[0]));
+    assert!(
+        texts(&lines[0])[0].contains("trash needs the write grant"),
+        "{lines:?}"
+    );
+    assert!(harness.system.runs.is_empty());
+    let (tool, outcome, _, detail) = last_record(&harness);
+    assert_eq!(
+        (tool.as_str(), outcome.as_str(), detail.as_str()),
+        (
+            "trash",
+            "refused",
+            "the grant was taken back while the user was asked"
+        )
+    );
+}
+
+#[test]
+fn an_unreadable_store_leaves_the_local_agent_reading_and_the_instructions_show_the_grants() {
+    use crate::grants::Permission;
+    let mut harness = writer();
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    let mut broken = store_file("local", &[(Grant::Write, Permission::Allow)]);
+    broken[0] = b'E';
+    harness.system.files.insert(STORE_PATH.into(), broken);
+    let answer = harness.call(1, "tee", r#"{"path":"/home/root/b.txt","content":"x"}"#);
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("cannot be trusted: it is not a grants file this version knows"),
+        "{answer}"
+    );
+    let answer = harness.call(2, "cat", r#"{"path":"/home/root/a.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    let mut lowered = Harness::with_grants(Grants::ALL);
+    lowered.system.files.insert(
+        STORE_PATH.into(),
+        store_file("local", &[(Grant::View, Permission::Allow)]),
+    );
+    let answer = lowered
+        .send(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}"#)
+        .unwrap();
+    assert!(
+        answer.contains("Grants on this machine: read,view."),
+        "{answer}"
+    );
+}
+
+#[test]
+fn no_tool_short_of_run_can_write_where_the_grants_are_kept() {
+    for tool in &tools::TOOLS {
+        if !matches!(tool.grant, Some(Grant::Write | Grant::Install)) {
+            continue;
+        }
+        let tools::Operand::Path(argument) = &tool.twin.operand else {
+            continue;
+        };
+        for root in argument.roots {
+            assert!(
+                !STORE_PATH.starts_with(root),
+                "{} reaches {root}",
+                tool.name
+            );
+        }
+    }
+}
+
+#[test]
+fn a_question_names_an_agent_other_than_the_local_one() {
+    use crate::grants::Permission;
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_agent(AgentId::new(b"phone").unwrap());
+    harness.initialize(r#"{"elicitation":{}}"#);
+    harness.system.folders.push("/home/root".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"aaa".to_vec());
+    harness.system.files.insert(
+        STORE_PATH.into(),
+        store_file("phone", &[(Grant::Write, Permission::Allow)]),
+    );
+    let lines = harness.call_lines(1, "trash", r#"{"path":"/home/root/a.txt"}"#);
+    assert_eq!(lines.len(), 1);
+    question_of(&lines[0]);
+    assert!(
+        lines[0].contains("(EggOS, agent phone, tool trash)"),
+        "{}",
+        lines[0]
+    );
+}

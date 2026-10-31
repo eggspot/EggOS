@@ -1,12 +1,12 @@
-//! `eggmcpd`'s system calls: the agent channel's loop, the grants from `/proc/cmdline`,
-//! running a CLI twin with its input given and its output captured, in a process group of its
-//! own that is stopped whole, the checks of what is at a path, `wm_capture`'s file in `/run`,
-//! the audit log on `/var/log` and the clocks.
+//! `eggmcpd`'s system calls: the agent channel's loop, the grants from `/proc/cmdline` and
+//! the agents' grants file, running a CLI twin with its input given and its output captured,
+//! in a process group of its own that is stopped whole, the checks of what is at a path,
+//! `wm_capture`'s file in `/run`, the audit log on `/var/log` and the clocks.
 
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::{GENERATIONS, LOG_FOLDER, LOG_PATH, RECORD_BYTES, ROTATE_BYTES, ROTATED_PATHS};
 use crate::framing::{Line, LineReader};
-use crate::grants::{self, COMMAND_LINE_PATH, Grant};
+use crate::grants::{self, COMMAND_LINE_PATH, Grant, STORE_PATH};
 use crate::paths::{HOME, MAX_PATH_BYTES};
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
@@ -872,6 +872,30 @@ impl System for Linux {
             (false, _) => Err(Errno::EIO),
             (true, Err(error)) => Err(error),
         }
+    }
+
+    fn read_grant_store(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let mut buffer = [0u8; 64];
+        let path = c_path(STORE_PATH, &mut buffer).ok_or(Errno::EINVAL)?;
+        let file = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, 0)?;
+        let mut length = 0;
+        let mut result = Ok(());
+        while let Some(free) = out.get_mut(length..).filter(|free| !free.is_empty()) {
+            match call(
+                number::READ,
+                [file, free.as_mut_ptr() as usize, free.len(), 0, 0, 0],
+            ) {
+                Ok(0) => break,
+                Ok(count) => length += count,
+                Err(Errno::EINTR) => continue,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        close(file);
+        result.map(|()| length)
     }
 
     fn now(&mut self) -> u64 {

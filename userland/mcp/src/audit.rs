@@ -1,6 +1,8 @@
 //! The audit log (D136): `/var/log/agent-audit.log`, one record per line, its fields separated
 //! by tabs: the time (seconds of the wall clock), the call's number since the server started,
-//! the client's name, the tool, the outcome, the arguments and a detail (a size, an exit
+//! the agent's id (D193; a record from before it has none and reads back as
+//! [`LOCAL_AGENT_ID`]'s), the client's name, the tool, the outcome, the arguments and a detail
+//! (a size, an exit
 //! status or an error, never what a command printed). A call that runs a command writes a
 //! `started` record, then its outcome under the same number; one stopped before (an unknown
 //! tool, a missing grant, bad arguments, a refused path) writes one record; one that asks the
@@ -19,6 +21,11 @@
 //! `\u{202e}`, and invalid UTF-8 as U+FFFD. Each field keeps at most [`FIELD_BYTES`] bytes,
 //! ending `...(cut)` when cut. Reading ([`parse_line`], [`display_into`]) escapes again, so a
 //! log edited by other hands cannot hide anything from the person reading it either.
+//!
+//! [`query`] reads a log's records that match a [`Filter`]: an agent, a tool, an outcome and a
+//! span of time, for the log's views in Settings and `agentlog`.
+
+use crate::grants::LOCAL_AGENT_ID;
 
 /// Where the log is.
 pub const LOG_PATH: &str = "/var/log/agent-audit.log";
@@ -48,7 +55,7 @@ const _: () = assert!(BUDGET_BYTES + 2 * ROTATE_BYTES <= ROTATE_BYTES * GENERATI
 /// The most bytes a free field keeps.
 pub const FIELD_BYTES: usize = 512;
 /// The most bytes one record takes, its newline included.
-pub const RECORD_BYTES: usize = 4 * FIELD_BYTES + 128;
+pub const RECORD_BYTES: usize = 5 * FIELD_BYTES + 128;
 
 const CUT: &[u8] = b"...(cut)";
 
@@ -121,6 +128,8 @@ pub struct Entry<'a> {
     pub time: u64,
     /// The call's number since the server started; 0 for the server's and session's records.
     pub call: u64,
+    /// The agent's id.
+    pub agent: &'a [u8],
     /// The client's name.
     pub client: &'a [u8],
     /// The tool, or `-`.
@@ -140,6 +149,8 @@ pub struct Record<'a> {
     pub time: u64,
     /// The call's number.
     pub call: u64,
+    /// The agent's id.
+    pub agent: &'a [u8],
     /// The client's name.
     pub client: &'a [u8],
     /// The tool.
@@ -166,7 +177,7 @@ pub fn write_record(entry: &Entry<'_>, out: &mut [u8]) -> usize {
     put(b"\t", &mut length);
     put(decimal(entry.call, &mut digits), &mut length);
     let mut field = [0u8; FIELD_BYTES];
-    for text in [entry.client, entry.tool] {
+    for text in [entry.agent, entry.client, entry.tool] {
         put(b"\t", &mut length);
         let count = escape_field(text, &mut field, true);
         put(field.get(..count).unwrap_or(&[]), &mut length);
@@ -194,9 +205,11 @@ fn decimal(mut value: u64, digits: &mut [u8; 20]) -> &[u8] {
     }
 }
 
-/// Reads one line of the log; `None` for a line that is not a record.
+/// Reads one line of the log; `None` for a line that is not a record. A line of seven fields,
+/// written before records named the agent, is the local channel's agent's.
 pub fn parse_line(line: &[u8]) -> Option<Record<'_>> {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
+    let named_agent = line.iter().filter(|&&byte| byte == b'\t').count() == 7;
     let mut fields = line.split(|&byte| byte == b'\t');
     let number = |field: &[u8]| -> Option<u64> {
         if field.is_empty() || !field.iter().all(u8::is_ascii_digit) {
@@ -206,6 +219,10 @@ pub fn parse_line(line: &[u8]) -> Option<Record<'_>> {
     };
     let time = number(fields.next()?)?;
     let call = number(fields.next()?)?;
+    let agent = match named_agent {
+        true => fields.next()?,
+        false => LOCAL_AGENT_ID,
+    };
     let client = fields.next()?;
     let tool = fields.next()?;
     let outcome = Outcome::from_word(fields.next()?)?;
@@ -217,12 +234,47 @@ pub fn parse_line(line: &[u8]) -> Option<Record<'_>> {
     Some(Record {
         time,
         call,
+        agent,
         client,
         tool,
         outcome,
         arguments,
         detail,
     })
+}
+
+/// Which records to show; each field left `None` matches every record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Filter<'f> {
+    /// Only this agent's records.
+    pub agent: Option<&'f [u8]>,
+    /// Only this tool's records.
+    pub tool: Option<&'f [u8]>,
+    /// Only records with this outcome.
+    pub outcome: Option<Outcome>,
+    /// Only records at this second of the wall clock or later.
+    pub since: Option<u64>,
+    /// Only records before this second of the wall clock.
+    pub until: Option<u64>,
+}
+
+impl Filter<'_> {
+    /// Whether `record` is one to show.
+    pub fn matches(&self, record: &Record<'_>) -> bool {
+        self.agent.is_none_or(|agent| record.agent == agent)
+            && self.tool.is_none_or(|tool| record.tool == tool)
+            && self.outcome.is_none_or(|outcome| record.outcome == outcome)
+            && self.since.is_none_or(|since| record.time >= since)
+            && self.until.is_none_or(|until| record.time < until)
+    }
+}
+
+/// The records of `log` (a log file's bytes) that `filter` matches, oldest first; lines that
+/// are not records are skipped.
+pub fn query<'l>(log: &'l [u8], filter: Filter<'_>) -> impl Iterator<Item = Record<'l>> {
+    log.split(|&byte| byte == b'\n')
+        .filter_map(parse_line)
+        .filter(move |record| filter.matches(record))
 }
 
 /// Writes a stored field for display into `out`: as stored, but any control byte, hidden
@@ -347,6 +399,7 @@ mod tests {
         Entry {
             time: 12,
             call: 3,
+            agent: b"local",
             client,
             tool: b"cat",
             outcome: Outcome::Started,
@@ -364,7 +417,7 @@ mod tests {
         });
         assert_eq!(
             line,
-            "12\t3\tclaude-code 2.1\tcat\tok\t{\"path\":\"/home/a\"}\t42 bytes\n"
+            "12\t3\tlocal\tclaude-code 2.1\tcat\tok\t{\"path\":\"/home/a\"}\t42 bytes\n"
         );
         let read = parse_line(line.as_bytes()).unwrap();
         assert_eq!(read.time, 12);
@@ -382,7 +435,7 @@ mod tests {
         let path = "{\"path\":\"/home/\u{202e}txt.exe\u{200b}\"}".as_bytes();
         let line = record(&entry(client, path));
         assert_eq!(line.matches('\n').count(), 1);
-        assert_eq!(line.matches('\t').count(), 6);
+        assert_eq!(line.matches('\t').count(), 7);
         assert!(line.contains("evil\\e[2J\\u{202e}gnp.exe\\ttab\\nnew\\\\"));
         assert!(line.contains("/home/\\u{202e}txt.exe\\u{200b}"));
         assert!(
@@ -408,13 +461,13 @@ mod tests {
     fn long_fields_are_cut_with_a_marker_at_a_character_boundary() {
         let long = "é".repeat(FIELD_BYTES);
         let line = record(&entry(b"c", long.as_bytes()));
-        let arguments = line.split('\t').nth(5).unwrap();
+        let arguments = line.split('\t').nth(6).unwrap();
         assert!(arguments.len() <= FIELD_BYTES);
         assert!(arguments.ends_with("...(cut)"));
         assert!(arguments.starts_with("éé"));
         let exact = "a".repeat(FIELD_BYTES);
         let line = record(&entry(b"c", exact.as_bytes()));
-        assert_eq!(line.split('\t').nth(5).unwrap(), exact);
+        assert_eq!(line.split('\t').nth(6).unwrap(), exact);
         let worst = "\u{202e}".repeat(FIELD_BYTES);
         let line = record(&entry(worst.as_bytes(), worst.as_bytes()));
         assert!(line.len() <= RECORD_BYTES);
@@ -437,9 +490,105 @@ mod tests {
             b"1\t1\tc\tt\tmaybe\ta\td",
             b"1\t1\tc\tt\tok\ta",
             b"1\t1\tc\tt\tok\ta\td\textra",
+            b"1\t1\tagent\tc\tt\tok\ta\td\textra",
         ] {
             assert_eq!(parse_line(line), None);
         }
         assert!(parse_line(b"1\t0\t-\t-\tserver-start\t\t\n").is_some());
+    }
+
+    #[test]
+    fn the_agent_is_recorded_and_older_records_read_as_the_local_agent() {
+        let line = record(&Entry {
+            agent: b"phone_agent",
+            ..entry(b"c", b"{}")
+        });
+        assert!(line.starts_with("12\t3\tphone_agent\tc\tcat\tstarted\t"));
+        assert_eq!(parse_line(line.as_bytes()).unwrap().agent, b"phone_agent");
+        let old = parse_line(b"7\t2\tclaude-code\tcat\tok\t{}\tdone\n").unwrap();
+        assert_eq!(old.agent, LOCAL_AGENT_ID);
+        assert_eq!(old.client, b"claude-code");
+        assert_eq!(old.detail, b"done");
+        let disguised = record(&Entry {
+            agent: b"a\tb\nc",
+            ..entry(b"c", b"{}")
+        });
+        assert_eq!(disguised.matches('\t').count(), 7);
+        assert_eq!(
+            parse_line(disguised.as_bytes()).unwrap().agent,
+            b"a\\tb\\nc"
+        );
+    }
+
+    fn log() -> String {
+        let mut log = String::new();
+        for (time, agent, tool, outcome) in [
+            (10, &b"local"[..], &b"cat"[..], Outcome::Ok),
+            (20, &b"phone"[..], &b"tee"[..], Outcome::Refused),
+            (30, &b"phone"[..], &b"cat"[..], Outcome::Ok),
+            (40, &b"local"[..], &b"tee"[..], Outcome::Ok),
+        ] {
+            log.push_str(&record(&Entry {
+                time,
+                agent,
+                tool,
+                outcome,
+                ..entry(b"c", b"{}")
+            }));
+        }
+        log.push_str("not a record\n");
+        log.push_str("50\t9\tclaude\tcat\tok\t{}\t\n");
+        log
+    }
+
+    fn times(filter: Filter<'_>) -> Vec<u64> {
+        let log = log();
+        query(log.as_bytes(), filter)
+            .map(|record| record.time)
+            .collect()
+    }
+
+    #[test]
+    fn a_query_keeps_the_records_every_filter_matches() {
+        assert_eq!(times(Filter::default()), [10, 20, 30, 40, 50]);
+        let agent = Filter {
+            agent: Some(&b"phone"[..]),
+            ..Filter::default()
+        };
+        assert_eq!(times(agent), [20, 30]);
+        let local = Filter {
+            agent: Some(LOCAL_AGENT_ID),
+            ..Filter::default()
+        };
+        assert_eq!(times(local), [10, 40, 50]);
+        let tool = Filter {
+            tool: Some(&b"tee"[..]),
+            ..Filter::default()
+        };
+        assert_eq!(times(tool), [20, 40]);
+        let refused = Filter {
+            outcome: Some(Outcome::Refused),
+            ..Filter::default()
+        };
+        assert_eq!(times(refused), [20]);
+        let span = Filter {
+            since: Some(20),
+            until: Some(40),
+            ..Filter::default()
+        };
+        assert_eq!(times(span), [20, 30]);
+        let all = Filter {
+            agent: Some(&b"phone"[..]),
+            tool: Some(&b"cat"[..]),
+            outcome: Some(Outcome::Ok),
+            since: Some(30),
+            until: Some(31),
+        };
+        assert_eq!(times(all), [30]);
+        let none = Filter {
+            agent: Some(&b"nobody"[..]),
+            ..Filter::default()
+        };
+        assert!(times(none).is_empty());
     }
 }

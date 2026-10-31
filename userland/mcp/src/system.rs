@@ -1,7 +1,7 @@
 //! What the server needs from the machine, as a trait: running a CLI twin with its input given
 //! and its output captured, asking whether a path is a symbolic link and what is there,
 //! making, reading and removing the file `wm_capture`'s twin writes, appending to the audit
-//! log, the clocks and the console. `linux.rs` makes the system calls;
+//! log, reading the agents' grants, the clocks and the console. `linux.rs` makes the system calls;
 //! the tests script a fake.
 
 use eggos_runtime::errno::Errno;
@@ -127,6 +127,13 @@ pub trait System {
     fn close_capture(&mut self, file: CaptureFile);
     /// Appends `record` to the audit log, durably.
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno>;
+    /// Reads the agents' grants file ([`crate::grants::STORE_PATH`]) into `out`, at most its
+    /// size; returns how many bytes it read, `ENOENT` when there is none. The server only ever
+    /// reads it: only the user's front-ends write it.
+    fn read_grant_store(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let _ = out;
+        Err(Errno::ENOENT)
+    }
     /// The wall clock's seconds.
     fn now(&mut self) -> u64;
     /// A clock that never goes back, in milliseconds.

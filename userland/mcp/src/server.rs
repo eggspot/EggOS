@@ -25,7 +25,9 @@
 
 use crate::arguments::{self, Button, Checked, Decoded};
 use crate::audit::{self, BUDGET_BYTES, Entry, Outcome};
-use crate::grants::{Grant, Grants, Unknown};
+use crate::grants::{
+    AgentId, Decision, Denial, Grant, Grants, Policy, STORE_BYTES, STORE_PATH, StoreState, Unknown,
+};
 use crate::json::{Base64Carry, JsonWriter, Object, Value};
 use crate::paths::{self, MAX_PATH_BYTES, PathRefusal};
 use crate::rpc::{
@@ -170,6 +172,7 @@ struct Pending {
     arguments_length: usize,
     state: FileState,
     deadline_ms: u64,
+    agent: AgentId,
 }
 
 /// The server: the session, the grants, the calls' count, a call waiting for the user, and
@@ -178,7 +181,8 @@ struct Pending {
 pub struct Server {
     session: Session,
     calls: u64,
-    grants: Grants,
+    agent: AgentId,
+    policy: Policy,
     unknown: Unknown,
     started_ms: u64,
     questions: u64,
@@ -193,7 +197,8 @@ impl Default for Server {
         Self {
             session: Session::default(),
             calls: 0,
-            grants: Grants::NONE,
+            agent: AgentId::LOCAL,
+            policy: Policy::default(),
             unknown: Unknown::default(),
             started_ms: 0,
             questions: 0,
@@ -250,13 +255,23 @@ impl Server {
 
     /// Gives the server the grants of this boot, and the unknown names for the log.
     pub fn set_grants(&mut self, grants: Grants, unknown: Unknown) {
-        self.grants = grants;
+        self.policy.boot = grants;
         self.unknown = unknown;
     }
 
     /// The grants of this boot.
     pub fn grants(&self) -> Grants {
-        self.grants
+        self.policy.boot
+    }
+
+    /// Sets the agent this server answers: [`AgentId::LOCAL`] until the channel names another.
+    pub fn set_agent(&mut self, agent: AgentId) {
+        self.agent = agent;
+    }
+
+    /// The agent this server answers.
+    pub fn agent(&self) -> AgentId {
+        self.agent
     }
 
     /// Sets how many bytes of records this run may write ([`BUDGET_BYTES`] by default).
@@ -288,7 +303,7 @@ impl Server {
         text.put(SERVER_VERSION);
         text.put(" grants=");
         let mut grants = [0u8; 32];
-        let length = self.grants.describe(&mut grants);
+        let length = self.policy.boot.describe(&mut grants);
         text.put_bytes(grants.get(..length).unwrap_or_default());
         if !self.unknown.as_bytes().is_empty() {
             text.put(" unknown=");
@@ -558,8 +573,12 @@ impl Server {
             b"",
         );
         let mut grants = [0u8; 32];
-        let grants_length = self.grants.describe(&mut grants);
-        let grants = text_prefix(&grants, grants_length);
+        let now = self.refresh_policy(system);
+        let grants_length = self.policy.allowed(&self.agent, now).describe(&mut grants);
+        let grants = match self.policy.check(&self.agent, None, now) {
+            Decision::Deny(_) => "none, not even reading",
+            _ => text_prefix(&grants, grants_length),
+        };
         rpc::write_result(out, id, |out| {
             out.begin_object();
             out.key("protocolVersion");
@@ -599,9 +618,11 @@ impl Server {
         arguments: &[u8],
         detail: &[u8],
     ) -> bool {
+        let agent = self.agent;
         let entry = Entry {
             time: system.now(),
             call,
+            agent: agent.as_bytes(),
             client,
             tool,
             outcome,
@@ -774,25 +795,29 @@ impl Server {
             return;
         };
         let tool_name = tool.name.as_bytes();
-        if let Some(grant) = tool.grant
-            && !self.grants.allows(grant)
-        {
-            let mut message = [0u8; 320];
-            let length = missing_grant(tool, grant, &mut message);
-            let message = text_prefix(&message, length);
-            self.stop(
-                system,
-                scratch,
-                id,
-                number,
-                tool_name,
-                Outcome::Refused,
-                Logged::Names(arguments),
-                message,
-                Ending::Refused(&errors::NEEDS_GRANT),
-                out,
-            );
-            return;
+        let now = self.refresh_policy(system);
+        let mut ask_user = false;
+        match self.policy.check(&self.agent, tool.grant, now) {
+            Decision::Allow => {}
+            Decision::AskUser => ask_user = true,
+            Decision::Deny(denial) => {
+                let mut message = [0u8; 480];
+                let length = denied(tool, denial, &mut message);
+                let message = text_prefix(&message, length);
+                self.stop(
+                    system,
+                    scratch,
+                    id,
+                    number,
+                    tool_name,
+                    Outcome::Refused,
+                    Logged::Names(arguments),
+                    message,
+                    Ending::Refused(&errors::NEEDS_GRANT),
+                    out,
+                );
+                return;
+            }
         }
         if tool.grant.is_some() && self.pending.is_some() {
             self.stop(
@@ -901,7 +926,7 @@ impl Server {
             return;
         }
         let replaces = !checked.append && state != FileState::Missing;
-        let needs_yes = tool.confirmation.needed(replaces, checked.dry_run);
+        let needs_yes = ask_user || tool.confirmation.needed(replaces, checked.dry_run);
         let mut approval = Approval::NotNeeded;
         if needs_yes {
             if self.session.elicits() {
@@ -915,6 +940,24 @@ impl Server {
                     shown,
                     system,
                     scratch,
+                    out,
+                );
+                return;
+            }
+            if ask_user {
+                let mut message = [0u8; 320];
+                let length = asks_the_user(tool, &mut message);
+                let message = text_prefix(&message, length);
+                self.stop(
+                    system,
+                    scratch,
+                    id,
+                    number,
+                    tool_name,
+                    Outcome::Refused,
+                    Logged::Shown(shown),
+                    message,
+                    Ending::Refused(&errors::NEEDS_GRANT),
                     out,
                 );
                 return;
@@ -1130,6 +1173,7 @@ impl Server {
             arguments_length: shown.len().min(scratch.held_arguments.len()),
             state,
             deadline_ms: system.monotonic_ms().saturating_add(ELICITATION_TIMEOUT_MS),
+            agent: self.agent,
         };
         let mut question = [0u8; 64];
         let question_length = self.question_id(pending.question, &mut question);
@@ -1164,7 +1208,7 @@ impl Server {
         self.pending = Some(pending);
         let target = target_text(tool, scratch.held_path, target_length).unwrap_or("");
         let mut message = [0u8; 2048];
-        let length = question_text(tool, &checked, state, target, &mut message);
+        let length = question_text(tool, &checked, state, target, &self.agent, &mut message);
         let message = text_prefix(&message, length);
         out.begin_object();
         out.key("jsonrpc");
@@ -1211,6 +1255,20 @@ impl Server {
         text.put("-");
         text.number(question as i64);
         text.length
+    }
+
+    fn refresh_policy(&mut self, system: &mut impl System) -> u64 {
+        let mut file = [0u8; STORE_BYTES];
+        let read = system.read_grant_store(&mut file);
+        let read = read.map(|length| file.get(..length).unwrap_or_default());
+        self.policy.store = StoreState::from_read(read);
+        match self.policy.needs_clock() {
+            true => match system.now() {
+                0 => u64::MAX,
+                now => now,
+            },
+            false => 0,
+        }
     }
 
     fn is_our_question(&self, pending: &Pending, id: &[u8]) -> bool {
@@ -1306,6 +1364,20 @@ impl Server {
         if let Some((detail, error, message)) = refusal {
             self.record_pending(system, scratch, &pending, detail);
             refused(out, pending.id.as_bytes(), error, message);
+            return Some(pending.id);
+        }
+        let now = self.refresh_policy(system);
+        if let Decision::Deny(denial) = self.policy.check(&pending.agent, pending.tool.grant, now) {
+            let mut message = [0u8; 480];
+            let length = denied(pending.tool, denial, &mut message);
+            let message = text_prefix(&message, length);
+            self.record_pending(
+                system,
+                scratch,
+                &pending,
+                b"the grant was taken back while the user was asked",
+            );
+            refused(out, pending.id.as_bytes(), &errors::NEEDS_GRANT, message);
             return Some(pending.id);
         }
         if !self.unchanged(&pending, system, scratch) {
@@ -2227,6 +2299,53 @@ fn path_refusal(argument: &tools::PathArgument, refusal: PathRefusal) -> &'stati
     }
 }
 
+fn denied(tool: &Tool, denial: Denial, out: &mut [u8]) -> usize {
+    if let (Denial::NotStartedWith, Some(grant)) = (denial, tool.grant) {
+        return missing_grant(tool, grant, out);
+    }
+    let mut text = Text::new(out);
+    text.put("Refused: ");
+    match denial {
+        Denial::UnknownAgent => text.put(
+            "EggOS does not know this agent. The user has to add it and give it grants \
+             before it can use any tool.",
+        ),
+        Denial::StoreUnreadable(error) => {
+            text.put("the agents' grants file ");
+            text.put(STORE_PATH);
+            text.put(" cannot be trusted: ");
+            text.put(error.reason());
+            text.put(". No agent gets more than reading until the user saves the grants again.");
+        }
+        Denial::NotStartedWith | Denial::NotGiven | Denial::Expired => {
+            text.put(tool.name);
+            text.put(" needs the ");
+            text.put(tool.grant.map_or("", Grant::name));
+            text.put(match denial {
+                Denial::Expired => {
+                    " grant, and the time the user gave this agent for it has passed. Only \
+                     the user can give it again."
+                }
+                _ => {
+                    " grant, which the user has not given this agent or has taken back. Only \
+                     the user can give it."
+                }
+            });
+        }
+    }
+    text.length
+}
+
+fn asks_the_user(tool: &Tool, out: &mut [u8]) -> usize {
+    let mut text = Text::new(out);
+    text.put("Refused: the user approves each call of this agent that needs the ");
+    text.put(tool.grant.map_or("", Grant::name));
+    text.put(" grant, and this client cannot ask the user, so ");
+    text.put(tool.name);
+    text.put(" was not run; confirm: true does not count as the user's approval.");
+    text.length
+}
+
 fn missing_grant(tool: &Tool, grant: Grant, out: &mut [u8]) -> usize {
     let mut text = Text::new(out);
     text.put("Refused: ");
@@ -2271,6 +2390,7 @@ fn question_text(
     checked: &Checked,
     state: FileState,
     target: &str,
+    agent: &AgentId,
     out: &mut [u8],
 ) -> usize {
     let mut shown = [0u8; MAX_PATH_BYTES * 2];
@@ -2278,6 +2398,20 @@ fn question_text(
     let shown = text_prefix(&shown, shown_length);
     let mut text = Text::new(out);
     match tool.kind {
+        Kind::Tee if checked.append => {
+            text.put("An agent asks to add ");
+            text.number(checked.content.unwrap_or(0) as i64);
+            text.put(" bytes to ");
+            text.put(shown);
+            text.put(". Allow it?");
+        }
+        Kind::Tee if state == FileState::Missing => {
+            text.put("An agent asks to make the file ");
+            text.put(shown);
+            text.put(" with ");
+            text.number(checked.content.unwrap_or(0) as i64);
+            text.put(" bytes. Allow it?");
+        }
         Kind::Tee => {
             text.put("An agent asks to replace ");
             text.put(shown);
@@ -2339,7 +2473,13 @@ fn question_text(
             text.put(". Allow it?");
         }
     }
-    text.put(" (EggOS, tool ");
+    text.put(" (EggOS, ");
+    if !agent.is_local() {
+        text.put("agent ");
+        text.put_bytes(agent.as_bytes());
+        text.put(", ");
+    }
+    text.put("tool ");
     text.put(tool.name);
     text.put(")");
     text.length
