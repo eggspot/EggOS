@@ -15,6 +15,7 @@
 //! supported yet, never read as words.
 
 use crate::pattern::Side;
+use crate::shell::MAX_NESTING;
 
 /// The most bytes a command's words take, each with its terminating NUL.
 pub const WORDS_CAPACITY: usize = 8192;
@@ -840,7 +841,20 @@ pub fn document_end(
 /// Where the command substitution whose text starts `input` (right after `$(`) ends: the
 /// index of its `)`. Quotes, escapes, comments and nested `$(...)` are passed over, and other
 /// parentheses counted; a `case` pattern inside must be written with its leading `(`.
+/// Substitutions nested more than [`MAX_NESTING`] deep are [`SyntaxError::TooDeep`]: they
+/// could never run.
 pub fn substitution_end(input: &[u8], final_input: bool) -> Result<usize, SyntaxError> {
+    substitution_end_within(input, final_input, MAX_NESTING)
+}
+
+fn substitution_end_within(
+    input: &[u8],
+    final_input: bool,
+    levels: u16,
+) -> Result<usize, SyntaxError> {
+    let Some(inner_levels) = levels.checked_sub(1) else {
+        return Err(SyntaxError::TooDeep);
+    };
     let end_of_text = || match final_input {
         true => SyntaxError::UnexpectedEnd(b'('),
         false => SyntaxError::Incomplete,
@@ -858,14 +872,14 @@ pub fn substitution_end(input: &[u8], final_input: bool) -> Result<usize, Syntax
                     .ok_or_else(end_of_text)?;
                 at + 1 + close + 1
             }
-            b'"' => skip_double_quoted(input, at + 1, final_input)?,
+            b'"' => skip_double_quoted(input, at + 1, final_input, inner_levels)?,
             b'`' => skip_backquoted(input, at + 1).ok_or_else(end_of_text)?,
             b'#' if word_start => input[at..]
                 .iter()
                 .position(|&byte| byte == b'\n')
                 .map_or(input.len(), |newline| at + newline),
             b'$' if input.get(at + 1) == Some(&b'(') => {
-                at + 2 + substitution_end(&input[at + 2..], final_input)? + 1
+                at + 2 + substitution_end_within(&input[at + 2..], final_input, inner_levels)? + 1
             }
             b'(' => {
                 depth += 1;
@@ -888,13 +902,14 @@ fn skip_double_quoted(
     input: &[u8],
     mut at: usize,
     final_input: bool,
+    levels: u16,
 ) -> Result<usize, SyntaxError> {
     while let Some(&byte) = input.get(at) {
         at = match byte {
             b'"' => return Ok(at + 1),
             b'\\' => at + 2,
             b'$' if input.get(at + 1) == Some(&b'(') => {
-                at + 2 + substitution_end(&input[at + 2..], final_input)? + 1
+                at + 2 + substitution_end_within(&input[at + 2..], final_input, levels)? + 1
             }
             b'`' => match skip_backquoted(input, at + 1) {
                 Some(after) => after,
@@ -920,22 +935,29 @@ fn skip_backquoted(input: &[u8], mut at: usize) -> Option<usize> {
     None
 }
 
-fn brace_word_end(input: &[u8], mut at: usize, quoted: bool) -> Option<usize> {
+fn brace_word_end(input: &[u8], mut at: usize, quoted: bool) -> Result<usize, SyntaxError> {
+    const UNCLOSED: SyntaxError = SyntaxError::UnexpectedEnd(b'{');
     let mut depth = 0usize;
     while let Some(&byte) = input.get(at) {
         at = match byte {
             b'\\' => at + 2,
-            b'\'' if !quoted => at + 1 + input[at + 1..].iter().position(|&b| b == b'\'')? + 1,
-            b'"' => skip_double_quoted(input, at + 1, true).ok()?,
-            b'`' => skip_backquoted(input, at + 1)?,
+            b'\'' if !quoted => {
+                let close = input[at + 1..]
+                    .iter()
+                    .position(|&b| b == b'\'')
+                    .ok_or(UNCLOSED)?;
+                at + 1 + close + 1
+            }
+            b'"' => skip_double_quoted(input, at + 1, true, MAX_NESTING)?,
+            b'`' => skip_backquoted(input, at + 1).ok_or(UNCLOSED)?,
             b'$' if input.get(at + 1) == Some(&b'(') => {
-                at + 2 + substitution_end(&input[at + 2..], true).ok()? + 1
+                at + 2 + substitution_end(&input[at + 2..], true)? + 1
             }
             b'$' if input.get(at + 1) == Some(&b'{') => {
                 depth += 1;
                 at + 2
             }
-            b'}' if depth == 0 => return Some(at),
+            b'}' if depth == 0 => return Ok(at),
             b'}' => {
                 depth -= 1;
                 at + 1
@@ -943,7 +965,7 @@ fn brace_word_end(input: &[u8], mut at: usize, quoted: bool) -> Option<usize> {
             _ => at + 1,
         };
     }
-    None
+    Err(UNCLOSED)
 }
 
 fn word_length(input: &[u8]) -> usize {
@@ -1678,8 +1700,9 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
         let word_end = match operator {
             Operator::Plain => name_end,
             _ => match brace_word_end(input, word_start, quoted) {
-                Some(end) => end,
-                None => return Err(self.scan.end_of_text(b'{')),
+                Ok(end) => end,
+                Err(SyntaxError::TooDeep) => return Err(SyntaxError::TooDeep),
+                Err(_) => return Err(self.scan.end_of_text(b'{')),
             },
         };
         self.scan.at = word_end + 1;

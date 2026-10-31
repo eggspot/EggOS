@@ -1308,6 +1308,17 @@ impl<S: System> Shell<'_, S> {
         source: Source<'_>,
         operator: usize,
     ) -> Result<usize, i32> {
+        match self.nested(|shell| Ok(shell.open_document_within(source, operator))) {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.syntax_error(error);
+                Err(self.status)
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn open_document_within(&mut self, source: Source<'_>, operator: usize) -> Result<usize, i32> {
         let Some(document) = self.documents.of(operator) else {
             self.error(&[b"here-document missing"]);
             return Err(1);

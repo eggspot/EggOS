@@ -13526,11 +13526,15 @@ the license, by an explicit instruction recorded here.
   (`syntax::keyword`). A complete command may be 16 KiB (D107's 4 KiB line grew: a whole
   function or loop of a script must fit). Every walk keeps fixed buffers on the 8 MiB stack, so
   nesting is bounded, as bash and dash report deep nesting instead of crashing: compound
-  commands, `eval` and command substitutions together nest 200 deep at most (`MAX_NESTING`;
-  enough for 64 function calls of up to three compound levels each), `${...}` words 64 deep
-  (`MAX_EXPANSION_DEPTH`), both refused as `syntax error: nested too deeply`; pathname expansion
-  walks the plain parts of a pattern in a loop and nests only at parts with `*`, `?` or `[`,
-  32 at most (`pattern nested too deeply`) (review round 1).
+  commands, `eval`, command substitutions, expanded here-documents and `.` together nest 200
+  deep at most (`MAX_NESTING`; enough for 64 function calls of up to three compound levels
+  each), `${...}` words 64 deep (`MAX_EXPANSION_DEPTH`), both refused as `syntax error: nested
+  too deeply`; pathname expansion walks the plain parts of a pattern in a loop and nests only
+  at parts with `*`, `?` or `[`, 32 at most (`pattern nested too deeply`) (review round 1).
+  Finding where a `$(...)` ends, before anything runs, stops at the same 200 levels (also
+  inside `"..."` and `${...}`), so a long `eggsh -c` text of nested `$(` is refused instead of
+  overflowing the stack; the nesting tests run on an 8 MiB thread, the program's own stack
+  (review round 2).
 - **Words (`syntax.rs`).** The lexer now takes the parameters mutably, so an expansion can
   assign (`${NAME:=word}`), fail (`${NAME:?word}`, `SyntaxError::Failed`) and run a command
   substitution, whose output is fed straight into the word being made, trailing newlines held

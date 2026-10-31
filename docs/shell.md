@@ -141,7 +141,8 @@ gets every feature below that does not need a terminal (`&&`, `||`, `&`, `2>`, `
 - A complete command (a line, or a whole `if`, loop or function definition with its
   here-documents) longer than 16 KiB is refused: in a file it ends the file with status 2; at
   the prompt the shell skips it up to its end, an open quote included.
-- Nesting is bounded (D182): compound commands, `eval` and `$(...)` nest 200 deep together
+- Nesting is bounded (D182): compound commands, `eval`, `$(...)`, expanded here-documents and
+  `.` nest 200 deep together
   and `${...}` words 64 deep; past that the shell says `syntax error: nested too deeply` (status
   2) instead of running out of stack. A file name pattern with `*`, `?` or `[` in more than 32
   of its parts is refused with `pattern nested too deeply`; the plain parts count for nothing.

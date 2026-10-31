@@ -39,8 +39,9 @@ pub const MAX_SOURCE_DEPTH: u8 = 16;
 /// How deeply functions may call functions (D182).
 pub const MAX_CALL_DEPTH: u8 = 64;
 
-/// How deeply compound commands, `eval` and command substitutions may nest, together: deeper
-/// text is refused as nested too deeply instead of running out of stack (D182).
+/// How deeply compound commands, `eval`, command substitutions, expanded here-documents and
+/// `.` may nest, together: deeper text is refused as nested too deeply instead of running out
+/// of stack (D182).
 pub const MAX_NESTING: u16 = 200;
 
 /// `$?` after `^C` at the prompt, as if the line had been interrupted by `SIGINT`.
@@ -1374,7 +1375,13 @@ impl<'a, S: System> Shell<'a, S> {
         self.depth += 1;
         self.status = 0;
         let loops = core::mem::take(&mut self.loops);
-        self.run_descriptor(descriptor, false);
+        let ran = self.nested(|shell| {
+            shell.run_descriptor(descriptor, false);
+            Ok(())
+        });
+        if let Err(error) = ran {
+            self.syntax_error(error);
+        }
         self.loops = loops;
         if self.control == Some(Control::Return) {
             self.control = None;
