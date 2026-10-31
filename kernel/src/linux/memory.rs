@@ -375,7 +375,7 @@ fn map_regular<P: Platform>(
     let writes = wanted
         .attributes
         .is_some_and(|attributes| attributes.writable);
-    let may_write = file.is_writable() && node.file_system().is_writable();
+    let may_write = file.is_writable() && node.file_system().is_node_writable(node.id());
     if !file.is_readable() || (shared && writes && !may_write) {
         return Err(Errno::EACCES);
     }

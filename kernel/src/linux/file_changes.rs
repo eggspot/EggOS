@@ -172,11 +172,11 @@ pub fn create_file<P: Platform>(
 }
 
 /// What `openat` does to existing regular file `node` opened with `flags` for writing or with
-/// `O_TRUNC`: `EROFS` unless its file system can be changed; with `O_TRUNC` and write access,
+/// `O_TRUNC`: `EROFS` unless it can be written to; with `O_TRUNC` and write access,
 /// empties it.
 pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno> {
     let file_system = node.file_system();
-    if !file_system.is_writable() {
+    if !file_system.is_node_writable(node.id()) {
         return Err(Errno::EROFS);
     }
     let writes = flags & open_flag::ACCMODE != open_flag::RDONLY;

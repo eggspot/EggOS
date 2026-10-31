@@ -298,6 +298,11 @@ pub trait FileSystem: Sync + Send {
     fn is_writable(&self) -> bool {
         false
     }
+    /// Whether existing node `node` can be written to, for a file system some of whose nodes
+    /// can and others cannot; [`Self::is_writable`] for the others.
+    fn is_node_writable(&self, _node: u64) -> bool {
+        self.is_writable()
+    }
     /// Writes `bytes` to regular file `node` `at` an offset or its end at time `now` (seconds
     /// since the epoch): how many it wrote, fewer if memory ran out, and the offset after them.
     fn write(

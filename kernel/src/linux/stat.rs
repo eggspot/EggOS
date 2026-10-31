@@ -565,7 +565,10 @@ pub fn faccessat2<P: Platform>(
         attributes.kind,
         NodeKind::Regular | NodeKind::Directory | NodeKind::SymbolicLink
     );
-    if mode & access_mode::WRITE != 0 && changeable_kind && !node.file_system().is_writable() {
+    if mode & access_mode::WRITE != 0
+        && changeable_kind
+        && !node.file_system().is_node_writable(node.id())
+    {
         return Err(Errno::EROFS);
     }
     Ok(0)

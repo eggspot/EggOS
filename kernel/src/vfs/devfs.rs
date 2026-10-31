@@ -303,7 +303,9 @@ impl FileSystem for DeviceFiles {
             size: match (node, disk_of(node)) {
                 (PROPERTIES, _) => properties::size(),
                 (ANDROID_LOG, _) => android_log::size(),
-                (_, Some(index)) => block::facts(index).sectors * SECTOR_SIZE as u64,
+                (_, Some(index)) => block::facts(index)
+                    .sectors
+                    .saturating_mul(SECTOR_SIZE as u64),
                 _ => 0,
             },
             modified: 0,
@@ -365,8 +367,8 @@ impl FileSystem for DeviceFiles {
         })
     }
 
-    fn is_writable(&self) -> bool {
-        true
+    fn is_node_writable(&self, node: u64) -> bool {
+        node == RTC || disk_of(node).is_some()
     }
 
     fn write(
@@ -529,6 +531,19 @@ mod tests {
             &header[8..12],
             &eggos_android_properties::MAGIC.to_ne_bytes()
         );
+    }
+
+    #[test]
+    fn only_the_disks_and_the_clock_can_be_opened_for_writing() {
+        let files = DeviceFiles;
+        assert!(!files.is_writable());
+        for disk in DISKS {
+            assert!(files.is_node_writable(disk));
+        }
+        assert!(files.is_node_writable(RTC));
+        for node in [PROPERTIES, ANDROID_LOG, ROOT, SHM, WINDOW] {
+            assert!(!files.is_node_writable(node));
+        }
     }
 
     #[test]
