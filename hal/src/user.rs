@@ -341,7 +341,7 @@ pub struct TestProgram {
     /// A Linux program that reads the clocks and sleeps (D73): `clock_gettime(CLOCK_MONOTONIC)`,
     /// `nanosleep` for [`Self::LINUX_CLOCK_WAIT_NS`], `clock_gettime(CLOCK_MONOTONIC)` again,
     /// which must be at least that much later, then `clock_gettime` of
-    /// `CLOCK_PROCESS_CPUTIME_ID`, which must fail with `EINVAL` until there is CPU time.
+    /// `CLOCK_PROCESS_CPUTIME_ID`, which must answer (D198).
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_clock: usize,
     /// A Linux program that reads the console's status (D74): `fstat(1)`, which must report a

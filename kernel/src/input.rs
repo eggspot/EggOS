@@ -348,7 +348,7 @@ pub struct InputState {
     keyboard: Keyboard,
     typist: Typist,
     repeat: KeyRepeat,
-    repeat_bytes: KeyBytes,
+    repeat_press: (Press, Modifiers),
     taken_back: u16,
     sticky: Sticky,
     slow: Option<(u16, u64)>,
@@ -603,7 +603,7 @@ impl InputState {
             keyboard: Keyboard::new(),
             typist: Typist::new(),
             repeat: KeyRepeat::new(),
-            repeat_bytes: KeyBytes::EMPTY,
+            repeat_press: (Press::Other, Modifiers::from_bits(0)),
             taken_back: 0,
             sticky: Sticky::new(),
             slow: None,
@@ -790,7 +790,7 @@ impl InputState {
             move_view_with_key(code, modifiers, sink);
         }
         sink.bytes(bytes.as_bytes());
-        self.repeat_bytes = bytes;
+        self.repeat_press = (press, modifiers);
         self.repeat
             .pressed(code, !bytes.is_empty(), timing.now, timing.repeat_delay);
         if let Press::Typed { typed, .. } = press
@@ -923,12 +923,10 @@ impl InputState {
         if sink.room() < KeyBytes::CAPACITY {
             return;
         }
-        if self
-            .repeat
-            .due(timing.now, timing.repeat_interval)
-            .is_some()
-        {
-            sink.bytes(self.repeat_bytes.as_bytes());
+        if let Some(code) = self.repeat.due(timing.now, timing.repeat_interval) {
+            let (press, modifiers) = self.repeat_press;
+            let bytes = press.terminal_bytes(code, modifiers, self.cursor_keys);
+            sink.bytes(bytes.as_bytes());
         }
     }
 }

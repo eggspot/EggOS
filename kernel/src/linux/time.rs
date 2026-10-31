@@ -93,7 +93,12 @@ fn clock(id: u64) -> Option<Clock> {
 /// use; 0 until then.
 static NANOSECONDS_PER_TICK: AtomicU64 = AtomicU64::new(0);
 
+const HOST_TEST_PLATFORMS_HAVE_THEIR_OWN_CLOCKS: bool = cfg!(test);
+
 fn nanoseconds_per_tick<P: Platform>() -> u64 {
+    if HOST_TEST_PLATFORMS_HAVE_THEIR_OWN_CLOCKS {
+        return ratio_ceil(NANOSECONDS_PER_SECOND, P::clock_frequency());
+    }
     match NANOSECONDS_PER_TICK.load(Ordering::Relaxed) {
         0 => {
             let ratio = ratio_ceil(NANOSECONDS_PER_SECOND, P::clock_frequency());

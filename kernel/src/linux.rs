@@ -4134,6 +4134,9 @@ mod tests {
                     .map_new_page(top - page * FRAME_SIZE, Attributes::USER_READ_WRITE, &[])
                     .unwrap();
             }
+            process
+                .add_region(top - 3 * FRAME_SIZE, top, Attributes::USER_READ_WRITE)
+                .unwrap();
         }
         process
             .add_region(
@@ -5336,16 +5339,20 @@ mod tests {
                 );
             }
         }
-        for id in [
-            clock::PROCESS_CPUTIME_ID,
-            clock::THREAD_CPUTIME_ID,
-            clock::REALTIME_ALARM,
-            clock::BOOTTIME_ALARM,
-            10,
-            12,
-            -2,
-            -6,
-        ] {
+        for id in [clock::PROCESS_CPUTIME_ID, clock::THREAD_CPUTIME_ID] {
+            let id = 0xffff_ffff_0000_0000 | u64::from(id as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [id, tp, 0, 0, 0, 0]),
+                0
+            );
+            assert!(read_timespec(&process, tp).1 < 1_000_000_000);
+            assert_eq!(call(&process, number::CLOCK_GETRES, [id, 0, 0, 0, 0, 0]), 0);
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [id, UNMAPPED, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+        for id in [clock::REALTIME_ALARM, clock::BOOTTIME_ALARM, 10, 12, -2, -6] {
             let id = 0xffff_ffff_0000_0000 | u64::from(id as u32);
             for call_number in [number::CLOCK_GETTIME, number::CLOCK_GETRES] {
                 assert_eq!(
@@ -8152,6 +8159,7 @@ mod tests {
             call(&process, number::STATFS, [missing, READ_BUFFER, 0, 0, 0, 0]),
             Errno::ENOENT.result()
         );
+        let path = at_path(&process, b"/etc");
         assert_eq!(
             call(&process, number::STATFS, [path, 0, 0, 0, 0, 0]),
             Errno::EFAULT.result()

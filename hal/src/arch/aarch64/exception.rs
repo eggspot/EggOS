@@ -871,8 +871,7 @@ aarch64_user_test_linux_clock:
     add     x1, sp, #16
     mov     x8, #113
     svc     #0
-    cmn     x0, #22
-    b.ne    9f
+    cbnz    x0, 9f
     mov     x0, #0
     mov     x8, #94
     svc     #0

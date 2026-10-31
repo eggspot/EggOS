@@ -979,8 +979,7 @@ riscv64_user_test_linux_clock:
     addi    a1, sp, 16
     li      a7, 113
     ecall
-    li      t0, -22
-    bne     a0, t0, 9f
+    bnez    a0, 9f
     li      a0, 0
     li      a7, 94
     ecall

@@ -1575,7 +1575,7 @@ pub(crate) mod tests {
         context: &mut eggos_hal::user::UserContext,
         start: u64,
     ) -> eggos_hal::user::UserExit {
-        use crate::linux::{Errno, number};
+        use crate::linux::number;
         use eggos_hal::user::UserExit;
         let pc = context.pc();
         if pc == start {
@@ -1599,7 +1599,7 @@ pub(crate) mod tests {
                 result == 0
                     && nanoseconds(second) - nanoseconds(first) >= TestProgram::LINUX_CLOCK_WAIT_NS
             }
-            _ => result == Errno::EINVAL.result(),
+            _ => result == 0,
         };
         let (number, arguments) = match step {
             _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),

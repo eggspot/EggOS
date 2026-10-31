@@ -351,7 +351,7 @@ pub fn call<P: Platform>(
             return finish_send(process, thread, context, result, fourth as u32);
         }
         number::SENDMSG => {
-            let result = read_header(process, third).and_then(|header| {
+            let result = read_header(process, second).and_then(|header| {
                 if header.buffer_count > MAX_IOVECS {
                     return Err(Errno::EMSGSIZE);
                 }
@@ -360,9 +360,9 @@ pub fn call<P: Platform>(
                     (0, _) | (_, 0) => None,
                     (address, length) => read_address(process, address, u64::from(length))?,
                 };
-                send(process, &socket, &buffers, destination, fourth as u32)
+                send(process, &socket, &buffers, destination, third as u32)
             });
-            return finish_send(process, thread, context, result, fourth as u32);
+            return finish_send(process, thread, context, result, third as u32);
         }
         number::RECVFROM => {
             if !ends_in_user_space::<P>(second, third) {
@@ -376,7 +376,7 @@ pub fn call<P: Platform>(
             };
             return recvfrom(process, thread, context, receive, fifth, sixth);
         }
-        number::RECVMSG => return recvmsg(process, thread, context, file, socket, third, fourth),
+        number::RECVMSG => return recvmsg(process, thread, context, file, socket, second, third),
         _ => Err(Errno::ENOSYS),
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));

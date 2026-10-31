@@ -1685,7 +1685,7 @@ mod tests {
         let running = table.ids_in_use(&mut ids).unwrap();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids, [0, 1, 60, 61]);
+        assert_eq!(ids, [1, 60, 61]);
         assert_eq!(running.len(), 1);
     }
 

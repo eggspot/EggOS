@@ -5,6 +5,7 @@ use crate::linux::socket::inet::{AF_INET, SOCKADDR_IN_SIZE, encode_address, pars
 use crate::memory::FRAMES;
 use crate::paging::PageTables;
 use crate::tests::TestPlatform as P;
+use crate::thread::host::{FramesForTest, frames_for_test};
 use alloc::vec;
 use alloc::vec::Vec;
 use eggos_hal::memory::FRAME_SIZE;
@@ -22,10 +23,12 @@ struct Test {
     thread: LinuxThread,
     process: Arc<Process<P>>,
     _kernel: PageTables<<P as Platform>::PageTableFormat>,
+    _frames: FramesForTest,
 }
 
 impl Test {
     fn new() -> Self {
+        let frames = frames_for_test();
         let kernel = {
             let mut frames = FRAMES.lock();
             let mut tables = PageTables::new(frames.as_mut().unwrap()).unwrap();
@@ -45,6 +48,7 @@ impl Test {
             thread,
             process,
             _kernel: kernel,
+            _frames: frames,
         }
     }
 
@@ -144,7 +148,11 @@ fn a_stream_connects_over_loopback_and_carries_bytes_both_ways() {
     assert_eq!(test.name(number::GETSOCKNAME, client), 0);
     let (_, client_port) = test.loaded_address().unwrap();
     test.store(LENGTH, &(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
-    let accepted = test.call(number::ACCEPT4, [server, ADDRESS, LENGTH, 0, 0, 0]);
+    let nonblocking = u64::from(open_flag::NONBLOCK);
+    let accepted = test.call(
+        number::ACCEPT4,
+        [server, ADDRESS, LENGTH, nonblocking, 0, 0],
+    );
     assert!(accepted < 1024, "accept failed: {accepted:#x}");
     assert_eq!(
         test.loaded_address(),

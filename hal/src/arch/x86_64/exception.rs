@@ -983,7 +983,7 @@ x86_64_user_test_linux_clock:
     leaq    16(%rsp), %rsi
     movl    $228, %eax
     syscall
-    cmpq    $-22, %rax
+    testq   %rax, %rax
     jne     9f
     xorl    %edi, %edi
     movl    $231, %eax

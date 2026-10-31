@@ -3,6 +3,7 @@ use crate::linux::handle;
 use crate::memory::FRAMES;
 use crate::paging::PageTables;
 use crate::tests::TestPlatform as P;
+use crate::thread::host::{FramesForTest, frames_for_test};
 use alloc::vec;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
@@ -72,10 +73,12 @@ struct Test {
     thread: LinuxThread,
     process: Arc<Process<P>>,
     _kernel: PageTables<<P as Platform>::PageTableFormat>,
+    _frames: FramesForTest,
 }
 
 impl Test {
     fn new() -> Self {
+        let frames = frames_for_test();
         let kernel = kernel_tables();
         let process = process(&kernel);
         let thread = LinuxThread::first(&process);
@@ -83,6 +86,7 @@ impl Test {
             thread,
             process,
             _kernel: kernel,
+            _frames: frames,
         }
     }
 
