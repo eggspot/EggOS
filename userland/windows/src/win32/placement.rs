@@ -35,8 +35,12 @@ fn rect_of(rect: &Win32Rect) -> Rect {
     Rect::new(rect.left, rect.top, rect.right, rect.bottom)
 }
 
-fn write_rect(out: *mut Win32Rect, rect: Rect) {
-    // SAFETY: every caller passes the program's writable `RECT`.
+unsafe fn write_rect(out: *mut Win32Rect, rect: Rect) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: every caller passes null or the program's writable `RECT`, and `out` is not
+    // null.
     unsafe {
         out.write(Win32Rect {
             left: rect.left,
@@ -91,9 +95,13 @@ pub(super) fn screen_rect(window: usize) -> Result<Rect, u32> {
 }
 
 unsafe extern "efiapi" fn get_window_rect(window: usize, rect: *mut Win32Rect) -> Bool {
+    if rect.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
     match screen_rect(window) {
         Ok(found) => {
-            write_rect(rect, found);
+            // SAFETY: the caller passes a writable `RECT`, which is not null.
+            unsafe { write_rect(rect, found) };
             TRUE
         }
         Err(code) => fail(code, FALSE),
@@ -101,6 +109,9 @@ unsafe extern "efiapi" fn get_window_rect(window: usize, rect: *mut Win32Rect) -
 }
 
 unsafe extern "efiapi" fn client_to_screen(window: usize, point: *mut Point) -> Bool {
+    if point.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
     match client_origin(window) {
         Ok((x, y)) => {
             // SAFETY: the caller passes a readable and writable `POINT`.
@@ -114,6 +125,9 @@ unsafe extern "efiapi" fn client_to_screen(window: usize, point: *mut Point) -> 
 }
 
 unsafe extern "efiapi" fn screen_to_client(window: usize, point: *mut Point) -> Bool {
+    if point.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
     match client_origin(window) {
         Ok((x, y)) => {
             // SAFETY: the caller passes a readable and writable `POINT`.
@@ -231,7 +245,8 @@ unsafe extern "efiapi" fn set_rect(
     if rect.is_null() {
         return FALSE;
     }
-    write_rect(rect, Rect::new(left, top, right, bottom));
+    // SAFETY: the caller passes a writable `RECT`, which is not null.
+    unsafe { write_rect(rect, Rect::new(left, top, right, bottom)) };
     TRUE
 }
 
@@ -239,7 +254,8 @@ unsafe extern "efiapi" fn set_rect_empty(rect: *mut Win32Rect) -> Bool {
     if rect.is_null() {
         return FALSE;
     }
-    write_rect(rect, Rect::default());
+    // SAFETY: the caller passes a writable `RECT`, which is not null.
+    unsafe { write_rect(rect, Rect::default()) };
     TRUE
 }
 
@@ -248,7 +264,9 @@ unsafe extern "efiapi" fn copy_rect(out: *mut Win32Rect, from: *const Win32Rect)
         return FALSE;
     }
     // SAFETY: the caller passes a readable `RECT`.
-    write_rect(out, rect_of(unsafe { &*from }));
+    let from = rect_of(unsafe { &*from });
+    // SAFETY: the caller passes a writable `RECT`, which is not null.
+    unsafe { write_rect(out, from) };
     TRUE
 }
 
@@ -258,7 +276,8 @@ unsafe extern "efiapi" fn offset_rect(rect: *mut Win32Rect, dx: i32, dy: i32) ->
     }
     // SAFETY: the caller passes a readable and writable `RECT`.
     let moved = rect_of(unsafe { &*rect }).offset(dx, dy);
-    write_rect(rect, moved);
+    // SAFETY: as above.
+    unsafe { write_rect(rect, moved) };
     TRUE
 }
 
@@ -268,15 +287,14 @@ unsafe extern "efiapi" fn inflate_rect(rect: *mut Win32Rect, dx: i32, dy: i32) -
     }
     // SAFETY: the caller passes a readable and writable `RECT`.
     let old = rect_of(unsafe { &*rect });
-    write_rect(
-        rect,
-        Rect::new(
-            old.left.saturating_sub(dx),
-            old.top.saturating_sub(dy),
-            old.right.saturating_add(dx),
-            old.bottom.saturating_add(dy),
-        ),
+    let inflated = Rect::new(
+        old.left.saturating_sub(dx),
+        old.top.saturating_sub(dy),
+        old.right.saturating_add(dx),
+        old.bottom.saturating_add(dy),
     );
+    // SAFETY: as above.
+    unsafe { write_rect(rect, inflated) };
     TRUE
 }
 
@@ -300,7 +318,8 @@ unsafe extern "efiapi" fn intersect_rect(
     // SAFETY: as above.
     let second = rect_of(unsafe { &*second });
     let both = emptied(first.intersection(&second));
-    write_rect(out, both);
+    // SAFETY: the caller passes a writable `RECT`, which is not null.
+    unsafe { write_rect(out, both) };
     Bool::from(!both.is_empty())
 }
 
@@ -322,7 +341,8 @@ unsafe extern "efiapi" fn union_rect(
         (false, true) => first,
         (false, false) => first.union(&second),
     };
-    write_rect(out, either);
+    // SAFETY: the caller passes a writable `RECT`, which is not null.
+    unsafe { write_rect(out, either) };
     Bool::from(!either.is_empty())
 }
 
@@ -362,7 +382,8 @@ unsafe extern "efiapi" fn system_parameters_info(
     }
     match gui::device() {
         Ok(device) => {
-            write_rect(out, device.work_area);
+            // SAFETY: the caller passes a writable `RECT`, which is not null.
+            unsafe { write_rect(out, device.work_area) };
             TRUE
         }
         Err(code) => fail(code, FALSE),

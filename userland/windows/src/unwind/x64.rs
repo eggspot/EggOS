@@ -337,7 +337,9 @@ fn in_epilog(
                 count += 1;
                 at += 7;
             }
-            (Some(0x8d), Some(modrm)) if modrm & 0x38 == 0x20 && modrm & 0x07 != 4 => {
+            (Some(0x8d), Some(modrm))
+                if modrm & 0x38 == 0x20 && modrm & 0x07 != 4 && rex & REX_R == 0 =>
+            {
                 let register = usize::from(modrm & 7) | usize::from(rex & 1) << 3;
                 let (displacement, length) = match modrm >> 6 {
                     1 => {
@@ -405,6 +407,8 @@ fn in_epilog(
     Ok(true)
 }
 
+const REX_R: u8 = 0x04;
+
 fn sign_extend_8(value: u64) -> u64 {
     value as u8 as i8 as i64 as u64
 }
@@ -420,8 +424,8 @@ fn ends_epilog(image: &Image<'_>, function: Function, at: u64) -> bool {
         (Some(0xeb), Some(relative), _) => {
             outside((at + 2).wrapping_add(sign_extend_8(u64::from(relative))))
         }
-        (Some(0xff), Some(modrm), _) => modrm & 0x38 == 0x20,
-        (Some(0x48), Some(0xff), Some(modrm)) => modrm & 0x38 == 0x20,
+        (Some(0xff), Some(0x25), _) => true,
+        (Some(rex), Some(0xff), Some(modrm)) if rex & 0xf8 == 0x48 => modrm & 0x38 == 0x20,
         _ => false,
     }
 }
@@ -742,6 +746,40 @@ mod tests {
         assert_eq!(unwound.handler, None);
         assert_eq!(tail_call.general[3], 0x55);
         assert_eq!(tail_call.rip, 0x33);
+    }
+
+    #[test]
+    fn only_windows_tail_jumps_end_an_epilog_and_lea_into_r12_is_not_lea_rsp() {
+        let mut builder = pushes_and_allocation();
+        builder.put(0x1060, &[0x4c, 0x8d, 0x65, 0x00, 0xc3]);
+        builder.put(0x1070, &[0xff, 0xe0]);
+        builder.put(0x1074, &[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]);
+        builder.put(0x107a, &[0x48, 0xff, 0xe0]);
+        let image = builder.image();
+        let function = lookup(&image, PDATA as u32, 12, 0x1070).unwrap();
+        let memory = stack(&[BASE + 0x1234, 0, 0, 0, 0x55, 0x33, BASE + 0x5678]);
+        for body in [0x1060, 0x1070] {
+            let mut registers = Registers {
+                rip: BASE + body,
+                ..Registers::default()
+            };
+            registers.set_rsp(STACK);
+            let unwound = virtual_unwind(&image, function, BOTH, &mut registers, &memory).unwrap();
+            assert!(unwound.handler.is_some());
+            assert_eq!(registers.rsp(), STACK + 56);
+            assert_eq!(registers.rip, BASE + 0x5678);
+        }
+        for tail in [0x1074, 0x107a] {
+            let mut registers = Registers {
+                rip: BASE + tail,
+                ..Registers::default()
+            };
+            registers.set_rsp(STACK);
+            let unwound = virtual_unwind(&image, function, BOTH, &mut registers, &memory).unwrap();
+            assert_eq!(unwound.handler, None);
+            assert_eq!(registers.rsp(), STACK + 8);
+            assert_eq!(registers.rip, BASE + 0x1234);
+        }
     }
 
     #[test]

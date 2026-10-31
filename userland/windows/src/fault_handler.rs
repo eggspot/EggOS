@@ -187,9 +187,7 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
         let fetching = matches!(signal, fault::SIGSEGV | fault::SIGBUS) && address == pc;
         let instruction = match fetching {
             true => 0,
-            // SAFETY: the instruction at `pc` ran (or was decoded), so its bytes are mapped
-            // and readable, as the program's code and the code it maps are.
-            false => unsafe { (pc as *const u32).read_unaligned() },
+            false => instruction_word(pc),
         };
         let byte_before = match signal == fault::SIGTRAP && cfg!(target_arch = "x86_64") {
             // SAFETY: as above: an `int3` that trapped ended just before `pc`.
@@ -224,6 +222,22 @@ extern "C" fn on_fault(signal: i32, info: *const u8, context: *mut u8) {
     }
     let _ = linux::default_signal_action(signal);
     let _ = linux::signal_this_thread(signal);
+}
+
+fn instruction_word(pc: u64) -> u32 {
+    let to_page_end = linux::PAGE_SIZE as u64 - pc % linux::PAGE_SIZE as u64;
+    let mut bytes = [0u8; 4];
+    for (index, byte) in bytes
+        .iter_mut()
+        .enumerate()
+        .take(to_page_end.min(4) as usize)
+    {
+        // SAFETY: the instruction at `pc` ran (or was decoded), so the page it starts on is
+        // mapped and readable, as the program's code and the code it maps are; only bytes of
+        // that page are read.
+        *byte = unsafe { (pc.wrapping_add(index as u64) as *const u8).read() };
+    }
+    u32::from_le_bytes(bytes)
 }
 
 /// Ends the process for a fault no handler took: the line that names it, then the signal's

@@ -27,17 +27,16 @@ struct Scope {
 }
 
 impl Scope {
-    fn at(table: u64, index: u32) -> Self {
-        let entry = (table + 4 + u64::from(index) * SCOPE_SIZE) as *const u32;
-        // SAFETY: the scope table the program's unwind data names holds `count` entries of
-        // four image-relative addresses each, after the count.
-        let word = |offset: usize| unsafe { entry.wrapping_add(offset).read_unaligned() };
-        Self {
-            begin: word(0),
-            end: word(1),
-            handler: word(2),
-            jump: word(3),
-        }
+    fn at(table: u64, index: u32) -> Option<Self> {
+        let image = frames::image();
+        let entry = image.rva_of(table)? + 4 + u64::from(index) * SCOPE_SIZE;
+        let word = |offset: u64| image.u32_at(entry + offset * 4);
+        Some(Self {
+            begin: word(0)?,
+            end: word(1)?,
+            handler: word(2)?,
+            jump: word(3)?,
+        })
     }
 
     fn covers(&self, rva: u64) -> bool {
@@ -80,17 +79,23 @@ unsafe extern "efiapi" fn c_specific_handler(
     // SAFETY: the handler's contract.
     let dispatcher = unsafe { &mut *dispatcher };
     let table = dispatcher.handler_data;
-    // SAFETY: as above; the scope table starts with its count.
-    let count = unsafe { (table as *const u32).read_unaligned() }.min(MAX_SCOPES);
+    let image = frames::image();
+    let count = image
+        .rva_of(table)
+        .and_then(|rva| image.u32_at(rva))
+        .unwrap_or(0)
+        .min(MAX_SCOPES);
     let pc = dispatcher.control_rva();
     let base = dispatcher.image_base;
     // SAFETY: the dispatcher context's `CONTEXT` holds the frame's registers.
     let frame_pointer = frames::frame_pointer(unsafe { &*dispatcher.context_record });
-    // SAFETY: as above.
+    // SAFETY: the handler's contract: the record of the exception being dispatched.
     let flags = unsafe { (*record).flags };
     if flags & (flag::UNWINDING | flag::EXIT_UNWIND) == 0 {
         for index in dispatcher.scope_index..count {
-            let scope = Scope::at(table, index);
+            let Some(scope) = Scope::at(table, index) else {
+                break;
+            };
             if !scope.covers(pc) || scope.jump == 0 {
                 continue;
             }
@@ -113,7 +118,9 @@ unsafe extern "efiapi" fn c_specific_handler(
         let target = dispatcher.target_ip.wrapping_sub(base);
         let is_target = flags & flag::TARGET_UNWIND != 0;
         for index in dispatcher.scope_index..count {
-            let scope = Scope::at(table, index);
+            let Some(scope) = Scope::at(table, index) else {
+                break;
+            };
             if !scope.covers(pc) {
                 continue;
             }
