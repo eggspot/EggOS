@@ -430,7 +430,8 @@ impl<P: Platform> Memory<P> {
                 ForkPage::Share
             }
         };
-        self.space
+        let shared = self
+            .space
             .share_pages_into(&mut space, kind, |frame, new, attributes| {
                 // SAFETY: both frames are reached through the frame allocator's offset: `frame`
                 // is mapped in this memory, whose regions' lock is held, so it stays the
@@ -442,9 +443,14 @@ impl<P: Platform> Memory<P> {
                 if attributes.is_some_and(|attributes| attributes.executable) {
                     P::make_instructions_visible(at(new) as usize, FRAME_SIZE as usize);
                 }
-            })
-            .map_err(|_| CopyError::OutOfMemory)?;
+            });
         drop(lent);
+        if shared.is_err() {
+            for range in &copied_lent {
+                space.forget_user_pages(range.start, range.end - range.start);
+            }
+            return Err(CopyError::OutOfMemory);
+        }
         let has_lent = !copied_lent.is_empty();
         let has_fork_marks = !marks.is_empty();
         Ok(Self {
@@ -3428,6 +3434,70 @@ mod tests {
         }
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert_eq!(free(), before, "every frame went back exactly once");
+    }
+
+    #[test]
+    fn a_fork_that_runs_out_of_frames_after_lending_pages_leaves_the_lent_frames_to_their_lender() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let drops = Arc::new(AtomicU64::new(0));
+        let before_all = free();
+        {
+            // SAFETY: test tables, never active; the test platform's switch only records roots.
+            let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+            let lent = TestLentFrames::new(2, &drops);
+            let physical = lent.physical;
+            assert_eq!(
+                process.map_lent_frames(
+                    Placement::Exactly(DATA),
+                    2 * FRAME_SIZE,
+                    Attributes::USER_READ_WRITE,
+                    Arc::clone(&lent) as Arc<dyn LentFrames>,
+                ),
+                Ok(DATA)
+            );
+            const FAR: u64 = DATA + (1 << 30);
+            process
+                .map_new_page(FAR, Attributes::USER_READ_WRITE, b"far")
+                .unwrap();
+            let mut hoard = Vec::new();
+            while free() > 1 {
+                hoard.push(memory::FRAMES.lock().as_mut().unwrap().allocate().unwrap());
+            }
+            let mut failures = 0;
+            loop {
+                let before = free();
+                match process.new_child(ChildMemory::Copied) {
+                    Ok(child) => {
+                        drop(child);
+                        break;
+                    }
+                    Err(error) => {
+                        assert_eq!(error, NewChildError::OutOfMemory);
+                        assert_eq!(free(), before, "a failed fork frees no frame it did not take");
+                        failures += 1;
+                    }
+                }
+                let frame = hoard.pop().expect("a fork succeeds once frames are back");
+                // SAFETY: allocated above from this allocator and never mapped.
+                unsafe { memory::FRAMES.lock().as_mut().unwrap().free(frame) };
+            }
+            assert!(failures > 0);
+            let mut frames = memory::FRAMES.lock();
+            for frame in hoard {
+                // SAFETY: allocated above from this allocator and never mapped.
+                unsafe { frames.as_mut().unwrap().free(frame) };
+            }
+            drop(frames);
+            drop(lent);
+            assert_eq!(drops.load(Ordering::Relaxed), 0, "the parent still maps them");
+            assert_eq!(
+                process.address_space().translate(DATA).map(|(phys, _)| phys),
+                Some(physical)
+            );
+        }
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(free(), before_all, "every frame went back exactly once");
     }
 
     fn test_file(pages: u64, tail: u64) -> Arc<crate::regions::BytesFile> {
