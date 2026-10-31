@@ -254,9 +254,21 @@ fn send(channel: usize, answer: &[u8]) {
     }
 }
 
+fn make_log_folder() {
+    let mut folder = [0u8; 16];
+    if let Some(folder) = c_path(LOG_FOLDER, &mut folder) {
+        let _ = call(
+            number::MKDIRAT,
+            [AT_FDCWD, folder.as_ptr() as usize, 0o755, 0, 0, 0],
+        );
+    }
+}
+
 /// Opens the channel, reads the grants, records the start and answers messages until the
-/// machine stops.
+/// machine stops; with `--network`, the server for agents on the network, which writes the
+/// same audit log.
 pub fn run(startup: &Startup) -> i32 {
+    make_log_folder();
     if startup
         .arguments()
         .any(|argument| argument.to_bytes() == network::NETWORK_OPTION)
@@ -273,13 +285,6 @@ pub fn run(startup: &Startup) -> i32 {
             return 1;
         }
     };
-    let mut folder = [0u8; 16];
-    if let Some(folder) = c_path(LOG_FOLDER, &mut folder) {
-        let _ = call(
-            number::MKDIRAT,
-            [AT_FDCWD, folder.as_ptr() as usize, 0o755, 0, 0, 0],
-        );
-    }
     // SAFETY: the program has one thread and takes the buffers once, here, so no other
     // reference to them exists while these live.
     let Some(buffers) = (unsafe { (&raw mut BUFFERS).as_mut() }) else {
