@@ -16,42 +16,42 @@ use eggos_crypto::{constant_time, x25519};
 
 /// The most bytes of data a record carries.
 pub const MAX_PLAINTEXT: usize = 16384;
-const MAX_CIPHERTEXT: usize = MAX_PLAINTEXT + 256;
-const HEADER_BYTES: usize = 5;
-const TAG_BYTES: usize = 16;
+pub(crate) const MAX_CIPHERTEXT: usize = MAX_PLAINTEXT + 256;
+pub(crate) const HEADER_BYTES: usize = 5;
+pub(crate) const TAG_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
 /// The bytes of the buffer incoming records are read into: two whole records.
 pub const INCOMING_BYTES: usize = 2 * (HEADER_BYTES + MAX_CIPHERTEXT);
 /// The longest handshake message kept, which bounds the server's certificates.
 pub const HANDSHAKE_BYTES: usize = 32 * 1024;
-const OUTGOING_BYTES: usize = HEADER_BYTES + MAX_PLAINTEXT + 1 + TAG_BYTES;
+pub(crate) const OUTGOING_BYTES: usize = HEADER_BYTES + MAX_PLAINTEXT + 1 + TAG_BYTES;
 /// The bytes of randomness a handshake takes: the client random, the legacy session ID and
 /// the X25519 secret.
 pub const RANDOMNESS_BYTES: usize = 96;
 
-const CHANGE_CIPHER_SPEC: u8 = 20;
-const ALERT: u8 = 21;
-const HANDSHAKE: u8 = 22;
-const APPLICATION_DATA: u8 = 23;
+pub(crate) const CHANGE_CIPHER_SPEC: u8 = 20;
+pub(crate) const ALERT: u8 = 21;
+pub(crate) const HANDSHAKE: u8 = 22;
+pub(crate) const APPLICATION_DATA: u8 = 23;
 
-const CLIENT_HELLO: u8 = 1;
-const SERVER_HELLO: u8 = 2;
+pub(crate) const CLIENT_HELLO: u8 = 1;
+pub(crate) const SERVER_HELLO: u8 = 2;
 const NEW_SESSION_TICKET: u8 = 4;
-const ENCRYPTED_EXTENSIONS: u8 = 8;
-const CERTIFICATE: u8 = 11;
+pub(crate) const ENCRYPTED_EXTENSIONS: u8 = 8;
+pub(crate) const CERTIFICATE: u8 = 11;
 const CERTIFICATE_REQUEST: u8 = 13;
-const CERTIFICATE_VERIFY: u8 = 15;
-const FINISHED: u8 = 20;
+pub(crate) const CERTIFICATE_VERIFY: u8 = 15;
+pub(crate) const FINISHED: u8 = 20;
 const KEY_UPDATE: u8 = 24;
 
 const SERVER_NAME: u16 = 0;
-const SUPPORTED_GROUPS: u16 = 10;
-const SIGNATURE_ALGORITHMS: u16 = 13;
-const APPLICATION_PROTOCOLS: u16 = 16;
-const SUPPORTED_VERSIONS: u16 = 43;
-const KEY_SHARE: u16 = 51;
-const X25519_GROUP: u16 = 0x001d;
-const TLS13: u16 = 0x0304;
+pub(crate) const SUPPORTED_GROUPS: u16 = 10;
+pub(crate) const SIGNATURE_ALGORITHMS: u16 = 13;
+pub(crate) const APPLICATION_PROTOCOLS: u16 = 16;
+pub(crate) const SUPPORTED_VERSIONS: u16 = 43;
+pub(crate) const KEY_SHARE: u16 = 51;
+pub(crate) const X25519_GROUP: u16 = 0x001d;
+pub(crate) const TLS13: u16 = 0x0304;
 
 const SIGNATURE_SCHEMES: [u16; 8] = [
     0x0403, 0x0503, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601,
@@ -143,7 +143,7 @@ pub enum CipherSuite {
 const OFFERED_SUITES: [u16; 3] = [0x1303, 0x1301, 0x1302];
 
 impl CipherSuite {
-    fn from_code(code: u16) -> Option<Self> {
+    pub(crate) fn from_code(code: u16) -> Option<Self> {
         match code {
             0x1301 => Some(Self::Aes128GcmSha256),
             0x1302 => Some(Self::Aes256GcmSha384),
@@ -213,7 +213,7 @@ pub fn derive_secret(
     Digest::from_bytes(&out[..length]).unwrap_or_else(|| empty_hash(hash))
 }
 
-fn empty_hash(hash: HashAlgorithm) -> Digest {
+pub(crate) fn empty_hash(hash: HashAlgorithm) -> Digest {
     Hasher::new(hash).finish()
 }
 
@@ -308,9 +308,9 @@ impl Protection {
 /// The memory a connection works in: incoming records, handshake messages and an outgoing
 /// record.
 pub struct Buffers {
-    incoming: [u8; INCOMING_BYTES],
-    handshake: [u8; HANDSHAKE_BYTES],
-    outgoing: [u8; OUTGOING_BYTES],
+    pub(crate) incoming: [u8; INCOMING_BYTES],
+    pub(crate) handshake: [u8; HANDSHAKE_BYTES],
+    pub(crate) outgoing: [u8; OUTGOING_BYTES],
 }
 
 impl fmt::Debug for Buffers {
@@ -337,13 +337,13 @@ impl Buffers {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct Incoming {
+pub(crate) struct Incoming {
     start: usize,
     end: usize,
 }
 
 impl Incoming {
-    fn next_record(
+    pub(crate) fn next_record(
         &mut self,
         transport: &mut dyn Transport,
         buffer: &mut [u8; INCOMING_BYTES],
@@ -374,7 +374,7 @@ impl Incoming {
     }
 }
 
-fn unprotect(
+pub(crate) fn unprotect(
     protection: &mut Protection,
     buffer: &mut [u8; INCOMING_BYTES],
     at: usize,
@@ -398,7 +398,7 @@ fn unprotect(
     Ok((data[end], at + HEADER_BYTES, end))
 }
 
-fn send_protected(
+pub(crate) fn send_protected(
     transport: &mut dyn Transport,
     outgoing: &mut [u8; OUTGOING_BYTES],
     protection: &mut Protection,
@@ -424,12 +424,12 @@ fn send_protected(
     }
 }
 
-struct Cursor<'a> {
-    data: &'a [u8],
+pub(crate) struct Cursor<'a> {
+    pub(crate) data: &'a [u8],
 }
 
 impl<'a> Cursor<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8], Error> {
+    pub(crate) fn take(&mut self, count: usize) -> Result<&'a [u8], Error> {
         if self.data.len() < count {
             return Err(Error::Malformed);
         }
@@ -438,19 +438,19 @@ impl<'a> Cursor<'a> {
         Ok(taken)
     }
 
-    fn number(&mut self, bytes: usize) -> Result<usize, Error> {
+    pub(crate) fn number(&mut self, bytes: usize) -> Result<usize, Error> {
         Ok(self
             .take(bytes)?
             .iter()
             .fold(0usize, |value, &byte| (value << 8) | usize::from(byte)))
     }
 
-    fn vector(&mut self, length_bytes: usize) -> Result<&'a [u8], Error> {
+    pub(crate) fn vector(&mut self, length_bytes: usize) -> Result<&'a [u8], Error> {
         let length = self.number(length_bytes)?;
         self.take(length)
     }
 
-    fn finish(&self) -> Result<(), Error> {
+    pub(crate) fn finish(&self) -> Result<(), Error> {
         match self.data.is_empty() {
             true => Ok(()),
             false => Err(Error::Malformed),
@@ -458,30 +458,30 @@ impl<'a> Cursor<'a> {
     }
 }
 
-struct Writer<'a> {
-    out: &'a mut [u8],
-    length: usize,
+pub(crate) struct Writer<'a> {
+    pub(crate) out: &'a mut [u8],
+    pub(crate) length: usize,
 }
 
 impl Writer<'_> {
-    fn put(&mut self, bytes: &[u8]) {
+    pub(crate) fn put(&mut self, bytes: &[u8]) {
         let end = (self.length + bytes.len()).min(self.out.len());
         let count = end - self.length;
         self.out[self.length..end].copy_from_slice(&bytes[..count]);
         self.length = end;
     }
 
-    fn put_u16(&mut self, value: u16) {
+    pub(crate) fn put_u16(&mut self, value: u16) {
         self.put(&value.to_be_bytes());
     }
 
-    fn open(&mut self, length_bytes: usize) -> usize {
+    pub(crate) fn open(&mut self, length_bytes: usize) -> usize {
         let at = self.length;
         self.put(&[0, 0, 0][..length_bytes]);
         at
     }
 
-    fn close(&mut self, at: usize, length_bytes: usize) {
+    pub(crate) fn close(&mut self, at: usize, length_bytes: usize) {
         let length = self.length - at - length_bytes;
         for index in 0..length_bytes {
             if let Some(byte) = self.out.get_mut(at + index) {
@@ -605,18 +605,25 @@ fn parse_server_hello<'a>(body: &'a [u8], session_id: &[u8]) -> Result<ServerHel
 }
 
 #[derive(Clone)]
-struct Transcript {
+pub(crate) struct Transcript {
     sha256: Hasher,
     sha384: Hasher,
 }
 
 impl Transcript {
-    fn update(&mut self, message: &[u8]) {
+    pub(crate) fn new() -> Self {
+        Self {
+            sha256: Hasher::new(HashAlgorithm::Sha256),
+            sha384: Hasher::new(HashAlgorithm::Sha384),
+        }
+    }
+
+    pub(crate) fn update(&mut self, message: &[u8]) {
         self.sha256.update(message);
         self.sha384.update(message);
     }
 
-    fn hash(&self, hash: HashAlgorithm) -> Digest {
+    pub(crate) fn hash(&self, hash: HashAlgorithm) -> Digest {
         match hash {
             HashAlgorithm::Sha384 => self.sha384.clone().finish(),
             _ => self.sha256.clone().finish(),
@@ -701,13 +708,13 @@ pub struct Settings<'a> {
     pub now: i64,
 }
 
-struct Handshaking {
-    incoming: Incoming,
-    filled: usize,
+pub(crate) struct Handshaking {
+    pub(crate) incoming: Incoming,
+    pub(crate) filled: usize,
 }
 
 impl Handshaking {
-    fn next_message(
+    pub(crate) fn next_message(
         &mut self,
         transport: &mut dyn Transport,
         buffers: &mut Buffers,
@@ -752,25 +759,26 @@ impl Handshaking {
         }
     }
 
-    fn consume(&mut self, buffers: &mut Buffers, length: usize) {
+    pub(crate) fn consume(&mut self, buffers: &mut Buffers, length: usize) {
         buffers.handshake.copy_within(length..self.filled, 0);
         self.filled -= length;
     }
 }
 
-/// An established connection.
+/// An established connection, the client's ([`connect`]) or the server's
+/// ([`crate::server::accept`]).
 pub struct Session<'b> {
-    buffers: &'b mut Buffers,
-    incoming: Incoming,
-    filled: usize,
-    suite: CipherSuite,
-    read: Protection,
-    write: Protection,
-    read_secret: Digest,
-    write_secret: Digest,
-    pending_start: usize,
-    pending_end: usize,
-    closed: bool,
+    pub(crate) buffers: &'b mut Buffers,
+    pub(crate) incoming: Incoming,
+    pub(crate) filled: usize,
+    pub(crate) suite: CipherSuite,
+    pub(crate) read: Protection,
+    pub(crate) write: Protection,
+    pub(crate) read_secret: Digest,
+    pub(crate) write_secret: Digest,
+    pub(crate) pending_start: usize,
+    pub(crate) pending_end: usize,
+    pub(crate) closed: bool,
 }
 
 impl fmt::Debug for Session<'_> {
@@ -791,10 +799,7 @@ pub fn connect<'b>(
     let mut secret = [0u8; 32];
     secret.copy_from_slice(&randomness[64..]);
     let key_share = x25519::public_key(&secret);
-    let mut transcript = Transcript {
-        sha256: Hasher::new(HashAlgorithm::Sha256),
-        sha384: Hasher::new(HashAlgorithm::Sha384),
-    };
+    let mut transcript = Transcript::new();
     let hello_length = write_client_hello(
         &mut buffers.outgoing[HEADER_BYTES..],
         settings.host,
@@ -1028,7 +1033,7 @@ impl Session<'_> {
         )
     }
 
-    /// Receives data into `out`: how many bytes, 0 once the server closed (with
+    /// Receives data into `out`: how many bytes, 0 once the peer closed (with
     /// `close_notify`, or by closing the connection).
     pub fn read(&mut self, transport: &mut dyn Transport, out: &mut [u8]) -> Result<usize, Error> {
         loop {
@@ -1128,7 +1133,7 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Tells the server the client sends nothing more (`close_notify`).
+    /// Tells the peer this side sends nothing more (`close_notify`).
     pub fn close(&mut self, transport: &mut dyn Transport) -> Result<(), Error> {
         send_protected(
             transport,

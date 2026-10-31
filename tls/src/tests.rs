@@ -6,6 +6,7 @@ use crate::client::{
 };
 use crate::der::{self, Reader};
 use crate::pem::Certificates;
+use crate::server;
 use crate::x509::{self, Certificate, DIGITAL_SIGNATURE, PublicKey};
 use eggos_crypto::HashAlgorithm;
 
@@ -535,4 +536,126 @@ fn eggos_certificates_read_back_from_their_pem_and_show_their_fingerprint() {
             .split(':')
             .all(|pair| pair.len() == 2 && pair.bytes().all(|byte| byte.is_ascii_hexdigit()))
     );
+}
+
+struct Pipe {
+    outgoing: std::sync::mpsc::Sender<Vec<u8>>,
+    incoming: std::sync::mpsc::Receiver<Vec<u8>>,
+    pending: Vec<u8>,
+}
+
+impl Transport for Pipe {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Stopped> {
+        self.outgoing.send(bytes.to_vec()).map_err(|_| Stopped)
+    }
+
+    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Stopped> {
+        if self.pending.is_empty() {
+            match self.incoming.recv() {
+                Ok(bytes) => self.pending = bytes,
+                Err(_) => return Ok(0),
+            }
+        }
+        let count = buffer.len().min(self.pending.len());
+        buffer[..count].copy_from_slice(&self.pending[..count]);
+        self.pending.drain(..count);
+        Ok(count)
+    }
+}
+
+fn pipes() -> (Pipe, Pipe) {
+    let (to_server, from_client) = std::sync::mpsc::channel();
+    let (to_client, from_server) = std::sync::mpsc::channel();
+    (
+        Pipe {
+            outgoing: to_server,
+            incoming: from_server,
+            pending: Vec::new(),
+        },
+        Pipe {
+            outgoing: to_client,
+            incoming: from_client,
+            pending: Vec::new(),
+        },
+    )
+}
+
+#[test]
+fn eggos_clients_and_eggos_servers_talk_through_a_pinned_certificate() {
+    let names = [certificate::Name::Host(b"eggos.local")];
+    let der = own_certificate(&names);
+    let (mut client_end, mut server_end) = pipes();
+    let served = der.clone();
+    let server = std::thread::spawn(move || {
+        let mut buffers = Box::new(Buffers::new());
+        let identity = server::Identity {
+            certificate: &served,
+            private_key: &SERVER_KEY,
+            protocol: b"http/1.1",
+        };
+        let mut session =
+            server::accept(&mut server_end, &mut buffers, &identity, &[0x42; 64]).unwrap();
+        let mut request = [0u8; 64];
+        let count = session.read(&mut server_end, &mut request).unwrap();
+        assert_eq!(&request[..count], b"POST /mcp");
+        session.write(&mut server_end, b"200 OK").unwrap();
+        session.close(&mut server_end).unwrap();
+        session.suite()
+    });
+    let mut buffers = Box::new(Buffers::new());
+    let settings = Settings {
+        host: b"eggos.local",
+        now: OCTOBER_2026 + 60,
+    };
+    let mut pinned = Roots(vec![der]);
+    let mut session = connect(
+        &mut client_end,
+        &mut buffers,
+        &settings,
+        &[0x17; RANDOMNESS_BYTES],
+        &mut pinned,
+    )
+    .unwrap();
+    session.write(&mut client_end, b"POST /mcp").unwrap();
+    let mut answer = [0u8; 64];
+    let count = session.read(&mut client_end, &mut answer).unwrap();
+    assert_eq!(&answer[..count], b"200 OK");
+    assert_eq!(session.read(&mut client_end, &mut answer).unwrap(), 0);
+    assert_eq!(server.join().unwrap(), session.suite());
+}
+
+#[test]
+fn eggos_servers_refuse_clients_without_tls_13_or_x25519() {
+    let names = [certificate::Name::Host(b"eggos.local")];
+    let der = own_certificate(&names);
+    let identity = server::Identity {
+        certificate: &der,
+        private_key: &SERVER_KEY,
+        protocol: b"http/1.1",
+    };
+    let hello = client::client_hello_for_tests(b"eggos.local", &[0x17; RANDOMNESS_BYTES]);
+    let mut without_x25519 = hello.clone();
+    let share = without_x25519
+        .windows(4)
+        .rposition(|window| window == [0x00, 0x1d, 0x00, 0x20])
+        .unwrap();
+    without_x25519[share + 1] = 0x17;
+    let mut old_version = hello.clone();
+    let version = old_version
+        .windows(5)
+        .position(|window| window == [0x00, 0x2b, 0x00, 0x03, 0x02])
+        .unwrap();
+    old_version[version + 6] = 0x03;
+    for (message, wanted) in [
+        (without_x25519, server::Error::NoCommonKeyExchange),
+        (old_version, server::Error::NotTls13),
+    ] {
+        let (mut client_end, mut server_end) = pipes();
+        let mut record = vec![22, 3, 1, (message.len() >> 8) as u8, message.len() as u8];
+        record.extend_from_slice(&message);
+        client_end.send(&record).unwrap();
+        let mut buffers = Box::new(Buffers::new());
+        let refused = server::accept(&mut server_end, &mut buffers, &identity, &[0x42; 64]);
+        assert_eq!(refused.err(), Some(wanted));
+    }
 }
