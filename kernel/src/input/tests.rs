@@ -78,6 +78,7 @@ fn timing(now: u64) -> Timing {
         now,
         repeat_delay: 400,
         repeat_interval: 40,
+        slow_keys: 0,
     }
 }
 
@@ -840,4 +841,31 @@ fn preferences_out_of_range_change_nothing() {
     };
     assert!(!set_preferences(wrong));
     assert_eq!(preferences(), DEFAULT_PREFERENCES);
+}
+
+#[test]
+fn sticky_keys_latch_a_tapped_modifier_for_the_next_key_and_a_second_tap_locks_it() {
+    let mut sticky = Sticky::new();
+    let shift = Modifiers::SHIFT.bits();
+    let none = Modifiers::NONE;
+    assert_eq!(sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift), Modifiers::SHIFT);
+    assert_eq!(sticky.apply(42, KeyChange::Released, none, 0), none);
+    assert_eq!(sticky.apply(30, KeyChange::Pressed, none, 0), Modifiers::SHIFT);
+    assert_eq!(sticky.apply(30, KeyChange::Released, none, 0), Modifiers::SHIFT);
+    assert_eq!(sticky.apply(30, KeyChange::Pressed, none, 0), none);
+    for _ in 0..2 {
+        sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
+        sticky.apply(42, KeyChange::Released, none, 0);
+    }
+    assert_eq!(sticky.locked, shift);
+    sticky.apply(30, KeyChange::Released, none, 0);
+    assert_eq!(sticky.apply(31, KeyChange::Pressed, none, 0), Modifiers::SHIFT);
+    sticky.apply(31, KeyChange::Released, none, 0);
+    assert_eq!(sticky.apply(32, KeyChange::Pressed, none, 0), Modifiers::SHIFT);
+}
+
+#[test]
+fn key_accessibility_refuses_a_slow_delay_out_of_range() {
+    assert!(!set_key_accessibility(false, Some(50)));
+    assert!(set_key_accessibility(false, None));
 }

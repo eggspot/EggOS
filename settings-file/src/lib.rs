@@ -110,6 +110,42 @@ pub const KEYBOARD_REPEAT_DELAY: &str = "keyboard.repeat_delay_ms";
 /// Repeats a second of a held key: 2 to 60, 25 the default (D195).
 pub const KEYBOARD_REPEAT_RATE: &str = "keyboard.repeat_rate";
 
+/// Whether a tapped modifier latches for the next key: `true` or `false` (D205).
+pub const STICKY_KEYS: &str = "accessibility.sticky_keys";
+/// Whether a key counts only once held a while: `true` or `false` (D205).
+pub const SLOW_KEYS: &str = "accessibility.slow_keys";
+/// How long a key must be held while slow keys are on: 100 to 1000 ms, 300 the default.
+pub const SLOW_KEYS_MS: &str = "accessibility.slow_keys_ms";
+
+/// How the keys are made easier to press (D205), as the settings file holds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyAccessibility {
+    pub sticky_keys: bool,
+    pub slow_keys: bool,
+    /// 100 to 1000.
+    pub slow_keys_ms: u32,
+}
+
+impl KeyAccessibility {
+    /// What EggOS starts with: both off, a 300 ms delay.
+    pub const DEFAULT: Self = Self {
+        sticky_keys: false,
+        slow_keys: false,
+        slow_keys_ms: 300,
+    };
+}
+
+/// The key accessibility `file` holds.
+pub fn key_accessibility(file: &[u8]) -> KeyAccessibility {
+    let on = |key: &str| value(file, key) == Some(&b"true"[..]);
+    KeyAccessibility {
+        sticky_keys: on(STICKY_KEYS),
+        slow_keys: on(SLOW_KEYS),
+        slow_keys_ms: number_in(file, SLOW_KEYS_MS, 100, 1000)
+            .unwrap_or(KeyAccessibility::DEFAULT.slow_keys_ms),
+    }
+}
+
 /// The mouse and key preferences the settings file holds (D195), each its default when absent
 /// or out of range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

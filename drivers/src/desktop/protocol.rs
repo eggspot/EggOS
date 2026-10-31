@@ -80,6 +80,7 @@ pub mod size {
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
     pub const DESKTOP_ACTION: usize = 16;
+    pub const SET_KEY_ACCESSIBILITY: usize = 12;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -124,6 +125,7 @@ pub mod request {
     pub const GET_CLIPBOARD: u32 = encode(READ | WRITE, 33, size::GET_CLIPBOARD);
     pub const LIST_DESKTOPS: u32 = encode(READ, 34, size::LIST_DESKTOPS);
     pub const DESKTOP_ACTION: u32 = encode(READ | WRITE, 35, size::DESKTOP_ACTION);
+    pub const SET_KEY_ACCESSIBILITY: u32 = encode(WRITE, 36, size::SET_KEY_ACCESSIBILITY);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -487,6 +489,12 @@ pub enum Request {
     /// Writes the desktops' count, the shown one and their windows ([`list_desktops_reply`],
     /// D204).
     ListDesktops,
+    /// Turns sticky keys and slow keys on or off, slow keys with this delay (D205).
+    SetKeyAccessibility {
+        sticky_keys: u32,
+        slow_keys: u32,
+        slow_keys_ms: u32,
+    },
     /// Does a [`desktop_action`] with desktop `desktop` (from 1) and window `window` (D204).
     DesktopAction {
         action: u32,
@@ -569,6 +577,7 @@ impl Request {
             request::GET_CLIPBOARD => size::GET_CLIPBOARD,
             request::LIST_DESKTOPS => size::LIST_DESKTOPS,
             request::DESKTOP_ACTION => size::DESKTOP_ACTION,
+            request::SET_KEY_ACCESSIBILITY => size::SET_KEY_ACCESSIBILITY,
             _ => return None,
         })
     }
@@ -739,6 +748,11 @@ impl Request {
                 length: double_word(bytes, 8),
             },
             request::LIST_DESKTOPS => Self::ListDesktops,
+            request::SET_KEY_ACCESSIBILITY => Self::SetKeyAccessibility {
+                sticky_keys: at(0),
+                slow_keys: at(4),
+                slow_keys_ms: at(8),
+            },
             request::DESKTOP_ACTION => Self::DesktopAction {
                 action: at(0),
                 desktop: at(4),

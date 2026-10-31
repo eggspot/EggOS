@@ -854,6 +854,7 @@ fn input_key_to_bytes(n: u64) {
         now: 0,
         repeat_delay: 400,
         repeat_interval: 40,
+        slow_keys: 0,
     };
     let syn = RawEvent::new(event_type::SYN, SYN_REPORT, 0);
     for i in 0..n {

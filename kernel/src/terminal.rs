@@ -314,6 +314,11 @@ pub fn load_saved_settings() {
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
+    let keys = eggos_settings_file::key_accessibility(&file[..length]);
+    crate::input::set_key_accessibility(
+        keys.sticky_keys,
+        keys.slow_keys.then_some(keys.slow_keys_ms),
+    );
     let input = eggos_settings_file::input_preferences(&file[..length]);
     crate::input::set_preferences(crate::input::Preferences {
         left_handed: input.left_handed,

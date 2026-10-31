@@ -24,6 +24,7 @@ const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
 const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
 const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
 const SET_CLIPBOARD: usize = 0x4010_7720;
+const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
@@ -148,6 +149,25 @@ impl WindowServer {
             )
         };
         result(answer).map(|_| argument)
+    }
+
+    /// Turns sticky keys and slow keys on or off, slow keys counting a key once held
+    /// `slow_keys_ms` (`SET_KEY_ACCESSIBILITY`, D205).
+    pub fn set_key_accessibility(
+        &self,
+        sticky_keys: bool,
+        slow_keys: bool,
+        slow_keys_ms: u32,
+    ) -> Result<(), Errno> {
+        let mut bytes = [0u8; 12];
+        for (place, word) in bytes.chunks_exact_mut(4).zip([
+            u32::from(sticky_keys),
+            u32::from(slow_keys),
+            slow_keys_ms,
+        ]) {
+            place.copy_from_slice(&word.to_ne_bytes());
+        }
+        self.ioctl(SET_KEY_ACCESSIBILITY, &mut bytes)
     }
 
     /// Makes `text` the clipboard every app shares (`SET_CLIPBOARD`, D197).

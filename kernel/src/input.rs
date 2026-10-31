@@ -350,6 +350,8 @@ pub struct InputState {
     repeat: KeyRepeat,
     repeat_bytes: KeyBytes,
     taken_back: u16,
+    sticky: Sticky,
+    slow: Option<(u16, u64)>,
     cursor_keys: CursorKeys,
     pointer: (u32, u32),
     buttons_held: u8,
@@ -371,6 +373,9 @@ pub struct Timing {
     pub repeat_delay: u64,
     /// [`REPEAT_INTERVAL_MS`] in ticks.
     pub repeat_interval: u64,
+    /// How long a key must be held before it counts, in ticks, while slow keys are on; 0 off
+    /// (D205).
+    pub slow_keys: u64,
 }
 
 impl Timing {
@@ -384,6 +389,86 @@ impl Timing {
             now: P::clock_ticks(),
             repeat_delay: mul_div_ceil(delay, frequency, 1000),
             repeat_interval: mul_div_ceil(1000, frequency, 1000 * rate),
+            slow_keys: mul_div_ceil(
+                u64::from(SLOW_KEYS_MS.load(Ordering::Relaxed)),
+                frequency,
+                1000,
+            ),
+        }
+    }
+}
+
+static STICKY_KEYS: AtomicBool = AtomicBool::new(false);
+static SLOW_KEYS_MS: AtomicU32 = AtomicU32::new(0);
+
+/// The accessibility of the keys (D205): sticky keys latch a tapped modifier for the next key
+/// (a second tap locks it); slow keys count a key only once it is held `slow_keys_ms` (`None`
+/// off, else 100 to 1000). `false`, and nothing changed, for a delay out of range.
+pub fn set_key_accessibility(sticky_keys: bool, slow_keys_ms: Option<u32>) -> bool {
+    if slow_keys_ms.is_some_and(|delay| !(100..=1000).contains(&delay)) {
+        return false;
+    }
+    STICKY_KEYS.store(sticky_keys, Ordering::Relaxed);
+    SLOW_KEYS_MS.store(slow_keys_ms.unwrap_or(0), Ordering::Relaxed);
+    true
+}
+
+/// Modifiers latched and locked by sticky keys (D205), and the key whose taps and use they
+/// follow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Sticky {
+    latched: u8,
+    locked: u8,
+    tapping: Option<(u16, u8)>,
+    using: Option<u16>,
+}
+
+impl Sticky {
+    const fn new() -> Self {
+        Self {
+            latched: 0,
+            locked: 0,
+            tapping: None,
+            using: None,
+        }
+    }
+
+    /// The modifiers key `code`'s `change` carries, `held` the keyboard's own and `added` the
+    /// modifier bits the change itself pressed.
+    fn apply(&mut self, code: u16, change: KeyChange, held: Modifiers, added: u8) -> Modifiers {
+        let extra = self.latched | self.locked;
+        let with_extra = Modifiers::from_bits(held.bits() | extra);
+        match change {
+            KeyChange::Released => {
+                if let Some((_, bits)) = self.tapping.take_if(|(tapped, _)| *tapped == code) {
+                    if self.locked & bits != 0 {
+                        self.locked &= !bits;
+                    } else if self.latched & bits != 0 {
+                        self.latched &= !bits;
+                        self.locked |= bits;
+                    } else {
+                        self.latched |= bits;
+                    }
+                    return held;
+                }
+                if self.using == Some(code) {
+                    self.using = None;
+                    self.latched = 0;
+                    return with_extra;
+                }
+                held
+            }
+            _ if added != 0 => {
+                self.tapping = Some((code, added));
+                held
+            }
+            _ => {
+                self.tapping = None;
+                if self.latched != 0 {
+                    self.using = Some(code);
+                }
+                with_extra
+            }
         }
     }
 }
@@ -520,6 +605,8 @@ impl InputState {
             repeat: KeyRepeat::new(),
             repeat_bytes: KeyBytes::EMPTY,
             taken_back: 0,
+            sticky: Sticky::new(),
+            slow: None,
             cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
             buttons_held: 0,
@@ -563,9 +650,38 @@ impl InputState {
         self.last_event
     }
 
-    /// When the held key repeats next, if one does.
+    /// When the held key repeats next, if one does, or a key held under slow keys counts.
     pub fn next_repeat(&self) -> Option<u64> {
-        self.repeat.next()
+        match (self.repeat.next(), self.slow.map(|(_, at)| at)) {
+            (Some(repeat), Some(slow)) => Some(repeat.min(slow)),
+            (repeat, slow) => repeat.or(slow),
+        }
+    }
+
+    /// Counts the key held under slow keys once it has been held long enough (D205).
+    fn accept_slow_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
+        let Some((code, at)) = self.slow else {
+            return;
+        };
+        if timing.now < at {
+            return;
+        }
+        self.slow = None;
+        let mut report = PendingReport::default();
+        let accepted = Timing {
+            slow_keys: 0,
+            ..timing
+        };
+        self.key(
+            RawEvent {
+                kind: event_type::KEY,
+                code,
+                value: 1,
+            },
+            &mut report,
+            accepted,
+            sink,
+        );
     }
 
     /// Has the arrow keys send `mode`'s forms, as the terminal's program asked.
@@ -595,10 +711,35 @@ impl InputState {
         if event.code >= button::FIRST {
             return;
         }
+        if timing.slow_keys > 0 {
+            match (event.value, self.slow) {
+                (1, _) => {
+                    self.slow = Some((event.code, timing.now + timing.slow_keys));
+                    return;
+                }
+                (2, Some((code, _))) if code == event.code => return,
+                (0, Some((code, _))) if code == event.code => {
+                    self.slow = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let before = self.keyboard.modifiers();
         let Some(change) = self.keyboard.key(event.code, event.value) else {
             return;
         };
-        let modifiers = self.keyboard.modifiers();
+        let held = self.keyboard.modifiers();
+        let modifiers = match STICKY_KEYS.load(Ordering::Relaxed) {
+            true => {
+                let added = held.bits() & !before.bits() & !Modifiers::CAPS_LOCK.bits();
+                self.sticky.apply(event.code, change, held, added)
+            }
+            false => {
+                self.sticky = Sticky::new();
+                held
+            }
+        };
         let code = event.code;
         if change == KeyChange::Released {
             self.repeat.released(code);
@@ -778,6 +919,7 @@ impl InputState {
     /// Sends the held key's bytes again if its repeat is due and `sink` has room for them
     /// whole; without room the repeat stays due for the next poll.
     pub fn repeat_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
+        self.accept_slow_key(timing, sink);
         if sink.room() < KeyBytes::CAPACITY {
             return;
         }

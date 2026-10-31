@@ -109,6 +109,7 @@ pub fn ioctl<P: Platform>(
         Request::SetProfile { .. }
             | Request::SetKeyboardLayout { .. }
             | Request::SetInputPreferences { .. }
+            | Request::SetKeyAccessibility { .. }
     );
     if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
@@ -277,6 +278,16 @@ pub fn ioctl<P: Platform>(
         } => on_windows::<P, _>(|desktop, _, damage, events| {
             desktop.manage(window, action, a, b, damage, events)
         })?,
+        Request::SetKeyAccessibility {
+            sticky_keys,
+            slow_keys,
+            slow_keys_ms,
+        } => {
+            let slow = (slow_keys != 0).then_some(slow_keys_ms);
+            if !crate::input::set_key_accessibility(sticky_keys != 0, slow) {
+                return Err(Errno::EINVAL);
+            }
+        }
         Request::ListDesktops => {
             let (count, current, windows) =
                 on_windows::<P, _>(|desktop, _, _, _| Ok(desktop.desktops()))?;
