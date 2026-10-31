@@ -12910,7 +12910,13 @@ the license, by an explicit instruction recorded here.
   count per handle, or a shutdown with the free deferred to the last user; `GetDIBits` into 4-
   and 8-bit formats (answers `ERROR_NOT_SUPPORTED`; `dib::write_row` already picks the nearest
   palette colour); QEMU checks of `SHFileOperationW` over a symbolic link (needs
-  `CreateSymbolicLinkW`) and of `OpenClipboard` from two threads.
+  `CreateSymbolicLinkW`) and of `OpenClipboard` from two threads. From round 2 review:
+  `SHFileOperationW`'s delete checks a folder with `lstat` and then opens it by path, so a
+  folder swapped for a symbolic link in between is recursed into (open with `O_NOFOLLOW` and
+  remove children with `unlinkat` relative to it); `TB_GETBUTTONINFOW` and `TB_SETBUTTONINFOW`
+  do not check `cbSize`, and `TB_ADDBUTTONSW` reads at least a 32-byte stride whatever size
+  `TB_BUTTONSTRUCTSIZE` gave; `SB_SETTEXTW` with `SBT_OWNERDRAW` drops its `lParam`, so
+  `SB_GETTEXTW` cannot return an owner-drawn part's data.
 
 ## D179 A real Qt app installs and runs: CorePad on Qt 6 Widgets through `eggway`, with EggOS's own EGL and GL libraries that report no display, `wl_output` 4, `xdg_wm_base` 5 and `wp_fractional_scale_v1`; `inotify` in the kernel; `/etc/passwd` and `/etc/group`; CI's `qt-app` job (batch part 27, the Real apps track's eighth step, its first Qt app; D176's "Not yet"; extends D18, D21, D22, D140, D167, D169, D172, D176) — Decided by the build loop (the app, where its pieces come from and what Qt needs at run time decided by research)
 - **Why.** After an SDL game (D172) and a GTK app (D176), Qt is the other toolkit most Linux
@@ -14717,7 +14723,9 @@ the license, by an explicit instruction recorded here.
   child that has ended but not been reaped still counts as owned (`kill(pid, 0)` succeeds on a
   zombie), so a parent that waits on the mutex before waiting on the child hangs where Windows
   answers `WAIT_ABANDONED`: reap the layer's own children first, or read `/proc/<pid>/stat`
-  for state `Z`.
+  for state `Z`. From round 2 review: `PeekNamedPipe` reads under the peeked-bytes lock, so
+  a peek that blocks (another thread emptied the pipe in between) stalls every thread's
+  `ReadFile` on any pipe with kept bytes, not only this pipe's readers.
 
 ## D190 macOS console breadth: programs that handle signals and start other programs: delivered handlers with Darwin's numbers and `siginfo_t`, masks, `sigsuspend`, alternate stacks; `fork`, the `exec` family, `posix_spawn` with file actions and attributes, pipes, `wait4`, `popen` and `system` (batch part 38, slice 38a; v0.3.0 items 20, 21 and 40's follow-ups; D123's "Not yet"; extends D120, D123, D142) — Decided by the build loop (the shell `system` and `popen` run decided by research)
 
