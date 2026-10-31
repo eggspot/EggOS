@@ -570,7 +570,7 @@ pub const NOUN_VERBS: [(&str, &[&str]); 3] = [
         ],
     ),
     ("disk", &["format", "repair"]),
-    ("agent", &["grant", "revoke", "forget"]),
+    ("agent", &["grant", "revoke", "forget", "pair", "network"]),
 ];
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full

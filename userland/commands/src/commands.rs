@@ -939,6 +939,79 @@ pub const AGENT_GRANT: CommandDefinition = CommandDefinition {
     surface: AGENT_SURFACE,
 };
 
+/// `agent network`.
+pub const AGENT_NETWORK: CommandDefinition = CommandDefinition {
+    words: &["agent", "network"],
+    summary: "Turns MCP for agents on other machines on or off, or shows it.",
+    description: "on makes EggOS answer paired agents over HTTPS from its next start (port \
+                  8443 unless --port says otherwise), off stops that from the next start, and \
+                  show says whether it is on, where agents connect, and the certificate's \
+                  fingerprint, which the agent's client pins. Only the person turns it on: no \
+                  MCP tool does. An agent gets nothing until it is paired (agent pair) and \
+                  granted (agent grant).",
+    options: &[valued(
+        None,
+        Some("port"),
+        "port",
+        ValueType::Integer {
+            minimum: 1,
+            maximum: 65_535,
+        },
+        "The TCP port to answer on.",
+    )],
+    operands: &[operand(
+        "state",
+        ValueType::Choice(&["on", "off", "show"]),
+        Count::One,
+    )],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[example(
+        "agent network show",
+        "network: off (agent network on turns it on)\n",
+    )],
+    surface: AGENT_SURFACE,
+};
+
+/// `agent pair`.
+pub const AGENT_PAIR: CommandDefinition = CommandDefinition {
+    words: &["agent", "pair"],
+    summary: "Lets an agent on another machine connect: shows a one-time code.",
+    description: "Adds the agent with no grants (or keeps its grants), gives it a new token in \
+                  place of any old one, and shows a code the agent's client sends once to \
+                  https://<this machine>:8443/pair within 5 minutes to get that token. Five \
+                  wrong codes burn it, and a new code can then be made after 30 seconds. Only \
+                  the person pairs: no MCP tool does. --name sets the name the user sees.",
+    options: &[valued(
+        None,
+        Some("name"),
+        "name",
+        ValueType::Text,
+        "The name the user sees, at most 64 bytes.",
+    )],
+    operands: &[AGENT_OPERAND],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::TOO_MANY_AGENTS, 1),
+        exits(&DAMAGED, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[Example {
+        line: "agent pair local",
+        output: "",
+        status: 2,
+    }],
+    surface: AGENT_SURFACE,
+};
+
 /// `agent list`.
 pub const AGENT_LIST: CommandDefinition = CommandDefinition {
     words: &["agent", "list"],
@@ -2747,10 +2820,12 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 78] = [
+pub const COMMANDS: [CommandDefinition; 80] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
+    AGENT_NETWORK,
+    AGENT_PAIR,
     AGENT_REVOKE,
     AGENT_SHOW,
     AGENTLOG,

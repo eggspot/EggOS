@@ -1,5 +1,5 @@
 //! `eggmcpd --network` (D193): MCP over HTTPS for paired agents on other machines. Init starts
-//! it only once the person turned it on (`agent network on`, which writes [`ENABLED_PATH`]).
+//! it only once the person turned it on (`agent network on`, which writes [`NETWORK_ENABLED`]).
 //! It answers one connection at a time on [`http::DEFAULT_PORT`]: a TLS handshake with
 //! EggOS's own certificate, then HTTP requests until the client closes or stays idle for
 //! [`IDLE_MS`]. Each paired agent gets a server of its own, pinned to that agent, with no
@@ -8,14 +8,13 @@
 
 use super::{
     AT_FDCWD, BUFFERS, Buffers, Linux, O_CREAT, O_EXCL, O_RDONLY, O_WRONLY, POLLERR, POLLHUP,
-    POLLIN, PollDescriptor, c_path, call, close, ignore_broken_pipes, now_ms, open, pause, rename,
-    say,
+    POLLIN, PollDescriptor, call, close, ignore_broken_pipes, now_ms, open, pause, rename, say,
 };
 use crate::grants::{AgentId, GrantStore, Grants, STORE_BYTES, StoreState, Unknown};
 use crate::http::{self, Parsed, Route, Status};
 use crate::pairing::{
-    Attempt, PAIRING_BYTES, PAIRING_PATH, PAIRING_TEMPORARY_PATH, PendingPairing,
-    WRONG_CODE_PAUSE_MS,
+    Attempt, NETWORK_CERTIFICATE, NETWORK_CERTIFICATE_PEM, NETWORK_ENABLED, NETWORK_KEY,
+    PAIRING_BYTES, PAIRING_PATH, PAIRING_TEMPORARY_PATH, PendingPairing, WRONG_CODE_PAUSE_MS,
 };
 use crate::server::{Scratch, Server};
 use crate::system::System;
@@ -30,14 +29,6 @@ use eggos_tls::server::{self as tls_server, Identity};
 
 /// The word that starts the network server.
 pub const NETWORK_OPTION: &[u8] = b"--network";
-/// The file whose presence turns the network server on; it may hold the port, in decimal.
-pub const ENABLED_PATH: &str = "/var/lib/eggos/agent-network";
-/// The server's private key: 32 bytes, readable by root only.
-pub const KEY_PATH: &str = "/var/lib/eggos/agent-network.key";
-/// The server's certificate, DER.
-pub const CERTIFICATE_PATH: &str = "/var/lib/eggos/agent-network.der";
-/// The server's certificate, PEM, for the person to give their agent's client.
-pub const CERTIFICATE_PEM_PATH: &str = "/var/lib/eggos/agent-network.pem";
 /// How long a connection may stay silent, in milliseconds.
 pub const IDLE_MS: u64 = 30_000;
 /// How long a TLS handshake may take, in milliseconds.
@@ -137,12 +128,6 @@ fn random<const N: usize>() -> Option<[u8; N]> {
     Some(bytes)
 }
 
-fn read_file(path: &str, out: &mut [u8]) -> Result<usize, Errno> {
-    let mut buffer = [0u8; 64];
-    let path = c_path(path, &mut buffer).ok_or(Errno::EINVAL)?;
-    read_c_file(path, out)
-}
-
 fn read_c_file(path: &CStr, out: &mut [u8]) -> Result<usize, Errno> {
     let file = open(path, O_RDONLY, 0)?;
     let mut length = 0;
@@ -164,11 +149,7 @@ fn read_c_file(path: &CStr, out: &mut [u8]) -> Result<usize, Errno> {
     result
 }
 
-fn write_file(path: &str, temporary: &str, mode: usize, bytes: &[u8]) -> Result<(), Errno> {
-    let mut target = [0u8; 64];
-    let mut spare = [0u8; 64];
-    let target = c_path(path, &mut target).ok_or(Errno::EINVAL)?;
-    let spare = c_path(temporary, &mut spare).ok_or(Errno::EINVAL)?;
+fn write_file(target: &CStr, spare: &CStr, mode: usize, bytes: &[u8]) -> Result<(), Errno> {
     let _ = call(
         number::UNLINKAT,
         [AT_FDCWD, spare.as_ptr() as usize, 0, 0, 0, 0],
@@ -184,19 +165,16 @@ fn write_file(path: &str, temporary: &str, mode: usize, bytes: &[u8]) -> Result<
     rename(spare, target)
 }
 
-fn remove(path: &str) {
-    let mut buffer = [0u8; 64];
-    if let Some(path) = c_path(path, &mut buffer) {
-        let _ = call(
-            number::UNLINKAT,
-            [AT_FDCWD, path.as_ptr() as usize, 0, 0, 0, 0],
-        );
-    }
+fn remove(path: &CStr) {
+    let _ = call(
+        number::UNLINKAT,
+        [AT_FDCWD, path.as_ptr() as usize, 0, 0, 0, 0],
+    );
 }
 
 fn private_key() -> Option<[u8; SCALAR_BYTES]> {
     let mut key = [0u8; SCALAR_BYTES + 1];
-    if let Ok(SCALAR_BYTES) = read_file(KEY_PATH, &mut key) {
+    if let Ok(SCALAR_BYTES) = read_c_file(NETWORK_KEY, &mut key) {
         let mut kept = [0u8; SCALAR_BYTES];
         kept.copy_from_slice(&key[..SCALAR_BYTES]);
         return p256::public_key(&kept).ok().map(|_| kept);
@@ -207,8 +185,8 @@ fn private_key() -> Option<[u8; SCALAR_BYTES]> {
         }
     };
     write_file(
-        KEY_PATH,
-        "/var/lib/eggos/agent-network.key.new",
+        NETWORK_KEY,
+        c"/var/lib/eggos/agent-network.key.new",
         KEY_MODE,
         &key,
     )
@@ -286,7 +264,7 @@ fn load_identity(
     key: &[u8; SCALAR_BYTES],
     certificate_out: &mut [u8; MAX_CERTIFICATE_BYTES],
 ) -> usize {
-    if let Ok(length) = read_file(CERTIFICATE_PATH, certificate_out)
+    if let Ok(length) = read_c_file(NETWORK_CERTIFICATE, certificate_out)
         && length > 0
         && length < MAX_CERTIFICATE_BYTES
     {
@@ -297,15 +275,15 @@ fn load_identity(
     let mut pem = [0u8; certificate::pem_bytes(MAX_CERTIFICATE_BYTES)];
     let pem_length = certificate::pem(der, &mut pem).unwrap_or(0);
     let stored = write_file(
-        CERTIFICATE_PATH,
-        "/var/lib/eggos/agent-network.der.new",
+        NETWORK_CERTIFICATE,
+        c"/var/lib/eggos/agent-network.der.new",
         PUBLIC_MODE,
         der,
     )
     .and_then(|()| {
         write_file(
-            CERTIFICATE_PEM_PATH,
-            "/var/lib/eggos/agent-network.pem.new",
+            NETWORK_CERTIFICATE_PEM,
+            c"/var/lib/eggos/agent-network.pem.new",
             PUBLIC_MODE,
             pem.get(..pem_length).unwrap_or_default(),
         )
@@ -318,7 +296,7 @@ fn load_identity(
 
 fn port() -> u16 {
     let mut text = [0u8; 16];
-    let length = read_file(ENABLED_PATH, &mut text).unwrap_or(0);
+    let length = read_c_file(NETWORK_ENABLED, &mut text).unwrap_or(0);
     let text = text.get(..length).unwrap_or_default();
     let text = text.strip_suffix(b"\n").unwrap_or(text);
     crate::grants::seconds(text)
@@ -415,7 +393,7 @@ fn pair(body: &[u8], now: u64, answer: &mut [u8]) -> (Status, usize) {
         );
     };
     let mut file = [0u8; PAIRING_BYTES];
-    let pending = read_file(PAIRING_PATH, &mut file)
+    let pending = read_c_file(PAIRING_PATH, &mut file)
         .ok()
         .and_then(|length| PendingPairing::decode(file.get(..length)?).ok());
     let Some(mut pending) = pending else {

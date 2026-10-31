@@ -35,7 +35,13 @@ fn the_paths_are_the_server_s() {
 #[test]
 fn a_grant_is_written_where_the_server_reads_it_and_listed() {
     let mut fake = started_with("view,write");
-    assert_eq!(run(&mut fake, &[c"grant", c"--name", c"My phone", c"phone", c"write"]), 0);
+    assert_eq!(
+        run(
+            &mut fake,
+            &[c"grant", c"--name", c"My phone", c"phone", c"write"]
+        ),
+        0
+    );
     assert_eq!(fake.output(), "gave phone write, from its next call\n");
     let store = stored(&fake);
     let phone = store.get(&AgentId::new(b"phone").unwrap()).unwrap();
@@ -59,7 +65,13 @@ fn run_and_install_need_yes_and_a_time_limit_ends_the_grant() {
     assert_eq!(run(&mut fake, &[c"grant", c"phone", c"run"]), 1);
     assert!(fake.errors().contains("full control"), "{}", fake.errors());
     fake.now = 1_000;
-    assert_eq!(run(&mut fake, &[c"grant", c"-y", c"--for", c"2h", c"phone", c"run"]), 0);
+    assert_eq!(
+        run(
+            &mut fake,
+            &[c"grant", c"-y", c"--for", c"2h", c"phone", c"run"]
+        ),
+        0
+    );
     let store = stored(&fake);
     let run_grant = store
         .get(&AgentId::new(b"phone").unwrap())
@@ -67,7 +79,10 @@ fn run_and_install_need_yes_and_a_time_limit_ends_the_grant() {
         .class(Grant::Run);
     assert_eq!(run_grant.until, Some(1_000 + 7_200));
     for bad in [c"2", c"h", c"0m", c"2w"] {
-        assert_eq!(run(&mut fake, &[c"grant", c"--for", bad, c"phone", c"view"]), 2);
+        assert_eq!(
+            run(&mut fake, &[c"grant", c"--for", bad, c"phone", c"view"]),
+            2
+        );
     }
 }
 
@@ -75,7 +90,10 @@ fn run_and_install_need_yes_and_a_time_limit_ends_the_grant() {
 fn revoking_from_local_keeps_its_other_boot_grants_and_says_what_run_still_brings() {
     let mut fake = started_with("write,run");
     assert_eq!(run(&mut fake, &[c"revoke", c"local", c"write"]), 0);
-    assert!(fake.output().contains("local keeps run, which brings write"));
+    assert!(
+        fake.output()
+            .contains("local keeps run, which brings write")
+    );
     let local = *stored(&fake).get(&AgentId::LOCAL).unwrap();
     assert_eq!(local.class(Grant::Write).permission, Permission::Deny);
     assert_eq!(local.class(Grant::Run).permission, Permission::Allow);
@@ -100,9 +118,18 @@ fn unknown_agents_bad_ids_and_a_damaged_store_are_refused() {
         .with_directory("/var", 0)
         .with_directory("/var/lib", 0)
         .with_directory("/var/lib/eggos", 0)
-        .with_file("/var/lib/eggos/agent-grants", 0o600, b"eggos-agent-grants 1\n", 0);
+        .with_file(
+            "/var/lib/eggos/agent-grants",
+            0o600,
+            b"eggos-agent-grants 1\n",
+            0,
+        );
     assert_eq!(run(&mut damaged, &[c"grant", c"phone", c"view"]), 1);
-    assert!(damaged.errors().contains("cannot be trusted"), "{}", damaged.errors());
+    assert!(
+        damaged.errors().contains("cannot be trusted"),
+        "{}",
+        damaged.errors()
+    );
 }
 
 #[test]
@@ -115,4 +142,91 @@ fn json_writes_one_record_an_agent() {
          \"write\":\"deny\",\"write_ends_at\":null,\"install\":\"deny\",\
          \"install_ends_at\":null,\"run\":\"deny\",\"run_ends_at\":null}\n"
     );
+}
+
+#[test]
+fn pairing_adds_the_agent_with_its_tokens_hash_and_leaves_a_code_for_the_server() {
+    let mut fake = started_with("view").with_directory("/run", 0);
+    assert_eq!(run(&mut fake, &[c"pair", c"--name", c"Phone", c"phone"]), 0);
+    let shown = fake.output();
+    assert!(
+        shown.starts_with(
+            "pairing phone: its client sends this code once, within 5 \
+                               minutes, to https://<this machine>:8443/pair\n  BCDE-FGHJ\n"
+        ),
+        "{shown}"
+    );
+    assert!(shown.contains("network server is off"), "{shown}");
+    assert!(shown.ends_with("agent grant phone view\n"), "{shown}");
+    let store = stored(&fake);
+    let phone = store.get(&AgentId::new(b"phone").unwrap()).unwrap();
+    assert_eq!(phone.name().as_bytes(), b"Phone");
+    assert_eq!(phone.class(Grant::View).permission, Permission::Deny);
+    let hash = *phone.token_hash().unwrap();
+    let mut waiting = PendingPairing::decode(&fake.contents("/run/eggos/agent-pairing")).unwrap();
+    assert_eq!(waiting.agent().as_bytes(), b"phone");
+    match waiting.attempt(b"bcde-fghj", fake.now()) {
+        pairing::Attempt::Paired(agent, token) => {
+            assert_eq!(agent.as_bytes(), b"phone");
+            assert_eq!(pairing::token_hash(&token), hash);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 0);
+    let again = stored(&fake);
+    let phone = again.get(&AgentId::new(b"phone").unwrap()).unwrap();
+    assert_ne!(*phone.token_hash().unwrap(), hash);
+    assert_eq!(phone.name().as_bytes(), b"Phone");
+    assert_eq!(run(&mut fake, &[c"pair", c"local"]), 2);
+    assert_eq!(run(&mut fake, &[c"pair"]), 2);
+}
+
+#[test]
+fn a_burned_code_holds_the_next_pairing_back() {
+    let mut fake = started_with("view").with_directory("/run", 0);
+    assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 0);
+    let mut waiting = PendingPairing::decode(&fake.contents("/run/eggos/agent-pairing")).unwrap();
+    let now = fake.now();
+    for _ in 0..pairing::MAX_WRONG_CODES {
+        waiting.attempt(b"ZZZZ-ZZZZ", now);
+    }
+    let mut file = [0u8; PAIRING_BYTES];
+    let length = waiting.encode(&mut file).unwrap();
+    let mut fake = fake.with_file("/run/eggos/agent-pairing", 0o600, &file[..length], 0);
+    assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 1);
+    assert!(
+        fake.errors().contains("pair again in 30 s"),
+        "{}",
+        fake.errors()
+    );
+}
+
+#[test]
+fn the_network_server_is_turned_on_and_off_by_its_file() {
+    let mut fake = started_with("view");
+    assert_eq!(run(&mut fake, &[c"network", c"show"]), 0);
+    assert_eq!(
+        fake.output(),
+        "network: off (agent network on turns it on)\n"
+    );
+    assert_eq!(run(&mut fake, &[c"network", c"--port", c"9443", c"on"]), 0);
+    assert_eq!(fake.contents("/var/lib/eggos/agent-network"), b"9443\n");
+    assert_eq!(run(&mut fake, &[c"network", c"show"]), 0);
+    assert!(
+        fake.output().starts_with(
+            "network: on, port 9443; agents connect to https://<this machine>:9443/mcp\n\
+             certificate: made when the network server first starts\n"
+        ),
+        "{}",
+        fake.output()
+    );
+    assert_eq!(run(&mut fake, &[c"network", c"--port", c"0", c"on"]), 2);
+    assert_eq!(run(&mut fake, &[c"network", c"off"]), 0);
+    assert_eq!(run(&mut fake, &[c"network", c"show"]), 0);
+    assert_eq!(
+        fake.output(),
+        "network: off (agent network on turns it on)\n"
+    );
+    assert_eq!(run(&mut fake, &[c"network", c"sideways"]), 2);
 }

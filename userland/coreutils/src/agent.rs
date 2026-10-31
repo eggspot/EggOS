@@ -9,17 +9,28 @@ use eggos_mcp::grants::{
     StoreError, StoreState,
 };
 use eggos_mcp::json::JsonWriter;
+use eggos_mcp::pairing::{
+    self, CODE_LIFETIME_S, NETWORK_CERTIFICATE, NETWORK_CERTIFICATE_PEM, NETWORK_ENABLED,
+    NETWORK_ENABLED_TEMPORARY, PAIRING_BYTES, PAIRING_FOLDER, PAIRING_PATH, PAIRING_TEMPORARY_PATH,
+    PendingPairing,
+};
 use eggos_runtime::errno::Errno;
 
 const USAGE: &[u8] = b"usage: agent list [--json] | show [--json] <id> | grant [--ask] \
     [--for <duration>] [--name <name>] [--yes] [--dry-run] <id> <view|write|install|run> | \
-    revoke <id> [<grant>] | forget <id>";
+    revoke <id> [<grant>] | forget <id> | pair [--name <name>] <id> | \
+    network [--port <port>] <on|off|show>";
 const USAGE_STATUS: i32 = 2;
 const HEADER: &[u8] = b"AGENT  NAME  VIEW  WRITE  INSTALL  RUN\n";
 const COMMAND_LINE: &CStr = c"/proc/cmdline";
 const COMMAND_LINE_BYTES: usize = 1024;
 const RECORD_BYTES: usize = 1024;
 const SECONDS_PER: [(u8, u64); 4] = [(b's', 1), (b'm', 60), (b'h', 3600), (b'd', 86_400)];
+const DEFAULT_PORT: &[u8] = b"8443";
+const PRIVATE_MODE: u32 = 0o600;
+const PUBLIC_MODE: u32 = 0o644;
+const FOLDER_MODE: u32 = 0o700;
+const CERTIFICATE_BYTES: usize = 1536;
 
 pub fn agent<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let rest = arguments.get(1..).unwrap_or_default();
@@ -29,6 +40,8 @@ pub fn agent<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Some(b"grant") => grant(output, rest),
         Some(b"revoke") => revoke(output, rest),
         Some(b"forget") => forget(output, rest),
+        Some(b"pair") => pair(output, rest),
+        Some(b"network") => network(output, rest),
         _ => usage(output),
     }
 }
@@ -48,6 +61,7 @@ struct Words<'a> {
     dry_run: bool,
     duration: Option<&'a [u8]>,
     name: Option<&'a [u8]>,
+    port: Option<&'a [u8]>,
 }
 
 fn words<'a, S: System>(
@@ -72,13 +86,14 @@ fn words<'a, S: System>(
             b"--ask" if !options_end && takes("ask") => words.ask = true,
             b"-y" | b"--yes" if !options_end && takes("yes") => words.yes = true,
             b"--dry-run" if !options_end && takes("dry-run") => words.dry_run = true,
-            b"--for" | b"--name" if !options_end && takes(&bytes_text(bytes)[2..]) => {
+            b"--for" | b"--name" | b"--port" if !options_end && takes(&bytes_text(bytes)[2..]) => {
                 let Some(value) = arguments.get(index) else {
                     return Err(usage(output));
                 };
                 index += 1;
                 match bytes {
                     b"--for" => words.duration = Some(value.to_bytes()),
+                    b"--port" => words.port = Some(value.to_bytes()),
                     _ => words.name = Some(value.to_bytes()),
                 }
             }
@@ -264,7 +279,11 @@ fn entry_of(store: &GrantStore, id: &AgentId, boot: Grants) -> Option<AgentGrant
 fn no_such_agent<S: System>(output: &mut Output<S>, id: &AgentId) -> i32 {
     output.coded(
         &errors::NO_SUCH_AGENT,
-        &[b"agent ", id.as_bytes(), b": EggOS does not know this agent"],
+        &[
+            b"agent ",
+            id.as_bytes(),
+            b": EggOS does not know this agent",
+        ],
     );
     FAILURE
 }
@@ -621,6 +640,298 @@ fn forget<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     };
     output.write(after);
     0
+}
+
+fn write_private<S: System>(
+    output: &mut Output<S>,
+    target: &CStr,
+    temporary: &CStr,
+    mode: u32,
+    bytes: &[u8],
+) -> Result<(), i32> {
+    let system = &mut output.system;
+    let _ = system.remove(temporary, false);
+    let written = system.create(temporary, mode, true).and_then(|descriptor| {
+        let written = system.write(descriptor, bytes);
+        system.close(descriptor);
+        written
+    });
+    let result = written.and_then(|()| {
+        system.sync();
+        system.rename(temporary, target)
+    });
+    result.map_err(|errno| {
+        output.file_error(target, errno);
+        FAILURE
+    })
+}
+
+fn pending_pairing<S: System>(output: &mut Output<S>) -> Option<PendingPairing> {
+    let mut file = [0u8; PAIRING_BYTES];
+    let length = read_whole(output, PAIRING_PATH, &mut file).ok()?;
+    PendingPairing::decode(&file[..length]).ok()
+}
+
+fn fresh<S: System, const N: usize>(output: &mut Output<S>) -> Result<[u8; N], i32> {
+    let mut bytes = [0u8; N];
+    output.system.random(&mut bytes).map_err(|errno| {
+        output.coded(
+            &errors::FAILED,
+            &[b"no randomness for a code: ", errno.message()],
+        );
+        FAILURE
+    })?;
+    Ok(bytes)
+}
+
+fn pair<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    let words = match words(output, &commands::AGENT_PAIR, arguments, 1) {
+        Ok(words) if words.count == 1 => words,
+        Ok(_) => return usage(output),
+        Err(status) => return status,
+    };
+    let Some(id) = AgentId::new(words.operands[0]) else {
+        output.coded(
+            &errors::USAGE,
+            &[
+                b"'",
+                words.operands[0],
+                b"' cannot be paired: an id is 1 to 32 letters, digits, ., _ or -, \
+                  and local is the host's channel, which needs no pairing",
+            ],
+        );
+        return USAGE_STATUS;
+    };
+    let name = match words.name.map(AgentName::new) {
+        Some(Some(name)) => Some(name),
+        Some(None) => return usage(output),
+        None => None,
+    };
+    let now = output.system.now();
+    if let Some(waiting) = pending_pairing(output) {
+        let wait = waiting.wait_before_next(now);
+        if wait > 0 {
+            let mut digits = [0u8; 20];
+            let seconds = decimal_text(wait, &mut digits);
+            output.coded(
+                &errors::FAILED,
+                &[
+                    b"the last code was burned by wrong tries: pair again in ",
+                    seconds,
+                    b" s",
+                ],
+            );
+            return FAILURE;
+        }
+    }
+    let mut store = match read_store(output) {
+        Ok(store) => store,
+        Err(status) => return status,
+    };
+    let code = loop {
+        match fresh::<S, 32>(output) {
+            Ok(randomness) => {
+                if let Some(code) = pairing::code_from(&randomness) {
+                    break code;
+                }
+            }
+            Err(status) => return status,
+        }
+    };
+    let token = match fresh::<S, { pairing::TOKEN_RANDOM_BYTES }>(output) {
+        Ok(randomness) => pairing::token_from(&randomness),
+        Err(status) => return status,
+    };
+    let shown_name = name.unwrap_or_else(|| {
+        store
+            .get(&id)
+            .map(|entry| *entry.name())
+            .or_else(|| AgentName::new(id.as_bytes()))
+            .unwrap_or_else(local_name)
+    });
+    match store.add(id, shown_name) {
+        Ok(entry) => entry.set_token_hash(Some(pairing::token_hash(&token))),
+        Err(error) => return store_error(output, error),
+    }
+    let mut file = [0u8; PAIRING_BYTES];
+    let Ok(length) = PendingPairing::new(id, &code, token, now).encode(&mut file) else {
+        return FAILURE;
+    };
+    let _ = output.system.make_directory(PAIRING_FOLDER, FOLDER_MODE);
+    if let Err(status) = write_private(
+        output,
+        PAIRING_PATH,
+        PAIRING_TEMPORARY_PATH,
+        PRIVATE_MODE,
+        &file[..length],
+    ) {
+        return status;
+    }
+    if let Err(status) = write_store(output, &store) {
+        let _ = output.system.remove(PAIRING_PATH, false);
+        return status;
+    }
+    let mut digits = [0u8; 20];
+    output.write(b"pairing ");
+    output.write(id.as_bytes());
+    output.write(b": its client sends this code once, within ");
+    output.write(decimal_text(CODE_LIFETIME_S / 60, &mut digits));
+    output.write(b" minutes, to https://<this machine>:");
+    let port = network_port(output);
+    output.write(port.as_bytes());
+    output.write(b"/pair\n  ");
+    output.write(&pairing::code_text(&code));
+    output.write(b"\n");
+    describe_certificate(output);
+    if !network_is_on(output) {
+        output
+            .write(b"note: the network server is off: agent network on, then start EggOS again\n");
+    }
+    output.write(b"the agent gets nothing until you grant it: agent grant ");
+    output.write(id.as_bytes());
+    output.write(b" view\n");
+    0
+}
+
+struct Port {
+    text: [u8; 5],
+    length: usize,
+}
+
+impl Port {
+    fn as_bytes(&self) -> &[u8] {
+        &self.text[..self.length]
+    }
+}
+
+fn network_is_on<S: System>(output: &mut Output<S>) -> bool {
+    let mut text = [0u8; 16];
+    read_whole(output, NETWORK_ENABLED, &mut text).is_ok()
+}
+
+fn network_port<S: System>(output: &mut Output<S>) -> Port {
+    let mut text = [0u8; 16];
+    let length = read_whole(output, NETWORK_ENABLED, &mut text).unwrap_or(0);
+    let digits = text[..length]
+        .strip_suffix(b"\n")
+        .unwrap_or(&text[..length]);
+    let digits = match parse_port(digits) {
+        Some(_) => digits,
+        None => DEFAULT_PORT,
+    };
+    let mut port = Port {
+        text: [0; 5],
+        length: digits.len(),
+    };
+    port.text[..digits.len()].copy_from_slice(digits);
+    port
+}
+
+fn parse_port(digits: &[u8]) -> Option<u16> {
+    if digits.is_empty() || digits.len() > 5 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let value = digits
+        .iter()
+        .fold(0u32, |value, &digit| value * 10 + u32::from(digit - b'0'));
+    u16::try_from(value).ok().filter(|&port| port > 0)
+}
+
+fn describe_certificate<S: System>(output: &mut Output<S>) {
+    let mut der = [0u8; CERTIFICATE_BYTES];
+    match read_whole(output, NETWORK_CERTIFICATE, &mut der) {
+        Ok(length) if length > 0 => {
+            output.write(b"certificate SHA-256 ");
+            output.write(&pairing::fingerprint_text(&der[..length]));
+            output.write(b"\ncertificate for the client: ");
+            output.write(NETWORK_CERTIFICATE_PEM.to_bytes());
+            output.write(b"\n");
+        }
+        _ => output.write(b"certificate: made when the network server first starts\n"),
+    }
+}
+
+fn decimal_text(value: u64, digits: &mut [u8; 20]) -> &[u8] {
+    let mut start = digits.len();
+    let mut value = value;
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            return &digits[start..];
+        }
+    }
+}
+
+fn network<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    let words = match words(output, &commands::AGENT_NETWORK, arguments, 1) {
+        Ok(words) if words.count == 1 => words,
+        Ok(_) => return usage(output),
+        Err(status) => return status,
+    };
+    match words.operands[0] {
+        b"on" => {
+            let port = match words.port {
+                Some(port) if parse_port(port).is_some() => port,
+                Some(_) => return usage(output),
+                None => DEFAULT_PORT,
+            };
+            for folder in grant_files::STORE_FOLDERS {
+                let _ = output.system.make_directory(folder, 0o755);
+            }
+            let mut line = [0u8; 8];
+            line[..port.len()].copy_from_slice(port);
+            line[port.len()] = b'\n';
+            if let Err(status) = write_private(
+                output,
+                NETWORK_ENABLED,
+                NETWORK_ENABLED_TEMPORARY,
+                PUBLIC_MODE,
+                &line[..port.len() + 1],
+            ) {
+                return status;
+            }
+            output.write(b"agents on the network can connect on port ");
+            output.write(port);
+            output.write(b" from EggOS's next start, once paired: agent pair <id>\n");
+            0
+        }
+        b"off" if words.port.is_none() => {
+            match output.system.remove(NETWORK_ENABLED, false) {
+                Ok(()) | Err(Errno::ENOENT) => {}
+                Err(errno) => {
+                    output.file_error(NETWORK_ENABLED, errno);
+                    return FAILURE;
+                }
+            }
+            output.write(b"agents on the network are not answered from EggOS's next start\n");
+            0
+        }
+        b"show" if words.port.is_none() => {
+            if !network_is_on(output) {
+                output.write(b"network: off (agent network on turns it on)\n");
+                return 0;
+            }
+            let port = network_port(output);
+            output.write(b"network: on, port ");
+            output.write(port.as_bytes());
+            output.write(b"; agents connect to https://<this machine>:");
+            output.write(port.as_bytes());
+            output.write(b"/mcp\n");
+            describe_certificate(output);
+            let now = output.system.now();
+            if let Some(waiting) = pending_pairing(output)
+                && waiting.is_open(now)
+            {
+                output.write(b"waiting to pair: ");
+                output.write(waiting.agent().as_bytes());
+                output.write(b"\n");
+            }
+            0
+        }
+        _ => usage(output),
+    }
 }
 
 #[cfg(test)]

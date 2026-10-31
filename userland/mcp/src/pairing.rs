@@ -9,15 +9,30 @@
 use crate::grants::{
     AgentId, TOKEN_HASH_BYTES, decimal, digest_from_hex, fnv1a, hex_digest, hex_value, seconds,
 };
+use core::ffi::CStr;
 use eggos_crypto::constant_time;
 use eggos_crypto::sha2::Sha256;
 
+/// The file whose presence turns the network server on (`agent network on`); it may hold the
+/// port, in decimal.
+pub const NETWORK_ENABLED: &CStr = c"/var/lib/eggos/agent-network";
+/// The file [`NETWORK_ENABLED`] is written to first.
+pub const NETWORK_ENABLED_TEMPORARY: &CStr = c"/var/lib/eggos/agent-network.new";
+/// The network server's private key: 32 bytes, readable by root only.
+pub const NETWORK_KEY: &CStr = c"/var/lib/eggos/agent-network.key";
+/// The network server's certificate, DER.
+pub const NETWORK_CERTIFICATE: &CStr = c"/var/lib/eggos/agent-network.der";
+/// The network server's certificate, PEM, for the person to give their agent's client.
+pub const NETWORK_CERTIFICATE_PEM: &CStr = c"/var/lib/eggos/agent-network.pem";
+/// The bytes of a certificate's fingerprint as people read it.
+pub const FINGERPRINT_TEXT_BYTES: usize = 32 * 3 - 1;
+
 /// Where the code waiting to be used is kept: in memory, gone at shutdown.
-pub const PAIRING_PATH: &str = "/run/eggos/agent-pairing";
+pub const PAIRING_PATH: &CStr = c"/run/eggos/agent-pairing";
 /// The file a new pairing is written to, then renamed over [`PAIRING_PATH`].
-pub const PAIRING_TEMPORARY_PATH: &str = "/run/eggos/agent-pairing.new";
+pub const PAIRING_TEMPORARY_PATH: &CStr = c"/run/eggos/agent-pairing.new";
 /// The folder the pairing file is in.
-pub const PAIRING_FOLDER: &str = "/run/eggos";
+pub const PAIRING_FOLDER: &CStr = c"/run/eggos";
 /// The most bytes the pairing file takes.
 pub const PAIRING_BYTES: usize = 512;
 /// The characters a code is made of: capital letters and digits, without `0`, `O`, `1`, `I`
@@ -123,6 +138,18 @@ pub fn token_from(randomness: &[u8; TOKEN_RANDOM_BYTES]) -> Token {
 /// The hash the grants store keeps of a token.
 pub fn token_hash(token: &[u8]) -> [u8; TOKEN_HASH_BYTES] {
     sha256(token)
+}
+
+/// A certificate's SHA-256 fingerprint as people compare it: upper-case hex pairs joined by
+/// colons, as `openssl x509 -fingerprint -sha256` prints it.
+pub fn fingerprint_text(der: &[u8]) -> [u8; FINGERPRINT_TEXT_BYTES] {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    let mut text = [b':'; FINGERPRINT_TEXT_BYTES];
+    for (index, byte) in sha256(der).iter().enumerate() {
+        text[3 * index] = DIGITS[usize::from(byte >> 4)];
+        text[3 * index + 1] = DIGITS[usize::from(byte & 15)];
+    }
+    text
 }
 
 /// What came of a code an agent sent.

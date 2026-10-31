@@ -213,7 +213,7 @@ item 48; `show` is a core verb), `drag` (D162).
 verbs). Its MCP tools are `agent_list` (`view`) and `agent_show`, which shows the calling
 agent's own grants; no tool changes grants.
 
-**Commands in the registry** (78, D163, D170, D171, D188, D193: every command EggOS ships): `agent forget|grant|list|revoke|show`, `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
+**Commands in the registry** (80, D163, D170, D171, D188, D193: every command EggOS ships): `agent forget|grant|list|network|pair|revoke|show`, `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
 `fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
 get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
