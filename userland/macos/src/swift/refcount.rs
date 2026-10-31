@@ -72,14 +72,14 @@ pub fn release(word: &AtomicU64, count: u32) -> bool {
     }
 }
 
-/// Whether only one strong reference holds the object (never for an immortal one, so the
-/// shared empty storages are copied before they are written).
 /// Whether deallocating the object whose count is `bits` frees its memory: only when its one
 /// unowned reference is the strong references' own (not a stack object, not an immortal one).
 pub fn frees_on_dealloc(bits: u64) -> bool {
     bits & UNOWNED_MASK == UNOWNED_ONE
 }
 
+/// Whether only one strong reference holds the object (never for an immortal one, so the
+/// shared empty storages are copied before they are written).
 pub fn is_unique(bits: u64) -> bool {
     !is_immortal(bits) && bits & (STRONG_MASK | DEINITING) == 0
 }
