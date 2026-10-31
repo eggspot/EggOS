@@ -6,7 +6,9 @@
 //! until it exists what one program copies is pasted only within that program. Its windows that
 //! listen (`AddClipboardFormatListener`, D178) get `WM_CLIPBOARDUPDATE` when a change is closed,
 //! `EnumClipboardFormats` lists what it holds and `GetClipboardFormatNameW` names a registered
-//! format.
+//! format. Its `CF_UNICODETEXT` is the clipboard every app shares (D197): closing the clipboard
+//! after a change gives that text to the window server, and opening it takes a text another app
+//! copied since in its place.
 
 use super::gui::{self, try_with, with};
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
@@ -28,6 +30,7 @@ struct Clipboard {
     entries: [Option<Entry>; MOST_FORMATS],
     changed: bool,
     listeners: [usize; MOST_LISTENERS],
+    shared_serial: Option<u32>,
 }
 
 static CLIPBOARD: SpinLock<Clipboard> = SpinLock::new(Clipboard {
@@ -35,7 +38,106 @@ static CLIPBOARD: SpinLock<Clipboard> = SpinLock::new(Clipboard {
     entries: [None; MOST_FORMATS],
     changed: false,
     listeners: [0; MOST_LISTENERS],
+    shared_serial: None,
 });
+
+const UNICODE_TEXT: u32 = 13;
+
+fn shared_device() -> Option<super::window_device::Device> {
+    gui::device().ok()
+}
+
+fn take_shared_text() {
+    let Some(device) = shared_device() else {
+        return;
+    };
+    let Ok((length, serial)) = device.clipboard(&mut []) else {
+        return;
+    };
+    let unseen = CLIPBOARD.with(|clipboard| {
+        let unseen = clipboard.shared_serial != Some(serial);
+        clipboard.shared_serial = Some(serial);
+        unseen
+    });
+    if !unseen || length == 0 {
+        return;
+    }
+    let bytes = heap::allocate(length);
+    if bytes.is_null() {
+        return;
+    }
+    // SAFETY: `allocate` returned `length` writable bytes that only this function uses.
+    let text = unsafe { core::slice::from_raw_parts_mut(bytes, length) };
+    let read = device.clipboard(text);
+    let units = crate::text::utf16_length(text);
+    let block = match read {
+        Ok((now, again)) if now == length && again == serial => heap::allocate((units + 1) * 2),
+        _ => core::ptr::null_mut(),
+    };
+    if !block.is_null() {
+        // SAFETY: `block` holds `units + 1` UTF-16 units, zeroed, the last one the NUL.
+        let wide = unsafe { core::slice::from_raw_parts_mut(block.cast::<u16>(), units + 1) };
+        crate::text::write_utf16(text, &mut wide[..units]);
+    }
+    free(bytes as usize);
+    if block.is_null() {
+        return;
+    }
+    let replaced = CLIPBOARD.with(|clipboard| {
+        let mut freed = [0usize; MOST_FORMATS];
+        for (slot, entry) in freed.iter_mut().zip(clipboard.entries.iter_mut()) {
+            *slot = entry.take().map_or(0, |entry| entry.data);
+        }
+        clipboard.entries[0] = Some(Entry {
+            format: UNICODE_TEXT,
+            data: block as usize,
+        });
+        freed
+    });
+    replaced.into_iter().for_each(free);
+}
+
+fn give_shared_text() {
+    let data = CLIPBOARD.with(|clipboard| {
+        clipboard
+            .entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.format == UNICODE_TEXT)
+            .map(|entry| entry.data)
+    });
+    let Some(device) = shared_device() else {
+        return;
+    };
+    let Some(data) = data else {
+        if let Ok((_, serial)) = device.clipboard(&mut []) {
+            CLIPBOARD.with(|clipboard| clipboard.shared_serial = Some(serial));
+        }
+        return;
+    };
+    // SAFETY: clipboard data are `GlobalAlloc` blocks; `global_units` reads only within the
+    // block's size, which the heap's header gives.
+    let units = unsafe { heap::global_units(data as *mut u8) };
+    let length = units
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(units.len());
+    let units = &units[..length];
+    let size = crate::text::utf8_length(units);
+    let bytes = heap::allocate(size.max(1));
+    if bytes.is_null() {
+        return;
+    }
+    // SAFETY: `allocate` returned `size.max(1)` writable bytes that only this function uses.
+    let text = unsafe { core::slice::from_raw_parts_mut(bytes, size) };
+    let (written, _) = crate::text::write_utf8(units, text);
+    if device.set_clipboard(&text[..written]).is_ok()
+        && let Ok((_, serial)) = device.clipboard(&mut [])
+    {
+        CLIPBOARD.with(|clipboard| clipboard.shared_serial = Some(serial));
+    }
+    free(bytes as usize);
+}
 
 fn free(data: usize) {
     if data != 0 {
@@ -46,6 +148,7 @@ fn free(data: usize) {
 }
 
 extern "efiapi" fn open_clipboard(_owner: usize) -> Bool {
+    take_shared_text();
     let thread = thread_environment::thread_id();
     let opened = CLIPBOARD.with(|clipboard| match clipboard.opened_by {
         Some(holder) if holder != thread => false,
@@ -70,15 +173,15 @@ extern "efiapi" fn close_clipboard() -> Bool {
             return None;
         }
         clipboard.opened_by = None;
-        let changed = core::mem::take(&mut clipboard.changed);
-        Some(match changed {
-            true => clipboard.listeners,
-            false => [0; MOST_LISTENERS],
-        })
+        Some(core::mem::take(&mut clipboard.changed).then_some(clipboard.listeners))
     });
-    let Some(listeners) = closed else {
+    let Some(changed) = closed else {
         return fail(error::ACCESS_DENIED, FALSE);
     };
+    let Some(listeners) = changed else {
+        return TRUE;
+    };
+    give_shared_text();
     for listener in listeners.into_iter().filter(|&listener| listener != 0) {
         let _ = gui::post(listener, message::CLIPBOARD_UPDATE, 0, 0);
     }

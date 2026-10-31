@@ -21,6 +21,8 @@ const COMMIT: usize = 0x4088_7708;
 const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
 const GET_PLACEMENT: usize = 0xc014_771c;
+const SET_CLIPBOARD: usize = 0x4010_7720;
+const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
 const TRY_AGAIN: u16 = 11;
 const PIXEL_BYTES: usize = 4;
@@ -245,6 +247,24 @@ impl Device {
         answer[answer_query::LENGTH..answer_query::LENGTH + 8]
             .copy_from_slice(&(tree.len() as u64).to_ne_bytes());
         self.request(query_request::ANSWER_QUERY as usize, &mut answer)
+    }
+
+    /// Makes `text` (UTF-8) the clipboard every app shares (`SET_CLIPBOARD`, D197).
+    pub fn set_clipboard(&self, text: &[u8]) -> Result<(), Errno> {
+        let mut argument = [0u8; 16];
+        argument[..8].copy_from_slice(&(text.as_ptr() as u64).to_ne_bytes());
+        argument[8..].copy_from_slice(&(text.len() as u64).to_ne_bytes());
+        self.request(SET_CLIPBOARD, &mut argument)
+    }
+
+    /// Copies the shared clipboard's text into `into` as far as it fits (`GET_CLIPBOARD`,
+    /// D197): its whole length and its serial.
+    pub fn clipboard(&self, into: &mut [u8]) -> Result<(usize, u32), Errno> {
+        let mut argument = [0u8; 32];
+        argument[..8].copy_from_slice(&(into.as_mut_ptr() as u64).to_ne_bytes());
+        argument[8..16].copy_from_slice(&(into.len() as u64).to_ne_bytes());
+        self.request(GET_CLIPBOARD, &mut argument)?;
+        Ok((word(&argument, 24) as usize, word(&argument, 28)))
     }
 
     /// Reads the waiting event records into `records`; 0 when none waits.

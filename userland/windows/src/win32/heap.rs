@@ -201,6 +201,24 @@ unsafe extern "efiapi" fn local_free(pointer: *mut u8) -> *mut u8 {
     }
 }
 
+/// The UTF-16 units a `GlobalAlloc` block holds, as many as its size allows; empty for a
+/// pointer that is not one of this heap's blocks.
+///
+/// # Safety
+/// `memory` is null or a block this heap returned and has not freed, which nothing writes
+/// while the slice lives.
+pub unsafe fn global_units<'a>(memory: *mut u8) -> &'a [u16] {
+    // SAFETY: the caller's duty, as `block_of`'s.
+    match unsafe { block_of(memory) } {
+        Some(block) if (memory as usize).is_multiple_of(2) => {
+            // SAFETY: the block holds `size` bytes from `memory`, which the caller keeps alive
+            // and unwritten.
+            unsafe { core::slice::from_raw_parts(memory.cast::<u16>(), block.size / 2) }
+        }
+        _ => &[],
+    }
+}
+
 unsafe extern "efiapi" fn global_lock(memory: *mut u8) -> *mut u8 {
     // SAFETY: `GlobalLock`'s contract: a block `GlobalAlloc` returned, moveable ones included,
     // whose handle is the block itself.
