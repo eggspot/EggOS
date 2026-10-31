@@ -187,15 +187,16 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
     }
 
     /// Lights the Caps Lock light (`on`) or puts it out, through the status queue: one `EV_LED`
-    /// event the device reads; nothing on a device without the light, or while the queue is
-    /// full of earlier states the device has not taken yet.
-    pub fn set_caps_lock_light(&mut self, on: bool) {
+    /// event the device reads; nothing on a device without the light. `false` when the event
+    /// was not queued (the queue is full of earlier states the device has not taken yet), so
+    /// the caller asks again later.
+    pub fn set_caps_lock_light(&mut self, on: bool) -> bool {
         let Some(status) = self.status.as_mut() else {
-            return;
+            return true;
         };
         while status.pop_used().is_some() {}
         if status.free_descriptors() == 0 {
-            return;
+            return false;
         }
         let slot = usize::from(self.status_written % status.size());
         let offset = STATUS_EVENTS + slot * EVENT_BYTES;
@@ -218,19 +219,21 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
                 .write_volatile(u32::from(on).to_le())
         };
         let Some(addr) = self.memory.dma_addr().checked_add(offset as u64) else {
-            return;
+            return false;
         };
         let submitted = status.submit(&[Buffer {
             addr,
             len: EVENT_BYTES as u32,
             device_writes: false,
         }]);
-        if submitted.is_ok() {
-            self.status_written = self.status_written.wrapping_add(1);
-            if status.should_notify() {
-                self.transport.notify(STATUS_QUEUE);
-            }
+        if submitted.is_err() {
+            return false;
         }
+        self.status_written = self.status_written.wrapping_add(1);
+        if status.should_notify() {
+            self.transport.notify(STATUS_QUEUE);
+        }
+        true
     }
 
     /// Resets the device and hands back the transport and the memory, with the proof that the

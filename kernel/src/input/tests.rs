@@ -887,3 +887,62 @@ fn key_accessibility_refuses_a_slow_delay_out_of_range() {
     assert!(!set_key_accessibility(false, Some(50)));
     assert!(set_key_accessibility(false, None));
 }
+
+struct BusyLight {
+    refusals_left: usize,
+    asked: Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl InputDevice for BusyLight {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            keyboard: true,
+            ..Capabilities::default()
+        }
+    }
+
+    fn poll(&mut self, _budget: usize, _event: &mut dyn FnMut(RawEvent)) -> usize {
+        0
+    }
+
+    fn set_caps_lock_light(&mut self, on: bool) -> bool {
+        self.asked.lock().unwrap().push(on);
+        if self.refusals_left == 0 {
+            return true;
+        }
+        self.refusals_left -= 1;
+        false
+    }
+}
+
+#[test]
+fn a_caps_lock_light_the_device_could_not_take_is_asked_again_until_it_does() {
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut input = Input {
+        sources: [const { None }; MAX_DEVICES],
+        state: InputState::new(),
+        caps_lock_shown: false,
+        events_left: false,
+    };
+    input.sources[0] = Some(Source {
+        device: Box::new(BusyLight {
+            refusals_left: 1,
+            asked: Arc::clone(&asked),
+        }),
+        capabilities: Device::keyboard().capabilities,
+        report: PendingReport::default(),
+        interrupting: false,
+    });
+    let mut keyboard = Device::keyboard();
+    send(&mut input.state, &mut keyboard, &tap(key::CAPS_LOCK), SCREEN, 0);
+    assert!(input.state.caps_lock());
+    input.show_caps_lock();
+    assert!(!input.caps_lock_shown);
+    input.show_caps_lock();
+    assert!(input.caps_lock_shown);
+    input.show_caps_lock();
+    send(&mut input.state, &mut keyboard, &tap(key::CAPS_LOCK), SCREEN, 0);
+    input.show_caps_lock();
+    assert!(!input.caps_lock_shown);
+    assert_eq!(*asked.lock().unwrap(), [true, true, false]);
+}

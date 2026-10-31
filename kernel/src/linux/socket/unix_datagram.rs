@@ -155,7 +155,14 @@ impl Datagrams {
             state
                 .waiting_writers
                 .retain(|waiting| waiting.strong_count() > 0);
-            if state.waiting_writers.try_reserve(1).is_ok() {
+            let growth = if state.waiting_writers.len() < state.waiting_writers.capacity() {
+                0
+            } else {
+                state.waiting_writers.capacity().max(4) * size_of::<Weak<WakeList>>()
+            };
+            if crate::heap::may_grow_for_user(growth)
+                && state.waiting_writers.try_reserve(1).is_ok()
+            {
                 state.waiting_writers.push(Arc::downgrade(writer));
             }
         }

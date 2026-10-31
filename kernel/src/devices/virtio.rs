@@ -603,8 +603,8 @@ mod input {
             self.0.poll(budget, &mut |raw| event(raw))
         }
 
-        fn set_caps_lock_light(&mut self, on: bool) {
-            self.0.set_caps_lock_light(on);
+        fn set_caps_lock_light(&mut self, on: bool) -> bool {
+            self.0.set_caps_lock_light(on)
         }
     }
 

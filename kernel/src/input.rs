@@ -64,8 +64,11 @@ pub trait InputDevice: Send {
     /// Hands `event` the device's new events, oldest first, at most `budget`; returns how many
     /// it took from the device.
     fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize;
-    /// Lights the Caps Lock light, or puts it out, on a keyboard that has one (D185).
-    fn set_caps_lock_light(&mut self, _on: bool) {}
+    /// Lights the Caps Lock light, or puts it out, on a keyboard that has one (D185): `false`
+    /// when the device could not take the change now, so it is asked again at the next poll.
+    fn set_caps_lock_light(&mut self, _on: bool) -> bool {
+        true
+    }
 }
 
 /// A pointer button.
@@ -939,10 +942,13 @@ impl Input {
         if on == self.caps_lock_shown {
             return;
         }
-        self.caps_lock_shown = on;
         CAPS_LOCK.store(on, Ordering::Relaxed);
+        let mut every_light_took_it = true;
         for source in self.sources.iter_mut().flatten() {
-            source.device.set_caps_lock_light(on);
+            every_light_took_it &= source.device.set_caps_lock_light(on);
+        }
+        if every_light_took_it {
+            self.caps_lock_shown = on;
         }
     }
 }
