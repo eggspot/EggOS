@@ -69,21 +69,22 @@ pub unsafe extern "C" fn objc_store_weak(location: *mut Id, object: Id) -> Id {
 /// # Safety
 /// `location` must be the address of a weak variable the runtime initialized.
 pub unsafe extern "C" fn objc_load_weak_retained(location: *mut Id) -> Id {
-    let (object, retained) = TABLE.with(|_| {
+    TABLE.with(|_| {
         // SAFETY: the program passes the address of its weak variable.
         let object = unsafe { location.read() };
         if object.is_null() || !reference_count::is_counted(object) {
-            return (object, true);
+            return object;
         }
-        match reference_count::try_retain(object) {
-            Some(retained) => (object, retained),
-            None => (core::ptr::null_mut(), true),
+        let retained = match reference_count::try_retain(object) {
+            Some(true) => true,
+            Some(false) => reference_count::retain_for_weak_load(object),
+            None => false,
+        };
+        match retained {
+            true => object,
+            false => core::ptr::null_mut(),
         }
-    });
-    match retained {
-        true => object,
-        false => reference_count::objc_retain(object),
-    }
+    })
 }
 
 unsafe extern "C" fn objc_load_weak(location: *mut Id) -> Id {

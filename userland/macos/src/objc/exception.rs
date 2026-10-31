@@ -328,7 +328,8 @@ pub fn throw_from(object: Id, registers: *const Registers) -> ! {
     if object.is_null() {
         report_uncaught(object);
     }
-    // SAFETY: the stub's saved registers, on its stack below the caller of this function.
+    // SAFETY: the stub's saved registers, on its stack below the caller of this function; the
+    // stub wrote every field, zero for the registers a call does not keep.
     let start = unsafe { *registers };
     raise(new_raised(object), start)
 }
@@ -436,6 +437,16 @@ macro_rules! capture {
             concat!(".hidden ", stringify!($entry)),
             concat!(stringify!($entry), ":"),
             "sub sp, sp, #336",
+            "stp xzr, xzr, [sp, #0]",
+            "stp xzr, xzr, [sp, #16]",
+            "stp xzr, xzr, [sp, #32]",
+            "stp xzr, xzr, [sp, #48]",
+            "stp xzr, xzr, [sp, #64]",
+            "stp xzr, xzr, [sp, #80]",
+            "stp xzr, xzr, [sp, #96]",
+            "stp xzr, xzr, [sp, #112]",
+            "stp xzr, xzr, [sp, #128]",
+            "str xzr, [sp, #144]",
             "stp x19, x20, [sp, #152]",
             "stp x21, x22, [sp, #168]",
             "stp x23, x24, [sp, #184]",
@@ -461,6 +472,15 @@ macro_rules! capture {
             concat!(".hidden ", stringify!($entry)),
             concat!(stringify!($entry), ":"),
             "sub rsp, 152",
+            "mov qword ptr [rsp + 0], 0",
+            "mov qword ptr [rsp + 8], 0",
+            "mov qword ptr [rsp + 16], 0",
+            "mov qword ptr [rsp + 32], 0",
+            "mov qword ptr [rsp + 40], 0",
+            "mov qword ptr [rsp + 64], 0",
+            "mov qword ptr [rsp + 72], 0",
+            "mov qword ptr [rsp + 80], 0",
+            "mov qword ptr [rsp + 88], 0",
             "mov [rsp + 24], rbx",
             "mov [rsp + 48], rbp",
             "lea rax, [rsp + 160]",

@@ -123,7 +123,7 @@ pub fn mark_weakly_referenced(object: Id) {
 }
 
 /// Retains `object` unless it is being deallocated (`None`); `Some(false)` when its class
-/// counts by messages, which the caller sends once it holds no lock.
+/// counts by messages, which a weak load then sends with [`retain_for_weak_load`].
 pub fn try_retain(object: Id) -> Option<bool> {
     match counting(object) {
         Counting::Never => Some(true),
@@ -151,6 +151,18 @@ pub fn try_retain(object: Id) -> Option<bool> {
             }
         }
     }
+}
+
+/// Retains `object`, whose class counts by messages, for a weak load while the weak table is
+/// locked, as Apple's runtime does: `retainWeakReference` when its class has one (false when
+/// the object refuses, as one being deallocated does), else `retain`.
+pub fn retain_for_weak_load(object: Id) -> bool {
+    let weak_retain = sel!("retainWeakReference");
+    if super::root::responds(class::class_of(object), weak_retain) {
+        return super::send_bool(object, weak_retain, 0);
+    }
+    send(object, sel!("retain"));
+    true
 }
 
 /// Runs every `.cxx_destruct` of the object's classes, the most derived first, then frees it.
