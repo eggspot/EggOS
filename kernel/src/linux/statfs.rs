@@ -58,11 +58,11 @@ pub fn statfs_bytes(usage: &Usage, device: (u32, u32)) -> [u8; STATFS_SIZE] {
     put(offset::AVAILABLE, usage.free_blocks);
     put(offset::FILES, usage.nodes);
     put(offset::FREE_FILES, usage.free_nodes);
-    put(offset::ID, u64::from(encoded_device(device)));
     put(offset::NAME_LENGTH, NAME_MAX as u64);
     put(offset::FRAGMENT_SIZE, usage.block_size);
     let read_only = if usage.read_only { flag::RDONLY } else { 0 };
     put(offset::FLAGS, flag::VALID | read_only);
+    bytes[offset::ID..offset::ID + 4].copy_from_slice(&encoded_device(device).to_ne_bytes());
     bytes
 }
 
@@ -161,7 +161,12 @@ mod tests {
         assert_eq!(word(&bytes, offset::AVAILABLE), 600);
         assert_eq!(word(&bytes, offset::FILES), 128);
         assert_eq!(word(&bytes, offset::FREE_FILES), 100);
-        assert_eq!(word(&bytes, offset::ID), 254 << 8 | 2);
+        let id = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            (id(offset::ID), id(offset::ID + 4)),
+            (254 << 8 | 2, 0),
+            "f_fsid's first int, on every byte order"
+        );
         assert_eq!(word(&bytes, offset::NAME_LENGTH), 255);
         assert_eq!(word(&bytes, offset::FRAGMENT_SIZE), 4096);
         assert_eq!(word(&bytes, offset::FLAGS), flag::VALID);

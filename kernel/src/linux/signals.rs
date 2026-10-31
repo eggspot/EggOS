@@ -2103,6 +2103,9 @@ fn read_queued_info<P: Platform>(
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
+    if i32::from_ne_bytes(bytes[8..12].try_into().unwrap()) == code::GROUP_STOP {
+        return Err(Errno::EPERM);
+    }
     Ok(bytes)
 }
 
@@ -2116,7 +2119,8 @@ fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
 /// process it can reach yet. As Linux, in this order: `EFAULT` if the first
 /// [`KEPT_INFO_SIZE`] bytes at `info`, all that is read, are not the program's memory;
 /// `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
-/// `SI_TKILL`) and the target is not the caller; `ESRCH` unless the target is the caller (0
+/// `SI_TKILL`) and the target is not the caller, or the kernel's own group-stop code to
+/// anyone; `ESRCH` unless the target is the caller (0
 /// is no process); `EINVAL` for a signal outside 0 to 64; `EAGAIN` for a real-time signal when
 /// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
 /// `siginfo_t` as written, with `signal` as its `si_signo` and only its first

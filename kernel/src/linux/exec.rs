@@ -160,8 +160,15 @@ pub fn pie_base(user_end: u64, align: u64) -> u64 {
     (user_end / 3 * 2) & !(align.max(PIE_ALIGN) - 1)
 }
 
-/// How many alignments below [`pie_base`] a program may be placed at random.
+/// How many alignments below [`pie_base`] a program may be placed at random, at most.
 pub const PIE_SLOTS: u64 = 256;
+
+/// How many alignments of `align` below [`pie_base`] a program may be placed at random:
+/// [`PIE_SLOTS`], fewer for an alignment so large that they would reach past half the base.
+pub fn pie_slots(user_end: u64, align: u64) -> u64 {
+    let align = align.max(PIE_ALIGN);
+    PIE_SLOTS.min(pie_base(user_end, align) / align / 2).max(1)
+}
 /// How many pages below the top of its reserve a program's stack may start at random.
 pub const STACK_SLOTS: u64 = 256;
 
@@ -253,7 +260,7 @@ pub fn load_program<P: Platform>(
     let span = Span::of(&elf)?;
     let slide = match elf.kind() {
         Kind::Executable => 0,
-        _ => random_below::<P>(PIE_SLOTS) * span.align.max(PIE_ALIGN),
+        _ => random_below::<P>(pie_slots(user_end, span.align)) * span.align.max(PIE_ALIGN),
     };
     let bias = load_bias(&elf, &span, user_end).wrapping_sub(slide);
     let layout = check_image(&elf, bias, user_end)?;
@@ -2048,6 +2055,20 @@ mod tests {
         assert_eq!(pie_base(Aarch64::USER_END, 64 << 10), 0xaaaa_aaa0_0000);
         assert_eq!(pie_base(Riscv64Sv39::USER_END, FRAME_SIZE), 0x2a_aaa0_0000);
         assert_eq!(pie_base(Riscv64Sv39::USER_END, 1 << 30), 0x2a_8000_0000);
+    }
+
+    #[test]
+    fn the_random_slide_stays_below_half_the_pie_base_for_every_alignment() {
+        use eggos_hal::paging::{riscv64::Riscv64Sv39, x86_64::X86_64};
+        assert_eq!(pie_slots(X86_64::USER_END, FRAME_SIZE), PIE_SLOTS);
+        assert_eq!(pie_slots(Riscv64Sv39::USER_END, PIE_ALIGN), PIE_SLOTS);
+        for shift in 21..=30 {
+            let align = 1u64 << shift;
+            let base = pie_base(Riscv64Sv39::USER_END, align);
+            let slots = pie_slots(Riscv64Sv39::USER_END, align);
+            assert!(slots >= 1);
+            assert!((slots - 1) * align <= base / 2, "alignment 2^{shift}");
+        }
     }
 
     /// Changes `image`'s program header `index` with `change`.

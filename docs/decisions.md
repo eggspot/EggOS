@@ -11284,7 +11284,9 @@ the license, by an explicit instruction recorded here.
   `/dev/shm` (part 17), `/dev/pts`, `/dev/rtc0` (part 42) and block devices; symbolic links on
   disks and `symlink`, `lstat` of disks' links (part 18); a vDSO; `rustc` on riscv64; the
   measured gaps of `rustc --version` against Linux once the job has run (recorded in the
-  roadmap as the job reports them).
+  roadmap as the job reports them); `maps`, `fd/`, `exe` and `stat`'s addresses given only to
+  the process's own user or root (Linux's `PTRACE_MODE_READ`): today any user reads them, which
+  shows other users' layouts and open paths.
 
 ## D169 Event loops, copy-on-write `fork` and POSIX shared memory: `epoll`, `eventfd`, `timerfd`, `signalfd`, `select` and `pselect6` with wake lists per file; `fork` copy on write with shared memory kept shared and `MADV_DONTFORK`/`MADV_WIPEONFORK`; writable `MAP_SHARED` of files written back; `/dev/shm` (the Real apps track's first step; extends D61, D71, D100, D104, D125, D127, D138, D139, D155, D167, D168) — Decided by the build loop
 - **Why.** Every graphical toolkit and most Linux servers sleep in an event loop: GLib and GTK,
@@ -11430,7 +11432,9 @@ the license, by an explicit instruction recorded here.
   `CLOCK_REALTIME` timer noticing `clock_settime` while a waiter sleeps; `EPOLLEXCLUSIVE`
   waking one waiter; more than 64 events per `epoll_wait`; signalfd readiness per file rather
   than per looking thread; a wait whose bookkeeping finds no memory looking again every 10 ms
-  instead of sleeping until woken; `/dev/shm` budgeted apart from `/tmp`.
+  instead of sleeping until woken; `/dev/shm` budgeted apart from `/tmp`; a `write` and an
+  `msync` or `fsync` of the same shared file in step, so a write-back between the write to the
+  file and the one to its shared frames cannot put the older frames back until the next write.
 
 ## D170 Symbolic and hard links, `#!` scripts and files removed while open: EggFS on-disk version 2, links and holds in tmpfs, symbolic links in the initramfs, `symlinkat`, `linkat`, `openat2`'s `RESOLVE_NO_SYMLINKS`, `chmod`, `ln`, `readlink`, the MCP tool `ln`, `.app` bundles with their links, and Files marking, following and making links (the Real apps track's second step; extends D102, D103, D125, D131, D134, D135, D137, D148, D166, D167, D168, D169) — Decided by the build loop (how the MCP server's path twins avoid links decided by research; the Files design by Claude Fable)
 - **Why.** Real software is full of links: a macOS framework's `Versions/Current`, a library's
@@ -11577,7 +11581,11 @@ the license, by an explicit instruction recorded here.
   `chmod`'s owner rule; `chmod`'s GUI and MCP front-ends (M10); `ls -l` showing `-> target`;
   Files' link badges on desktop icons and in the launcher, `Paste link`, re-pointing a broken
   link, hard-link counts; the Text Editor saving through a link (it replaces the link with a
-  file); hard links packed from a Windows host; the QEMU screenshots Fable's design lists.
+  file); hard links packed from a Windows host; the QEMU screenshots Fable's design lists;
+  removing the name a multiply named file records as its parent without walking the whole
+  volume (EggFS) or every slot (tmpfs) for another holder; mounting a disk that cannot be
+  written and carries orphans (freeing them takes a commit, so the mount fails today);
+  `openat2` refusing open flags Linux does not know (`EINVAL` outside `VALID_OPEN_FLAGS`).
 
 ## D171 A hello-world crate builds and runs inside EggOS: file locks, `statfs` with `/proc/mounts`, `df` and Files' free space, RAM above 4 GiB on x86_64, `--memory` and `--room`, and CI's `hello-crate` job comparing the program with Linux's (the CI track's stage 2, milestone 2; extends D33, D101, D131, D135, D137, D160, D163, D166, D167, D168, D169, D170) — Decided by the build loop (the linker path decided by research; the Files free space designed by Claude Fable)
 - **Why.** The CI track's second milestone (D166) is `cargo build` and `cargo run` of a small
@@ -13398,7 +13406,9 @@ the license, by an explicit instruction recorded here.
   descriptors past 2 and `>&-`; multi-digit descriptors; `^C` interrupting `wait` (the shell
   keeps `SIGINT` blocked outside its prompt); `disown`, `suspend` and `set -b`; job reports
   for a terminal whose window wraps the line; history search (`^R`) and `history` the builtin;
-  the graphical terminal calling `resize_window` when its grid changes (part 35).
+  the graphical terminal calling `resize_window` when its grid changes (part 35); a process
+  continued by its own `SIGCONT` from a thread that has not joined the group stop yet, and a
+  thread `clone` makes while the process stops joining the stop (both leave it stopped today).
 
 ## D182 The shell's language: wildcards, `$(...)` and backquotes, here-documents, subshells, `${NAME:-word}` and the other parameter operators, `$@`, `$*` and `IFS`, `if`, `while`, `until`, `for`, `case`, functions, and the builtins that come with them (`test`, `[`, `read`, `eval`, `local`, `return`, `break`, `continue`, `shift`, `set -e`) (batch part 30; v0.3.0 item 9's follow-up; D107's and D181's "Not yet"; extends D107, D125, D169, D181) — Decided by the build loop (subshells, here-documents, the builtins that come with the language, wildcards, substitution output and function storage decided by research)
 
@@ -16224,7 +16234,9 @@ the license, by an explicit instruction recorded here.
 - Not yet: the desktop's clock in local time, `date -s` and `clock_set` reading local time as
   the pane does, the list's rows named by their text in `wm show`, the C runtime's `localtime`
   and `_tzset` in the Windows layer, past rules of a zone, reading `/dev/rtc0` for its alarm and
-  `poll` on it, `timerfd` on the alarm clocks, the real-time clock's own interrupt.
+  `poll` on it, `timerfd` on the alarm clocks, the real-time clock's own interrupt; a clock set
+  between a wall-clock sleeper computing its deadline and starting to wait (a forward set is
+  missed until the old deadline).
 
 ## D195 High-density displays at 2x, and the mouse and key preferences: left-handed buttons, natural scrolling, pointer speed and key repeat (batch part 43; v0.3.0 items 34 and 35's "Next: 2x, the Mouse pane"; extends D113, D132, D185) — Decided by the build loop (the panes designed by Claude Fable)
 
@@ -16275,7 +16287,8 @@ the license, by an explicit instruction recorded here.
 - Not yet: an open Settings window following a scale or mouse preference set from the CLI or
   MCP when it is focused again, a scale change without a reboot, fractional scales, a font drawn at 2x rather than
   doubled, pointer acceleration, sub-step moves carried at speeds under 5, per-device
-  preferences, a QEMU screendump at 2x.
+  preferences, a QEMU screendump at 2x; a button held while the left-handed preference changes
+  released as the button it was pressed as (today the release is mapped anew).
 
 ## D196 Apps' own icons, the rest of item 45: `app icon` and `app_icon`, binary property lists, and the installer's dialogs with the app's icon (batch part 44; extends D148, D134) — Decided by the build loop (the look is Claude Fable's, docs/ux/app-icons-v0.3.md)
 
@@ -16439,7 +16452,8 @@ the license, by an explicit instruction recorded here.
 
 - Address-space layout randomization: from the moment init starts (`exec::randomize_layouts`),
   each position-independent program is placed up to 256 of its alignments (at least 2 MiB)
-  below the PIE base, and every program's initial stack up to 256 pages below the top of its
+  below the PIE base, fewer when a large alignment would take it past half the base
+  (`exec::pie_slots`), and every program's initial stack up to 256 pages below the top of its
   8 MiB reserve, from the kernel's random number generator. The kernel's self-tests and
   benchmarks run before it on the fixed layout, and host tests never turn it on.
 - SMEP on x86_64 when `CPUID` reports it, set on each CPU with its user-mode setup: a fetch in
