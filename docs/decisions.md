@@ -10037,7 +10037,8 @@ the license, by an explicit instruction recorded here.
   request. If PowerShell turns out to alter QEMU's standard output on the MCP channel, the
   release notes must say `-Mcp` does not work on Windows and `run-eggos.ps1 -Mcp` must say so
   instead of hanging (issue #145's fallback); that is decided by the first run. aarch64 Windows
-  hosts and riscv64 are not run on Windows.
+  hosts and riscv64 are not run on Windows. The job's path filter leaves out
+  `kernel/src/net*` and `drivers/src/virtio/net/`.
 
 ## D155 A program that uses up memory, or a damaged disk, can't crash EggOS: a kernel reserve, global caps on window and socket buffers, and hostile-disk checks (issue #143; extends D28, D30, D31, D104, D125, D127, D130, D131, D138, D139) — Decided by the build loop (the numbers checked by research)
 - **Why.** The kernel's own allocations cannot fail: a `Box` or `Vec` that finds no memory
@@ -10108,7 +10109,9 @@ the license, by an explicit instruction recorded here.
   other limits); the memory figures in a GUI (the task manager, part 48). The reserve and caps
   were sized by reasoning and research, not by measuring the kernel's low-water mark during the
   exhaustion test; the build phase measures it and adjusts the numbers if the kernel comes
-  within a frame of the bottom.
+  within a frame of the bottom. The eighth of memory for `AF_UNIX` queues is shared, so one
+  program filling queues nobody reads makes new sends elsewhere fail with `ENOMEM` (a
+  per-connection floor or per-user limits).
 
 ## D156 Switchers feel at home in their first minute and see when an agent drives: the `Agent` chip, the driven window and the agent's arrow, the keys the host steals, the first text and pressed controls (issue #142, partly; extends D16, D21, D22, D107, D132, D133, D136, D141, D143) — Decided by the build loop (design by Claude Fable, `docs/ux/desktop-v0.3-gui.md` section 14)
 - **Why.** The desktop's first frame was sound, but five gaps would embarrass the release in
@@ -10164,7 +10167,8 @@ the license, by an explicit instruction recorded here.
   tooltip at (8, 32), the pressed close circle) are left to the build phase, which also checks
   that a frame comes soon enough after 1000 ms for the chip to go idle by 1.2 s (the desktop's
   tick runs with frames and at least once a second; if that is too late, a wake at the expiry
-  is needed).
+  is needed). Interactive `eggsh` greets (changes to `$HOME`, prints `/etc/motd`) even when
+  nested, where Linux and macOS greet only login shells.
 
 ## D157 EggOS is on the network, part 1: a polled virtio-net driver, an IPv4 stack of our own with a DHCP client, UDP and ping sockets for Linux programs, and `ip`, `ping`, `nslookup` and `net_status` (old item 26, M8; extends D18, D21, D22, D110, D125, D136, D138, D155) — Decided by the build loop (design by Claude Fable, `docs/ux/network-v0.3.md`)
 - **Why.** EggOS could reach nothing beyond the machine: no driver, no stack, no addresses. An
@@ -10261,12 +10265,7 @@ the license, by an explicit instruction recorded here.
   review: ephemeral ports start at a place drawn from a ChaCha20 stream keyed at boot (RFC
   6056) and the free one is found in a bitmap filled in one pass, DNS ids come from
   `getrandom`, `nslookup` and `fetch` show server text with bytes outside printable ASCII as
-  `?`, `SO_RCVBUF` stops at twice `rmem_default`, as Linux's `rmem_max` does. Still not yet:
-  the D155 eighth of memory for `AF_UNIX` queues is shared, so one program filling queues
-  nobody reads makes new sends elsewhere fail with `ENOMEM` (a per-connection floor or
-  per-user limits); interactive `eggsh` greets (changes to `$HOME`, prints `/etc/motd`) even
-  when nested, where Linux and macOS greet only login shells; the Windows script CI job's path
-  filter leaves out `kernel/src/net*` and `drivers/src/virtio/net/`.
+  `?`, `SO_RCVBUF` stops at twice `rmem_default`, as Linux's `rmem_max` does.
 
 ## D158 EggOS is on the network, part 2: TCP of our own, stream sockets for Linux programs, downloads over HTTP with `fetch`, and the MCP tools `net_ping`, `net_lookup` and `fetch` (old item 27, M8; extends D21, D22, D136, D137, D138, D155, D157) — Decided by the build loop
 - **Why.** Part 1 (D157) gave EggOS addresses, names and UDP, but nothing a person or an agent
