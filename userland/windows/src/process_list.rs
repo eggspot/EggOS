@@ -24,8 +24,8 @@ pub fn parse_line(line: &[u8]) -> Option<Listed<'_>> {
     for index in 0..6 {
         let space = rest.iter().position(|byte| *byte == b' ')?;
         let word = &rest[..space];
-        if index < 2 {
-            fields[index] = number(word)?;
+        if let Some(field) = fields.get_mut(index) {
+            *field = number(word)?;
         }
         rest = &rest[space + 1..];
     }

@@ -337,7 +337,7 @@ fn layer_code(startup: &Startup) -> (u64, u64) {
     // SAFETY: the kernel maps the layer's program headers where `AT_PHDR` says, for the
     // process's life.
     let bytes = unsafe { core::slice::from_raw_parts(headers as *const u8, count * size) };
-    fault::executable_range(bytes, headers as u64).unwrap_or((0, 0))
+    eggos_translation_loader::executable_range(bytes, headers as u64).unwrap_or((0, 0))
 }
 
 fn stack_top() -> usize {

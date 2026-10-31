@@ -1,4 +1,6 @@
-use crate::tools::{self, Confirmation, DefaultValue, JsonType, Mapping, SHIPPED_NAMES, TOOLS};
+use crate::tools::{
+    self, Confirmation, DECIDED_NAMES, DefaultValue, JsonType, Mapping, SHIPPED_NAMES, TOOLS,
+};
 use crate::{
     COMMANDS, CORE_VERBS, Category, Effect, Grant, KEPT_NAMES, NOUN_VERBS, Output, SHELL_BUILTINS,
     errors, find_command,
@@ -18,18 +20,27 @@ fn find(words: &[&str]) -> Option<&'static crate::CommandDefinition> {
 
 #[test]
 fn every_command_is_a_kept_name_or_a_noun_and_a_verb() {
+    let has_verb = |noun: &str, verb: &str| {
+        let noun_verbs = NOUN_VERBS
+            .iter()
+            .find(|(known, _)| *known == noun)
+            .map_or(&[][..], |(_, verbs)| *verbs);
+        CORE_VERBS.contains(&verb) || noun_verbs.contains(&verb)
+    };
     for command in &COMMANDS {
         match command.words {
             [name] => assert!(KEPT_NAMES.contains(name), "{name}"),
             [noun, verb] => {
-                let noun_verbs = NOUN_VERBS
-                    .iter()
-                    .find(|(known, _)| known == noun)
-                    .map_or(&[][..], |(_, verbs)| *verbs);
+                assert!(has_verb(noun, verb), "{noun} {verb}");
+                assert!(KEPT_NAMES.contains(noun), "{noun}");
+            }
+            [noun, inner, verb] => {
+                let inner_noun = format!("{noun} {inner}");
                 assert!(
-                    CORE_VERBS.contains(verb) || noun_verbs.contains(verb),
-                    "{noun} {verb}"
+                    NOUN_VERBS.iter().any(|(known, _)| *known == inner_noun),
+                    "{inner_noun}"
                 );
+                assert!(has_verb(&inner_noun, verb), "{inner_noun} {verb}");
                 assert!(KEPT_NAMES.contains(noun), "{noun}");
             }
             other => panic!("{other:?} has too many words"),
@@ -201,7 +212,7 @@ fn error_codes_are_unique_snake_case_and_their_fix_commands_exist() {
     for command in &COMMANDS {
         for declared in command.errors {
             assert!(
-                errors::ALL.iter().any(|error| *error == declared.error),
+                errors::ALL.contains(&declared.error),
                 "{}",
                 declared.error.code
             );
@@ -221,7 +232,7 @@ fn new_tool_names_join_their_command_s_words_and_shipped_names_are_kept() {
             tool.name
         );
         assert_eq!(tools::find(tool.name), Some(tool));
-        if !SHIPPED_NAMES.contains(&tool.name) {
+        if !SHIPPED_NAMES.contains(&tool.name) && !DECIDED_NAMES.contains(&tool.name) {
             assert_eq!(tool.name, tool.command.join("_"));
         }
     }

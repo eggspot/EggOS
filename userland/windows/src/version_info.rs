@@ -31,7 +31,7 @@ struct Sections<'a> {
 
 impl Sections<'_> {
     fn file_offset(&self, address: u32) -> Option<usize> {
-        self.table.chunks_exact(40).find_map(|header| {
+        self.table.as_chunks::<40>().0.iter().find_map(|header| {
             let virtual_size = u32_at(header, 8)?;
             let virtual_address = u32_at(header, 12)?;
             let raw_size = u32_at(header, 16)?;
@@ -157,9 +157,14 @@ fn node(block: &[u8], start: usize, limit: usize) -> Option<Node> {
 fn key_matches(block: &[u8], node: &Node, wanted: &[u16]) -> bool {
     let key = &block[node.key_start..node.key_end];
     key.len() == wanted.len() * 2
-        && key.chunks_exact(2).zip(wanted).all(|(pair, unit)| {
-            crate::text::upper(u16::from_le_bytes([pair[0], pair[1]])) == crate::text::upper(*unit)
-        })
+        && key
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(wanted)
+            .all(|(pair, unit)| {
+                crate::text::upper(u16::from_le_bytes(*pair)) == crate::text::upper(*unit)
+            })
 }
 
 /// Where the value that `path` (UTF-16, components separated by `\`) names lies in the
@@ -206,12 +211,12 @@ mod tests {
         for unit in key.encode_utf16().chain([0]) {
             out.extend_from_slice(&unit.to_le_bytes());
         }
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push(0);
         }
         out.extend_from_slice(value);
         for child in children {
-            while out.len() % 4 != 0 {
+            while !out.len().is_multiple_of(4) {
                 out.push(0);
             }
             out.extend_from_slice(child);

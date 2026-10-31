@@ -4050,17 +4050,18 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
 }
 
 fn decimal_text(value: u32, digits: &mut [u8; 10]) -> &str {
-    let mut at = digits.len();
+    let mut used = 0;
     let mut rest = value;
-    loop {
-        at -= 1;
-        digits[at] = b'0' + (rest % 10) as u8;
+    for slot in digits.iter_mut().rev() {
+        *slot = b'0' + (rest % 10) as u8;
+        used += 1;
         rest /= 10;
         if rest == 0 {
             break;
         }
     }
-    core::str::from_utf8(&digits[at..]).unwrap_or("0")
+    let start = digits.len() - used;
+    core::str::from_utf8(digits.get(start..).unwrap_or_default()).unwrap_or("0")
 }
 
 #[cfg(test)]

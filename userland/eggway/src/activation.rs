@@ -113,7 +113,7 @@ impl Activation {
 /// `xdg_activation_v1`'s requests: a new token object, or `activate`, which raises and
 /// focuses the surface's window when the token allows it (and does nothing otherwise, as the
 /// protocol lets the compositor choose).
-pub fn activation_request<S: System>(
+pub(crate) fn activation_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
     system: &mut S,
@@ -151,7 +151,7 @@ pub fn activation_request<S: System>(
 
 /// A token object's requests: its serial, app id and surface say where the request came from,
 /// which EggOS judges by the keyboard focus instead; `commit` gives the token (once).
-pub fn token_request<S: System>(
+pub(crate) fn token_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
     system: &mut S,

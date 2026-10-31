@@ -130,7 +130,7 @@ pub struct TextInput {
 
 /// `zwp_text_input_manager_v3`'s `get_text_input`: a new text input for the seat, told `enter`
 /// at once if its client has the keyboard focus.
-pub fn manager_request(client: &mut ClientSlot, message: &Message) {
+pub(crate) fn manager_request(client: &mut ClientSlot, message: &Message) {
     if message.opcode != 1 {
         return;
     }
@@ -165,7 +165,7 @@ pub fn manager_request(client: &mut ClientSlot, message: &Message) {
 
 /// A text input's requests, ignored while it has no `enter`: state for the next `commit`,
 /// which applies it.
-pub fn request(client: &mut ClientSlot, message: &Message) {
+pub(crate) fn request(client: &mut ClientSlot, message: &Message) {
     let index = usize::from(message.index);
     if message.opcode == 0 {
         if let Some(slot) = client.text_inputs.get_mut(index) {

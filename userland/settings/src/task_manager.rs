@@ -204,13 +204,13 @@ pub fn size_text(bytes: u64) -> Text<16> {
             text,
             "{}.{} MB",
             bytes >> 20,
-            (bytes % (1 << 20)) * 10 >> 20
+            ((bytes % (1 << 20)) * 10) >> 20
         ),
         bytes => write!(
             text,
             "{}.{} GB",
             bytes >> 30,
-            (bytes % (1 << 30)) * 10 >> 30
+            ((bytes % (1 << 30)) * 10) >> 30
         ),
     };
     text
@@ -530,7 +530,7 @@ impl TaskManager {
             Sort::Name => rows.sort_by(|a, b| {
                 lowercase_order(a.shown.as_str(), b.shown.as_str()).then(a.pid.cmp(&b.pid))
             }),
-            Sort::Memory => rows.sort_by(|a, b| a.pid.cmp(&b.pid)),
+            Sort::Memory => rows.sort_by_key(|row| row.pid),
         }
         rows
     }
@@ -1004,7 +1004,7 @@ mod tests {
         );
         let list = manager.widgets.list;
         manager.respond(Response::Chosen(list, 3), 1000);
-        assert_eq!(manager.end_button().1, false);
+        assert!(!manager.end_button().1);
         manager.respond(Response::Chosen(list, 1), 1000);
         manager.signal_sent(7, Err(Errno::ESRCH));
         assert_eq!(manager.lines()[0], "eggsh has already ended.");

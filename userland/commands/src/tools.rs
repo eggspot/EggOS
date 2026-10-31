@@ -1853,7 +1853,8 @@ pub const AGENT_SHOW: ToolDefinition = reading(
 );
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
-/// D162's, D163's, D170's, D184's, D188's, D191's, D192's and D193's.
+/// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's and
+/// D204's.
 pub const TOOLS: [ToolDefinition; 58] = [
     LS,
     CAT,
@@ -1928,6 +1929,10 @@ impl ToolDefinition {
 pub fn find(name: &str) -> Option<&'static ToolDefinition> {
     TOOLS.iter().find(|tool| tool.name == name)
 }
+
+/// Tool names a decision chose over `<noun>_<verb>`: D197's clipboard tools, named by the word
+/// agents know rather than `clip`'s.
+pub const DECIDED_NAMES: [&str; 2] = ["clipboard_get", "clipboard_set"];
 
 /// The tool names that shipped before the model (D136, D137, D143, D147, D149, D150, D157 to
 /// D159): new tools must be `<noun>_<verb>`, these keep their names.

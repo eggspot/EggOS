@@ -242,7 +242,9 @@ impl Queue {
             if mine.accepts(input) {
                 bits |= match input.message {
                     message::MOUSE_MOVE => status::MOUSE_MOVE,
-                    message::FIRST_MOUSE..=message::LAST_MOUSE => status::MOUSE_BUTTON,
+                    other if (message::FIRST_MOUSE..=message::LAST_MOUSE).contains(&other) => {
+                        status::MOUSE_BUTTON
+                    }
                     _ => status::KEY,
                 };
             }

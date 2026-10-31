@@ -35,9 +35,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The workspace's program, which `cargo run` runs.
-pub const PROGRAM: &str = "eggos-multi-crate";
-
 /// Starts every line the timer writes.
 pub const MARKER: &str = "BUILD-TIMER";
 
@@ -628,6 +625,8 @@ pub fn check(arch: &Arch) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PROGRAM: &str = "eggos-multi-crate";
 
     fn stamped(lines: &[(u64, &str)]) -> Vec<(Duration, String)> {
         lines

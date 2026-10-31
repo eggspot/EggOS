@@ -354,10 +354,18 @@ impl Rule {
     /// the earlier one when the clocks went back, and the time after the gap when they went
     /// forward over it.
     pub fn to_utc(&self, local: i64) -> i64 {
-        let guess = local - self.at(local).offset;
-        let first = local - self.at(guess).offset;
-        let second = local - self.at(first).offset;
-        first.min(second)
+        let standard = local + self.west;
+        let Some(daylight) = &self.daylight else {
+            return standard;
+        };
+        let summer = local + daylight.west;
+        let names_local = |utc: i64| utc + self.at(utc).offset == local;
+        match (names_local(standard), names_local(summer)) {
+            (true, true) => standard.min(summer),
+            (true, false) => standard,
+            (false, true) => summer,
+            (false, false) => standard.max(summer),
+        }
     }
 
     /// Whether the zone has daylight saving time.

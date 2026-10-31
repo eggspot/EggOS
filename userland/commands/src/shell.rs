@@ -427,7 +427,7 @@ mod tests {
             assert!(matches!(command.surface, Surface::NoGui(_)), "{name}");
             assert!(
                 COMMANDS.iter().all(|other| other.words != command.words)
-                    || matches!(name, "echo" | "false" | "help" | "true"),
+                    || matches!(name, "echo" | "false" | "help" | "kill" | "true"),
                 "{name}"
             );
         }

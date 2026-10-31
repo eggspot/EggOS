@@ -112,7 +112,7 @@ fn cell_colour(cell: Cell, player: Cell, food: Cell, colours: Colours) -> u32 {
         colours.player
     } else if cell == food {
         colours.food
-    } else if (cell.0 + cell.1) % 2 == 0 {
+    } else if (cell.0 + cell.1).is_multiple_of(2) {
         colours.even
     } else {
         colours.odd

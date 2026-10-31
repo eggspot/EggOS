@@ -24,10 +24,6 @@ pub const MAX_HISTORY: usize = 64;
 /// The longest line a history file gives back; longer ones are passed over.
 pub const LOADED_LINE_CAPACITY: usize = 4096;
 
-/// A history file larger than this many bytes is written again with only the lines kept,
-/// when it is read (D181).
-pub const HISTORY_FILE_LIMIT: usize = 8 * HISTORY_CAPACITY;
-
 const BACKSPACE: u8 = 0x08;
 
 /// The lines typed before, newest last.

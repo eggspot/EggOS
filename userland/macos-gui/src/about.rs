@@ -108,8 +108,8 @@ pub fn icon_pixels(file: &[u8], out: &mut [u32; ICON_PIXELS]) -> bool {
     if file.len() != ICON_FILE_BYTES {
         return false;
     }
-    for (pixel, bytes) in out.iter_mut().zip(file.chunks_exact(4)) {
-        let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    for (pixel, bytes) in out.iter_mut().zip(file.as_chunks::<4>().0) {
+        let value = u32::from_le_bytes(*bytes);
         let alpha = value >> 24;
         let clamp = |shift: u32| (value >> shift & 0xff).min(alpha) << shift;
         *pixel = alpha << 24 | clamp(16) | clamp(8) | clamp(0);

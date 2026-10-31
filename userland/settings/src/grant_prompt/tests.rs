@@ -177,7 +177,7 @@ fn always_writes_allow_for_the_agent_s_class_or_nothing() {
         .add(phone, AgentName::new(b"Claude on my phone").unwrap())
         .unwrap()
         .set(Grant::Write, Permission::Ask, None);
-    let allowed = allowed_always(StoreState::Loaded(store.clone()), &phone, Grant::Write).unwrap();
+    let allowed = allowed_always(StoreState::Loaded(store), &phone, Grant::Write).unwrap();
     assert_eq!(
         allowed.get(&phone).unwrap().class(Grant::Write).permission,
         Permission::Allow

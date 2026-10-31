@@ -109,8 +109,10 @@ impl<'p> Plist<'p> {
                 let mut length = 0;
                 for unit in char::decode_utf16(
                     units
-                        .chunks_exact(2)
-                        .map(|pair| u16::from_be_bytes([pair[0], pair[1]])),
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|pair| u16::from_be_bytes(*pair)),
                 ) {
                     let mut buffer = [0u8; 4];
                     let encoded = unit.ok()?.encode_utf8(&mut buffer).as_bytes();
@@ -153,7 +155,10 @@ mod tests {
     use super::*;
 
     fn ascii(text: &str) -> Vec<u8> {
-        let mut object = vec![0x50 | text.len() as u8];
+        let mut object = match text.len() {
+            short @ 0..15 => vec![0x50 | short as u8],
+            long => vec![0x5f, 0x10, long as u8],
+        };
         object.extend_from_slice(text.as_bytes());
         object
     }

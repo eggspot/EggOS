@@ -388,7 +388,10 @@ impl LabelText {
             return Err(ArgumentProblem::BadLabel);
         }
         let mut bytes = [0u8; MAX_LABEL_BYTES];
-        bytes[..text.len()].copy_from_slice(text);
+        bytes
+            .get_mut(..text.len())
+            .ok_or(ArgumentProblem::BadLabel)?
+            .copy_from_slice(text);
         Ok(Self {
             bytes,
             length: text.len(),

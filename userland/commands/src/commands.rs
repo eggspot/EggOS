@@ -115,7 +115,7 @@ pub const LS_FIELDS: [Field; 9] = [
 ];
 
 /// `ps --json`'s records.
-pub const PS_FIELDS: [Field; 6] = [
+pub const PS_FIELDS: [Field; 7] = [
     field("pid", FieldType::Integer),
     field("parent_pid", FieldType::Integer),
     field("group_id", FieldType::Integer),
@@ -445,6 +445,13 @@ const DESKTOP_NUMBER: OperandDefinition = operand(
     Count::One,
 );
 
+/// `wm desktop list --json`'s records (D204).
+pub const DESKTOP_FIELDS: [Field; 3] = [
+    field("number", FieldType::Integer),
+    field("windows", FieldType::Integer),
+    field("current", FieldType::Boolean),
+];
+
 /// `wm desktop list` (D204).
 pub const WM_DESKTOP_LIST: CommandDefinition = CommandDefinition {
     words: &["wm", "desktop", "list"],
@@ -453,7 +460,10 @@ pub const WM_DESKTOP_LIST: CommandDefinition = CommandDefinition {
                   it, and * for the one shown.",
     options: &[JSON_OPTION],
     operands: &[],
-    outputs: TEXT_ONLY,
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&DESKTOP_FIELDS),
+    },
     max_effect: Effect::Read,
     errors: &[
         exits(&USAGE, 2),
@@ -1364,7 +1374,11 @@ pub const CLIP_GET: CommandDefinition = CommandDefinition {
         exits(&NO_WINDOW_SERVER, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[],
+    examples: &[Example {
+        line: "clip get",
+        output: "",
+        status: 0,
+    }],
     surface: Surface::Gui("Edit > Paste, Ctrl+V or Cmd+V in any app"),
 };
 
@@ -2275,7 +2289,7 @@ pub const GETPROP: CommandDefinition = CommandDefinition {
         exits(&DAMAGED, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[],
+    examples: &[refused_example("getprop name default extra")],
     surface: Surface::NoGui("a Settings page for Android properties is not built yet (D188)"),
 };
 
@@ -2539,7 +2553,7 @@ pub const TRUE: CommandDefinition = CommandDefinition {
 pub const FALSE: CommandDefinition = CommandDefinition {
     words: &["false"],
     summary: "Does nothing, unsuccessfully.",
-    description: "Exits 1, whatever its words.",
+    description: "Exits with 1, whatever its words.",
     options: &[],
     operands: &[],
     outputs: NOTHING,
@@ -3086,7 +3100,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 90] = [
+pub static COMMANDS: [CommandDefinition; 90] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3158,12 +3172,12 @@ pub const COMMANDS: [CommandDefinition; 90] = [
     WM_ACT,
     WM_CAPTURE,
     WM_CLICK,
+    WM_CLOSE,
     WM_DESKTOP_CLOSE,
     WM_DESKTOP_LIST,
     WM_DESKTOP_MOVE,
     WM_DESKTOP_NEW,
     WM_DESKTOP_SWITCH,
-    WM_CLOSE,
     WM_DRAG,
     WM_FOCUS,
     WM_LIST,

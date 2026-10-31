@@ -236,6 +236,7 @@ impl<const N: usize> WidgetTree<N> {
             Kind::TextField(field) => {
                 field.text.set(words);
                 field.caret = field.text.len();
+                field.anchor = field.caret;
                 field.scroll = 0;
             }
             _ => {}

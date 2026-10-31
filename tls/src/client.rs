@@ -224,6 +224,7 @@ pub fn early_secret(hash: HashAlgorithm) -> Digest {
 }
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 enum Aead {
     Gcm(AesGcm),
     ChaCha(ChaCha20Poly1305),

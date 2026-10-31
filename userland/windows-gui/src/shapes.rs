@@ -264,8 +264,8 @@ fn fill_polygon(surface: &mut Surface<'_>, points: &[(i32, i32)], brush: u32) {
         }
         let crossings = &mut crossings[..count];
         crossings.sort_unstable();
-        for pair in crossings.chunks_exact(2) {
-            surface.span(y, clamp(pair[0]), clamp(pair[1]), brush);
+        for [left, right] in crossings.as_chunks::<2>().0 {
+            surface.span(y, clamp(*left), clamp(*right), brush);
         }
     }
 }

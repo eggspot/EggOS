@@ -67,7 +67,11 @@ impl AcceleratorTable {
             return None;
         }
         let mut table = Self::new();
-        for (slot, entry) in table.entries.iter_mut().zip(bytes.chunks_exact(ACCEL_SIZE)) {
+        for (slot, entry) in table
+            .entries
+            .iter_mut()
+            .zip(bytes.as_chunks::<ACCEL_SIZE>().0)
+        {
             *slot = Accelerator {
                 flags: entry[0],
                 key: word(entry, 2),
@@ -83,7 +87,7 @@ impl AcceleratorTable {
     /// more than [`MAX_ENTRIES`].
     pub fn from_resource(bytes: &[u8]) -> Option<Self> {
         let mut table = Self::new();
-        for entry in bytes.chunks_exact(RESOURCE_ENTRY_SIZE) {
+        for entry in bytes.as_chunks::<RESOURCE_ENTRY_SIZE>().0 {
             let flags = word(entry, 0);
             *table.entries.get_mut(table.count)? = Accelerator {
                 flags: flags as u8 & !(LAST_ENTRY as u8),

@@ -42,6 +42,7 @@ const DENY_AT: (i32, i32) = (368, 96);
 const SECOND_MS: u32 = 1000;
 
 /// The prompt's widgets and what the person answered.
+#[derive(Debug)]
 pub struct GrantPrompt {
     tree: WidgetTree<CAPACITY>,
     countdown: WidgetId,

@@ -578,8 +578,10 @@ mod tests {
 
     #[test]
     fn an_arm64_frameless_function_returns_through_the_link_register() {
-        let mut registers = Arm64Registers::default();
-        registers.sp = 0x8000;
+        let mut registers = Arm64Registers {
+            sp: 0x8000,
+            ..Arm64Registers::default()
+        };
         registers.x[30] = 0x1_0000_0040;
         step_arm64(
             ARM64_FRAMELESS | (3 << ARM64_STACK_SIZE_SHIFT),

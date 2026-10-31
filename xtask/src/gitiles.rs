@@ -36,12 +36,12 @@ pub fn decode_base64(text: &[u8]) -> Result<Vec<u8>, String> {
         .copied()
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect();
-    if symbols.len() % 4 != 0 {
+    if !symbols.len().is_multiple_of(4) {
         return Err("base64: the text is not whole groups of four".into());
     }
     let mut bytes = Vec::with_capacity(symbols.len() / 4 * 3);
     let groups = symbols.len() / 4;
-    for (index, group) in symbols.chunks_exact(4).enumerate() {
+    for (index, group) in symbols.as_chunks::<4>().0.iter().enumerate() {
         let padding = group.iter().rev().take_while(|byte| **byte == b'=').count();
         if padding > 2 || (padding > 0 && index + 1 != groups) {
             return Err("base64: padding before the end".into());
@@ -65,10 +65,10 @@ fn sha1(data: &[u8]) -> [u8; 20] {
         message.push(0);
     }
     message.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
-    for chunk in message.chunks_exact(64) {
+    for chunk in message.as_chunks::<64>().0 {
         let mut words = [0u32; 80];
-        for (index, word) in chunk.chunks_exact(4).enumerate() {
-            words[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        for (index, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            words[index] = u32::from_be_bytes(*word);
         }
         for index in 16..80 {
             words[index] =
@@ -100,8 +100,8 @@ fn sha1(data: &[u8]) -> [u8; 20] {
         }
     }
     let mut digest = [0u8; 20];
-    for (bytes, value) in digest.chunks_exact_mut(4).zip(state) {
-        bytes.copy_from_slice(&value.to_be_bytes());
+    for (bytes, value) in digest.as_chunks_mut::<4>().0.iter_mut().zip(state) {
+        *bytes = value.to_be_bytes();
     }
     digest
 }

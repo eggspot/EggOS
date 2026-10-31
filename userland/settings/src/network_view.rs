@@ -527,7 +527,7 @@ impl NetworkView {
         tree.set_focus(Some(widgets.id_field), now_ms);
     }
 
-    fn to_code_step(
+    fn show_code_step(
         &mut self,
         tree: &mut WidgetTree<CAPACITY>,
         agent: AgentId,
@@ -609,7 +609,7 @@ impl NetworkView {
         match outcome {
             Ok(code) => {
                 self.hint_refusal = None;
-                self.to_code_step(tree, agent, code, now_ms);
+                self.show_code_step(tree, agent, code, now_ms);
             }
             Err(error) => {
                 self.hint_refusal = Some(pair_error_text(error));

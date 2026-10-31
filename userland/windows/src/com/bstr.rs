@@ -287,8 +287,8 @@ mod tests {
         assert!(unsafe { units(core::ptr::null()) }.is_empty());
         // SAFETY: null is allowed.
         assert!(unsafe { sys_alloc_string(core::ptr::null()) }.is_null());
-        // SAFETY: null is allowed.
         assert_eq!(
+            // SAFETY: null is allowed.
             unsafe { duplicate(core::ptr::null()) },
             Some(core::ptr::null_mut())
         );
@@ -300,15 +300,15 @@ mod tests {
         let second = wide("three");
         // SAFETY: NUL-terminated.
         let mut text = unsafe { sys_alloc_string(first.as_ptr()) };
-        // SAFETY: `text` holds a BSTR; the new text is NUL-terminated.
         assert_eq!(
+            // SAFETY: `text` holds a BSTR; the new text is NUL-terminated.
             unsafe { sys_re_alloc_string(&mut text, second.as_ptr()) },
             1
         );
         // SAFETY: a BSTR.
         assert_eq!(unsafe { units(text) }, &second[..5]);
-        // SAFETY: as above, two units.
         assert_eq!(
+            // SAFETY: as above, two units.
             unsafe { sys_re_alloc_string_len(&mut text, second.as_ptr(), 2) },
             1
         );

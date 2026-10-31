@@ -12,30 +12,36 @@ fn if_runs_the_first_branch_whose_condition_succeeds() {
 
 #[test]
 fn while_until_and_for_loop() {
-    let shell = run("set -- a b c; while [ $# -gt 0 ]; do echo $1; shift; done\n\
+    let shell = run(
+        "set -- a b c; while [ $# -gt 0 ]; do echo $1; shift; done\n\
          until true; do echo never; done; echo until $?\n\
          for word in x 'y z'; do echo \"[$word]\"; done\n\
          for each; do echo $each; done\n\
-         set -- p q; for each do echo $each; done");
+         set -- p q; for each do echo $each; done",
+    );
     assert_eq!(output(&shell), "a\nb\nc\nuntil 0\n[x]\n[y z]\np\nq\n");
     assert_eq!(errors(&shell), "");
 }
 
 #[test]
 fn break_and_continue_leave_or_go_round_their_loops() {
-    let shell = run("for i in 1 2 3; do if [ $i = 2 ]; then continue; fi; echo $i; done\n\
+    let shell = run(
+        "for i in 1 2 3; do if [ $i = 2 ]; then continue; fi; echo $i; done\n\
          for i in a b; do for j in 1 2; do echo $i$j; break 2; done; done\n\
-         break; echo $?");
+         break; echo $?",
+    );
     assert_eq!(output(&shell), "1\n3\na1\n0\n");
     assert_eq!(errors(&shell), "eggsh: break: only meaningful in a loop\n");
 }
 
 #[test]
 fn case_runs_the_first_item_whose_pattern_matches() {
-    let shell = run("for x in apple Berry 'a*' ''; do case $x in a*) echo A $x;; \
+    let shell = run(
+        "for x in apple Berry 'a*' ''; do case $x in a*) echo A $x;; \
          [Bb]*|z) echo B;; \"\") echo empty;; (*) echo other;; esac; done\n\
          case none in x) echo x;; esac; echo $?\n\
-         case '*' in \"*\") echo star;; *) echo any;; esac");
+         case '*' in \"*\") echo star;; *) echo any;; esac",
+    );
     assert_eq!(output(&shell), "A apple\nB\nA a*\nempty\n0\nstar\n");
 }
 
@@ -72,8 +78,10 @@ fn functions_cannot_nest_without_end() {
 #[test]
 fn a_brace_group_takes_redirections_and_compound_commands_in_a_pipeline_are_forked() {
     let mut shell = shell(false);
-    shell.run_text(b"{ echo a; echo b; } > /tmp/out; (echo sub); { echo piped; } | tool\n\
-          f() { echo x; }; f | ls");
+    shell.run_text(
+        b"{ echo a; echo b; } > /tmp/out; (echo sub); { echo piped; } | tool\n\
+          f() { echo x; }; f | ls",
+    );
     let out = shell.system.redirected[0].2;
     assert_eq!(shell.system.written.get(&out).unwrap(), b"a\nb\n");
     assert_eq!(shell.system.forks, [Group::Shell; 3]);
@@ -172,14 +180,19 @@ fn read_splits_a_line_into_variables() {
         output(&shell),
         "[one][two three] 0\none two three second\n1\n"
     );
-    assert_eq!(errors(&shell), "eggsh: /missing: No such file or directory\n");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: /missing: No such file or directory\n"
+    );
     all_closed(&shell);
 }
 
 #[test]
 fn test_and_brackets_check_files_strings_and_numbers() {
-    let shell = run("[ -d /bin ] && echo dir; test -x /bin/notes || echo plain\n\
-         [ 3 -gt 2 ]; echo $?; [ a = b ]; echo $?; [ x; echo $?; test 1 -eq x; echo $?");
+    let shell = run(
+        "[ -d /bin ] && echo dir; test -x /bin/notes || echo plain\n\
+         [ 3 -gt 2 ]; echo $?; [ a = b ]; echo $?; [ x; echo $?; test 1 -eq x; echo $?",
+    );
     assert_eq!(output(&shell), "dir\nplain\n0\n1\n2\n2\n");
     assert_eq!(
         errors(&shell),
@@ -189,9 +202,11 @@ fn test_and_brackets_check_files_strings_and_numbers() {
 
 #[test]
 fn parameter_operators_and_positional_parameters_expand() {
-    let shell = run("echo ${U:-d} ${#HOME} ${HOME#/}; echo ${U:=set} $U; echo ${U:?gone}\n\
+    let shell = run(
+        "echo ${U:-d} ${#HOME} ${HOME#/}; echo ${U:=set} $U; echo ${U:?gone}\n\
          set -- 'a b' c; for x in \"$@\"; do echo \"[$x]\"; done; echo $# \"$*\"; shift; echo $1\n\
-         echo ${V:?missing}; echo never");
+         echo ${V:?missing}; echo never",
+    );
     assert_eq!(
         output(&shell),
         "d 5 home\nset set\nset\n[a b]\n[c]\n2 a b c\nc\n"
@@ -204,8 +219,10 @@ fn parameter_operators_and_positional_parameters_expand() {
 fn eval_runs_its_words_and_set_e_ends_on_a_failure() {
     let shell = run("eval 'Y=1; echo $Y' two");
     assert_eq!(output(&shell), "1 two\n");
-    let shell = run("set -e; false || echo ok; if false; then :; fi; ! true; echo still\n\
-         false\necho never");
+    let shell = run(
+        "set -e; false || echo ok; if false; then :; fi; ! true; echo still\n\
+         false\necho never",
+    );
     assert_eq!(output(&shell), "ok\nstill\n");
     assert_eq!(shell.exit_status(), 1);
 }
@@ -254,12 +271,18 @@ fn grammar_errors_are_reported() {
             "for 1 in x; do :; done",
             "syntax error: `for` needs a variable's name",
         ),
-        ("{ echo a; } b", "syntax error: a word after a compound command"),
+        (
+            "{ echo a; } b",
+            "syntax error: a word after a compound command",
+        ),
         (
             "case x in a) echo",
             "syntax error: unexpected end of file, looking for `esac`",
         ),
-        ("while true; done", "syntax error near unexpected token `done`"),
+        (
+            "while true; done",
+            "syntax error near unexpected token `done`",
+        ),
         (
             "echo $(echo",
             "syntax error: unexpected end of file, looking for the closing `)`",

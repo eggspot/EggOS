@@ -26,8 +26,6 @@ use std::process::Command;
 pub const APP: &str = "brogue";
 /// The archive the host folder holds.
 pub const ARCHIVE: &str = "brogue.zip";
-/// Brogue CE's version, as Alpine packages it.
-pub const BROGUE_VERSION: &str = "1.15.1";
 /// Where the game's data is inside the app's folder.
 pub const DATA_FOLDER: &str = "share/brogue";
 /// Where musl's loader and the libraries are inside the app's folder.
@@ -471,6 +469,8 @@ pub fn check(arch: &Arch) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BROGUE_VERSION: &str = "1.15.1";
 
     #[test]
     fn every_package_is_pinned_on_both_architectures() {

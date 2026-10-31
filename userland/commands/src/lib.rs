@@ -1,6 +1,6 @@
 //! The Egg command model's registry for EggOS (D160, D163, docs/ux/command-model.md): one
 //! [`CommandDefinition`] per CLI command, every command EggOS ships, and one
-//! [`ToolDefinition`] per MCP tool, in two `'static` const tables, [`COMMANDS`] and [`TOOLS`].
+//! [`ToolDefinition`] per MCP tool, in two `'static` tables, [`COMMANDS`] and [`TOOLS`].
 //! The core utilities, `app`, `settings` and the MCP server read their options, `help`, JSON
 //! forms, error codes, examples and tool schemas from here, so
 //! the help, the tools and the docs cannot drift apart (D22's CLI and MCP front-ends; each
@@ -560,8 +560,9 @@ pub const CORE_VERBS: [&str; 20] = [
 ];
 
 /// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161 and D162),
-/// `disk`'s (D192) and `agent`'s (D193).
-pub const NOUN_VERBS: [(&str, &[&str]); 3] = [
+/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196) and those of `wm desktop`, a noun of
+/// `wm` (D204).
+pub const NOUN_VERBS: [(&str, &[&str]); 5] = [
     (
         "wm",
         &[
@@ -571,16 +572,18 @@ pub const NOUN_VERBS: [(&str, &[&str]); 3] = [
     ),
     ("disk", &["format", "repair"]),
     ("agent", &["grant", "revoke", "forget", "pair", "network"]),
+    ("app", &["icon"]),
+    ("wm desktop", &["switch", "new"]),
 ];
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full
 /// definition all the same (the spec's list, checked against the code).
-pub const KEPT_NAMES: [&str; 48] = [
-    "agent", "agentlog", "app", "cat", "chmod", "cp", "date", "device", "df", "disk", "echo",
-    "edit", "false", "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip",
-    "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink",
-    "reboot", "rm", "setprop", "settings", "sleep", "sync", "tail", "tee", "terminal", "touch",
-    "trash", "true", "uname", "uptime", "wc", "wm",
+pub const KEPT_NAMES: [&str; 51] = [
+    "agent", "agentlog", "app", "cat", "chmod", "clip", "cp", "date", "device", "df", "disk",
+    "echo", "edit", "false", "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock",
+    "ip", "kill", "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps",
+    "readlink", "reboot", "rm", "setprop", "settings", "sleep", "sync", "tail", "taskset", "tee",
+    "terminal", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the

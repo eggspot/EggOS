@@ -117,7 +117,7 @@ fn status(window: &SettingsWindow) -> &str {
 #[test]
 fn the_network_view_says_where_agents_connect_and_shows_the_fingerprint_in_halves() {
     assert_eq!(VIEWS, ["Grants", "Activity", "Network"]);
-    assert_eq!(CAPACITY, 140);
+    assert_eq!(CAPACITY, 176);
     let window = on_network_view(network(NetworkState::On(8443), None));
     let lines = window.agents_pane().network().lines(window.widgets());
     assert_eq!(lines[0], "Network");

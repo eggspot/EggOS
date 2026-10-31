@@ -274,7 +274,7 @@ pub fn character_type(information: u32, unit: u16) -> Option<u16> {
             0x0a | 0x0d | 0x1c..=0x1e | 0x85 | 0x2029 => 8,
             0x09 | 0x0b | 0x1f => 9,
             0x0c | 0x20 | 0x2028 => 10,
-            0x0590..=0x05ff | 0x0600..=0x06ff => 2,
+            0x0590..=0x06ff => 2,
             _ if alphabetic => 1,
             _ if control || surrogate => 0,
             _ => 11,

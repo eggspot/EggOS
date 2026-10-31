@@ -14,8 +14,6 @@ pub const ZERO_REGISTER: usize = 31;
 #[cfg(any(test, target_arch = "aarch64"))]
 pub const USER_EXCEPTION_LEVEL: u64 = 0;
 
-pub use eggos_translation_loader::executable_range;
-
 pub const SIGILL: i32 = 4;
 pub const SIGTRAP: i32 = 5;
 pub const SIGBUS: i32 = 7;

@@ -97,7 +97,9 @@ fn window_area(before: &Picture, after: &Picture) -> Option<Rect> {
         .collect();
     let (&top, &bottom) = (rows.first()?, rows.last()?);
     let columns: Vec<usize> = (0..width)
-        .filter(|&x| (top..=bottom).filter(|&y| differs(x, y)).count() >= (bottom - top + 1) / 2)
+        .filter(|&x| {
+            (top..=bottom).filter(|&y| differs(x, y)).count() >= (bottom - top).div_ceil(2)
+        })
         .collect();
     let (&left, &right) = (columns.first()?, columns.last()?);
     let area = Rect::new(

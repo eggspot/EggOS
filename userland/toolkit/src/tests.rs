@@ -447,10 +447,7 @@ fn a_text_field_edits_at_the_caret_and_esc_clears_it() {
             },
             0
         ),
-        Response::Unused {
-            code: 46,
-            shift: false
-        }
+        Response::Nothing
     );
     assert_eq!(
         press(tree, key::ESC, 27, false),
@@ -1074,4 +1071,20 @@ fn a_dropdown_answers_its_keys_open_and_closed() {
     assert_eq!(key(key::ENTER, 0), Response::Nothing);
     assert_eq!(key(key::ESC, 0), Response::Nothing);
     assert_eq!(tree.selected(dropdown), Some(0));
+}
+
+#[test]
+fn set_text_leaves_no_selection_behind() {
+    let mut form = form();
+    let tree = &mut form.tree;
+    tree.set_focus(Some(form.field), 0);
+    for character in "abcde".chars() {
+        press(tree, 30, character as u32, false);
+    }
+    tree.set_text(form.field, "");
+    assert_eq!(
+        press(tree, 30, 'x' as u32, false),
+        Response::Edited(form.field)
+    );
+    assert_eq!(tree.text_of(form.field), Some("x"));
 }

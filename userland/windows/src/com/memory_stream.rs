@@ -447,13 +447,13 @@ mod tests {
     fn read_all(stream: *mut Stream) -> Vec<u8> {
         let mut buffer = [0u8; 64];
         let mut got = 0;
-        // SAFETY: a live stream from here on.
         assert_eq!(
+            // SAFETY: a live stream from here on.
             unsafe { seek(stream, 0, STREAM_SEEK_SET, ptr::null_mut()) },
             S_OK
         );
-        // SAFETY: as above.
         assert_eq!(
+            // SAFETY: as above.
             unsafe { read(stream, buffer.as_mut_ptr(), 64, &mut got) },
             S_OK
         );
@@ -465,8 +465,8 @@ mod tests {
         let stream = new_stream_over(b"hello");
         let mut buffer = [0u8; 3];
         let mut got = 0;
-        // SAFETY: a live stream from here on.
         assert_eq!(
+            // SAFETY: a live stream from here on.
             unsafe { read(stream, buffer.as_mut_ptr(), 3, &mut got) },
             S_OK
         );
@@ -476,22 +476,22 @@ mod tests {
         assert_eq!(unsafe { seek(stream, -1, STREAM_SEEK_END, &mut at) }, S_OK);
         assert_eq!(at, 4);
         let mut put = 0;
-        // SAFETY: as above.
         assert_eq!(
+            // SAFETY: as above.
             unsafe { write(stream, b"O, world".as_ptr(), 8, &mut put) },
             S_OK
         );
         assert_eq!(put, 8);
         assert_eq!(read_all(stream), b"hellO, world");
-        // SAFETY: as above.
         assert_eq!(
+            // SAFETY: as above.
             unsafe { seek(stream, -20, STREAM_SEEK_CUR, &mut at) },
             STG_E_INVALIDFUNCTION
         );
         // SAFETY: as above.
         assert_eq!(unsafe { seek(stream, 3, STREAM_SEEK_END, &mut at) }, S_OK);
-        // SAFETY: as above.
         assert_eq!(
+            // SAFETY: as above.
             unsafe { write(stream, b"!".as_ptr(), 1, ptr::null_mut()) },
             S_OK
         );
@@ -529,8 +529,8 @@ mod tests {
         // SAFETY: a live stream from here on.
         assert_eq!(unsafe { clone(stream, &mut copy) }, S_OK);
         let copy = copy as *mut Stream;
-        // SAFETY: the clone is a live stream.
         assert_eq!(
+            // SAFETY: the clone is a live stream.
             unsafe { write(copy, b"S".as_ptr(), 1, ptr::null_mut()) },
             S_OK
         );
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn copy_to_writes_through_the_destination_s_write() {
-        let table = [0, 0, 0, 0, write as usize];
+        let table = [0, 0, 0, 0, write as *const () as usize];
         let source = new_stream_over(b"copy me");
         let target = new_stream_over(b"");
         // SAFETY: the target is a live stream; its table's fifth method is `Write`.

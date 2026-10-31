@@ -574,8 +574,8 @@ mod tests {
         assert_eq!(as_text(Variant::boolean(true)), "-1");
         assert_eq!(as_text(Variant::boolean(false)), "0");
         let mut named = converted(Variant::boolean(true), VARIANT_ALPHABOOL, kind::BSTR).unwrap();
-        // SAFETY: the value holds a BSTR.
         assert_eq!(
+            // SAFETY: the value holds a BSTR.
             unsafe { bstr::units(named.pointer() as *const u16) },
             &wide("True")[..]
         );

@@ -49,7 +49,7 @@ pub enum Order {
     /// It moves after the options (the long forms).
     Permute,
     /// It comes back as option 1 with the word as its argument (a `-` option string).
-    InOrder,
+    Return,
 }
 
 /// How a call parses: its function, the order of words, whether a missing argument gives `:`
@@ -65,7 +65,7 @@ pub struct Rules<'s> {
 impl<'s> Rules<'s> {
     pub fn new(kind: Kind, spec: &'s [u8], posixly_correct: bool) -> Self {
         let (order, rest) = match spec.first() {
-            Some(b'-') if kind != Kind::Short => (Order::InOrder, &spec[1..]),
+            Some(b'-') if kind != Kind::Short => (Order::Return, &spec[1..]),
             Some(b'+' | b'-') => (Order::Stop, &spec[1..]),
             _ if kind == Kind::Short || posixly_correct => (Order::Stop, spec),
             _ => (Order::Permute, spec),
@@ -269,7 +269,7 @@ fn start_word<W: Words + ?Sized>(
         }
         match rules.order {
             Order::Stop => return Some(Found::Done),
-            Order::InOrder => {
+            Order::Return => {
                 cursor.index += 1;
                 return Some(Found::Operand(cursor.index - 1));
             }

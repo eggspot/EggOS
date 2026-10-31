@@ -474,7 +474,8 @@ fn place(window: &SettingsWindow, id: WidgetId) -> (i32, i32, i32, i32) {
 
 fn showing_activity(read: &mut GrantsRead) -> SettingsWindow {
     let mut window = opened(read);
-    let request = choose(&mut window, widgets(&window).view, ACTIVITY);
+    let view = widgets(&window).view;
+    let request = choose(&mut window, view, ACTIVITY);
     assert_eq!(request, Some(Request::ReadActivity));
     serve(&mut window, read, request);
     window
@@ -581,7 +582,8 @@ fn this_agent_only_follows_the_selected_agent() {
     let list = widgets(&window).list;
     window.tree().set_focus(Some(list), 0);
     assert_eq!(press(&mut window, key::DOWN, 0), None);
-    let request = press_button(&mut window, activity(&window).this_agent);
+    let this_agent = activity(&window).this_agent;
+    let request = press_button(&mut window, this_agent);
     served(&mut window, &mut read, request);
     assert_eq!(window.activity_query().agent, Some(id("phone")));
     assert_eq!(count(&window), None);

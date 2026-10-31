@@ -17,12 +17,18 @@ fn parsed(answer: &str) -> Value<'_> {
 }
 
 fn error_code(answer: &str) -> i64 {
-    let code = parsed(answer).get("error").unwrap().get("code").unwrap();
+    let code = parsed(answer)
+        .get("error")
+        .unwrap_or_else(|| panic!("{answer}"))
+        .get("code")
+        .unwrap();
     std::str::from_utf8(code.raw()).unwrap().parse().unwrap()
 }
 
 fn texts(answer: &str) -> Vec<String> {
-    let result = parsed(answer).get("result").unwrap();
+    let result = parsed(answer)
+        .get("result")
+        .unwrap_or_else(|| panic!("{answer}"));
     let Some(Value::Array(content)) = result.get("content") else {
         panic!("content is an array: {answer}");
     };
@@ -34,7 +40,11 @@ fn texts(answer: &str) -> Vec<String> {
 }
 
 fn is_error(answer: &str) -> bool {
-    parsed(answer).get("result").unwrap().get("isError") == Some(Value::Bool(true))
+    parsed(answer)
+        .get("result")
+        .unwrap_or_else(|| panic!("{answer}"))
+        .get("isError")
+        == Some(Value::Bool(true))
 }
 
 fn outcomes(system: &FakeSystem) -> Vec<(String, String, String)> {
@@ -119,7 +129,7 @@ fn initialize_answers_the_client_s_version_or_the_newest_and_records_the_client(
 fn unknown_methods_are_not_found_before_the_session_is_checked() {
     let mut harness = Harness::new();
     let answer = harness
-        .send(r#"{"jsonrpc":"2.0","id":"d","method":"server/discover","params":{}}"#)
+        .send(r#"{"jsonrpc":"2.0","id":"d","method":"server/frobnicate","params":{}}"#)
         .unwrap();
     assert_eq!(error_code(&answer), rpc::METHOD_NOT_FOUND);
     assert_eq!(parsed(&answer).get("id").unwrap().raw(), b"\"d\"");
@@ -221,7 +231,13 @@ fn the_tools_are_listed_once_initialized() {
             "disk_repair",
             "disk_format",
             "agent_list",
-            "agent_show"
+            "agent_show",
+            "app_icon",
+            "clipboard_get",
+            "clipboard_set",
+            "kill",
+            "wm_desktop_list",
+            "wm_desktop_new"
         ]
     );
 }
@@ -577,7 +593,7 @@ fn a_hostile_client_name_is_escaped_in_the_log() {
     harness.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"a\u001b[31m\u202eb\tc","version":"1"}}}"#);
     let record = harness.system.audit.last().unwrap();
     assert!(record.contains("a\\e[31m\\u{202e}b\\tc"));
-    assert_eq!(record.matches('\t').count(), 6);
+    assert_eq!(record.matches('\t').count(), 7);
 }
 
 #[test]
@@ -1805,7 +1821,7 @@ fn hostile_window_arguments_are_refused_before_wm_runs() {
         ("wm_menu_list", r#"{"window":1,"menu":0}"#, "does not take"),
         (
             "wm_scroll",
-            r#"{"window":1,"dx":1,"dy":1}"#,
+            r#"{"window":1,"dy":1,"button":"left"}"#,
             "does not take",
         ),
     ] {
@@ -2089,7 +2105,14 @@ fn a_clock_set_question_names_the_time() {
         ..Checked::default()
     };
     let mut out = [0u8; 256];
-    let length = question_text(tool, &checked, FileState::Missing, "", &mut out);
+    let length = question_text(
+        tool,
+        &checked,
+        FileState::Missing,
+        "",
+        &AgentId::LOCAL,
+        &mut out,
+    );
     assert_eq!(
         core::str::from_utf8(&out[..length]).unwrap(),
         "An agent asks to set the machine's clock to 2030-01-02T03:04:05Z (UTC). Allow it? \
@@ -2885,6 +2908,7 @@ fn confirmation_texts_name_the_tool_whatever_it_is() {
         &Checked::default(),
         FileState::Missing,
         "",
+        &AgentId::LOCAL,
         &mut question,
     );
     assert_eq!(
@@ -3346,7 +3370,7 @@ fn agent_show_shows_the_calling_agent_s_own_grants_and_agent_list_needs_view() {
         &["/bin/agent", "show", "--json", "--", "phone"]
     );
     let answer = harness.call(3, "agent_show", r#"{"id":"local"}"#);
-    assert!(is_error(&answer), "{answer}");
+    assert_eq!(error_code(&answer), INVALID_PARAMS, "{answer}");
     let answer = harness.call(4, "agent_list", "{}");
     assert!(is_error(&answer));
     assert!(
@@ -3429,7 +3453,11 @@ fn a_session_answer_keeps_the_class_until_the_client_disconnects() {
     assert!(harness.call_lines(1, "tee", NEW_FILE).is_empty());
     let lines = harness.prompt_answered(Some(PromptAnswer::Session));
     assert!(!is_error(&lines[0]), "{}", lines[0]);
-    let answer = harness.call(2, "tee", NEW_FILE);
+    let answer = harness.call(
+        2,
+        "tee",
+        r#"{"path":"/home/root/second.txt","content":"x"}"#,
+    );
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(harness.system.runs.len(), 2);
     assert_eq!(harness.system.prompts.len(), 1);
@@ -3440,7 +3468,11 @@ fn a_session_answer_keeps_the_class_until_the_client_disconnects() {
             .disconnected(&mut harness.system, &mut scratch);
     }
     harness.initialize("{}");
-    assert!(harness.call_lines(3, "tee", NEW_FILE).is_empty());
+    assert!(
+        harness
+            .call_lines(3, "tee", r#"{"path":"/home/root/third.txt","content":"x"}"#)
+            .is_empty()
+    );
     assert_eq!(harness.system.prompts.len(), 2);
 }
 

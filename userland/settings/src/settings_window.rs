@@ -1885,15 +1885,15 @@ mod tests {
             [Some(5), Some(450), Some(23)]
         );
         assert_eq!(
-            click(&mut window, 443, 196),
-            Some(Request::ChangeInput(InputChange::RepeatDelayMs(500)))
+            click(&mut window, 468, 196),
+            Some(Request::ChangeInput(InputChange::RepeatDelayMs(800)))
         );
         assert_eq!(
-            click(&mut window, 460, 236),
-            Some(Request::ChangeInput(InputChange::RepeatRate(20)))
+            click(&mut window, 436, 236),
+            Some(Request::ChangeInput(InputChange::RepeatRate(10)))
         );
-        window.input_changed(InputChange::RepeatRate(20), Ok(()), Ok(()));
-        assert_eq!(window.input_panes().values(window.widgets())[2], Some(20));
+        window.input_changed(InputChange::RepeatRate(10), Ok(()), Ok(()));
+        assert_eq!(window.input_panes().values(window.widgets())[2], Some(10));
     }
 
     const ACCESSIBILITY_ROW: i32 = 44 + 4 * 32 + 10;

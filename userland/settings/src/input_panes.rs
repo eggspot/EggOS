@@ -141,7 +141,7 @@ fn slider(
 
 /// The scale the device's size allows: 2 needs both sides even.
 fn halvable(resolution: (u32, u32)) -> bool {
-    resolution.0 % 2 == 0 && resolution.1 % 2 == 0
+    resolution.0.is_multiple_of(2) && resolution.1.is_multiple_of(2)
 }
 
 fn size_text(text: &mut Text<96>, (width, height): (u32, u32)) {

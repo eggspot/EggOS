@@ -410,7 +410,9 @@ mod tests {
     #[test]
     fn input_preferences_out_of_range_or_absent_are_their_defaults() {
         assert_eq!(input_preferences(b""), InputPreferences::DEFAULT);
-        let file = b"mouse.buttons=left\nmouse.scrolling=natural\nmouse.speed=9\nkeyboard.repeat_delay_ms=100\nkeyboard.repeat_rate=30\n";
+        let file =
+            b"eggos-settings 1\nmouse.buttons=left\nmouse.scrolling=natural\nmouse.speed=9\n\
+                     keyboard.repeat_delay_ms=100\nkeyboard.repeat_rate=30\n";
         assert_eq!(
             input_preferences(file),
             InputPreferences {
@@ -422,7 +424,7 @@ mod tests {
             }
         );
         assert_eq!(
-            input_preferences(b"mouse.speed=99999999\nmouse.buttons=LEFT\n"),
+            input_preferences(b"eggos-settings 1\nmouse.speed=99999999\nmouse.buttons=LEFT\n"),
             InputPreferences::DEFAULT
         );
     }

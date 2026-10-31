@@ -14,14 +14,14 @@ pub fn executable_range(headers: &[u8], headers_address: u64) -> Option<(u64, u6
         Some(u64::from_le_bytes(header.get(at..at + 8)?.try_into().ok()?))
     };
     let mut bias = None;
-    for header in headers.chunks_exact(PROGRAM_HEADER_SIZE) {
+    for header in headers.as_chunks::<PROGRAM_HEADER_SIZE>().0 {
         if field32(header, 0)? == PT_PHDR {
             bias = Some(headers_address.wrapping_sub(field64(header, 16)?));
         }
     }
     let bias = bias?;
     let mut range: Option<(u64, u64)> = None;
-    for header in headers.chunks_exact(PROGRAM_HEADER_SIZE) {
+    for header in headers.as_chunks::<PROGRAM_HEADER_SIZE>().0 {
         if field32(header, 0)? != PT_LOAD || field32(header, 4)? & PF_X == 0 {
             continue;
         }

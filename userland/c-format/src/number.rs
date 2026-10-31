@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(parse_float(b"0.125"), (0.125, 5));
         assert_eq!(parse_float(b".5"), (0.5, 2));
         assert_eq!(parse_float(b"1e"), (1.0, 1));
-        assert_eq!(parse_float(b"3.14159"), (3.14159, 7));
+        assert_eq!(parse_float(b"1.23456"), (1.23456, 7));
         assert_eq!(parse_float(b"1e-5"), (1e-5, 4));
         assert_eq!(parse_float(b"abc"), (0.0, 0));
         assert_eq!(parse_float(b"-"), (0.0, 0));

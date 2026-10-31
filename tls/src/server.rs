@@ -132,11 +132,7 @@ fn parse_client_hello(body: &[u8], protocol: &[u8]) -> Result<ClientHello, Error
         data: cursor.vector(2)?,
     };
     cursor.finish()?;
-    let offered = |code: u16| {
-        suites
-            .chunks_exact(2)
-            .any(|pair| u16::from_be_bytes([pair[0], pair[1]]) == code)
-    };
+    let offered = |code: u16| lists_code(suites, code);
     let suite = SUITE_PREFERENCE
         .into_iter()
         .find(|&code| offered(code))
@@ -155,21 +151,15 @@ fn parse_client_hello(body: &[u8], protocol: &[u8]) -> Result<ClientHello, Error
         match kind {
             SUPPORTED_VERSIONS => {
                 let versions = data.vector(1)?;
-                tls13 = versions
-                    .chunks_exact(2)
-                    .any(|pair| u16::from_be_bytes([pair[0], pair[1]]) == TLS13);
+                tls13 = lists_code(versions, TLS13);
             }
             SUPPORTED_GROUPS => {
                 let groups = data.vector(2)?;
-                x25519_offered = groups
-                    .chunks_exact(2)
-                    .any(|pair| u16::from_be_bytes([pair[0], pair[1]]) == X25519_GROUP);
+                x25519_offered = lists_code(groups, X25519_GROUP);
             }
             SIGNATURE_ALGORITHMS => {
                 let schemes = data.vector(2)?;
-                signs = schemes
-                    .chunks_exact(2)
-                    .any(|pair| u16::from_be_bytes([pair[0], pair[1]]) == ECDSA_P256_SHA256);
+                signs = lists_code(schemes, ECDSA_P256_SHA256);
             }
             KEY_SHARE => {
                 let mut shares = Cursor {
@@ -221,6 +211,13 @@ fn parse_client_hello(body: &[u8], protocol: &[u8]) -> Result<ClientHello, Error
     };
     hello.session_id[..session_id.len()].copy_from_slice(session_id);
     Ok(hello)
+}
+
+fn lists_code(list: &[u8], code: u16) -> bool {
+    list.as_chunks::<2>()
+        .0
+        .iter()
+        .any(|pair| u16::from_be_bytes(*pair) == code)
 }
 
 fn write_server_hello(

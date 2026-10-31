@@ -190,11 +190,10 @@ impl System for FakeSystem {
     }
 
     fn accessible(&mut self, path: &[u8], access: Access) -> bool {
-        match (self.kind(path), access) {
-            (Kind::Missing, _) => false,
-            (Kind::NotExecutable, Access::Execute) => false,
-            _ => true,
-        }
+        !matches!(
+            (self.kind(path), access),
+            (Kind::Missing, _) | (Kind::NotExecutable, Access::Execute)
+        )
     }
 
     fn is_terminal(&mut self, _descriptor: usize) -> bool {
@@ -544,7 +543,10 @@ fn unsupported_operators_reject_the_whole_line_and_end_a_script() {
     assert_eq!(errors(&shell), "eggsh: `$((` is not supported yet\n");
     assert_eq!(shell.exit_status(), 2);
     let shell = run("ls (wc)");
-    assert_eq!(errors(&shell), "eggsh: syntax error near unexpected token `(`\n");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: syntax error near unexpected token `(`\n"
+    );
     assert!(shell.system.ran.is_empty());
     let mut interactive = shell_with_input(true, &["echo a &> f\n", "echo next\n"]);
     interactive.run_descriptor(0, true);

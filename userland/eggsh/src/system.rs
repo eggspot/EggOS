@@ -1,12 +1,12 @@
-use crate::editor::{
-    Editor, Fed, HISTORY_FILE_LIMIT, History, HistoryLoader, LOADED_LINE_CAPACITY, should_remember,
-};
 use crate::arguments::MAX_ARGUMENTS;
+use crate::editor::{
+    Editor, Fed, HISTORY_CAPACITY, History, HistoryLoader, LOADED_LINE_CAPACITY, should_remember,
+};
 use crate::path::{Files, Kind, PATH_CAPACITY};
 use crate::shell::{Errno, Forked, Group, Read, Shell, Streams, System, Wait};
 use crate::status::USAGE;
-use crate::test::{Access, FileStatus, FileType};
 use crate::syntax::{MAX_WORDS, Redirection};
+use crate::test::{Access, FileStatus, FileType};
 use crate::variables::MAX_VARIABLES;
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
@@ -17,6 +17,7 @@ use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
 
 const TERMINAL: usize = 0;
+const HISTORY_FILE_LIMIT: usize = 8 * HISTORY_CAPACITY;
 const STANDARD_ERROR: usize = 2;
 const AT_FDCWD: usize = -100isize as usize;
 const O_CLOEXEC: usize = 0o2_000_000;
@@ -786,7 +787,14 @@ impl System for Linux {
         loop {
             let read = call(
                 number::GETDENTS64,
-                [descriptor, piece.as_mut_ptr() as usize, piece.len(), 0, 0, 0],
+                [
+                    descriptor,
+                    piece.as_mut_ptr() as usize,
+                    piece.len(),
+                    0,
+                    0,
+                    0,
+                ],
             );
             if read <= 0 {
                 close(descriptor);
@@ -805,7 +813,10 @@ impl System for Linux {
                     break;
                 }
                 let name = &piece[at + DIRECTORY_ENTRY_NAME..at + length];
-                let end = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+                let end = name
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(name.len());
                 each(&name[..end]);
                 at += length;
             }

@@ -179,7 +179,7 @@ fn a_reset_answers_a_segment_no_connection_owns_but_never_a_reset() {
     client.take(&out[..length], SERVER.0, 5);
     assert_eq!(client.connection.state(), State::Closed);
     assert_eq!(client.connection.error(), Some(Error::Refused));
-    assert!(write_reset_for(&mut out, SERVER.0, CLIENT.0, &reset).is_none());
+    assert!(write_reset_for(&mut [0u8; HEADER_BYTES], SERVER.0, CLIENT.0, &reset).is_none());
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn a_peer_that_stops_answering_times_the_connection_out() {
         assert!(!client.connection.poll(now));
         assert_eq!(client.output(now).len(), 1);
     }
-    now = client.connection.next_poll_ms();
+    let now = client.connection.next_poll_ms();
     assert!(client.connection.poll(now));
     assert_eq!(client.connection.state(), State::Closed);
     assert_eq!(client.connection.error(), Some(Error::TimedOut));
@@ -280,9 +280,8 @@ fn an_unanswered_syn_is_sent_again_then_given_up() {
         queues: Queues::with_room(4096),
     };
     assert_eq!(client.output(0).len(), 1);
-    let mut now = 0;
     for _ in 0..SYN_RETRIES {
-        now = client.connection.next_poll_ms();
+        let now = client.connection.next_poll_ms();
         client.connection.poll(now);
         let again = client.output(now);
         assert_eq!(again.len(), 1);
@@ -290,7 +289,7 @@ fn an_unanswered_syn_is_sent_again_then_given_up() {
         assert_eq!(segment.header.flags, flags::SYN);
         assert_eq!(segment.header.sequence, 1000);
     }
-    now = client.connection.next_poll_ms();
+    let now = client.connection.next_poll_ms();
     assert!(client.connection.poll(now));
     assert_eq!(client.connection.error(), Some(Error::TimedOut));
 }

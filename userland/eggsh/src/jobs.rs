@@ -173,15 +173,13 @@ impl Jobs {
     /// Its jobs, by number.
     pub fn iter(&self) -> impl Iterator<Item = &Job> {
         let mut jobs: [Option<&Job>; MAX_JOBS] = [None; MAX_JOBS];
-        let mut count = 0;
-        for job in self.slots.iter().flatten() {
+        for (count, job) in self.slots.iter().flatten().enumerate() {
             let at = jobs[..count]
                 .iter()
                 .position(|other| other.is_some_and(|other| other.number > job.number))
                 .unwrap_or(count);
             jobs.copy_within(at..count, at + 1);
             jobs[at] = Some(job);
-            count += 1;
         }
         jobs.into_iter().flatten()
     }

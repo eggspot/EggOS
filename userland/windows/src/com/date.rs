@@ -154,10 +154,7 @@ fn tokens(text: &[u16], out: &mut [Token; 12]) -> Option<usize> {
         } else if unit == u16::from(b' ') || unit == u16::from(b'\t') {
             at += 1;
             continue;
-        } else if [b'/', b'-', b':', b'T']
-            .iter()
-            .any(|&b| unit == u16::from(b))
-        {
+        } else if b"/-:T".iter().any(|&b| unit == u16::from(b)) {
             at += 1;
             Token::Separator(unit as u8)
         } else {

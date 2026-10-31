@@ -105,6 +105,8 @@ fn local_times_turn_back_into_instants() {
     assert_eq!(berlin.to_utc(noon + 7200), noon);
     let kolkata = zone("Asia/Kolkata").unwrap();
     assert_eq!(kolkata.to_utc(noon + 19_800), noon);
+    assert_eq!(berlin.to_utc(1_792_895_400), 1_792_888_200);
+    assert_eq!(berlin.to_utc(1_774_751_400), 1_774_747_800);
     let local = berlin.at(1_774_746_000);
     assert_eq!(&local.numeric_offset(), b"+0200");
     assert_eq!(

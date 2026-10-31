@@ -787,11 +787,9 @@ pub(crate) fn hex_digest(hash: &[u8; TOKEN_HASH_BYTES]) -> [u8; 2 * TOKEN_HASH_B
             .unwrap_or(b'0')
     };
     let mut text = [0u8; 2 * TOKEN_HASH_BYTES];
-    for (pair, byte) in text.chunks_exact_mut(2).zip(hash) {
-        if let [high, low] = pair {
-            *high = digit(byte >> 4);
-            *low = digit(byte & 15);
-        }
+    for ([high, low], byte) in text.as_chunks_mut::<2>().0.iter_mut().zip(hash) {
+        *high = digit(byte >> 4);
+        *low = digit(byte & 15);
     }
     text
 }
@@ -806,10 +804,7 @@ pub(crate) fn digest_from_hex(text: &[u8]) -> Option<[u8; TOKEN_HASH_BYTES]> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         _ => None,
     };
-    for (byte, pair) in hash.iter_mut().zip(text.chunks_exact(2)) {
-        let [high, low] = pair else {
-            return None;
-        };
+    for (byte, [high, low]) in hash.iter_mut().zip(text.as_chunks::<2>().0) {
         *byte = (digit(*high)? << 4) | digit(*low)?;
     }
     Some(hash)

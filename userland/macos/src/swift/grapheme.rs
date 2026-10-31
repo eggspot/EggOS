@@ -205,7 +205,7 @@ impl State {
             (TrailingSyllable | TrailingJamo, TrailingJamo) => false,
             (_, Extend | ZeroWidthJoiner) => false,
             (ZeroWidthJoiner, Pictographic) => !self.emoji_sequence,
-            (RegionalIndicator, RegionalIndicator) => self.regional_indicators % 2 == 0,
+            (RegionalIndicator, RegionalIndicator) => self.regional_indicators.is_multiple_of(2),
             _ => true,
         }
     }

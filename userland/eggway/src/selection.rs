@@ -306,7 +306,7 @@ fn kind_of(interface: Interface) -> Kind {
 /// `wl_data_device_manager`'s and `zwp_primary_selection_device_manager_v1`'s requests: a new
 /// source, or a device for the seat (offered the selection at once if its client has the
 /// keyboard focus).
-pub fn manager_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
+pub(crate) fn manager_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
     let kind = kind_of(message.interface);
     let id = message.uint(0);
     match message.opcode {
@@ -346,7 +346,7 @@ pub fn manager_request(client: &mut ClientSlot, shared: &mut Shared, message: &M
 }
 
 /// A source's requests: `offer` adds a MIME type; `destroy` ends the selection it is.
-pub fn source_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
+pub(crate) fn source_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
     let index = usize::from(message.index);
     let Some(source) = client.sources.get(index).copied().flatten() else {
         return;
@@ -372,7 +372,7 @@ pub fn source_request(client: &mut ClientSlot, shared: &mut Shared, message: &Me
 
 /// A device's requests: `set_selection` makes a source (or none) the selection; a drag's
 /// source is cancelled at once, as drag and drop is not served yet.
-pub fn device_request<S: System>(
+pub(crate) fn device_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
     system: &mut S,
@@ -450,7 +450,7 @@ fn take_source(client: &mut ClientSlot, device: u32, source: u32, kind: Kind) ->
 /// still the selection's (else the pipe is closed, so the reader gets nothing); `finish` is a
 /// drag's, an error on a selection's offer; `accept` and `set_actions` are a drag's and do
 /// nothing here.
-pub fn offer_request<S: System>(
+pub(crate) fn offer_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
     system: &mut S,

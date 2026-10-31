@@ -816,7 +816,7 @@ fn getopt_long_moves_operands_after_the_options_as_a_mac_does() {
     assert_eq!(found, [(Found::Done, 1)]);
     let words: &[&[u8]] = &[b"probe", b"a", b"-v", b"b"];
     let in_order = Rules::new(Kind::Long, b"-vn:", true);
-    assert_eq!(in_order.order, Order::InOrder);
+    assert_eq!(in_order.order, Order::Return);
     let (found, words) = parse_all(in_order, &longs, words);
     assert_eq!(
         found,
