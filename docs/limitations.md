@@ -479,8 +479,9 @@ shortcuts), kept on the disk across reboots. Not yet:
   they reach whatever reads the console at that moment (docs/apps.md);
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
-  and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
-  key repeat and 2x come later; Windows GUI programs (D129), Linux Wayland apps (D140) and
+  and `win-paint.exe` are added only to their own images); Settings' Components pane comes
+  later, and 2x (D195) takes a reboot, doubles pixels rather than drawing finer and has no
+  fractional scales; Windows GUI programs (D129), Linux Wayland apps (D140) and
   macOS AppKit apps (D147) open windows;
 - 3D graphics;
 - a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100

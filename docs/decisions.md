@@ -16221,3 +16221,40 @@ the license, by an explicit instruction recorded here.
   the pane does, the list's rows named by their text in `wm show`, the C runtime's `localtime`
   and `_tzset` in the Windows layer, past rules of a zone, reading `/dev/rtc0` for its alarm and
   `poll` on it, `timerfd` on the alarm clocks, the real-time clock's own interrupt.
+
+## D195 High-density displays at 2x, and the mouse and key preferences: left-handed buttons, natural scrolling, pointer speed and key repeat (batch part 43; v0.3.0 items 34 and 35's "Next: 2x, the Mouse pane"; extends D113, D132, D185) — Decided by the build loop (the panes designed by Claude Fable)
+
+- Scale 2 (slice 43a): with `display.scale=2` in the settings file the kernel's display keeps a
+  logical frame buffer of half the device's width and height and doubles every flushed
+  rectangle into the device's buffer (`Display::set_scale`, `flush_scaled`), so the terminal,
+  the desktop, every toolkit window and the Windows and macOS layers' windows draw at 2x
+  without knowing it: they see a screen of half the size, and pointer positions are halved on
+  the way in. The scale is read at boot by `terminal::load_saved_settings`, before the
+  terminal and the desktop start, so `settings set display.scale 2` takes effect at the next
+  boot; a device whose size is odd, or a logical buffer that cannot be allocated, stays at 1.
+  `display.scale` is settable (`1` or `2`) through `settings set`, MCP `settings_set` and the
+  Displays pane.
+- The mouse and key preferences (slice 43b): `mouse.buttons` (`right` or `left`, which swaps
+  the left and right buttons), `mouse.scrolling` (`traditional` or `natural`, which turns the
+  wheel round), `mouse.speed` (1 to 10, 5 moving a relative mouse as reported, 10 twice as
+  far; an absolute tablet is not scaled), `keyboard.repeat_delay_ms` (150 to 2000, 400) and
+  `keyboard.repeat_rate` (2 to 60 a second, 25). The kernel's input thread applies them to
+  every event (`input::set_preferences`, `handed`, `sped`); the statics hold each value XOR its
+  default so they start zeroed in `.bss`. They are read from the settings file at boot and set
+  live by the window server's privileged `SET_INPUT_PREFERENCES` request (0x4014_771f, five
+  32-bit words), which `settings set` and MCP `settings_set` send after saving, so a change is
+  felt at the next event; out-of-range values are refused and a file value out of range reads
+  as the default.
+- Choices made without research: pixel doubling of a logical buffer rather than every drawer
+  scaling itself (one place, every client at once, no font at 32 px needed; the cost is one
+  copy of each flushed rectangle, 4 stores per pixel); scale 2 only, as the toolkit's 2x rules
+  (docs/ux/toolkit-v0.3.md) define; the values' names and ranges follow macOS's and GNOME's
+  settings.
+- Check. Host tests: doubling a rectangle into the device buffer, a scale refused for an odd
+  size; the input preferences swap only the left and right buttons, speed 5 is the reported
+  move and 10 twice it, out-of-range preferences change nothing; the settings file's values
+  and defaults; `settings set` for each key, refusals with their ranges, a mouse preference
+  saved and applied at once; the protocol request's five words.
+- Not yet: a scale change without a reboot, fractional scales, a font drawn at 2x rather than
+  doubled, pointer acceleration, sub-step moves carried at speeds under 5, per-device
+  preferences, a QEMU screendump at 2x.

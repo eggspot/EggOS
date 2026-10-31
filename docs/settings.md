@@ -121,11 +121,16 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | Key | Value | Settable |
 |-----|-------|----------|
 | `shell.profile` | `windows`, `macos` (the default) or `linux` | yes |
-| `display.scale` | `1` | no (2x comes later) |
+| `display.scale` | `1` (the default) or `2`, which doubles everything from the next boot (D195) | yes |
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |
 | `keyboard.layout` | `us` (the default), `us-intl`, `gb`, `us-dvorak`, `us-colemak`, `dk`, `fi`, `fr`, `de`, `it`, `no`, `br`, `es` or `se` (D185, the Keyboard pane, docs/ux/keyboard-v0.3.md) | yes |
 | `time.zone` | `UTC` (the default) or any IANA zone such as `Europe/Paris`, `America/New_York` or `Asia/Kolkata` (D194); `date`, `ls -l` and the Windows and macOS layers show times in it unless `TZ` names another; the Date & time pane's picker chooses it, and its `Set to` reads local time | yes |
+| `mouse.buttons` | `right` (the default) or `left`, which swaps the primary and secondary buttons (D195); used from the next event | yes |
+| `mouse.scrolling` | `traditional` (the default) or `natural` (D195) | yes |
+| `mouse.speed` | `1` to `10`, `5` the default (D195) | yes |
+| `keyboard.repeat_delay_ms` | `150` to `2000`, `400` the default: how long a key is held before it repeats (D195) | yes |
+| `keyboard.repeat_rate` | `2` to `60` repeats a second, `25` the default (D195) | yes |
 | `system.version`, `system.arch`, `system.cpus`, `system.memory_mb`, `system.uptime_s` | facts about the machine | no |
 
 ## The settings file
