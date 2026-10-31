@@ -439,12 +439,15 @@ pub(crate) fn device_request<S: System>(
 }
 
 fn may_set_selection(client: &ClientSlot, shared: &Shared, serial: u32) -> bool {
-    let since_focus = serial.wrapping_sub(client.focus_serial);
-    let latest_since_focus = client.input_serial.wrapping_sub(client.focus_serial);
+    let since_focus = |quoted: u32| quoted.wrapping_sub(client.focus_serial);
+    let quoted = since_focus(serial);
+    let from_input = quoted <= since_focus(client.input_serial);
+    let from_pointer_enter =
+        serial == client.pointer_enter_serial && quoted <= since_focus(shared.last_serial());
     shared.keyboard_client == Some(client.index)
         && serial != 0
-        && since_focus != 0
-        && since_focus <= latest_since_focus
+        && quoted != 0
+        && (from_input || from_pointer_enter)
 }
 
 fn offer_slot(offer: u32) -> Option<usize> {

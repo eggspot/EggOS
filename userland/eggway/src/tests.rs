@@ -1840,6 +1840,80 @@ fn an_offer_stays_dead_however_many_times_the_selection_changes() {
 }
 
 #[test]
+fn the_focused_client_may_set_a_selection_with_its_latest_pointer_enter_serial() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.source(SECOND_SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    let key_serial = session.input_serial();
+    session.record(record::POINTER_ENTER, [5, 5, 0, 0]);
+    let entered = session
+        .of(POINTER, pointer::ENTER.opcode)
+        .last()
+        .expect("the pointer entered")
+        .word(0);
+    assert_ne!(entered, key_serial);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(entered)],
+    );
+    let events = session.pump();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.object == DATA_DEVICE
+                && event.opcode == data_device::DATA_OFFER.opcode),
+        "a selection quoting the pointer enter's serial is taken"
+    );
+
+    session.record(record::POINTER_LEAVE, [0; 4]);
+    session.record(record::POINTER_ENTER, [6, 6, 0, 0]);
+    let entered_again = session
+        .of(POINTER, pointer::ENTER.opcode)
+        .last()
+        .expect("the pointer entered")
+        .word(0);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(entered)],
+    );
+    session.pump();
+    assert!(
+        session.of(SOURCE, data_source::CANCELLED.opcode).is_empty(),
+        "only the latest pointer enter's serial counts"
+    );
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SECOND_SOURCE), Value::Uint(entered_again)],
+    );
+    session.pump();
+    assert_eq!(session.of(SOURCE, data_source::CANCELLED.opcode).len(), 1);
+
+    session.record(record::FOCUS_OUT, [0; 4]);
+    session.record(record::POINTER_LEAVE, [0; 4]);
+    session.record(record::POINTER_ENTER, [7, 7, 0, 0]);
+    let unfocused = session
+        .of(POINTER, pointer::ENTER.opcode)
+        .last()
+        .expect("the pointer entered")
+        .word(0);
+    session.send(DATA_DEVICE, 1, &[Value::Object(0), Value::Uint(unfocused)]);
+    session.pump();
+    assert!(
+        session
+            .of(SECOND_SOURCE, data_source::CANCELLED.opcode)
+            .is_empty(),
+        "a client without the keyboard focus cannot set it from a pointer enter"
+    );
+    session.end();
+}
+
+#[test]
 fn a_source_is_set_once_and_a_selection_offer_has_no_finish() {
     let mut session = Session::new();
     let window = session.shown();

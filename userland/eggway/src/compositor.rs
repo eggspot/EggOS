@@ -1545,6 +1545,7 @@ fn seat_request<S: System>(
                 let surface = surface.id;
                 let (x, y) = client.pointer_at;
                 let serial = shared.next_serial();
+                client.pointer_enter_serial = serial;
                 client.post(
                     id,
                     message.version,
@@ -2631,6 +2632,7 @@ fn point_at(client: &mut ClientSlot, shared: &mut Shared, target: u16, x: i32, y
     };
     client.pointer_focus = Some(target);
     let serial = shared.next_serial();
+    client.pointer_enter_serial = serial;
     each_of(client, Interface::Pointer, |client, id, version| {
         client.post(
             id,

@@ -12459,7 +12459,8 @@ the license, by an explicit instruction recorded here.
   becomes the selection with `set_selection` (once: `used_source` after), and the previous
   source is told `cancelled`. Only the client with the keyboard focus may set a selection (or
   clear it), quoting the serial of a key, button or keyboard `enter` event it was sent since
-  its focus came; any other `set_selection` is ignored, so a background client can neither
+  its focus came, or of its latest pointer `enter` since then (GTK 3 quotes its display's
+  latest serial, which a pointer `enter` moves); any other `set_selection` is ignored, so a background client can neither
   replace the clipboard nor flood the focused client with offers (review round 2). The client
   with the keyboard focus (the one whose window last got `FOCUS_IN`) is offered the selection
   before its keyboard `enter` and whenever it changes:

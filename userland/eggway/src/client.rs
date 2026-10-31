@@ -298,6 +298,8 @@ pub struct ClientSlot {
     pub focus_serial: u32,
     /// The serial of its latest key, button or keyboard-enter event.
     pub input_serial: u32,
+    /// The serial of its latest pointer `enter` event, which GTK 3 may quote to set a selection.
+    pub pointer_enter_serial: u32,
     pub text_inputs: [Option<TextInput>; MAX_TEXT_INPUTS],
     pub pool_bytes: usize,
     /// It bound `wl_subcompositor` or `wp_viewporter`, or made a positioner: its windows are
@@ -350,6 +352,7 @@ impl ClientSlot {
             offer_generations: [0; MAX_SERVER_OBJECTS],
             focus_serial: 0,
             input_serial: 0,
+            pointer_enter_serial: 0,
             text_inputs: [None; MAX_TEXT_INPUTS],
             pool_bytes: 0,
             composes: false,
