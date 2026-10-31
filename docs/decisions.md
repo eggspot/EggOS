@@ -11423,7 +11423,11 @@ the license, by an explicit instruction recorded here.
   never places anything (superseding D64's placement): mapped where `mmap` would put it, the
   first handler's trampoline filled the very hole `MADV_DONTFORK` left in the child, so the
   repeated read found the trampoline's code instead of faulting. Linux's vDSO, mapped at
-  exec, cannot.
+  exec, cannot. The page takes the lowest free one of the gap's 16 lowest pages and never
+  falls back below the gap; threads racing for their first handler each map one, the first
+  to record its page keeps it and the others unmap theirs. So the guard gap is unmapped
+  except for that one read-only page at its bottom, and a stack overrun still faults in the
+  rest of it first.
 - **Decided without research.** Shared file pages read in full when a mapping is made rather
   than when touched, and past the end read as zeros rather than `SIGBUS`, to reuse the lent
   frames that memory files already use (their limits come with them: no `mremap`,

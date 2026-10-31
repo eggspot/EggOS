@@ -4248,6 +4248,36 @@ mod tests {
         assert!(process.region(hole).is_none());
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
+    #[test]
+    fn the_return_trampoline_takes_the_next_gap_page_and_never_one_below_the_gap() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let stack_gap_bottom = super::memory::mmap_top::<P>();
+        let anywhere = crate::process::Placement::Anywhere {
+            hint: None,
+            floor: super::exec::MINIMUM_ADDRESS,
+            top: stack_gap_bottom,
+        };
+        let hole = process
+            .map_region(anywhere, FRAME_SIZE, Some(Attributes::USER_READ_WRITE))
+            .unwrap();
+        process.unmap_range(hole, hole + FRAME_SIZE).unwrap();
+        process
+            .map_region(
+                crate::process::Placement::Exactly(stack_gap_bottom),
+                FRAME_SIZE,
+                Some(Attributes::USER_READ_WRITE),
+            )
+            .unwrap();
+        let entry = super::trampoline::address(&process).unwrap();
+        assert_eq!(entry, stack_gap_bottom + FRAME_SIZE + 4);
+        assert_eq!(super::trampoline::address(&process), Some(entry));
+        assert!(process.region(hole).is_none());
+        assert!(process.region(stack_gap_bottom + 2 * FRAME_SIZE).is_none());
+    }
+
     #[test]
     fn handlers_run_on_linux_s_frames_and_return_with_rt_sigreturn() {
         let _frames = frames_for_test();

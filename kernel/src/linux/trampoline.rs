@@ -6,17 +6,22 @@
 //!
 //! The page is the process's own, read-only and executable, mapped the first time a handler
 //! needs it: a process that never runs one pays nothing, not even at exec. It goes at the
-//! bottom of the gap kept below the stack, where `mmap` never places anything, so it never
-//! lands in a hole the program made and may still touch (a range it unmapped, or one a
-//! `fork` left out for `MADV_DONTFORK`), as Linux's vDSO, mapped at exec, never does; only if
-//! the program mapped something there itself does it go where `mmap` would put it. It holds a `nop` and then the call, and handlers return to the call: unwinders and
+//! bottom of the guard gap kept below the stack, where `mmap` never places anything, so it
+//! never lands in a hole the program made and may still touch (a range it unmapped, or one a
+//! `fork` left out for `MADV_DONTFORK`), as Linux's vDSO, mapped at exec, never does. If that
+//! page is taken (the program mapped something there itself, or a thread racing for its first
+//! handler got there first), it takes the next free one of the gap's lowest
+//! [`GAP_PAGES_TRIED`] pages, never one below the gap. Threads racing for it each map a page,
+//! the first to record its page wins, and the others unmap theirs, so the address space keeps
+//! one. It holds a `nop` and then the call, and handlers return to the call: unwinders and
 //! debuggers recognise these exact instructions as a signal trampoline, and some look one
 //! byte before the return address, which the `nop` keeps inside it. The real vDSO, shared and
 //! mapped at exec, will take it over.
 
-use super::exec::MINIMUM_ADDRESS;
+use super::exec::STACK_GUARD_GAP;
 use crate::process::{Placement, Process};
 use eggos_hal::Platform;
+use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 
 /// The trampoline's code on the architecture: `None` where handlers need `SA_RESTORER`.
@@ -39,6 +44,13 @@ const CODE: Option<&[u8]> = if cfg!(target_arch = "aarch64") {
 /// Where handlers return to in the page: the call, after the `nop`.
 const ENTRY: u64 = 4;
 
+/// How many pages at the bottom of the stack's guard gap the trampoline may take, lowest
+/// first: enough for threads racing for their first handler, and a small part of the gap, so
+/// the rest of it stays unmapped above the page.
+pub const GAP_PAGES_TRIED: u64 = 16;
+
+const _: () = assert!(GAP_PAGES_TRIED * FRAME_SIZE * 8 <= STACK_GUARD_GAP);
+
 /// Where `process`'s handlers without a restorer return to, its trampoline mapped first if
 /// it is not yet. `None` on x86_64, or if there was no room or no memory for the page (the
 /// handler cannot run then, as for a frame that cannot be written).
@@ -49,20 +61,24 @@ pub fn address<P: Platform>(process: &Process<P>) -> Option<u64> {
         return Some(mapped + ENTRY);
     }
     let stack_gap_bottom = super::memory::mmap_top::<P>();
-    let anywhere = Placement::Anywhere {
-        hint: None,
-        floor: MINIMUM_ADDRESS,
-        top: stack_gap_bottom,
+    let page = (0..GAP_PAGES_TRIED)
+        .map(|index| stack_gap_bottom + index * FRAME_SIZE)
+        .find_map(|at| {
+            process.map_filled_page(Placement::Exactly(at), Attributes::USER_TEXT, code)
+        })?;
+    let recorded = {
+        let mut signals = process.signals().lock();
+        let recorded = signals.trampoline();
+        if recorded == 0 {
+            signals.set_trampoline(page);
+        }
+        recorded
     };
-    let page = process
-        .map_filled_page(
-            Placement::Exactly(stack_gap_bottom),
-            Attributes::USER_TEXT,
-            code,
-        )
-        .or_else(|| process.map_filled_page(anywhere, Attributes::USER_TEXT, code))?;
-    process.signals().lock().set_trampoline(page);
-    Some(page + ENTRY)
+    if recorded == 0 {
+        return Some(page + ENTRY);
+    }
+    let _ = process.unmap_range(page, page + FRAME_SIZE);
+    Some(recorded + ENTRY)
 }
 
 #[cfg(test)]

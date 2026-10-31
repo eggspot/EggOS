@@ -58,8 +58,10 @@ use eggos_hal::user::UserContext;
 /// as the program first touches them. No segment may reach into it, nor into the
 /// [`STACK_GUARD_GAP`] below it.
 pub const STACK_RESERVE: u64 = 8 << 20;
-/// Address space below [`STACK_RESERVE`] that stays unmapped, so a stack that overruns
-/// faults instead of running into the program's data (Linux keeps the same gap).
+/// Address space below [`STACK_RESERVE`] that `mmap` never places anything in, so a stack
+/// that overruns faults instead of running into the program's data (Linux keeps the same
+/// gap). Only its lowest pages may hold the read-only signal return trampoline (D169), so the
+/// rest of it, above that page, stays unmapped.
 pub const STACK_GUARD_GAP: u64 = 1 << 20;
 /// The most bytes the arguments, the environment, their pointers and the auxiliary vector
 /// may take on the stack: a quarter of [`STACK_RESERVE`], as Linux allows a quarter of its
