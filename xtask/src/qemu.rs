@@ -279,7 +279,7 @@ const BOOT_CLOCK_LINE: &str = "EGGOS-BENCH: boot_to_prompt ";
 
 const SHELL_PROMPT: &str = "eggsh:/";
 
-const SHELL_SESSION: [&[u8]; 37] = [
+const SHELL_SESSION: [&[u8]; 38] = [
     b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
     b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
     b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
@@ -291,6 +291,7 @@ const SHELL_SESSION: [&[u8]; 37] = [
     b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
     b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
     b"eggsh /usr/share/eggsh/language-test; echo EGGSH-TEST language status $?\r",
+    b"TZ=Asia/Kolkata date +EGGSH-TEST-zone-%Z%z; echo EGGSH-TEST zone $?\r",
     b"for i in 1 2; do echo EGGSH-TEST loop $i; done\r",
     b"true && echo EGGSH-TEST and ok; false && echo EGGSH-TEST never; false || echo EGGSH-TEST or ok\r",
     b"eggsh -c 'echo echo EGGSH-TEST redirected stderr >&2' 2> /tmp/e; . /tmp/e\r",
@@ -1750,7 +1751,7 @@ struct ShellTyping {
     reactions: [bool; REACTIONS.len()],
 }
 
-const SHELL_LINES: [&str; 53] = [
+const SHELL_LINES: [&str; 55] = [
     "EGGSH-TEST quoting single  quoted double /home/root $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
     "EGGSH-TEST cd /usr/libexec /home/root",
@@ -1778,6 +1779,8 @@ const SHELL_LINES: [&str; 53] = [
     "EGGSH-TEST piped loop",
     "EGGSH-TEST done default",
     "EGGSH-TEST language status 0",
+    "EGGSH-TEST-zone-IST+0530",
+    "EGGSH-TEST zone 0",
     "EGGSH-TEST loop 1",
     "EGGSH-TEST loop 2",
     "EGGSH-TEST and ok",
