@@ -18,7 +18,17 @@ click or the keyboard would: invoke presses, ticks, chooses or opens it, set-tex
 text field's text.\n";
 
 const MAX_DEPTH: usize = 16;
-const ELEMENT_RECORD_BYTES: usize = 2048;
+const ELEMENT_RECORD_BYTES: usize = 4096;
+
+fn element_id(text: &[u8]) -> Option<u32> {
+    if text.is_empty() || text.len() > 10 || !text.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let value = text.iter().try_fold(0u32, |value, &digit| {
+        value.checked_mul(10)?.checked_add(u32::from(digit - b'0'))
+    })?;
+    (value > 0).then_some(value)
+}
 
 fn window_operand<S: System>(output: &mut Output<S>, operand: &[u8]) -> Option<u32> {
     match number(operand) {
@@ -248,9 +258,9 @@ pub fn act<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let Some(window) = window_operand(output, window_bytes) else {
         return USAGE_STATUS;
     };
-    let element = match number(element.to_bytes()) {
-        Some(element) if element > 0 => element as u32,
-        _ => {
+    let element = match element_id(element.to_bytes()) {
+        Some(element) => element,
+        None => {
             output.coded(
                 &errors::USAGE,
                 &[b"invalid element id '", element.to_bytes(), b"'"],
@@ -414,6 +424,26 @@ mod tests {
     }
 
     #[test]
+    fn show_json_keeps_an_element_whose_texts_escape_to_their_longest() {
+        let mut fake = settings();
+        let controls = [1u8; 255];
+        let mut bytes = vec![0u8; 2048];
+        let mut tree = TreeWriter::new(&mut bytes);
+        tree.push(
+            &Element::new(1, 0, Role::TextField, Bounds::new(0, 0, 10, 10))
+                .named(&controls)
+                .valued(&controls),
+        );
+        let bytes = tree.bytes().to_vec();
+        fake.trees.insert(129, bytes);
+        let (status, fake) = run(&[c"show", c"--json", c"129"], fake);
+        assert_eq!(status, 0);
+        let written = fake.output();
+        assert_eq!(written.lines().count(), 1, "{written}");
+        assert_eq!(written.matches("\\u0001").count(), 510);
+    }
+
+    #[test]
     fn a_window_without_a_tree_is_pixels_only() {
         let mut fake = settings();
         fake.trees.clear();
@@ -442,6 +472,33 @@ mod tests {
         let (status, fake) = run(&[c"act", c"129", c"400", c"set-text", c"Egg"], fake);
         assert_eq!(status, 0);
         assert_eq!(fake.acted[1], (129, 400, 3, b"Egg".to_vec()));
+    }
+
+    #[test]
+    fn act_takes_every_element_id_up_to_the_largest() {
+        let (status, fake) = run(&[c"act", c"129", c"1073807362", c"select"], settings());
+        assert_eq!((status, fake.errors()), (0, String::new()));
+        let (status, fake) = run(&[c"act", c"129", c"4294967295", c"invoke"], fake);
+        assert_eq!((status, fake.errors()), (0, String::new()));
+        assert_eq!(
+            fake.acted,
+            [
+                (129, 1_073_807_362, 4, Vec::new()),
+                (129, u32::MAX, 1, Vec::new())
+            ]
+        );
+        for element in [
+            c"4294967296",
+            c"99999999999",
+            c"0000000000",
+            c"-1",
+            c"+5",
+            c"",
+        ] {
+            let (status, fake) = run(&[c"act", c"129", element, c"invoke"], settings());
+            assert_eq!(status, 2, "{element:?}");
+            assert!(fake.acted.is_empty(), "{element:?}");
+        }
     }
 
     #[test]

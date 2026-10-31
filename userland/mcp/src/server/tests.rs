@@ -2344,6 +2344,13 @@ fn the_window_management_tools_run_wm_s_verbs_and_say_what_they_did() {
             r#"{"window":129,"element":302,"action":"set-text","text":"Egg"}"#,
             "Acted on an element of window 129.",
         ),
+        (
+            "wm_act",
+            r#"{"window":129,"element":4294967295,"action":"select"}"#,
+            "act -- 129 4294967295 select",
+            r#"{"window":129,"element":4294967295,"action":"select"}"#,
+            "Acted on an element of window 129.",
+        ),
     ] {
         let answer = harness.call(1, tool, arguments);
         assert!(!is_error(&answer), "{tool}: {answer}");
