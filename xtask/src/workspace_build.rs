@@ -797,7 +797,7 @@ mod tests {
     fn the_workspace_is_its_own_with_a_lock_file_and_no_dependencies_from_outside() {
         let folder = crate::workspace_root().join("tests").join("multi-crate");
         let manifest = std::fs::read_to_string(folder.join("Cargo.toml")).unwrap();
-        assert!(manifest.starts_with("[workspace]\n"));
+        assert_eq!(manifest.lines().next(), Some("[workspace]"));
         let lock = std::fs::read_to_string(folder.join("Cargo.lock")).unwrap();
         assert!(lock.contains(&format!("name = \"{PROGRAM}\"")));
         assert!(!lock.contains("source = "), "no dependencies from outside");

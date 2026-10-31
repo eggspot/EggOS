@@ -510,7 +510,7 @@ mod tests {
         let folder = crate::workspace_root().join("tests").join("hello-crate");
         let manifest = std::fs::read_to_string(folder.join("Cargo.toml")).unwrap();
         assert!(manifest.contains(&format!("name = \"{PROGRAM}\"")));
-        assert!(manifest.contains("\n[workspace]\n"));
+        assert!(manifest.lines().any(|line| line == "[workspace]"));
         let lock = std::fs::read_to_string(folder.join("Cargo.lock")).unwrap();
         assert!(lock.contains(&format!("name = \"{PROGRAM}\"")));
         assert!(!lock.contains("source = "), "no dependencies");
