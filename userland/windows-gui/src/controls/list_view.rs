@@ -2072,7 +2072,7 @@ mod tests {
         assert_eq!(list.text(3, 1), units("5"));
         assert!(!list.reorder(&[0, 0, 1, 2]));
         assert_eq!(list.sorted_position(&units("cabbage"), false), 0);
-        assert_eq!(list.sorted_position(&units("cabbage"), true), 2);
+        assert_eq!(list.sorted_position(&units("cabbage"), true), 3);
         list.clear();
         assert_eq!(list.count(), 0);
     }

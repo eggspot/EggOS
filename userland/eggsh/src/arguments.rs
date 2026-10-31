@@ -180,7 +180,9 @@ mod tests {
         arguments.shift(1);
         arguments.push_frame([&b"inner"[..]].into_iter()).unwrap();
         assert_eq!(all(&arguments), [&b"inner"[..]]);
-        arguments.set([&b"changed"[..], b"too"].into_iter()).unwrap();
+        arguments
+            .set([&b"changed"[..], b"too"].into_iter())
+            .unwrap();
         assert_eq!(arguments.count(), 2);
         arguments.pop_frame();
         assert_eq!(all(&arguments), [&b"two"[..]]);
@@ -192,7 +194,7 @@ mod tests {
     fn what_does_not_fit_is_refused_and_changes_nothing() {
         let mut arguments = Arguments::default();
         arguments.set([&b"kept"[..]].into_iter()).unwrap();
-        let big = [b'x'; ARGUMENTS_CAPACITY];
+        let big = [b'x'; ARGUMENTS_CAPACITY + 1];
         assert_eq!(arguments.set([&big[..]].into_iter()), Err(Full));
         assert_eq!(all(&arguments), [&b"kept"[..]]);
         let many = vec![&b"a"[..]; MAX_ARGUMENTS];

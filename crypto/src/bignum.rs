@@ -251,6 +251,7 @@ impl Modulus {
         result.limbs[..count].copy_from_slice(&t[..count]);
         if t[count] != 0 || result >= self.value {
             result.subtract_assign(&self.value);
+            result.limbs[count..].fill(0);
         }
         result
     }

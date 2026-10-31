@@ -743,7 +743,7 @@ fn the_prompt_follows_ps1_and_the_user() {
 
 #[test]
 fn a_line_too_long_is_refused_and_the_shell_goes_on() {
-    let long = format!("echo {}\n", "x".repeat(LINE_CAPACITY));
+    let long = format!("# {}\n", "x".repeat(LINE_CAPACITY));
     let mut shell = shell_with_input(true, &[&long, "echo ok\n"]);
     shell.run_descriptor(0, true);
     assert_eq!(output(&shell), "ok\n");

@@ -33,7 +33,7 @@ impl Timestamp {
         let rest = nanoseconds.rem_euclid(NANOSECONDS);
         Self {
             seconds: (seconds + UNIX_EPOCH_IN_NTP_SECONDS).rem_euclid(ERA_SECONDS) as u32,
-            fraction: ((rest << 32) / NANOSECONDS) as u32,
+            fraction: (((rest << 32) + NANOSECONDS / 2) / NANOSECONDS) as u32,
         }
     }
 
@@ -44,7 +44,7 @@ impl Timestamp {
         if self.seconds & 0x8000_0000 == 0 {
             seconds += ERA_SECONDS;
         }
-        let fraction = (i64::from(self.fraction) * NANOSECONDS) >> 32;
+        let fraction = (i64::from(self.fraction) * NANOSECONDS + (1 << 31)) >> 32;
         (seconds - UNIX_EPOCH_IN_NTP_SECONDS) * NANOSECONDS + fraction
     }
 

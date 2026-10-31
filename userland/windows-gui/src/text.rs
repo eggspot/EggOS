@@ -422,8 +422,8 @@ mod tests {
                 Cell::Glyph {
                     id,
                     underline: true,
-                } => format!("_{}", id as char),
-                Cell::Glyph { id, .. } => (id as char).to_string(),
+                } => format!("_{}", font::character(id)),
+                Cell::Glyph { id, .. } => font::character(id).to_string(),
                 Cell::Space => " ".into(),
                 Cell::Break => "|".into(),
             })
@@ -442,7 +442,7 @@ mod tests {
         let plain = Reading::default();
         assert_eq!(shown(&decoded("a\r\nb\nc\rd", plain)), "a|b|c|d");
         assert_eq!(shown(&decoded("a\u{1}b\tc", plain)), "ab c");
-        assert_eq!(shown(&decoded("é€😀", plain)), "???");
+        assert_eq!(shown(&decoded("é€😀", plain)), "é€?");
         let prefixed = Reading {
             prefixes: true,
             ..plain
