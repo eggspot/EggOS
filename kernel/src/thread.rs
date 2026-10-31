@@ -191,8 +191,16 @@ struct Thread {
     fp: OnceCell<FpRegisters>,
     ran: Cell<u64>,
     since: Cell<u64>,
-    account: Cell<Option<Arc<AtomicU64>>>,
+    account: CpuAccount,
     allowed: Cell<u64>,
+}
+
+struct CpuAccount(Cell<Option<Arc<AtomicU64>>>);
+
+impl fmt::Debug for CpuAccount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("CpuAccount").finish_non_exhaustive()
+    }
 }
 
 /// A thread's FP/SIMD registers (D54): where they are saved, and the CPU that last loaded them.
@@ -239,7 +247,7 @@ impl Thread {
             fp: OnceCell::new(),
             ran: Cell::new(0),
             since: Cell::new(0),
-            account: Cell::new(account),
+            account: CpuAccount(Cell::new(account)),
             allowed: Cell::new(u64::MAX),
         })
     }
@@ -252,17 +260,17 @@ impl Thread {
     fn charge(&self, now: u64) {
         let spent = now.wrapping_sub(self.since.get());
         self.ran.set(self.ran.get().wrapping_add(spent));
-        let account = self.account.take();
+        let account = self.account.0.take();
         if let Some(account) = &account {
             account.fetch_add(spent, Ordering::Relaxed);
         }
-        self.account.set(account);
+        self.account.0.set(account);
     }
 
     fn move_account(&self, now: u64, account: Arc<AtomicU64>) -> Option<Arc<AtomicU64>> {
         self.charge(now);
         self.since.set(now);
-        self.account.replace(Some(account))
+        self.account.0.replace(Some(account))
     }
 
     /// Stops the kernel if the thread overflowed its stack: whatever lies below it may already
@@ -2532,7 +2540,7 @@ mod tests {
             fp,
             ran: Cell::new(0),
             since: Cell::new(0),
-            account: Cell::new(None),
+            account: CpuAccount(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         };
         let layout = Layout::new::<FpState>();
@@ -2597,7 +2605,7 @@ mod tests {
             fp: OnceCell::new(),
             ran: Cell::new(0),
             since: Cell::new(100),
-            account: Cell::new(Some(Arc::clone(&old))),
+            account: CpuAccount(Cell::new(Some(Arc::clone(&old)))),
             allowed: Cell::new(u64::MAX),
         };
         let replaced = thread.move_account(130, Arc::clone(&new));
@@ -2634,7 +2642,7 @@ mod tests {
             fp: OnceCell::new(),
             ran: Cell::new(0),
             since: Cell::new(0),
-            account: Cell::new(None),
+            account: CpuAccount(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         });
         thread.check_stack();
