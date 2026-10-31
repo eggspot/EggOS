@@ -245,3 +245,30 @@ fn stateless_answers_carry_their_errors_in_the_http_status() {
         Status::Ok
     );
 }
+
+#[test]
+fn only_an_agents_own_message_keeps_its_connection() {
+    let mcp = Route::Mcp(crate::pairing::token_hash(b"eggos_abc"), b"{}");
+    assert!(keeps_connection(&mcp, Status::Ok, true));
+    assert!(keeps_connection(&mcp, Status::Accepted, true));
+    assert!(!keeps_connection(&mcp, Status::Ok, false));
+    assert!(!keeps_connection(&mcp, Status::Unauthorized, true));
+    assert!(!keeps_connection(
+        &Route::Pair(b"{}"),
+        Status::Forbidden,
+        true
+    ));
+    assert!(!keeps_connection(&Route::Pair(b"{}"), Status::Ok, true));
+    for status in [
+        Status::Unauthorized,
+        Status::Forbidden,
+        Status::NotFound,
+        Status::MethodNotAllowed,
+    ] {
+        assert!(!keeps_connection(
+            &Route::Refused(status, "no"),
+            status,
+            true
+        ));
+    }
+}

@@ -33,6 +33,9 @@ pub const NETWORK_OPTION: &[u8] = b"--network";
 pub const IDLE_MS: u64 = 30_000;
 /// How long a TLS handshake may take, in milliseconds.
 pub const HANDSHAKE_MS: u64 = 10_000;
+/// How long a request may take to arrive once it started, in milliseconds, however its bytes
+/// are spread over records.
+pub const REQUEST_MS: u64 = 10_000;
 /// The years the certificate is valid for.
 pub const CERTIFICATE_YEARS: i64 = 20;
 
@@ -543,8 +546,8 @@ fn serve_connection(
         return;
     };
     let mut filled = 0;
+    socket.deadline_ms = now_ms() + REQUEST_MS;
     loop {
-        socket.deadline_ms = now_ms() + IDLE_MS;
         let parsed = match http::parse(
             input.get(..filled).unwrap_or_default(),
             super::MAX_MESSAGE_BYTES,
@@ -557,9 +560,13 @@ fn serve_connection(
                 let _ = answer(&mut session, socket, Status::PayloadTooLarge, &[], false);
                 return;
             };
+            let waiting_for_first_byte = filled == 0;
             match session.read(socket, free) {
                 Ok(0) | Err(_) => return,
                 Ok(count) => filled += count,
+            }
+            if waiting_for_first_byte {
+                socket.deadline_ms = socket.deadline_ms.min(now_ms() + REQUEST_MS);
             }
             continue;
         };
@@ -571,29 +578,21 @@ fn serve_connection(
             }
             Parsed::Incomplete => return,
         };
-        let keep_alive = request.keep_alive;
         let mut error = [0u8; 256];
-        let sent = match http::route(&request) {
+        let route = http::route(&request);
+        let (status, sent) = match route {
             Route::Refused(status, message) => {
                 let length = http::error_body(message, &mut error);
-                answer(
-                    &mut session,
-                    socket,
-                    status,
-                    error.get(..length).unwrap_or_default(),
-                    keep_alive,
-                )
+                socket.deadline_ms = now_ms() + HANDSHAKE_MS;
+                let body = error.get(..length).unwrap_or_default();
+                (status, answer(&mut session, socket, status, body, false))
             }
             Route::Pair(body) => {
                 let now = exchange.system.now();
                 let (status, length) = pair(body, now, &mut error);
-                answer(
-                    &mut session,
-                    socket,
-                    status,
-                    error.get(..length).unwrap_or_default(),
-                    keep_alive,
-                )
+                socket.deadline_ms = now_ms() + HANDSHAKE_MS;
+                let body = error.get(..length).unwrap_or_default();
+                (status, answer(&mut session, socket, status, body, false))
             }
             Route::Mcp(token_hash, body) => {
                 let stateless = match http::check_stateless_headers(&request) {
@@ -601,20 +600,10 @@ fn serve_connection(
                     Err(message) => {
                         let length = http::header_mismatch_body(message, &mut error);
                         let refusal = error.get(..length).unwrap_or_default();
-                        let sent = answer(
-                            &mut session,
-                            socket,
-                            Status::BadRequest,
-                            refusal,
-                            keep_alive,
-                        );
-                        if !sent || !keep_alive {
-                            let _ = session.close(socket);
-                            return;
-                        }
-                        input.copy_within(used..filled, 0);
-                        filled -= used;
-                        continue;
+                        socket.deadline_ms = now_ms() + HANDSHAKE_MS;
+                        let _ = answer(&mut session, socket, Status::BadRequest, refusal, false);
+                        let _ = session.close(socket);
+                        return;
                     }
                 };
                 let (status, start, end) = exchange.mcp(&token_hash, body);
@@ -624,31 +613,33 @@ fn serve_connection(
                     ),
                     (_, status) => status,
                 };
+                let keep_alive = http::keeps_connection(&route, status, request.keep_alive);
+                socket.deadline_ms = now_ms() + IDLE_MS;
                 let body = exchange.response.get(start..end).unwrap_or_default();
-                match status {
+                let sent = match status {
                     Status::Unauthorized => {
                         let length = http::error_body(
                             "this token is no agent's: pair the agent again",
                             &mut error,
                         );
-                        answer(
-                            &mut session,
-                            socket,
-                            status,
-                            error.get(..length).unwrap_or_default(),
-                            keep_alive,
-                        )
+                        let body = error.get(..length).unwrap_or_default();
+                        answer(&mut session, socket, status, body, keep_alive)
                     }
                     _ => answer(&mut session, socket, status, body, keep_alive),
-                }
+                };
+                (status, sent)
             }
         };
-        if !sent || !keep_alive {
+        if !sent || !http::keeps_connection(&route, status, request.keep_alive) {
             let _ = session.close(socket);
             return;
         }
         input.copy_within(used..filled, 0);
         filled -= used;
+        socket.deadline_ms = match filled {
+            0 => now_ms() + IDLE_MS,
+            _ => now_ms() + REQUEST_MS,
+        };
     }
 }
 

@@ -300,6 +300,14 @@ fn is_json(content_type: Option<&[u8]>) -> bool {
     })
 }
 
+/// Whether the connection stays open after answering `route` with `status`: only after an
+/// MCP message whose token checked out, from a client that asked to keep it. Anything else, a
+/// refusal, a pairing or a token that is no agent's, closes it, so a stranger cannot hold the
+/// server's connection.
+pub fn keeps_connection(route: &Route<'_>, status: Status, keep_alive: bool) -> bool {
+    keep_alive && matches!(route, Route::Mcp(..)) && status != Status::Unauthorized
+}
+
 /// Decides where `request` goes.
 pub fn route<'a>(request: &Request<'a>) -> Route<'a> {
     if let Some(origin) = request.origin
