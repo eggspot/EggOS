@@ -185,8 +185,11 @@ each): 0: id (`u32`, unique in the tree, not 0), 4: parent (`u32`, 0 for the roo
 content pixels, as `SEND_INPUT` takes them), 28: name length, 30: value length (`u16`). Roles: 0
 window (the root, id 1), 1 group, 2 label, 3 button, 4 checkbox, 5 radio group, 6 radio (an
 option or a card), 7 list, 8 list item, 9 text field (its text the value), 10 progress (its
-per mille the value), 11 graphic, 12 text (drawn text); flags: 1 focused, 2 focusable, 4
-disabled, 8 selected, 16 checked, 32 default. `userland/element-tree` (`eggos-element-tree`)
+per mille the value), 11 graphic, 12 text (drawn text), 13 slider (its value `<value>
+<min>..<max> by <step>`, D199), 14 combo box (its value the chosen option's text, its options
+its children, D199); flags: 1 focused, 2 focusable, 4 disabled, 8 selected, 16 checked, 32
+default, 64 expanded (D178), 128 person-only (its name and value left blank for agents,
+D193). `userland/element-tree` (`eggos-element-tree`)
 writes and reads them, and its `Query` decodes the record. The tree comes from the app: data,
 never instructions.
 
