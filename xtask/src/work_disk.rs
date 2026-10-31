@@ -515,7 +515,11 @@ fn write_file(
     let attributes = volume
         .attributes(node)
         .map_err(|error| eggfs_error(&shown, error))?;
-    let mut file = File::create(path).map_err(|e| format!("{shown}: {e}"))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("{shown}: {e}"))?;
     let mut offset = 0u64;
     loop {
         let read = volume
@@ -531,28 +535,60 @@ fn write_file(
     let modified = UNIX_EPOCH + Duration::from_secs(attributes.modified);
     file.set_modified(modified)
         .map_err(|e| format!("{shown}: {e}"))?;
-    drop(file);
-    set_permissions(path, attributes.permissions)?;
+    set_permissions(&file, attributes.permissions).map_err(|e| format!("{shown}: {e}"))?;
     Ok(offset)
 }
 
 #[cfg(unix)]
-fn set_permissions(path: &Path, permissions: u32) -> Result<(), String> {
+fn set_permissions(file: &File, permissions: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(permissions & 0o7777))
-        .map_err(|e| format!("{}: {e}", path.display()))
+    file.set_permissions(std::fs::Permissions::from_mode(permissions & 0o777))
 }
 
 #[cfg(not(unix))]
-fn set_permissions(path: &Path, permissions: u32) -> Result<(), String> {
+fn set_permissions(file: &File, permissions: u32) -> std::io::Result<()> {
     if permissions & 0o222 != 0 {
         return Ok(());
     }
-    let mut host = std::fs::metadata(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?
-        .permissions();
+    let mut host = file.metadata()?.permissions();
     host.set_readonly(true);
-    std::fs::set_permissions(path, host).map_err(|e| format!("{}: {e}", path.display()))
+    file.set_permissions(host)
+}
+
+fn link_stays_inside(
+    volume: &mut Volume<FileDisk>,
+    top: u64,
+    directory: u64,
+    target: &[u8],
+) -> bool {
+    let refused_byte = |&byte: &u8| matches!(byte, b'\\' | b':' | 0);
+    if target.is_empty() || target.starts_with(b"/") || target.iter().any(refused_byte) {
+        return false;
+    }
+    let parts: Vec<&[u8]> = target.split(|&byte| byte == b'/').collect();
+    let last = parts.len() - 1;
+    let mut node = directory;
+    let mut unverified = false;
+    for (index, part) in parts.into_iter().enumerate() {
+        match part {
+            b"" | b"." => {}
+            b".." if unverified => return false,
+            b".." if node == top => return false,
+            b".." => match volume.parent(node) {
+                Ok(parent) => node = parent,
+                Err(_) => return false,
+            },
+            _ if unverified => {}
+            name => match volume.lookup(node, name) {
+                Ok(Some(found)) if eggos_eggfs::kind_of(found) == Kind::Directory => node = found,
+                Ok(Some(_)) if index == last => {}
+                Ok(Some(_)) => return false,
+                Ok(None) => unverified = true,
+                Err(_) => return false,
+            },
+        }
+    }
+    true
 }
 
 #[cfg(unix)]
@@ -690,7 +726,11 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
                     let target = volume
                         .link_target(entry.node)
                         .map_err(|error| eggfs_error(&path.display().to_string(), error))?;
-                    match make_host_link(&mut volume, directory, &target, &path)? {
+                    let made = match link_stays_inside(&mut volume, top, directory, &target) {
+                        true => make_host_link(&mut volume, directory, &target, &path)?,
+                        false => Some("its target leads outside the unpacked folder".to_owned()),
+                    };
+                    match made {
                         None => unpacked.symbolic_links += 1,
                         Some(reason) => {
                             eprintln!(
@@ -882,8 +922,8 @@ mod tests {
         drop(volume);
         let out = root.join("out");
         let unpacked = unpack(&image, &out).unwrap();
-        assert_eq!((unpacked.files, unpacked.symbolic_links), (1, 3));
-        assert_eq!((unpacked.hard_links, unpacked.skipped), (1, 0));
+        assert_eq!((unpacked.files, unpacked.symbolic_links), (1, 2));
+        assert_eq!((unpacked.hard_links, unpacked.skipped), (1, 1));
         let mode = std::fs::metadata(out.join("run.sh"))
             .unwrap()
             .permissions()
@@ -893,10 +933,7 @@ mod tests {
             std::fs::read_link(out.join("link")).unwrap(),
             Path::new("run.sh")
         );
-        assert_eq!(
-            std::fs::read_link(out.join("dangling")).unwrap(),
-            Path::new("../outside/missing")
-        );
+        assert!(std::fs::symlink_metadata(out.join("dangling")).is_err());
         assert_eq!(
             std::fs::read_link(out.join("sub/up")).unwrap(),
             Path::new("..")
@@ -908,6 +945,78 @@ mod tests {
             std::fs::read(out.join("link")).unwrap(),
             b"#!/bin/eggsh\necho hi\n"
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unpacking_never_writes_or_links_outside_the_output_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("escape");
+        let folder = root.join("repo");
+        write(&folder.join("keep.txt"), b"keep\n");
+        let image = root.join("work.img");
+        pack_with_room(&folder, &image, TEST_ROOM).unwrap();
+        let outside = root.join("outside.txt");
+        write(&outside, b"mine\n");
+        let (mut volume, _) = Volume::mount(FileDisk::open(&image).unwrap()).unwrap();
+        let top = eggos_eggfs::work_folder(&mut volume).unwrap();
+        let sub = volume
+            .create(top, b"sub", Kind::Directory, 0o755, 5)
+            .unwrap();
+        volume.symlink(top, b"up", b".", 5).unwrap();
+        for (name, target) in [
+            (&b"absolute"[..], outside.to_str().unwrap().as_bytes()),
+            (b"climbs", b"../outside.txt"),
+            (b"through", b"up/../outside.txt"),
+            (b"folded", b"UP/../outside.txt"),
+            (b"backslash", b"..\\outside.txt"),
+        ] {
+            volume.symlink(top, name, target, 5).unwrap();
+        }
+        volume.symlink(sub, b"parent", b"../keep.txt", 5).unwrap();
+        let setuid = volume
+            .create(top, b"tool", Kind::Regular, 0o4755, 5)
+            .unwrap();
+        volume.write(setuid, None, b"x", 5).unwrap();
+        volume.commit().unwrap();
+        drop(volume);
+        let out = root.join("out");
+        let unpacked = unpack(&image, &out).unwrap();
+        assert_eq!((unpacked.symbolic_links, unpacked.skipped), (2, 5));
+        for name in ["absolute", "climbs", "through", "folded", "backslash"] {
+            assert!(std::fs::symlink_metadata(out.join(name)).is_err(), "{name}");
+        }
+        assert_eq!(std::fs::read(out.join("sub/parent")).unwrap(), b"keep\n");
+        let mode = std::fs::metadata(out.join("tool"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, 0o755);
+        assert_eq!(std::fs::read(&outside).unwrap(), b"mine\n");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_is_never_written_through_an_entry_already_there() {
+        let root = scratch("existing");
+        let folder = root.join("repo");
+        write(&folder.join("key"), b"guest\n");
+        let image = root.join("work.img");
+        pack_with_room(&folder, &image, TEST_ROOM).unwrap();
+        let outside = root.join("outside.txt");
+        write(&outside, b"mine\n");
+        let (mut volume, _) = Volume::mount(FileDisk::open(&image).unwrap()).unwrap();
+        let top = eggos_eggfs::work_folder(&mut volume).unwrap();
+        let key = volume.lookup(top, b"key").unwrap().unwrap();
+        let out = root.join("out");
+        std::fs::create_dir(&out).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("key")).unwrap();
+        let mut buffer = vec![0u8; COPY_CHUNK_BYTES];
+        assert!(write_file(&mut volume, key, &out.join("key"), &mut buffer).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"mine\n");
+        drop(volume);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

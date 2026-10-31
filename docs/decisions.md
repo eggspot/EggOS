@@ -11551,7 +11551,16 @@ the license, by an explicit instruction recorded here.
 - **Work disks** (D166). `cargo xtask work pack` carries host symbolic links (target bytes;
   on Windows UTF-8 with `\` as `/`) and hard links (same device and inode, Unix); `unpack`
   makes them on the host (on Windows `symlink_dir` or `symlink_file`, skipped with a warning
-  without the privilege).
+  without the privilege). Since round 1's review, unpacking never writes outside the output
+  folder, whatever the guest left on the disk: a symbolic link is made only when its target
+  is relative, has no `\`, `:` or NUL, and stays inside the folder when walked over the image
+  itself (a `..` only through real folders, never above `work`, never after a name the image
+  does not have, so a name the host folds by case or Unicode cannot climb; a link in the
+  middle of a target refuses it), else it is left out with a warning; files are created with
+  `create_new` (an entry already there, a link the host folded onto the name included, stops
+  the unpack instead of being written through), their mode and time set through the open
+  handle, and the setuid, setgid and sticky bits are dropped (`0o777`), as `tar` does for a
+  user who is not root.
 - **Checks.** Host tests: the VFS walk without links; tmpfs links, hard links counted, names
   moved, a held file kept until its last release, a held file replaced by rename, `chmod`;
   EggFS's adapter end to end (links, `EPERM`, permissions, a held file freed at the commit
