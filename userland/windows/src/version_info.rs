@@ -60,7 +60,9 @@ fn first_entry(resources: &[u8], directory: usize, wanted: Option<u32>) -> Optio
     })
 }
 
-/// The bytes of the first `RT_VERSION` resource in the PE file `file`, if it has one.
+/// The bytes of the first `RT_VERSION` resource in the PE file `file`, if it has one and its
+/// `VS_VERSIONINFO` block fits in them, so a block's own length never reaches past the bytes a
+/// program copies.
 pub fn version_resource(file: &[u8]) -> Option<&[u8]> {
     if !file.starts_with(b"MZ") {
         return None;
@@ -103,7 +105,11 @@ pub fn version_resource(file: &[u8]) -> Option<&[u8]> {
     let data_address = u32_at(resources, data_entry)?;
     let data_size = u32_at(resources, data_entry + 4)? as usize;
     let data = sections.file_offset(data_address)?;
-    file.get(data..data.checked_add(data_size)?)
+    let resource = file.get(data..data.checked_add(data_size)?)?;
+    let block_length = usize::from(u16_at(resource, 0)?);
+    (NODE_HEADER..=resource.len())
+        .contains(&block_length)
+        .then_some(resource)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +203,13 @@ pub fn query(block: &[u8], path: &[u16]) -> Option<(usize, usize, bool)> {
     if current.value_start > current.end {
         return None;
     }
-    Some((current.value_start, current.value_length, current.text))
+    let unit = if current.text { 2 } else { 1 };
+    let fitting = (current.end - current.value_start) / unit;
+    Some((
+        current.value_start,
+        current.value_length.min(fitting),
+        current.text,
+    ))
 }
 
 #[cfg(test)]
@@ -280,6 +292,34 @@ mod tests {
         assert_eq!(query(&block[..4], &path("\\")), None);
     }
 
+    #[test]
+    fn a_value_never_reaches_past_its_node() {
+        let mut block = built("VS_VERSION_INFO", &[1, 2, 3, 4], false, &[]);
+        block[2..4].copy_from_slice(&0xfff0u16.to_le_bytes());
+        let (offset, length, _) = query(&block, &path("\\")).unwrap();
+        assert_eq!(length, 4);
+        assert!(offset + length <= block.len());
+        let text = built("FileVersion", &wide_bytes("1.0"), true, &[]);
+        let table = built("040904b0", &[], true, &[text]);
+        let strings = built("StringFileInfo", &[], true, &[table]);
+        let mut block = built("VS_VERSION_INFO", &[], false, &[strings]);
+        let key: Vec<u8> = "FileVersion"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let key_at = block
+            .windows(key.len())
+            .position(|window| window == key)
+            .unwrap();
+        let node_start = key_at - NODE_HEADER;
+        block[node_start + 2..node_start + 4].copy_from_slice(&0x7fffu16.to_le_bytes());
+        let wanted = path("\\StringFileInfo\\040904b0\\FileVersion");
+        let (offset, length, text) = query(&block, &wanted).unwrap();
+        assert!(text);
+        assert_eq!(length, 4);
+        assert!(offset + length * 2 <= block.len());
+    }
+
     fn pe_with_version(resource: &[u8], optional_magic: u16) -> Vec<u8> {
         let mut file = vec![0u8; 0x400];
         file[0..2].copy_from_slice(b"MZ");
@@ -330,6 +370,12 @@ mod tests {
         broken[0x80] = b'X';
         assert_eq!(version_resource(&broken), None);
         assert_eq!(version_resource(b"MZ"), None);
+        let mut too_long = block.clone();
+        too_long[0..2].copy_from_slice(&0xffffu16.to_le_bytes());
+        assert_eq!(version_resource(&pe_with_version(&too_long, 0x20b)), None);
+        let mut too_short = block.clone();
+        too_short[0..2].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(version_resource(&pe_with_version(&too_short, 0x20b)), None);
         assert_eq!(version_resource(b"\x7fELF"), None);
     }
 }

@@ -95,6 +95,11 @@ unsafe extern "efiapi" fn get_file_version_info_w(
         with_version_block(name, |block| {
             let count = block.len().min(out.len());
             out[..count].copy_from_slice(&block[..count]);
+            if let Some(header) = out.get_mut(..2) {
+                let stored = u16::from_le_bytes([header[0], header[1]]);
+                let fitting = stored.min(u16::try_from(count).unwrap_or(u16::MAX));
+                header.copy_from_slice(&fitting.to_le_bytes());
+            }
         })
     };
     match copied {
@@ -115,7 +120,9 @@ unsafe extern "efiapi" fn ver_query_value_w(
     // SAFETY: `VerQueryValueW`'s contract: a block `GetFileVersionInfoW` filled, which starts
     // with its own length.
     let size = usize::from(unsafe { block.cast::<u16>().read_unaligned() });
-    // SAFETY: as above: the block holds `size` readable bytes.
+    // SAFETY: as above: `GetFileVersionInfoW` copied only a block whose length fits in the
+    // resource's data, and stored a length no larger than the bytes it copied, so the block
+    // holds `size` readable bytes.
     let bytes = unsafe { core::slice::from_raw_parts(block, size) };
     // SAFETY: as above: a NUL-terminated path.
     let path = unsafe { super::file::wide_string(path) };
