@@ -12204,7 +12204,10 @@ the license, by an explicit instruction recorded here.
   need its status bar: part 26), the math library beyond `sqrtf` (other puzzles import `sin`,
   `cos`, `floor`), printing, HTML Help, a clipboard shared between apps (part 45), hatched
   brushes; aarch64 (part 39, x64 programs on Arm); a client raising its own window
-  (`SetForegroundWindow`); fonts other than Egg Mono.
+  (`SetForegroundWindow`); fonts other than Egg Mono. From round 1 review: `pegs.exe` kept as
+  a test asset we host (a release asset of this repository, still checked by its SHA-256),
+  since the upstream URL is replaced by every upstream build and a cache miss then fails CI's
+  `win32-app` job until it is re-pinned.
 
 ## D175 A real Objective-C Mac app installs and runs: CocoaGame from its `.zip` through the Cocoa umbrella, views told when they move into a window, the standard About panel, AppKit windows as element trees, NSTimer in the event loop, and the Objective-C runtime's blocks, `__weak` references and exceptions with an unwinder over the image's compact unwind information (the Real apps track's fifth step, its first Mac app; extends D18, D21, D22, D120, D142, D147, D148, D161, D162, D172, D174) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the About panel designed by Claude Fable, `docs/ux/macos-gui-v0.3.md` section 8)
 - **Why.** The Real apps track checks EggOS against applications people use. After a Linux SDL
@@ -12680,6 +12683,12 @@ the license, by an explicit instruction recorded here.
   filter `_seh_filter_exe` calls the handler of the signal an access violation, an illegal
   instruction or an arithmetic exception stands for (`SIGFPE` with `_FPE_*`) and continues the
   program, as Microsoft documents.
+- **Bounded by the stack.** A walk reads the stack only between the stack pointer it starts
+  from (never below the TEB's `StackLimit`) and the TEB's `StackBase`, and ends, as unhandled
+  (the unhandled-exception filter, or the end of the process for an unwind), when a frame's
+  stack pointer or establisher leaves that range or a caller's stack pointer moves down, as
+  Windows bounds a walk by the TEB's limits; a smashed stack never makes the layer fault in
+  its own code (round 1 review).
 - **Cost.** Nothing runs on any path until an exception: the tables are the program's own,
   looked up by binary search; no allocation (the dispatch works on the thread's stack); the
   whole of it is in the Windows layer (D18). No benchmark covers a throw yet (see "Not yet").
@@ -12724,7 +12733,14 @@ the license, by an explicit instruction recorded here.
   context; `RtlAddFunctionTable` and `RtlInstallFunctionTableCallback` for code a program
   generates (it is unwound as a leaf); `RtlVirtualUnwind`'s context pointers; PAC-signed
   return addresses (`pacibsp`) stripped from `lr`; a benchmark of a throw and catch
-  against Windows; 32-bit (`x86`) programs' frame-based SEH (part 71).
+  against Windows; 32-bit (`x86`) programs' frame-based SEH (part 71). From round 1 review:
+  a QEMU check that a smashed stack reaches the unhandled-exception filter; unwind and scope
+  data read only from sections the program maps readable (a table naming an unreadable or
+  changing section now faults as the program's own read would); restoring a `CONTEXT` loads
+  every register before switching `sp`/`rsp` to the target (safe today, as only synchronous
+  faults have handlers, but an asynchronous handler could write over the `CONTEXT` below the
+  new stack pointer); the faulting instruction's bytes read only on the signals that need
+  them.
 
 ## D178 A real Win32 app on common controls, GDI+ and COM: AutoHotkey v2 with comctl32's status bar, progress bar, tab control, list view and header, tree view, toolbar and image lists, STATIC pictures, GDI+ images, COM with `Scripting.Dictionary`, PE resources, dialog templates, accelerators, subclassing, and the rest of the 280 functions it imports; CI's `autohotkey` job (batch part 26, the Real apps track's second Windows step; D174's "Not yet"; extends D18, D21, D22, D118, D129, D145, D146, D161, D162, D174, D177) — Decided by the build loop (the app, where it comes from and which architectures it runs on decided by research; the common controls designed by Claude Fable, `docs/ux/windows-controls-v0.3.md` sections 20-31)
 - **Why.** After a classic Win32 app made of the standard controls (D174), the Real apps track's
@@ -12881,7 +12897,12 @@ the license, by an explicit instruction recorded here.
   sound, joysticks and MCI; other processes' memory; exceptions through the layer's own frames
   (D177); host tests for the code under `win32/` (that module is built only for Windows
   programs, so its pure parts belong in modules outside it); aarch64 (part 39, x64 programs on
-  Arm).
+  Arm). From round 1 review: closing a WinINet request handle while another thread is blocked
+  in `InternetReadFile` on it (Windows' way to cancel) frees the block under the reader: a use
+  count per handle, or a shutdown with the free deferred to the last user; `GetDIBits` into 4-
+  and 8-bit formats (answers `ERROR_NOT_SUPPORTED`; `dib::write_row` already picks the nearest
+  palette colour); QEMU checks of `SHFileOperationW` over a symbolic link (needs
+  `CreateSymbolicLinkW`) and of `OpenClipboard` from two threads.
 
 ## D179 A real Qt app installs and runs: CorePad on Qt 6 Widgets through `eggway`, with EggOS's own EGL and GL libraries that report no display, `wl_output` 4, `xdg_wm_base` 5 and `wp_fractional_scale_v1`; `inotify` in the kernel; `/etc/passwd` and `/etc/group`; CI's `qt-app` job (batch part 27, the Real apps track's eighth step, its first Qt app; D176's "Not yet"; extends D18, D21, D22, D140, D167, D169, D172, D176) — Decided by the build loop (the app, where its pieces come from and what Qt needs at run time decided by research)
 - **Why.** After an SDL game (D172) and a GTK app (D176), Qt is the other toolkit most Linux
@@ -14684,7 +14705,11 @@ the license, by an explicit instruction recorded here.
   child; duplicating handles into or out of another process; a really suspended child
   (`CREATE_SUSPENDED` with `WriteProcessMemory` or `SetThreadContext` on it), `SuspendThread`
   and debugging APIs; job objects; the C runtime's handle table passed to a child through
-  `lpReserved2` (`_spawn*`, `system`, `_popen`).
+  `lpReserved2` (`_spawn*`, `system`, `_popen`). From round 1 review: a named mutex owned by a
+  child that has ended but not been reaped still counts as owned (`kill(pid, 0)` succeeds on a
+  zombie), so a parent that waits on the mutex before waiting on the child hangs where Windows
+  answers `WAIT_ABANDONED`: reap the layer's own children first, or read `/proc/<pid>/stat`
+  for state `Z`.
 
 ## D190 macOS console breadth: programs that handle signals and start other programs: delivered handlers with Darwin's numbers and `siginfo_t`, masks, `sigsuspend`, alternate stacks; `fork`, the `exec` family, `posix_spawn` with file actions and attributes, pipes, `wait4`, `popen` and `system` (batch part 38, slice 38a; v0.3.0 items 20, 21 and 40's follow-ups; D123's "Not yet"; extends D120, D123, D142) — Decided by the build loop (the shell `system` and `popen` run decided by research)
 
