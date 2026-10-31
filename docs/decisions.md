@@ -16338,7 +16338,9 @@ the license, by an explicit instruction recorded here.
   (`since`); a switch reads the clock once, stamps the next thread and charges the previous
   one, and a user thread also adds its turn to its process's account, an `AtomicU64` behind an
   `Arc` that the process's memory holds (out of line: `Process` stays in its size class), which
-  the threads sharing that memory share. `clock_gettime` and `clock_getres` answer
+  the threads sharing that memory share. `execve` keeps the kernel thread but gives the
+  process new memory, so it moves the running thread's account to the new memory's, the turn
+  so far charged to the old one. `clock_gettime` and `clock_getres` answer
   `CLOCK_PROCESS_CPUTIME_ID` (the account plus the caller's running turn) and
   `CLOCK_THREAD_CPUTIME_ID`; `getrusage` reports `RUSAGE_SELF` and `RUSAGE_THREAD` as user
   time (`RUSAGE_CHILDREN` reads 0); `times` reports the process's user time in `USER_HZ` (100)

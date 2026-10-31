@@ -2382,6 +2382,12 @@ impl<P: Platform> Process<P> {
             .wrapping_add(running)
     }
 
+    /// Has the running thread, which runs this process's program from now on (`execve`),
+    /// charge the time it runs to this process (D198).
+    pub fn account_running_thread(&self) {
+        thread::set_running_account::<P>(Arc::clone(&self.memory.cpu_ticks));
+    }
+
     /// Its threads that run its program and have not exited.
     pub fn threads(&self) -> u32 {
         self.threads.load(Ordering::Acquire)

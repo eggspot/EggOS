@@ -191,7 +191,7 @@ struct Thread {
     fp: OnceCell<FpRegisters>,
     ran: Cell<u64>,
     since: Cell<u64>,
-    account: Option<Arc<AtomicU64>>,
+    account: Cell<Option<Arc<AtomicU64>>>,
     allowed: Cell<u64>,
 }
 
@@ -239,7 +239,7 @@ impl Thread {
             fp: OnceCell::new(),
             ran: Cell::new(0),
             since: Cell::new(0),
-            account,
+            account: Cell::new(account),
             allowed: Cell::new(u64::MAX),
         })
     }
@@ -252,9 +252,17 @@ impl Thread {
     fn charge(&self, now: u64) {
         let spent = now.wrapping_sub(self.since.get());
         self.ran.set(self.ran.get().wrapping_add(spent));
-        if let Some(account) = &self.account {
+        let account = self.account.take();
+        if let Some(account) = &account {
             account.fetch_add(spent, Ordering::Relaxed);
         }
+        self.account.set(account);
+    }
+
+    fn move_account(&self, now: u64, account: Arc<AtomicU64>) -> Option<Arc<AtomicU64>> {
+        self.charge(now);
+        self.since.set(now);
+        self.account.replace(Some(account))
     }
 
     /// Stops the kernel if the thread overflowed its stack: whatever lies below it may already
@@ -1528,6 +1536,22 @@ pub fn running_thread_ticks<P: Platform>() -> u64 {
     })
 }
 
+/// Has the running thread charge the time it runs to `account` from now on, its turn so far
+/// going to the account it had: for a process whose memory `execve` replaced (D198).
+pub fn set_running_account<P: Platform>(account: Arc<AtomicU64>) {
+    let previous = {
+        let mut schedulers = SCHEDULER.lock();
+        let here = cpu::current::<P>();
+        let now = P::clock_ticks();
+        schedulers
+            .of(here)
+            .current
+            .as_ref()
+            .and_then(|thread| thread.get().move_account(now, account))
+    };
+    drop(previous);
+}
+
 /// The ticks the running thread has run this turn, not yet added to its process's account.
 pub fn running_turn_ticks<P: Platform>() -> u64 {
     let mut schedulers = SCHEDULER.lock();
@@ -2508,7 +2532,7 @@ mod tests {
             fp,
             ran: Cell::new(0),
             since: Cell::new(0),
-            account: None,
+            account: Cell::new(None),
             allowed: Cell::new(u64::MAX),
         };
         let layout = Layout::new::<FpState>();
@@ -2555,6 +2579,36 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_charges_its_turn_to_the_account_it_had_then_to_the_new_one() {
+        let old = Arc::new(AtomicU64::new(0));
+        let new = Arc::new(AtomicU64::new(0));
+        let thread = Thread {
+            id: ThreadId(u64::MAX - 4),
+            context: 0,
+            stack: None,
+            joined: Arc::new(Joined {
+                finished: AtomicBool::new(false),
+                joiners: WaitQueue::new(),
+            }),
+            next: None,
+            wake_at: 0,
+            cpu: cpu::current::<P>(),
+            user: true,
+            fp: OnceCell::new(),
+            ran: Cell::new(0),
+            since: Cell::new(100),
+            account: Cell::new(Some(Arc::clone(&old))),
+            allowed: Cell::new(u64::MAX),
+        };
+        let replaced = thread.move_account(130, Arc::clone(&new));
+        assert!(replaced.is_some_and(|replaced| Arc::ptr_eq(&replaced, &old)));
+        thread.charge(150);
+        assert_eq!(old.load(Ordering::Relaxed), 30);
+        assert_eq!(new.load(Ordering::Relaxed), 20);
+        assert_eq!(thread.ran.get(), 50);
+    }
+
+    #[test]
     #[should_panic(expected = "overflowed its stack")]
     fn a_clobbered_canary_stops_the_kernel_when_checked() {
         // No scheduler and no frame allocator: the thread never runs, and its stack is leaked
@@ -2580,7 +2634,7 @@ mod tests {
             fp: OnceCell::new(),
             ran: Cell::new(0),
             since: Cell::new(0),
-            account: None,
+            account: Cell::new(None),
             allowed: Cell::new(u64::MAX),
         });
         thread.check_stack();
