@@ -83,7 +83,8 @@ run-eggos.sh` the script's own path works too.
 - **Each agent has its own grants** (D193). They are kept in `/var/lib/eggos/agent-grants`,
   outside every folder a tool can write, which only you change, with the `agent` command
   (`agent grant phone write`, `agent grant --yes --ask --for 2h phone run`, `agent revoke
-  phone`, `agent list`; Settings' Agents pane comes next); no tool changes grants. Each grant is `deny`, `ask` (each
+  phone`, `agent list`) or Settings' Agents pane, whose grant controls agents cannot operate
+  (`wm act` answers `element_cannot`); no tool changes grants. Each grant is `deny`, `ask` (each
   call asks you first, through the client; `confirm: true` does not count) or `allow`, and can
   end at a time you set. An agent you never added gets nothing, not even reading. The local
   agent keeps the boot grants until you set its own, which can only lower them. The server
@@ -415,5 +416,5 @@ The 2026-07-28 protocol version, resources and prompts; tools for the commands t
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
-terminal's window; MCP over the network; the log and the Agents pane in Settings. A window whose program stopped answering keeps input
+terminal's window; MCP over the network; the audit log's view in Settings' Agents pane and the grant prompt on EggOS's own screen (Ask still asks through the client). A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

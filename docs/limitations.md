@@ -50,7 +50,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   boot's grants (D193), which the user gives and takes back with `agent grant` and `agent
   revoke`; a client names its agent in `initialize` or the boot pins it (`--mcp-agent`), and on
   the local channel that name is the client's own word (paired connections come with MCP over
-  the network), and Settings' Agents pane comes next; `run` is full control, the audit log included. Agents read toolkit and Wayland
+  the network), and Settings' Agents pane sets them too (its log view and EggOS's own grant prompt come next: `ask` asks through the client); `run` is full control, the audit log included. Agents read toolkit and Wayland
   windows as element trees and act on their controls by id (D161), Windows programs too, with
   the text they draw (D162), and macOS apps' windows, their views and the About panel (D175;
   a macOS alert is pixels only); a Windows list box's items and a check box's state are not in

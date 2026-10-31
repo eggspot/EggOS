@@ -13,7 +13,7 @@ is the installer's window instead ([Apps](apps.md), D134), so the toolkit is in 
 Open it from the dock (macOS profile), the launcher (Super, Cmd+Space or Start, then type
 `settings`, `control panel` or `preferences`), its desktop icon, or type `settings` at the
 prompt (D133). The window has a sidebar with a search field and the panes
-`Appearance`, `Display`, `Keyboard`, `Mouse`, `Storage`, `Date & time`, `Components` and `About`; typing in the search
+`Appearance`, `Display`, `Keyboard`, `Mouse`, `Storage`, `Date & time`, `Agents`, `Components` and `About`; typing in the search
 field keeps the panes whose name, synonyms (`Control Panel`, `Preferences`, `theme`, `HiDPI`,
 ...) or settings match. Tab moves between the search, the sidebar and the pane's controls;
 Down in the search goes to the sidebar.
@@ -57,6 +57,22 @@ the disk's short name (`vdb`) is typed; Esc or `Cancel` writes nothing. A mounte
 checked, repaired or formatted in this version, and the status line says why whenever a button
 is disabled. Its command-line front-end is `disk` (docs/coreutils.md), its MCP tools
 `disk_list`, `disk_check`, `disk_repair` and `disk_format`.
+
+**Agents** (D193, Claude Fable's docs/ux/agents-v0.3.md) lists the AI agents EggOS knows,
+`local` (the local channel's agent) first, then the agents in the grants file
+(`/var/lib/eggos/agent-grants`), and sets the selected one's grants: for each of `View`,
+`Write`, `Install` and `Run` a `Deny` `Ask` `Allow` choice that writes the file at once (the
+server reads it before every call, so it applies from the agent's next call), with the end
+chosen in `Grants last` (`No end`, `15 min`, `2 h`, `7 d`). Each class line says what holds it
+back or brings it: `started without it` (EggOS was not started with that grant, every agent's
+ceiling), `run brings it`, `until 2026-10-31 11:14` or `ended ...`. `Ask` or `Allow` on `Run` or
+`Install` opens a panel that asks first, as `agent grant` needs `--yes`; `Revoke all` takes
+every grant back, `Forget` removes an agent (never `local`), and `Add` adds an id with no
+grants. A damaged grants file disables every change and says why. The controls that change
+grants are person-only: an agent's `wm act` on them answers `element_cannot`. Its command-line
+front-end is `agent` (docs/coreutils.md), its MCP tools `agent_list` and `agent_show` (an agent
+reads its own grants; none changes them). The audit log's view and the grant prompt come next
+(D193 "Not yet").
 
 ## The command
 

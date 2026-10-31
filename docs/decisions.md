@@ -15877,3 +15877,48 @@ the license, by an explicit instruction recorded here.
     log there (41c); network connections that prove who they are (41d); resources, prompts
     and the 2026-07-28 protocol (41e); stopping a twin already running when its grant is
     taken back; an `agentlog --until`.
+- **Slice 41c1 (Settings' Agents pane: the grants view).** Designed by Claude Fable in
+  docs/ux/agents-v0.3.md (the pane, its activity view and the grant prompt). Settings gains
+  the `Agents` pane after `Date & time` (`settings_window::AGENTS` 6; `Components` 7, `About`
+  8; sidebar rows 32 lower), `userland/settings/src/agents_pane.rs`: the agents list (`local`
+  first, its boot grants when the store has no entry for it, then the store's agents), per
+  class a line with its note (`started without it`, `file untrusted`, `run brings it`, `until
+  <UTC minute>`, `ended ...`) and `Deny` `Ask` `Allow` radios that write the store at once,
+  `Grants last` (`No end`, `15 min`, `2 h`, `7 d`, the CLI's `--for`), `Add` (an id with no
+  grants), `Revoke all`, `Forget` (never `local`), a confirmation panel for `Ask`/`Allow` on
+  `run` and `install` (the CLI's `--yes`), and a status line saying what changed or why a
+  control is off (a damaged store disables every change). The program reads the store
+  (`grant_files::load`), `/proc/cmdline`'s grants and the clock when the pane is shown
+  (`Request::ReadGrants`) and writes through `grant_files::save` (`Request::WriteGrants`),
+  then reads again. The one write path: `eggos_mcp::grant_files` (`GrantFiles`, `load`,
+  `save`, `SaveError`): `agent-grants.new`, sync, rename, after making `/var/lib/eggos`; the
+  `agent` command now writes through it too. `CAPACITY` (and the installer's) is 114: the
+  pane is its container and 26 widgets now, 37 with the activity view.
+  - Security review (slice 41c1). Checklist: can an agent change grants through the pane;
+    can a damaged or raced store be written over; injection through names. Findings: the
+    toolkit gains a per-widget person-only flag (`WidgetTree::set_person_only`, element flag
+    `person-only`, `flags::PERSON_ONLY` 128); `act` refuses every action on such a widget
+    with `Outcome::NotSupported`, which `wm act` reports as `element_cannot`. The class
+    radios, `Grants last`, `Add`, `Revoke all`, `Forget` and the panel's buttons are
+    person-only; the agents list and the id field stay actable (choosing or typing changes
+    nothing by itself). Limit, accepted: injected pointer and key input (`wm click`,
+    `wm type`) reaches the window like a person's, since the window server does not mark it;
+    every input tool and `wm_act` already need `run`, which is full control (D137: it can run
+    `agent grant` too), so the flag is defence in depth and a clear refusal, not a boundary.
+    A damaged store is never written over from the pane (every change is off; removing it is
+    the CLI's advice); a write that fails re-reads the store and keeps the pane's choices as
+    the file holds them; names are shown as text, cut at the label's 64 bytes.
+  - Choices made without research: a person-only element answers the existing
+    `element_cannot` rather than a new outcome and error code (no change to the wire or the
+    error registry); the reading side stays in each front-end (the CLI keeps its errno
+    messages) and only writing is shared; the list's rows are labels over a list of empty
+    static rows (the toolkit's list holds static text only), so `wm show` names the rows by the
+    labels, not the list items; the status line's priority is untrusted store, a bad id,
+    `local`, a full store, no disk, then the boot grants.
+  - Not yet (41c2 and after): the pane's `Activity` view (the audit log with the filters by
+    agent, tool, result and time, a detail line; design section 2.2; needs `agentlog`'s row
+    building shared with Settings) and its `Grants`/`Activity` switch; the grant prompt on
+    EggOS's own screen (design section 5: `settings --grant-prompt`, a question on stdin and
+    one answer word on stdout, `once|session|always|deny|timeout`, 90 s, headless falling back
+    to the client's elicitation; eggmcpd must start it and wait on it beside the channel);
+    naming an agent from the pane; list items named by agent for `wm show`.
