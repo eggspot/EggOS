@@ -4,6 +4,7 @@
 //! writes the grants file (`eggos_mcp::grant_files`) when a [`Request`] asks it to. The controls
 //! that change grants are person-only: an agent's `wm act` on them is refused.
 
+use crate::activity::{ActivityQuery, ActivityRead, ActivityView};
 use crate::settings_window::{CAPACITY, Request};
 use crate::storage_pane::format_panel;
 use alloc::string::String;
@@ -51,7 +52,12 @@ const PANEL_LINES: [i32; 2] = [16, 36];
 const PANEL_LINE_WIDTH: i32 = 368;
 const CANCEL_AT: (i32, i32) = (192, 88);
 const GRANT_AT: (i32, i32) = (288, 88);
-const EMPTY_ROWS: [&str; 32] = [""; 32];
+pub(crate) const EMPTY_ROWS: [&str; 32] = [""; 32];
+const VIEW_RADIOS_TOP: i32 = 18;
+const ACTIVITY_VIEW: usize = 1;
+
+/// The pane's two views, chosen beside its heading.
+pub const VIEWS: [&str; 2] = ["Grants", "Activity"];
 
 /// The class rows' titles, in [`Grant::ALL`] order.
 pub const CLASS_TITLES: [&str; 4] = ["View", "Write", "Install", "Run"];
@@ -113,6 +119,7 @@ pub enum Reply {
 
 #[derive(Debug, Clone, Copy)]
 struct Widgets {
+    view: WidgetId,
     list: WidgetId,
     rows: [WidgetId; VISIBLE_ROWS],
     status: WidgetId,
@@ -122,6 +129,7 @@ struct Widgets {
     forget: WidgetId,
     class_lines: [WidgetId; 4],
     class_radios: [WidgetId; 4],
+    lasts_line: WidgetId,
     lasts: WidgetId,
     panel: WidgetId,
     question: WidgetId,
@@ -141,18 +149,30 @@ pub struct AgentsPane {
     confirming: Option<(Grant, Permission)>,
     status: Option<String>,
     default_button: WidgetId,
+    activity: ActivityView,
 }
 
-fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
+pub(crate) fn add(
+    tree: &mut WidgetTree<CAPACITY>,
+    parent: WidgetId,
+    place: Place,
+    kind: Kind,
+) -> WidgetId {
     tree.add(Some(parent), place, kind)
         .expect("the Settings window fits its tree")
 }
 
-fn at(x: i32, y: i32, width: i32, height: i32) -> Place {
+pub(crate) fn at(x: i32, y: i32, width: i32, height: i32) -> Place {
     Place::at(x, y, Length::Px(width), Length::Px(height))
 }
 
-fn line(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, width: i32) -> WidgetId {
+pub(crate) fn line(
+    tree: &mut WidgetTree<CAPACITY>,
+    parent: WidgetId,
+    x: i32,
+    y: i32,
+    width: i32,
+) -> WidgetId {
     add(
         tree,
         parent,
@@ -175,7 +195,14 @@ fn button(
     )
 }
 
-fn shortened(words: &str) -> Text<LABEL_BYTES> {
+pub(crate) fn top_row(tree: &WidgetTree<CAPACITY>, list: WidgetId) -> usize {
+    match tree.kind(list) {
+        Some(Kind::List(list)) if list.row_height > 0 => (list.offset / list.row_height) as usize,
+        _ => 0,
+    }
+}
+
+pub(crate) fn shortened(words: &str) -> Text<LABEL_BYTES> {
     let mut text = Text::new();
     if text.push_str(words) {
         return text;
@@ -191,7 +218,7 @@ fn shortened(words: &str) -> Text<LABEL_BYTES> {
     text
 }
 
-fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: u32) {
+pub(crate) fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: u32) {
     tree.set_text(id, shortened(words).as_str());
     tree.change(id, |kind| {
         if let Kind::Label { colour, .. } = kind {
@@ -382,6 +409,12 @@ impl AgentsPane {
             Place::at(PADDING, HEADING_TOP, Length::Content, Length::Content),
             Kind::heading("Agents"),
         );
+        let view = add(
+            tree,
+            pane,
+            Place::right(PADDING, VIEW_RADIOS_TOP),
+            Kind::radios(&VIEWS, 0, true),
+        );
         let list = add(
             tree,
             pane,
@@ -473,8 +506,10 @@ impl AgentsPane {
             tree.set_person_only(id, true);
         }
         tree.set_shown(panel, false);
+        let activity = ActivityView::build(tree, pane);
         let mut agents = Self {
             widgets: Widgets {
+                view,
                 list,
                 rows,
                 status,
@@ -484,6 +519,7 @@ impl AgentsPane {
                 forget,
                 class_lines,
                 class_radios,
+                lasts_line,
                 lasts,
                 panel,
                 question,
@@ -498,13 +534,15 @@ impl AgentsPane {
             confirming: None,
             status: None,
             default_button,
+            activity,
         };
         agents.show_grants(tree, GrantsRead::default());
         agents
     }
 
-    /// The pane is shown again: `local` is selected once the grants are read, the id field is
-    /// emptied and `Grants last` goes back to `No end`.
+    /// The pane is shown again: the `Grants` view shows, `local` is selected once the grants
+    /// are read, the id field is emptied, `Grants last` goes back to `No end` and the Activity
+    /// view's filters to how the pane opens.
     pub fn reset(&mut self, tree: &mut WidgetTree<CAPACITY>) {
         if self.confirming.is_some() {
             self.close_panel(tree, None);
@@ -514,6 +552,70 @@ impl AgentsPane {
         tree.set_text(self.widgets.id_field, "");
         tree.set_selected(self.widgets.lasts, 0);
         tree.set_selected(self.widgets.list, 0);
+        tree.set_selected(self.widgets.view, 0);
+        self.activity.reset(tree);
+        self.show_view(tree);
+    }
+
+    fn grants_view(&self) -> [WidgetId; 14] {
+        let widgets = self.widgets;
+        let mut ids = [widgets.id_field; 14];
+        ids[..4].copy_from_slice(&[
+            widgets.id_field,
+            widgets.add,
+            widgets.revoke_all,
+            widgets.forget,
+        ]);
+        ids[4..8].copy_from_slice(&widgets.class_lines);
+        ids[8..12].copy_from_slice(&widgets.class_radios);
+        ids[12] = widgets.lasts_line;
+        ids[13] = widgets.lasts;
+        ids
+    }
+
+    /// Whether the `Activity` view is chosen.
+    pub fn showing_activity(&self, tree: &WidgetTree<CAPACITY>) -> bool {
+        tree.selected(self.widgets.view) == Some(ACTIVITY_VIEW)
+    }
+
+    fn show_view(&self, tree: &mut WidgetTree<CAPACITY>) {
+        let activity = self.showing_activity(tree);
+        for id in self.grants_view() {
+            tree.set_shown(id, !activity);
+        }
+        self.activity.set_shown(tree, activity);
+    }
+
+    fn switch_view(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) -> Option<Request> {
+        if self.confirming.is_some() {
+            self.close_panel(tree, None);
+        }
+        let focused = tree.focus();
+        self.show_view(tree);
+        if focused.is_some() && tree.focus().is_none() {
+            tree.set_focus(Some(self.widgets.view), now_ms);
+        }
+        self.status = None;
+        self.refresh(tree);
+        self.showing_activity(tree).then_some(Request::ReadActivity)
+    }
+
+    /// What the Activity view's filters ask the log for, `This agent only` meaning the agent
+    /// selected in the list ([`Request::ReadActivity`]).
+    pub fn activity_query(&self, tree: &WidgetTree<CAPACITY>) -> ActivityQuery {
+        let agent = self.selected(tree).map(|agent| *agent.id());
+        self.activity.query(tree, agent)
+    }
+
+    /// Shows the log's rows just read in the Activity view.
+    pub fn show_activity(&mut self, tree: &mut WidgetTree<CAPACITY>, read: ActivityRead) {
+        self.activity.show(tree, read);
+        self.refresh(tree);
+    }
+
+    /// The Activity view.
+    pub fn activity(&self) -> &ActivityView {
+        &self.activity
     }
 
     /// Shows the grants just read; the selection stays on the same agent when it is still
@@ -600,12 +702,7 @@ impl AgentsPane {
     }
 
     fn top_row(&self, tree: &WidgetTree<CAPACITY>) -> usize {
-        match tree.kind(self.widgets.list) {
-            Some(Kind::List(list)) if list.row_height > 0 => {
-                (list.offset / list.row_height) as usize
-            }
-            _ => 0,
-        }
+        top_row(tree, self.widgets.list)
     }
 
     fn id_typed(&self, tree: &WidgetTree<CAPACITY>) -> Result<Option<AgentId>, &'static str> {
@@ -673,6 +770,7 @@ impl AgentsPane {
         tree.set_enabled(widgets.add, writable && id_ok && !self.store_full());
         tree.set_enabled(widgets.id_field, self.writable());
         let (line, ink) = match &self.status {
+            _ if self.showing_activity(tree) => self.activity.status_line(tree),
             Some(status) => (status.clone(), colour::TEXT),
             None => self.idle_line(tree),
         };
@@ -829,12 +927,18 @@ impl AgentsPane {
         response: Response,
         now_ms: u32,
     ) -> Reply {
+        if let Some(request) = self.activity.respond(response) {
+            self.refresh(tree);
+            return Reply::Done(request);
+        }
         let widgets = self.widgets;
         let request = match response {
+            Response::Chosen(id, _) if id == widgets.view => self.switch_view(tree, now_ms),
             Response::Chosen(id, _) if id == widgets.list => {
                 self.status = None;
                 self.refresh(tree);
-                None
+                let activity = self.showing_activity(tree) && self.activity.this_agent_only(tree);
+                activity.then_some(Request::ReadActivity)
             }
             Response::Chosen(id, choice) if widgets.class_radios.contains(&id) => {
                 let index = widgets
@@ -878,6 +982,7 @@ impl AgentsPane {
             }
             Response::Nothing => {
                 self.refresh_rows(tree);
+                self.activity.retitle(tree);
                 return Reply::NotMine;
             }
             _ => return Reply::NotMine,
@@ -933,11 +1038,12 @@ impl AgentsPane {
         Some([self.widgets.question, self.widgets.meaning].map(|id| tree.text_of(id).unwrap_or("")))
     }
 
-    /// The widgets tests and agents address: the agents list, the id field, `Add`, `Revoke all`,
-    /// `Forget`, the class groups, `Grants last`, `Cancel` and `Grant`.
+    /// The widgets tests and agents address: the view radios, the agents list, the id field,
+    /// `Add`, `Revoke all`, `Forget`, the class groups, `Grants last`, `Cancel` and `Grant`.
     pub fn widget_ids(&self) -> AgentsWidgets {
         let widgets = self.widgets;
         AgentsWidgets {
+            view: widgets.view,
             list: widgets.list,
             id_field: widgets.id_field,
             add: widgets.add,
@@ -954,6 +1060,8 @@ impl AgentsPane {
 /// The Agents pane's widgets that tests and agents address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentsWidgets {
+    /// The `Grants` `Activity` view radios.
+    pub view: WidgetId,
     /// The agents list.
     pub list: WidgetId,
     /// The `Agent id` field.

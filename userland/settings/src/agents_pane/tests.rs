@@ -1,4 +1,6 @@
 use super::*;
+use crate::activity::tests::{Log, agentlog_test_log};
+use crate::activity::{ActivityWidgets, read_activity};
 use crate::facts::Facts;
 use crate::settings_window::{AGENTS, PANES, SettingsWindow, pane_matches};
 use eggos_mcp::grant_files::STORE_TEMPORARY;
@@ -44,6 +46,11 @@ fn serve(window: &mut SettingsWindow, read: &mut GrantsRead, request: Option<Req
         Some(Request::WriteGrants) => {
             read.store = StoreState::Loaded(*window.grants_to_write());
             window.grants_written(Ok(()), *read);
+        }
+        Some(Request::ReadActivity) => {
+            let query = window.activity_query();
+            let log = &mut Log::of(agentlog_test_log());
+            window.show_activity(read_activity(log, &query, NOW));
         }
         _ => {}
     }
@@ -439,4 +446,207 @@ fn an_agent_cannot_change_grants_through_the_element_tree() {
         Outcome::Done
     );
     assert!(window.grants_to_write().get(&id("tv")).is_none());
+}
+
+const ABOUT_ROW_Y: i32 = 44 + 8 * 32 + 10;
+const GRANTS_VIEW: usize = 0;
+const ACTIVITY: usize = 1;
+
+fn activity(window: &SettingsWindow) -> ActivityWidgets {
+    window.agents_pane().activity().widget_ids()
+}
+
+fn records(window: &SettingsWindow) -> [&str; 4] {
+    window
+        .agents_pane()
+        .activity()
+        .record_lines(window.widgets())
+}
+
+fn count(window: &SettingsWindow) -> Option<&str> {
+    window.agents_pane().activity().count(window.widgets())
+}
+
+fn place(window: &SettingsWindow, id: WidgetId) -> (i32, i32, i32, i32) {
+    let rect = window.widgets().rect(id).unwrap();
+    (rect.x, rect.y, rect.width, rect.height)
+}
+
+fn showing_activity(read: &mut GrantsRead) -> SettingsWindow {
+    let mut window = opened(read);
+    let request = choose(&mut window, widgets(&window).view, ACTIVITY);
+    assert_eq!(request, Some(Request::ReadActivity));
+    serve(&mut window, read, request);
+    window
+}
+
+fn served(window: &mut SettingsWindow, read: &mut GrantsRead, request: Option<Request>) {
+    assert_eq!(request, Some(Request::ReadActivity));
+    serve(window, read, request);
+}
+
+#[test]
+fn activity_lists_the_log_s_calls_newest_first_with_a_detail_line() {
+    let mut read = machine();
+    let window = opened(&mut read);
+    let view = place(&window, widgets(&window).view);
+    assert_eq!((view.0 + view.2, view.1), (624, 18));
+    assert_eq!(
+        window.widgets().selected(widgets(&window).view),
+        Some(GRANTS_VIEW)
+    );
+    let window = showing_activity(&mut read);
+    let ids = widgets(&window);
+    let tree = window.widgets();
+    for hidden in [
+        ids.id_field,
+        ids.add,
+        ids.forget,
+        ids.class_radios[3],
+        ids.lasts,
+    ] {
+        assert!(!tree.is_shown(hidden));
+    }
+    let activity = activity(&window);
+    assert_eq!(place(&window, activity.this_agent), (416, 64, 208, 28));
+    assert_eq!(place(&window, activity.tool), (416, 100, 208, 28));
+    assert_eq!(place(&window, activity.results).0, 192);
+    assert_eq!(place(&window, activity.results).1, 148);
+    assert_eq!(place(&window, activity.since).1, 180);
+    assert_eq!(place(&window, activity.list), (192, 216, 432, 96));
+    let shown = place(&window, activity.count);
+    assert_eq!(shown.0 + shown.2, 624);
+    assert_eq!(count(&window), Some("7 of 7"));
+    assert_eq!(
+        records(&window),
+        [
+            "01-01 00:00:07 \u{b7} local \u{b7} ls \u{b7} interrupted",
+            "01-01 00:00:06 \u{b7} local \u{b7} - \u{b7} server-restart",
+            "01-01 00:00:05 \u{b7} local \u{b7} ps \u{b7} interrupted",
+            "01-01 00:00:04 \u{b7} local \u{b7} cat \u{b7} refused",
+        ]
+    );
+    assert_eq!(status(&window), "local \u{b7} /home \u{b7} {}");
+}
+
+#[test]
+fn choosing_a_record_shows_its_detail_line() {
+    let mut read = machine();
+    let mut window = showing_activity(&mut read);
+    let list = activity(&window).list;
+    window.tree().set_focus(Some(list), 0);
+    assert_eq!(press(&mut window, key::DOWN, 0), None);
+    assert_eq!(status(&window), "local \u{b7} 0.2.0");
+}
+
+#[test]
+fn the_filters_narrow_the_records_and_bring_them_back() {
+    let mut read = machine();
+    let mut window = showing_activity(&mut read);
+    let ids = activity(&window);
+    window.tree().set_focus(Some(ids.tool), 0);
+    for character in "cat".chars() {
+        let request = press(&mut window, 30, character as u32);
+        served(&mut window, &mut read, request);
+    }
+    assert_eq!(count(&window), Some("2 of 2"));
+    let request = choose(&mut window, ids.results, 3);
+    served(&mut window, &mut read, request);
+    assert_eq!(
+        records(&window),
+        [
+            "01-01 00:00:04 \u{b7} local \u{b7} cat \u{b7} refused",
+            "",
+            "",
+            ""
+        ]
+    );
+    let request = choose(&mut window, ids.results, 0);
+    served(&mut window, &mut read, request);
+    window.tree().set_text(ids.tool, "");
+    let request = choose(&mut window, ids.since, 0);
+    served(&mut window, &mut read, request);
+    assert_eq!(count(&window), None);
+    assert_eq!(records(&window), [""; 4]);
+    assert_eq!(status(&window), "No records match.");
+    let request = choose(&mut window, ids.since, 3);
+    served(&mut window, &mut read, request);
+    assert_eq!(count(&window), Some("7 of 7"));
+}
+
+#[test]
+fn this_agent_only_follows_the_selected_agent() {
+    let mut read = machine();
+    let mut window = showing_activity(&mut read);
+    let list = widgets(&window).list;
+    window.tree().set_focus(Some(list), 0);
+    assert_eq!(press(&mut window, key::DOWN, 0), None);
+    let request = press_button(&mut window, activity(&window).this_agent);
+    served(&mut window, &mut read, request);
+    assert_eq!(window.activity_query().agent, Some(id("phone")));
+    assert_eq!(count(&window), None);
+    assert_eq!(status(&window), "No records match.");
+    window.tree().set_focus(Some(list), 0);
+    let request = press(&mut window, key::UP, 0);
+    served(&mut window, &mut read, request);
+    assert_eq!(count(&window), Some("7 of 7"));
+}
+
+#[test]
+fn a_log_that_cannot_be_read_says_why() {
+    let mut read = machine();
+    let mut window = showing_activity(&mut read);
+    let mut log = Log::of(agentlog_test_log());
+    log.failing = Some(Errno::EACCES);
+    let query = window.activity_query();
+    window.show_activity(read_activity(&mut log, &query, NOW));
+    assert!(status(&window).starts_with("The log could not be read: "));
+    assert_eq!(records(&window), [""; 4]);
+}
+
+#[test]
+fn grants_comes_back_and_showing_the_pane_again_resets_the_filters() {
+    let mut read = machine();
+    let mut window = showing_activity(&mut read);
+    let since = activity(&window).since;
+    let request = choose(&mut window, since, 0);
+    served(&mut window, &mut read, request);
+    let view = widgets(&window).view;
+    assert_eq!(choose(&mut window, view, GRANTS_VIEW), None);
+    assert!(window.widgets().is_shown(widgets(&window).class_radios[0]));
+    assert!(!window.widgets().is_shown(activity(&window).list));
+    assert_eq!(status(&window), LOCAL_LINE);
+    let request = choose(&mut window, view, ACTIVITY);
+    served(&mut window, &mut read, request);
+    assert_eq!(window.widgets().selected(since), Some(0));
+    click(&mut window, 40, ABOUT_ROW_Y);
+    let request = click(&mut window, 40, AGENTS_ROW_Y);
+    serve(&mut window, &mut read, request);
+    assert!(!window.agents_pane().showing_activity(window.widgets()));
+    assert_eq!(window.widgets().selected(since), Some(3));
+    assert!(!window.widgets().is_shown(since));
+}
+
+#[test]
+fn an_agent_can_switch_views_and_filter_the_activity() {
+    let mut read = machine();
+    let mut window = opened(&mut read);
+    let view = widgets(&window).view;
+    let (outcome, response) = window
+        .tree()
+        .act(element_of(view) + 2, Action::Select, "", 0);
+    assert_eq!(outcome, Outcome::Done);
+    let request = window.respond(response, 0);
+    served(&mut window, &mut read, request);
+    let ids = activity(&window);
+    for filter in [ids.this_agent, ids.tool, ids.results, ids.since, ids.list] {
+        assert!(!window.widgets().is_person_only(filter));
+    }
+    let (outcome, response) = window
+        .tree()
+        .act(element_of(ids.tool), Action::SetText, "cat", 0);
+    assert_eq!(outcome, Outcome::Done);
+    let request = window.respond(response, 0);
+    served(&mut window, &mut read, request);
+    assert_eq!(count(&window), Some("2 of 2"));
 }

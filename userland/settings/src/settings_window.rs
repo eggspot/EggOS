@@ -5,6 +5,7 @@
 //! docs/ux/agents-v0.3.md), Components and About. It holds only widgets and answers what the user does with what the
 //! program must do; the program talks to the system.
 
+use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::facts::Facts;
@@ -30,7 +31,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 114;
+pub const CAPACITY: usize = 120;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -253,6 +254,9 @@ pub enum Request {
     /// Write [`SettingsWindow::grants_to_write`] as the grants file, read it again, then show
     /// both ([`SettingsWindow::grants_written`]).
     WriteGrants,
+    /// Read the audit log's rows [`SettingsWindow::activity_query`] asks for and show them
+    /// ([`SettingsWindow::show_activity`]) (D193).
+    ReadActivity,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -803,6 +807,16 @@ impl SettingsWindow {
     /// How writing the grants file went, and the grants read again after it.
     pub fn grants_written(&mut self, written: Result<(), SaveError>, read: GrantsRead) {
         self.agents.grants_written(&mut self.tree, written, read);
+    }
+
+    /// What the Agents pane's Activity view asks the log for ([`Request::ReadActivity`]).
+    pub fn activity_query(&self) -> ActivityQuery {
+        self.agents.activity_query(&self.tree)
+    }
+
+    /// Shows the audit log's rows just read in the Agents pane's Activity view (D193).
+    pub fn show_activity(&mut self, read: ActivityRead) {
+        self.agents.show_activity(&mut self.tree, read);
     }
 
     /// The Agents pane.

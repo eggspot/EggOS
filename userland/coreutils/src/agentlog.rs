@@ -5,6 +5,7 @@ use crate::system::System;
 use core::ffi::CStr;
 use eggos_commands::{commands, errors};
 use eggos_files::clock::deletion_date;
+use eggos_mcp::audit::calls::{self, CallRow, CallRows, LINE_BYTES, LogFiles};
 use eggos_mcp::audit::{self, Filter, Outcome, Record};
 use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
@@ -12,18 +13,6 @@ use eggos_runtime::errno::Errno;
 const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--agent <id>] [--tool <name>] \
     [--outcome <result>] [--since <time>] [--raw | --json]";
 const USAGE_STATUS: i32 = 2;
-const LOGS: [&CStr; 8] = [
-    c"/var/log/agent-audit.log.7",
-    c"/var/log/agent-audit.log.6",
-    c"/var/log/agent-audit.log.5",
-    c"/var/log/agent-audit.log.4",
-    c"/var/log/agent-audit.log.3",
-    c"/var/log/agent-audit.log.2",
-    c"/var/log/agent-audit.log.1",
-    c"/var/log/agent-audit.log",
-];
-const LINE_BYTES: usize = 4096;
-const CHUNK: usize = 4096;
 const HEADER: &[u8] = b"TIME  AGENT  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
 const JSON_RECORD_BYTES: usize = 4 * 7 * audit::FIELD_BYTES + 512;
 const FILTER_OPTIONS: [(&[u8], FilterOption); 4] = [
@@ -192,20 +181,17 @@ fn since(now: u64, text: &[u8]) -> Option<u64> {
     u64::try_from(moment).ok()
 }
 
-fn shows(filter: &Filter<'_>, outcome: Outcome) -> bool {
-    filter.outcome.is_none_or(|wanted| wanted == outcome)
-}
+impl<S: System> LogFiles for Output<S> {
+    fn open_log(&mut self, path: &CStr) -> Result<usize, Errno> {
+        self.system.open(path)
+    }
 
-struct Pending {
-    line: [u8; LINE_BYTES],
-    length: usize,
-}
+    fn read_log(&mut self, descriptor: usize, out: &mut [u8]) -> Result<usize, Errno> {
+        self.system.read(descriptor, out)
+    }
 
-impl Pending {
-    fn record(&self) -> Option<Record<'_>> {
-        (self.length > 0)
-            .then(|| audit::parse_line(&self.line[..self.length]))
-            .flatten()
+    fn close_log(&mut self, descriptor: usize) {
+        self.system.close(descriptor);
     }
 }
 
@@ -216,74 +202,32 @@ fn each_row<S: System>(
     row: &mut dyn FnMut(&mut Output<S>, &[u8]),
 ) -> Result<usize, i32> {
     let mut rows = 0;
-    let mut pending = Pending {
-        line: [0; LINE_BYTES],
-        length: 0,
-    };
+    let mut calls = CallRows::new();
     let mut text = [0u8; LINE_BYTES * 2];
-    for log in LOGS {
-        let descriptor = match output.system.open(log) {
-            Ok(descriptor) => descriptor,
-            Err(Errno::ENOENT) => continue,
-            Err(errno) => {
-                output.file_error(log, errno);
-                return Err(FAILURE);
-            }
+    let read = calls::each_line(output, &mut |output, line| {
+        let view = View {
+            mode,
+            filter,
+            calls: &mut calls,
+            text: &mut text,
         };
-        let mut line = [0u8; LINE_BYTES];
-        let mut length = 0;
-        let mut too_long = false;
-        let mut chunk = [0u8; CHUNK];
-        loop {
-            let count = match output.system.read(descriptor, &mut chunk) {
-                Ok(0) => break,
-                Ok(count) => count,
-                Err(errno) => {
-                    output.system.close(descriptor);
-                    output.file_error(log, errno);
-                    return Err(FAILURE);
-                }
-            };
-            for &byte in &chunk[..count] {
-                if byte != b'\n' {
-                    match line.get_mut(length) {
-                        Some(slot) => {
-                            *slot = byte;
-                            length += 1;
-                        }
-                        None => too_long = true,
-                    }
-                    continue;
-                }
-                if !too_long {
-                    let view = View {
-                        mode,
-                        filter,
-                        pending: &mut pending,
-                        text: &mut text,
-                    };
-                    rows += take_line(output, view, &line[..length], row);
-                }
-                length = 0;
-                too_long = false;
-            }
-        }
-        output.system.close(descriptor);
+        rows += take_line(output, view, line, row);
+    });
+    if let Err(error) = read {
+        output.file_error(error.path, error.errno);
+        return Err(FAILURE);
     }
-    if let Some(record) = pending.record()
-        && shows(filter, record.outcome)
-    {
-        let shown = format_row(&record, Some(b"interrupted"), &mut text);
+    rows += calls.finish(filter, &mut |call| {
+        let shown = format_row(call, &mut text);
         row(output, &text[..shown]);
-        rows += 1;
-    }
+    });
     Ok(rows)
 }
 
 struct View<'v, 'f> {
     mode: Mode,
     filter: &'v Filter<'f>,
-    pending: &'v mut Pending,
+    calls: &'v mut CallRows,
     text: &'v mut [u8],
 }
 
@@ -296,20 +240,19 @@ fn take_line<S: System>(
     let View {
         mode,
         filter,
-        pending,
+        calls,
         text,
     } = view;
+    if mode == Mode::Rows {
+        return calls.take(line, filter, &mut |call| {
+            let shown = format_row(call, text);
+            row(output, &text[..shown]);
+        });
+    }
     let Some(record) = audit::parse_line(line) else {
         return 0;
     };
-    let by_record = Filter {
-        outcome: None,
-        ..*filter
-    };
-    if !by_record.matches(&record) {
-        return 0;
-    }
-    if mode != Mode::Rows && !shows(filter, record.outcome) {
+    if !filter.matches(&record) {
         return 0;
     }
     if mode == Mode::Json {
@@ -318,37 +261,9 @@ fn take_line<S: System>(
         row(output, &record_text[..shown]);
         return 1;
     }
-    if mode == Mode::Raw {
-        let shown = format_raw(line, text);
-        row(output, &text[..shown]);
-        return 1;
-    }
-    let mut rows = 0;
-    let continues = pending.record().is_some_and(|open| {
-        open.call == record.call
-            && (record.outcome.ends_a_call()
-                || (open.outcome == Outcome::Asked && record.outcome == Outcome::Started))
-    });
-    if !continues
-        && let Some(open) = pending.record()
-        && shows(filter, open.outcome)
-    {
-        let shown = format_row(&open, Some(b"interrupted"), text);
-        row(output, &text[..shown]);
-        rows += 1;
-    }
-    if matches!(record.outcome, Outcome::Asked | Outcome::Started) {
-        pending.line[..line.len()].copy_from_slice(line);
-        pending.length = line.len();
-        return rows;
-    }
-    pending.length = 0;
-    if !shows(filter, record.outcome) {
-        return rows;
-    }
-    let shown = format_row(&record, None, text);
+    let shown = format_raw(line, text);
     row(output, &text[..shown]);
-    rows + 1
+    1
 }
 
 fn format_json(record: &Record<'_>, text: &mut [u8]) -> usize {
@@ -402,10 +317,11 @@ fn put(text: &mut [u8], at: usize, bytes: &[u8]) -> usize {
     }
 }
 
-fn format_row(record: &Record<'_>, result: Option<&[u8]>, text: &mut [u8]) -> usize {
+fn format_row(call: &CallRow<'_>, text: &mut [u8]) -> usize {
+    let record = &call.record;
     let stamp = deletion_date(record.time);
     let mut length = put(text, 0, stamp.as_str().as_bytes());
-    let result = result.unwrap_or(record.outcome.word().as_bytes());
+    let result = call.result().as_bytes();
     for field in [
         record.agent,
         record.client,

@@ -7,11 +7,13 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use eggos_eggfs::CheckMode;
 use eggos_files::storage;
+use eggos_mcp::audit::calls::LogFiles;
 use eggos_mcp::grant_files::{self, GrantFiles, SaveError};
 use eggos_mcp::grants;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
+use eggos_settings::activity::read_activity;
 use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
@@ -564,6 +566,33 @@ impl GrantFiles for LinuxGrantFiles {
     }
 }
 
+struct LinuxLogFiles;
+
+impl LogFiles for LinuxLogFiles {
+    fn open_log(&mut self, path: &CStr) -> Result<usize, Errno> {
+        syscall(
+            number::OPENAT,
+            [AT_FDCWD, path.as_ptr() as usize, O_RDONLY_CLOEXEC, 0, 0, 0],
+        )
+    }
+
+    fn read_log(&mut self, descriptor: usize, out: &mut [u8]) -> Result<usize, Errno> {
+        loop {
+            match syscall(
+                number::READ,
+                [descriptor, out.as_mut_ptr() as usize, out.len(), 0, 0, 0],
+            ) {
+                Err(Errno::EINTR) => {}
+                read => return read,
+            }
+        }
+    }
+
+    fn close_log(&mut self, descriptor: usize) {
+        close(descriptor);
+    }
+}
+
 fn grants_read(on_disk: bool) -> GrantsRead {
     let mut line = [0u8; COMMAND_LINE_BYTES];
     let boot = match read_file(grants::COMMAND_LINE_PATH, &mut line) {
@@ -631,6 +660,11 @@ impl Application<CAPACITY> for Settings {
                 let written = write_grants(&self.window);
                 let read = grants_read(self.window.facts().on_disk);
                 self.window.grants_written(written, read);
+            }
+            Some(Request::ReadActivity) => {
+                let query = self.window.activity_query();
+                let read = read_activity(&mut LinuxLogFiles, &query, wall_clock().0);
+                self.window.show_activity(read);
             }
             None => self.show_clock(now_ms),
         }

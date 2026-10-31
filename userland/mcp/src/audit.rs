@@ -23,7 +23,10 @@
 //! log edited by other hands cannot hide anything from the person reading it either.
 //!
 //! [`query`] reads a log's records that match a [`Filter`]: an agent, a tool, an outcome and a
-//! span of time, for the log's views in Settings and `agentlog`.
+//! span of time, for the log's views in Settings and `agentlog`; [`calls`] reads the log's files
+//! and turns their records into one row per call, for both.
+
+pub mod calls;
 
 use crate::grants::LOCAL_AGENT_ID;
 
