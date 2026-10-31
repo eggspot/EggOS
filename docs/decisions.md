@@ -12680,9 +12680,13 @@ the license, by an explicit instruction recorded here.
   assertion, `#0xF004` a division by zero (MSVC's ARM64 code checks divisors itself, since
   `sdiv` does not trap), any other `brk` an illegal instruction; `int 0x29` and `brk #0xF003`
   are `__fastfail`, which ends the process at once with `0xC0000409` and a line. The signal
-  handler puts the record and `CONTEXT` on the thread's own stack below the faulting frame
-  (128 bytes below, as no red zone is used on Windows), rewrites its signal frame so that
-  `rt_sigreturn` enters the dispatch there with the normal signal mask, and returns: no
+  handler puts the record and `CONTEXT` on the thread's own stack below the whole signal
+  frame the kernel pushed there (which sits below the faulting frame, as the layer sets no
+  alternate stack), rewrites that frame so that `rt_sigreturn` enters the dispatch there with
+  the normal signal mask, and returns. (Revised by the CI fixes of #149, commit 55a0122e: the
+  first version wrote them 128 bytes below the faulting frame, as no red zone is used on
+  Windows, which is inside the signal frame, so the record overwrote the registers
+  `rt_sigreturn` restores.) No
   handler runs on the signal frame, and no kernel change is needed (the kernel already
   reports `err`, `trapno` and `esr_context`, D65). A fault in the layer's own code (its
   executable segments, from its program headers) ends the process as before. D151's
@@ -12708,11 +12712,18 @@ the license, by an explicit instruction recorded here.
   its bytes for a simple type with pointers adjusted to the base, else its copy constructor,
   with the virtual-base flag), run the catch funclet through a bridge, destroy the object,
   and resume the function at the address the funclet returns (or the continuation it names by
-  index, `__CxxFrameHandler4`). The bridge of a running catch remembers its function's frame,
+  index, `__CxxFrameHandler4`). `__CxxFrameHandler3`'s catch-object offset (the parameter's
+  place in the frame) is signed and sign-extended: MSVC's ARM64 code puts it below the frame
+  pointer, so it is negative there (revised by commit 55a0122e, #149's CI fixes). The bridge
+  of a running catch remembers its function's frame,
   registers, try state and data: an exception thrown inside the catch block is searched in
   the funclet's frame with the function's try blocks (so the try blocks around it, in the
   function or its callers, catch it), the function's own destructors run once, through the
-  funclet's frame, and the walk then continues in the function's caller; leaving the catch
+  funclet's frame, and the walk then continues in the function's caller (a
+  `__CxxFrameHandler4` catch funclet with no handler of its own is searched as part of its
+  function: the walk goes on in that function's try blocks, so an outer `try` in the same
+  function catches a rethrow instead of the walk skipping to the caller; commit 55a0122e,
+  #149's CI fixes); leaving the catch
   block this way destroys its object unless it is the one rethrown. An exception leaving a
   `noexcept` function, or `throw;` with nothing caught, calls `terminate`, which ends the
   process with status 3 and a line, as an uncaught C++ exception does through MSVC's own
@@ -16966,3 +16977,33 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** From round 2 review: a wait that finds only a hidden change yields with no
   bound, so a future caller that drops an announcement would leave its parent's waits
   spinning (`#[must_use]` on the notices would catch it).
+
+## D213 Memory a Windows program maps writable and executable is never both at once: it flips per page on the fault an access raises (W^X) — Decided by the build loop (engineering; extends D129, D177; #149's CI fixes, commit 55a0122e)
+
+- **Context.** Windows programs ask for memory that is writable and executable at once
+  (`VirtualAlloc` or `VirtualProtect` with `PAGE_EXECUTE_READWRITE` or
+  `PAGE_EXECUTE_WRITECOPY`): JIT compilers, code that patches itself, and MSVC's C++ runtime,
+  which writes the thunks it runs (`eggcpp.exe` in CI's `windows-crt` check). The EggOS
+  kernel refuses a mapping that is writable and executable at once (W^X), so those calls
+  failed and the programs ended.
+- **Decision.** The layer maps such memory readable and writable and records its range
+  (`userland/windows/src/write_execute.rs`, at most 64 ranges, in a table the fault handler
+  reads without a lock). An instruction fetch from one of its pages raises a fault; the
+  handler makes that page readable and executable and returns, so the instruction runs again.
+  A write to a page that is executable now raises a fault too, and the handler makes it
+  readable and writable again. Every page is writable or executable, never both, so W^X holds
+  for Windows programs as for every other program. `VirtualProtect` reports such memory's old
+  protection as `PAGE_EXECUTE_READWRITE`; changing the memory's protection to anything else
+  drops its range (`VirtualQuery` reads the pages' protection as it is at that moment). Pure logic with host tests; the faults go through D177's handler
+  before any are delivered to the program as Windows exceptions.
+- **Cost.** Each flip is one fault, one `mprotect` and the return, a few microseconds: code
+  written once and then run (thunks, a JIT's finished functions) pays one flip per page.
+  Nothing else changes: pages the program never maps this way, and the program's own image,
+  are untouched.
+- **Not yet.** Two threads that write and execute the same page at the same time flip it back
+  and forth on every access and slow down without bound (no lock-step between them, and
+  correct only because each access retries after its flip). Code that modifies itself often
+  (a JIT that patches running code, self-modifying loops) pays a fault per switch between
+  writing and running a page, far slower than on Windows; a cheaper scheme (a second, writable
+  view of the same pages mapped elsewhere, as some JITs use on W^X systems) is not built.
+  More than 64 such ranges fail the call with `ERROR_NOT_ENOUGH_MEMORY`.
