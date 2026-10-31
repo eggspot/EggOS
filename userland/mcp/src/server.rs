@@ -26,7 +26,8 @@
 use crate::arguments::{self, Button, Checked, Decoded};
 use crate::audit::{self, BUDGET_BYTES, Entry, Outcome};
 use crate::grants::{
-    AgentId, Decision, Denial, Grant, Grants, Policy, STORE_BYTES, STORE_PATH, StoreState, Unknown,
+    AgentId, AgentName, Decision, Denial, Grant, Grants, MAX_AGENT_ID_BYTES, MAX_AGENT_NAME_BYTES,
+    Policy, STORE_BYTES, STORE_PATH, StoreState, Unknown,
 };
 use crate::json::{Base64Carry, JsonWriter, Object, Value};
 use crate::paths::{self, MAX_PATH_BYTES, PathRefusal};
@@ -115,6 +116,15 @@ const PAGE_CUT: &str = "The page was cut at the output's limit, so where the nex
     unknown: call again with a smaller limit.";
 const PAGE_LIMIT_DIGITS: usize = 24;
 
+/// The member of `initialize`'s `_meta` in which a client on the local channel names the
+/// agent it speaks for: `{"id": "<agent id>", "name": "<what the user sees>"}`, the name
+/// optional (D193). A client that names none is the local channel's agent, `local`.
+pub const AGENT_META_KEY: &str = "org.eggos/agent";
+const BAD_AGENT_ID: &str = "_meta.org.eggos/agent.id must be 1 to 32 ASCII letters, digits, ., _ \
+    or -, and not local";
+const BAD_AGENT_NAME: &str = "_meta.org.eggos/agent.name must be text of at most 64 bytes with no \
+    hidden character";
+
 /// The buffers a call works in, each sized by the constant named after it.
 #[derive(Debug)]
 pub struct Scratch<'s> {
@@ -181,7 +191,9 @@ struct Pending {
 pub struct Server {
     session: Session,
     calls: u64,
+    channel_agent: AgentId,
     agent: AgentId,
+    agent_bound: bool,
     policy: Policy,
     unknown: Unknown,
     started_ms: u64,
@@ -197,7 +209,9 @@ impl Default for Server {
         Self {
             session: Session::default(),
             calls: 0,
+            channel_agent: AgentId::LOCAL,
             agent: AgentId::LOCAL,
+            agent_bound: false,
             policy: Policy::default(),
             unknown: Unknown::default(),
             started_ms: 0,
@@ -264,8 +278,11 @@ impl Server {
         self.policy.boot
     }
 
-    /// Sets the agent this server answers: [`AgentId::LOCAL`] until the channel names another.
+    /// Sets the agent the channel itself names, which every connection on it speaks for:
+    /// [`AgentId::LOCAL`] unless set. On the local channel a client may name another agent in
+    /// `initialize` ([`AGENT_META_KEY`]); on a channel set to another agent it may not.
     pub fn set_agent(&mut self, agent: AgentId) {
+        self.channel_agent = agent;
         self.agent = agent;
     }
 
@@ -346,6 +363,8 @@ impl Server {
             b"",
         );
         self.session.end();
+        self.agent = self.channel_agent;
+        self.agent_bound = false;
     }
 
     /// Answers a line longer than the input buffer; returns the answer's length in `out`,
@@ -503,7 +522,13 @@ impl Server {
             return reply;
         }
         match name {
-            "tools/list" => rpc::write_result(out, id, tools::write_list),
+            "tools/list" => {
+                let now = self.refresh_policy(system);
+                match self.policy.check(&self.agent, None, now) {
+                    Decision::Deny(_) => rpc::write_result(out, id, write_no_tools),
+                    _ => rpc::write_result(out, id, tools::write_list),
+                }
+            }
             _ => self.call(id, params, nested_duplicate, system, scratch, out),
         }
         reply
@@ -524,6 +549,33 @@ impl Server {
             rpc::write_error(out, Some(id), INVALID_PARAMS, "protocolVersion is missing");
             return;
         };
+        let declared = match declared_agent(params) {
+            Ok(declared) => declared,
+            Err(message) => {
+                self.refuse_agent(id, message, system, scratch, out);
+                return;
+            }
+        };
+        let wanted = declared.map_or(self.channel_agent, |declared| declared.id);
+        let mut message = [0u8; 160];
+        let mut text = Text::new(&mut message);
+        if !self.channel_agent.is_local() && wanted != self.channel_agent {
+            text.put("this channel speaks for agent ");
+            text.put_bytes(self.channel_agent.as_bytes());
+            text.put("; a client on it cannot name another");
+        } else if self.agent_bound && wanted != self.agent {
+            text.put("this connection speaks for agent ");
+            text.put_bytes(self.agent.as_bytes());
+            text.put(" until it closes; connect again to speak for another");
+        }
+        let refusal_length = text.length;
+        if refusal_length > 0 {
+            let refusal = text_prefix(&message, refusal_length);
+            self.refuse_agent(id, refusal, system, scratch, out);
+            return;
+        }
+        self.agent = wanted;
+        self.agent_bound = true;
         let info = params.and_then(|params| params.get("clientInfo"));
         let text_of = |key: &str, buffer: &mut [u8]| -> usize {
             info.and_then(|info| info.get(key))
@@ -548,7 +600,7 @@ impl Server {
             text_prefix(&version, version_length),
             elicitation,
         );
-        let mut detail = [0u8; 192];
+        let mut detail = [0u8; 320];
         let mut writer = JsonWriter::new(&mut detail);
         writer.begin_object();
         writer.key("requested");
@@ -559,6 +611,10 @@ impl Server {
         writer.string(self.session.client_version());
         writer.key("elicitation");
         writer.bool(self.session.elicits());
+        if let Some(name) = declared.and_then(|declared| declared.name) {
+            writer.key("agentName");
+            writer.string_lossy(name.as_bytes());
+        }
         writer.end_object();
         let detail_length = writer.len();
         let client = self.session.client();
@@ -572,13 +628,13 @@ impl Server {
             detail.get(..detail_length).unwrap_or_default(),
             b"",
         );
-        let mut grants = [0u8; 32];
+        let mut grants = [0u8; 192];
         let now = self.refresh_policy(system);
-        let grants_length = self.policy.allowed(&self.agent, now).describe(&mut grants);
-        let grants = match self.policy.check(&self.agent, None, now) {
-            Decision::Deny(_) => "none, not even reading",
-            _ => text_prefix(&grants, grants_length),
+        let grants_length = match self.policy.check(&self.agent, None, now) {
+            Decision::Deny(_) => how_to_grant(&self.agent, &mut grants),
+            _ => self.policy.allowed(&self.agent, now).describe(&mut grants),
         };
+        let grants = text_prefix(&grants, grants_length);
         rpc::write_result(out, id, |out| {
             out.begin_object();
             out.key("protocolVersion");
@@ -604,6 +660,27 @@ impl Server {
             write_instructions(out, grants);
             out.end_object();
         });
+    }
+
+    fn refuse_agent(
+        &mut self,
+        id: &[u8],
+        message: &str,
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut JsonWriter<'_>,
+    ) {
+        self.record(
+            system,
+            scratch.record,
+            0,
+            b"-",
+            b"initialize",
+            Outcome::Refused,
+            b"",
+            message.as_bytes(),
+        );
+        rpc::write_error(out, Some(id), INVALID_PARAMS, message);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1447,7 +1524,7 @@ impl Server {
                 .checked
                 .name
                 .is_some_and(|name| self.installed(name.as_str(), system)),
-            Operand::None | Operand::Window => true,
+            Operand::None | Operand::Window | Operand::CallingAgent => true,
         }
     }
 
@@ -1574,12 +1651,16 @@ impl Server {
             );
         }
         let name = prepared.checked.name;
+        let agent = self.agent;
         let (program, operand) = match (tool.twin.program, tool.twin.operand) {
             (Program::FromArguments, _) => (prepared.target.unwrap_or(""), None),
             (Program::Fixed(program), Operand::Name) => {
                 (program, name.as_ref().map(|name| name.as_str()))
             }
             (Program::Fixed(program), Operand::Path(_)) => (program, prepared.target),
+            (Program::Fixed(program), Operand::CallingAgent) => {
+                (program, core::str::from_utf8(agent.as_bytes()).ok())
+            }
             (Program::Fixed(program), Operand::None | Operand::Window) => (program, None),
         };
         let content = prepared
@@ -2864,6 +2945,57 @@ fn refused(out: &mut JsonWriter<'_>, id: &[u8], error: &ErrorDefinition, message
         out.bool(true);
         out.end_object();
     });
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeclaredAgent {
+    id: AgentId,
+    name: Option<AgentName>,
+}
+
+fn declared_agent(params: Option<Object<'_>>) -> Result<Option<DeclaredAgent>, &'static str> {
+    let Some(declared) = params
+        .and_then(|params| params.get("_meta"))
+        .and_then(|meta| meta.get(AGENT_META_KEY))
+    else {
+        return Ok(None);
+    };
+    let mut id_bytes = [0u8; MAX_AGENT_ID_BYTES + 1];
+    let id = exact_text(declared.get("id"), &mut id_bytes)
+        .and_then(AgentId::new)
+        .ok_or(BAD_AGENT_ID)?;
+    let mut name_bytes = [0u8; MAX_AGENT_NAME_BYTES + 1];
+    let name = match declared.get("name") {
+        None => None,
+        Some(name) => Some(
+            exact_text(Some(name), &mut name_bytes)
+                .and_then(AgentName::new)
+                .ok_or(BAD_AGENT_NAME)?,
+        ),
+    };
+    Ok(Some(DeclaredAgent { id, name }))
+}
+
+fn exact_text<'b>(value: Option<Value<'_>>, buffer: &'b mut [u8]) -> Option<&'b [u8]> {
+    let (text, whole) = value?.as_str()?.decode_prefix_into(buffer);
+    whole.then_some(text.as_bytes())
+}
+
+fn how_to_grant(agent: &AgentId, out: &mut [u8]) -> usize {
+    let mut text = Text::new(out);
+    text.put("none, not even reading, so no tool is listed. The user gives this agent ");
+    text.put("grants on EggOS with: agent grant ");
+    text.put_bytes(agent.as_bytes());
+    text.put(" view (or write, install, run)");
+    text.length
+}
+
+fn write_no_tools(out: &mut JsonWriter<'_>) {
+    out.begin_object();
+    out.key("tools");
+    out.begin_array();
+    out.end_array();
+    out.end_object();
 }
 
 fn write_instructions(out: &mut JsonWriter<'_>, grants: &str) {

@@ -257,6 +257,20 @@ pub const NO_SUCH_DISK: ErrorDefinition = error(
     "Name a disk disk list shows: /dev/vda to /dev/vdd.",
     Some("disk list"),
 );
+/// `agent`: EggOS does not know the agent (D193).
+pub const NO_SUCH_AGENT: ErrorDefinition = error(
+    "no_such_agent",
+    Category::NotFound,
+    "Name an agent agent list shows, or give it a grant first: agent grant <id> <grant>.",
+    Some("agent list"),
+);
+/// `agent`: the agents' grants file holds as many agents as it can (D193).
+pub const TOO_MANY_AGENTS: ErrorDefinition = error(
+    "too_many_agents",
+    Category::TooLarge,
+    "Forget an agent no longer used (agent forget <id>), then try again.",
+    Some("agent list"),
+);
 /// `disk`: a file system holds the disk (D192).
 pub const DISK_IN_USE: ErrorDefinition = error(
     "disk_in_use",
@@ -379,7 +393,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 51] = [
+pub const ALL: [&ErrorDefinition; 53] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -415,6 +429,8 @@ pub const ALL: [&ErrorDefinition; 51] = [
     &INVALID_VALUE,
     &NOT_APPLIED,
     &NO_SUCH_DISK,
+    &NO_SUCH_AGENT,
+    &TOO_MANY_AGENTS,
     &DISK_IN_USE,
     &NOT_EGGFS,
     &LABEL_TOO_LONG,

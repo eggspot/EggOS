@@ -1,3 +1,4 @@
+use crate::agent::agent;
 use crate::agentlog::agentlog;
 use crate::cat::cat;
 use crate::chmod::chmod;
@@ -38,6 +39,7 @@ const UTILITY_NOT_FOUND: i32 = 127;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Utility {
+    Agent,
     Agentlog,
     Cat,
     Chmod,
@@ -83,7 +85,8 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
+        Self::Agent,
         Self::Agentlog,
         Self::Cat,
         Self::Chmod,
@@ -130,6 +133,7 @@ impl Utility {
 
     pub fn name(self) -> &'static [u8] {
         match self {
+            Self::Agent => b"agent",
             Self::Agentlog => b"agentlog",
             Self::Cat => b"cat",
             Self::Chmod => b"chmod",
@@ -181,6 +185,7 @@ impl Utility {
 
     fn run<S: System>(self, output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         match self {
+            Self::Agent => agent(output, arguments),
             Self::Agentlog => agentlog(output, arguments),
             Self::Cat => cat(output, arguments),
             Self::Chmod => chmod(output, arguments),

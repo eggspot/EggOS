@@ -15808,3 +15808,39 @@ the license, by an explicit instruction recorded here.
   network connections (41d); resources, prompts and the 2026-07-28 protocol (41e); stopping
   a twin already running when its grant is taken back; `agentlog` filters and an `AGENT`
   column (41b).
+- **Slice 41b1 (identity, the cap, the `agent` command, `agent_list` and `agent_show`).** A
+  client on the local channel names the agent it speaks for in `initialize`'s
+  `params._meta["org.eggos/agent"] = {"id", "name"}` (`AGENT_META_KEY`; the name optional);
+  a client that names none is `local`. A bad id or name, or `local`, refuses `initialize`
+  (`INVALID_PARAMS`, logged as a refused `initialize`). `Server::set_agent` now sets the
+  channel's own agent: on a channel set to another agent (41d's paired connections) a client
+  cannot name a different one. The agent is bound for the connection: a second `initialize`
+  naming another agent is refused until the client reconnects (`disconnected` resets it to
+  the channel's agent). Every agent, named or not, is capped by the boot grants (`Policy::check`
+  denies `NotStartedWith` above them), since a name on the local channel is the client's own
+  word. An agent that gets nothing sees an empty `tools/list`, and `initialize`'s
+  instructions say how the user grants it (`agent grant <id> view`). `agent list|show|grant|
+  revoke|forget` (coreutils, `/bin/agent`; `grant`, `revoke` and `forget` are the noun's own
+  verbs) writes the store through `GrantStore::encode` to `agent-grants.new`, `sync`, then
+  `rename`, making `/var/lib/eggos` first; `grant run` and `grant install` need `--yes`;
+  `--ask`, `--for 30s|15m|2h|7d`, `--name`, `--dry-run`; `local`'s first entry starts from its
+  boot grants, so taking one grant back keeps the others, and the command says when `run`
+  still brings the grant taken. MCP: `agent_list` (`view`) runs `agent list --json`;
+  `agent_show` runs `agent show --json <the calling agent>` (a new `Operand::CallingAgent`),
+  so an agent reads its own grants and no tool reads another's or raises any; D193's
+  `grants_list_own` is this tool, named by the registry's `<noun>_<verb>` rule (D160).
+  - Decided by research: the identity goes in `initialize`'s `_meta` (MCP's place for
+    implementation data, reverse-DNS key) rather than a method before `initialize`, which
+    every standard client would break; an invalid id refuses rather than falling back to
+    `local`; named agents on the local channel are capped by the boot grants; the agent
+    cannot change within a connection.
+  - Choices made without research: `sync` stands for `fsync` (the core utilities' `System`
+    has no `fsync`); `grant run|install` takes `--yes` rather than asking on the terminal; a
+    `--for` duration is a number and one unit; a server started again (`--restarted`) speaks
+    for the channel's agent until its client initializes again.
+  - Not yet (41b2): `agentlog --agent/--tool/--outcome/--since` and its AGENT column and
+    `agent` JSON field; the `eggos.mcp_agent=` command-line pin with a `run-eggos --mcp-agent`
+    flag for clients that cannot send `_meta`; the counts that follow two new tools (xtask
+    `TOOLS`/`GRANTED_TOOLS`/`TWIN_CALLS`, docs/mcp.md, command-model.md, schema fixtures,
+    server tests); server tests for `_meta`, the empty list and `agent_show`; the QEMU
+    revoke-mid-session check; docs/mcp.md, coreutils.md, limitations and roadmap item 28.

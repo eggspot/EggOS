@@ -76,7 +76,7 @@ fn a_known_agent_reads_and_has_exactly_the_grants_given_with_run_bringing_the_re
     for given in [Grant::View, Grant::Write, Grant::Install] {
         let policy = loaded(
             store_with("agent", &[(given, Permission::Allow, None)]),
-            Grants::NONE,
+            Grants::ALL,
         );
         assert_eq!(policy.check(&id("agent"), None, 0), Decision::Allow);
         for grant in Grant::ALL {
@@ -94,7 +94,7 @@ fn a_known_agent_reads_and_has_exactly_the_grants_given_with_run_bringing_the_re
     }
     let run = loaded(
         store_with("agent", &[(Grant::Run, Permission::Allow, None)]),
-        Grants::NONE,
+        Grants::ALL,
     );
     for grant in Grant::ALL {
         assert_eq!(run.check(&id("agent"), Some(grant), 0), Decision::Allow);
@@ -113,7 +113,7 @@ fn ask_asks_the_user_and_the_stronger_of_the_grant_and_run_wins() {
                 (Grant::View, Permission::Allow, None),
             ],
         ),
-        Grants::NONE,
+        Grants::ALL,
     );
     let agent = id("agent");
     assert_eq!(
@@ -135,13 +135,13 @@ fn a_revoked_grant_stops_the_next_check() {
     let mut store = store_with("agent", &[(Grant::Write, Permission::Allow, None)]);
     let before = StoreState::from_read(Ok(encoded(&store).as_slice()));
     let policy = Policy {
-        boot: Grants::NONE,
+        boot: Grants::ALL,
         store: before,
     };
     assert_eq!(policy.check(&agent, Some(Grant::Write), 5), Decision::Allow);
     store.get_mut(&agent).unwrap().revoke(Grant::Write);
     let after = Policy {
-        boot: Grants::NONE,
+        boot: Grants::ALL,
         store: StoreState::from_read(Ok(encoded(&store).as_slice())),
     };
     assert_eq!(
@@ -151,7 +151,7 @@ fn a_revoked_grant_stops_the_next_check() {
     assert_eq!(after.check(&agent, None, 6), Decision::Allow);
     assert!(store.forget(&agent));
     assert!(!store.forget(&agent));
-    let forgotten = loaded(store, Grants::NONE);
+    let forgotten = loaded(store, Grants::ALL);
     assert_eq!(
         forgotten.check(&agent, None, 7),
         Decision::Deny(Denial::UnknownAgent)
@@ -168,7 +168,7 @@ fn a_time_limited_grant_ends_at_its_second() {
         ],
     );
     assert!(store.has_expiry());
-    let policy = loaded(store, Grants::NONE);
+    let policy = loaded(store, Grants::ALL);
     assert!(policy.needs_clock());
     let agent = id("agent");
     assert_eq!(
@@ -426,4 +426,31 @@ fn ids_and_names_refuse_what_could_disguise_them() {
     ] {
         assert_eq!(AgentName::new(bad), None, "{bad:?}");
     }
+}
+
+#[test]
+fn an_agent_that_names_itself_never_gets_more_than_eggos_was_started_with() {
+    let store = store_with(
+        "phone",
+        &[
+            (Grant::Run, Permission::Allow, None),
+            (Grant::Write, Permission::Allow, None),
+        ],
+    );
+    let policy = loaded(store, Grants::NONE.with(Grant::Write));
+    let phone = id("phone");
+    assert_eq!(policy.check(&phone, None, 0), Decision::Allow);
+    assert_eq!(policy.check(&phone, Some(Grant::Write), 0), Decision::Allow);
+    for grant in [Grant::View, Grant::Install, Grant::Run] {
+        assert_eq!(
+            policy.check(&phone, Some(grant), 0),
+            Decision::Deny(Denial::NotStartedWith),
+            "{grant:?}"
+        );
+    }
+    assert_eq!(policy.allowed(&phone, 0), Grants::NONE.with(Grant::Write));
+    assert_eq!(
+        policy.check(&id("stranger"), Some(Grant::Write), 0),
+        Decision::Deny(Denial::UnknownAgent)
+    );
 }

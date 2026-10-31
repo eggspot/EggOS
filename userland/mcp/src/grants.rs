@@ -69,7 +69,8 @@ impl Grant {
         }
     }
 
-    fn named(name: &[u8]) -> Option<Self> {
+    /// The grant called `name` (`view`, `write`, `install` or `run`).
+    pub fn named(name: &[u8]) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|grant| grant.name().as_bytes() == name)
@@ -366,7 +367,7 @@ pub enum Decision {
 /// Why a call is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Denial {
-    /// The local channel's agent needs a grant EggOS was not started with.
+    /// The agent needs a grant EggOS was not started with, which bounds every agent.
     NotStartedWith,
     /// The user has not given the agent this grant, or took it back.
     NotGiven,
@@ -773,7 +774,8 @@ impl StoreState {
 /// The boot's grants and the store together: what decides every call.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Policy {
-    /// The grants EggOS was started with: all the local channel's agent can ever have.
+    /// The grants EggOS was started with: all any agent on this server's channel can ever
+    /// have, since an agent names itself there in its own words.
     pub boot: Grants,
     /// The store.
     pub store: StoreState,
@@ -782,9 +784,9 @@ pub struct Policy {
 impl Policy {
     /// Whether a call by `agent` needing `capability` (`None` for reading) may go ahead at
     /// `now` (the wall clock's seconds). An agent the store does not have gets nothing, the
-    /// local channel's agent excepted: it has the boot's grants until the user sets its own,
-    /// which can only lower them. An unreadable store leaves the local agent reading and
-    /// every other agent nothing.
+    /// local channel's agent excepted: it has the boot's grants until the user sets its own.
+    /// The boot's grants bound every agent's. An unreadable store leaves the local agent
+    /// reading and every other agent nothing.
     pub fn check(&self, agent: &AgentId, capability: Option<Grant>, now: u64) -> Decision {
         let entry = match &self.store {
             StoreState::Unreadable(error) => {
@@ -811,6 +813,9 @@ impl Policy {
         match (entry, capability) {
             (None, _) => Decision::Deny(Denial::UnknownAgent),
             (Some(_), None) => Decision::Allow,
+            (Some(_), Some(grant)) if !self.boot.allows(grant) => {
+                Decision::Deny(Denial::NotStartedWith)
+            }
             (Some(entry), Some(grant)) => entry.decide(grant, now),
         }
     }

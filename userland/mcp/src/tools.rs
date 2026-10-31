@@ -145,6 +145,10 @@ pub enum Kind {
     DiskRepair,
     /// `disk_format`: erases a disk and makes it an empty EggFS disk (D192).
     DiskFormat,
+    /// `agent_list`: the agents the user added and their grants (D193).
+    AgentList,
+    /// `agent_show`: the calling agent's own grants (D193).
+    AgentShow,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -181,6 +185,8 @@ pub enum Operand {
     /// A window's id, then the tool's other positional words (a point, text, keys or a
     /// scroll), each its own word.
     Window,
+    /// The id of the agent that calls: a tool about the caller itself (`agent_show`, D193).
+    CallingAgent,
 }
 
 /// What a twin reads on its standard input.
@@ -348,7 +354,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 50] = [
+pub const TOOLS: [Tool; 52] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -592,6 +598,16 @@ pub const TOOLS: [Tool; 50] = [
             &["format", "--yes"],
             Operand::Path(DEVICE_PATH),
         ),
+    ),
+    tool(
+        &registry::AGENT_LIST,
+        Kind::AgentList,
+        twin("/bin/agent", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::AGENT_SHOW,
+        Kind::AgentShow,
+        twin("/bin/agent", &["show", "--json"], Operand::CallingAgent),
     ),
 ];
 

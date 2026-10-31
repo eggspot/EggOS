@@ -835,6 +835,192 @@ pub const APP_OPEN: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("a double-click on the app's icon"),
 };
 
+/// `agent list --json`'s and `agent show --json`'s records: one per agent, each grant's
+/// permission (`allow`, `ask` or `deny`) and when it ends (D193).
+pub const AGENT_FIELDS: [Field; 10] = [
+    field("id", FieldType::Text),
+    field("name", FieldType::Text),
+    field("view", FieldType::Text),
+    nullable("view_ends_at", FieldType::Time),
+    field("write", FieldType::Text),
+    nullable("write_ends_at", FieldType::Time),
+    field("install", FieldType::Text),
+    nullable("install_ends_at", FieldType::Time),
+    field("run", FieldType::Text),
+    nullable("run_ends_at", FieldType::Time),
+];
+
+const AGENT_OPERAND: OperandDefinition = operand("id", ValueType::Text, Count::One);
+const AGENT_CAPABILITY: ValueType = ValueType::Choice(&["view", "write", "install", "run"]);
+const AGENT_SURFACE: Surface = Surface::NoGui(
+    "Settings' Agents pane comes with its design (D193 slice 41c); until then the agent \
+     command is how the user grants",
+);
+const AGENT_ERRORS: [CommandError; 6] = [
+    exits(&USAGE, 2),
+    exits(&crate::errors::NO_SUCH_AGENT, 1),
+    exits(&crate::errors::TOO_MANY_AGENTS, 1),
+    exits(&DAMAGED, 1),
+    exits(&PERMISSION_DENIED, 1),
+    exits(&FAILED, 1),
+];
+
+/// `agent forget`.
+pub const AGENT_FORGET: CommandDefinition = CommandDefinition {
+    words: &["agent", "forget"],
+    summary: "Forgets an agent and every grant it had.",
+    description: "Removes the agent from the agents' grants file, /var/lib/eggos/agent-grants. \
+                  An agent EggOS does not know gets nothing, not even reading, from its next \
+                  call on; forgetting local gives the local channel back the grants EggOS was \
+                  started with.",
+    options: &[],
+    operands: &[AGENT_OPERAND],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &AGENT_ERRORS,
+    examples: &[refused_example("agent forget phone")],
+    surface: AGENT_SURFACE,
+};
+
+/// `agent grant`.
+pub const AGENT_GRANT: CommandDefinition = CommandDefinition {
+    words: &["agent", "grant"],
+    summary: "Gives an agent a grant.",
+    description: "Gives the agent one grant, view, write, install or run, from its next call \
+                  on, adding the agent when EggOS does not know it yet. --ask makes each such \
+                  call ask the user first; --for ends the grant after a while (30s, 15m, 2h or \
+                  7d); --name sets the name the user sees. run is full control of EggOS and \
+                  brings the others, and install adds programs, so both need --yes. No agent \
+                  gets more than EggOS was started with (--mcp-allow). --dry-run says what \
+                  would change and writes nothing.",
+    options: &[
+        long_flag("ask", "Ask the user before each call that needs the grant."),
+        valued(
+            None,
+            Some("for"),
+            "duration",
+            ValueType::Text,
+            "End the grant after this long: a number and s, m, h or d.",
+        ),
+        valued(
+            None,
+            Some("name"),
+            "name",
+            ValueType::Text,
+            "The name the user sees, at most 64 bytes.",
+        ),
+        named_flag(b'y', "yes", "Give run or install without asking."),
+        DRY_RUN_OPTION,
+    ],
+    operands: &[
+        AGENT_OPERAND,
+        operand("grant", AGENT_CAPABILITY, Count::One),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::TOO_MANY_AGENTS, 1),
+        exits(&crate::errors::NEEDS_CONFIRMATION, 1),
+        exits(&DAMAGED, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example(
+            "agent grant --dry-run --ask phone write",
+            "would give phone write, asking the user each time, from its next call\nnote: EggOS \
+             was started without write, and no agent gets more than EggOS was started with: \
+             start it with --mcp-allow write\n",
+        ),
+        refused_example("agent grant phone run"),
+    ],
+    surface: AGENT_SURFACE,
+};
+
+/// `agent list`.
+pub const AGENT_LIST: CommandDefinition = CommandDefinition {
+    words: &["agent", "list"],
+    summary: "Lists the agents and their grants.",
+    description: "Lists the agents the user added, and local, the agent on the host's channel: \
+                  its id, its name and each grant (allow, ask or deny, with the time it ends). \
+                  local has the grants EggOS was started with until the user sets its own. The \
+                  last line says what EggOS was started with, which no agent exceeds. --json \
+                  writes one record an agent.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&AGENT_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&DAMAGED, 1), exits(&FAILED, 1)],
+    examples: &[
+        example(
+            "agent list",
+            "AGENT  NAME  VIEW  WRITE  INSTALL  RUN\nlocal  local  deny  deny  deny  deny\n\
+             EggOS was started with: read\n",
+        ),
+        example(
+            "agent list --json",
+            "{\"id\":\"local\",\"name\":\"local\",\"view\":\"deny\",\"view_ends_at\":null,\
+             \"write\":\"deny\",\"write_ends_at\":null,\"install\":\"deny\",\
+             \"install_ends_at\":null,\"run\":\"deny\",\"run_ends_at\":null}\n",
+        ),
+    ],
+    surface: AGENT_SURFACE,
+};
+
+/// `agent revoke`.
+pub const AGENT_REVOKE: CommandDefinition = CommandDefinition {
+    words: &["agent", "revoke"],
+    summary: "Takes a grant, or every grant, back from an agent.",
+    description: "Takes the grant named back from the agent, or every grant when none is \
+                  named, from its next call on; a call waiting for the user's answer is refused \
+                  too. The agent keeps reading. Taking a grant from local, which has the grants \
+                  EggOS was started with, keeps the others. run brings every other grant, so an \
+                  agent that keeps run keeps them all: the command says so.",
+    options: &[],
+    operands: &[
+        AGENT_OPERAND,
+        operand("grant", AGENT_CAPABILITY, Count::ZeroOrOne),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &AGENT_ERRORS,
+    examples: &[refused_example("agent revoke phone write")],
+    surface: AGENT_SURFACE,
+};
+
+/// `agent show`.
+pub const AGENT_SHOW: CommandDefinition = CommandDefinition {
+    words: &["agent", "show"],
+    summary: "Shows one agent's grants.",
+    description: "Shows the agent's id, name and each grant (allow, ask or deny, with the time \
+                  it ends), as agent list does for one agent. --json writes one record.",
+    options: &[JSON_OPTION],
+    operands: &[AGENT_OPERAND],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&AGENT_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::NO_SUCH_AGENT, 1),
+        exits(&DAMAGED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[
+        example(
+            "agent show local",
+            "AGENT  NAME  VIEW  WRITE  INSTALL  RUN\nlocal  local  deny  deny  deny  deny\n",
+        ),
+        refused_example("agent show phone"),
+    ],
+    surface: AGENT_SURFACE,
+};
+
 /// `agentlog`.
 pub const AGENTLOG: CommandDefinition = CommandDefinition {
     words: &["agentlog"],
@@ -2519,7 +2705,12 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 73] = [
+pub const COMMANDS: [CommandDefinition; 78] = [
+    AGENT_FORGET,
+    AGENT_GRANT,
+    AGENT_LIST,
+    AGENT_REVOKE,
+    AGENT_SHOW,
     AGENTLOG,
     APP_INSTALL,
     APP_LIST,
