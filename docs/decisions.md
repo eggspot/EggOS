@@ -13679,7 +13679,8 @@ the license, by an explicit instruction recorded here.
 - **Input.** virtio-input connects its interrupt at probe and is installed with
   `input::install_interrupting`; when every input device was, init's `input::start` runs the
   input thread on `input::DEVICE_EVENTS` (the boot log says `input: on interrupts`): it takes
-  every device's events, then sleeps until one interrupts or the held key's next repeat. A
+  every device's events, then sleeps until one interrupts or the held key's next repeat (or,
+  when its rounds stopped with events still waiting, until the next active poll's time). A
   device whose interrupt cannot be connected is polled as before, and the thread polls them
   all (`input: polled`); the desktop's clock then ticks from its own thread whenever the input
   thread does not poll. A thread stays (it is where events become bytes and queue entries,
@@ -13729,7 +13730,10 @@ the license, by an explicit instruction recorded here.
   out; a QMP resize check); virtio-console input as a console; the kernel's generator reseeded
   from virtio-rng; Settings' About list (the toolkit's `Table`, docs/ux/devices-v0.3.md); device
   lines through the I/O APIC (x86 INTx) and on other CPUs; a line per queue; lines given back
-  when a driver lets a device go; the measured costs above.
+  when a driver lets a device go, and when connecting fails after the line was routed (the
+  device answers `NO_VECTOR`, `interrupts::connect` fails: the line stays taken, MSI-X stays
+  on, and a routed riscv64 level source with no handler is claimed and completed while the
+  device asserts it); the measured costs above.
 
 ## D185 Text beyond ASCII and keyboard layouts: Egg Mono's Latin-1 glyphs and `€`, 14 keyboard layouts with dead keys and the AltGr/Option layer, `keyboard.layout` from Settings' Keyboard pane, `settings set` and MCP `settings_set`, Caps Lock's light, and non-ASCII characters from `wm type` and `wm_type` (batch part 33; v0.3.0 items 12, 32 and 46's follow-ups; D113's, D114's and D141's "Not yet"; extends D109, D113, D114, D129, D132, D141, D163, D184) — Decided by the build loop (the layouts, their names and data, dead-key rules, the AltGr/Option rule, where the kernel learns the layout and the LED decided by research; the glyphs and the Keyboard pane designed by Claude Fable, `docs/ux/font-8x16-latin-1.txt`, `docs/ux/keyboard-v0.3.md`)
 

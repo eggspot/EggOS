@@ -930,6 +930,7 @@ struct Input {
     sources: [Option<Source>; MAX_DEVICES],
     state: InputState,
     caps_lock_shown: bool,
+    events_left: bool,
 }
 
 impl Input {
@@ -1001,6 +1002,7 @@ fn install_source(
             sources: [const { None }; MAX_DEVICES],
             state: InputState::new(),
             caps_lock_shown: false,
+            events_left: false,
         })
     });
     let queue = events()
@@ -1115,8 +1117,8 @@ impl InputSink for PollSink {
 
 /// Polls every input device: in rounds of at most 16 events each, the console fed between
 /// rounds, until the devices have nothing more or [`MAX_POLL_ROUNDS`] rounds ran; then sends the
-/// held key's repeat if it is due, and returns the clock tick to poll again at. `None` without
-/// input devices.
+/// held key's repeat if it is due, and returns the clock tick to poll again at, which an input
+/// thread woken by interrupts also keeps when events were left. `None` without input devices.
 pub fn poll<P: Platform>() -> Option<u64> {
     poll_devices::<P>(&INPUT, subscribed_events(), screen(), Timing::now::<P>())
 }
@@ -1181,6 +1183,7 @@ fn poll_devices<P: Platform>(
             let last = !more || round == MAX_POLL_ROUNDS;
             if last {
                 input.state.repeat_key(timing, &mut sink);
+                input.events_left = more;
             }
             input.show_caps_lock();
             PERSON_HOLDS_INPUT.store(input.state.anything_held(), Ordering::Relaxed);
@@ -1235,6 +1238,10 @@ fn next_repeat() -> Option<u64> {
     INPUT.lock().as_ref()?.state.next_repeat()
 }
 
+fn events_left() -> bool {
+    INPUT.lock().as_ref().is_some_and(|input| input.events_left)
+}
+
 /// Starts the input thread if there are input devices, and says how it hears from them;
 /// `Ok(None)` without any, so nothing runs.
 pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnError> {
@@ -1247,7 +1254,12 @@ pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnErro
             match watching {
                 Watching::Polling => crate::thread::sleep_until::<P>(next),
                 Watching::Interrupts => {
-                    seen = DEVICE_EVENTS.wait::<P>(seen, next_repeat().unwrap_or(u64::MAX));
+                    let poll_again = match events_left() {
+                        true => next,
+                        false => u64::MAX,
+                    };
+                    let deadline = next_repeat().unwrap_or(u64::MAX).min(poll_again);
+                    seen = DEVICE_EVENTS.wait::<P>(seen, deadline);
                 }
             }
         }

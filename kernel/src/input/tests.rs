@@ -687,6 +687,7 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
         sources: [const { None }; MAX_DEVICES],
         state: InputState::new(),
         caps_lock_shown: false,
+        events_left: false,
     })));
     let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     if let Some(input) = devices.lock().as_mut() {
@@ -702,6 +703,7 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
     let next = poll_devices::<TestPlatform>(&devices, None, SCREEN, timing(1000));
     assert_eq!(next, Some(1000 + ACTIVE_POLL_MS * 1000));
     assert_eq!(polls.load(Ordering::Relaxed), MAX_POLL_ROUNDS);
+    assert!(devices.lock().as_ref().unwrap().events_left);
     let empty = LeafSpinLock::new_leaf(None);
     assert_eq!(
         poll_devices::<TestPlatform>(&empty, None, SCREEN, timing(0)),

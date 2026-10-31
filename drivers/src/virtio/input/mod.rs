@@ -194,6 +194,9 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
             return;
         };
         while status.pop_used().is_some() {}
+        if status.free_descriptors() == 0 {
+            return;
+        }
         let slot = usize::from(self.status_written % status.size());
         let offset = STATUS_EVENTS + slot * EVENT_BYTES;
         let event = self.memory.as_mut_ptr().wrapping_add(offset);
