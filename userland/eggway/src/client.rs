@@ -180,6 +180,8 @@ pub struct Surface {
     pub viewport_current: ViewportState,
     /// The `wp_fractional_scale_v1`, 0 when it is none.
     pub fractional_scale: u32,
+    /// The `wl_subsurface`, 0 when it is none: while it lives the surface keeps its role.
+    pub subsurface: u32,
 }
 
 impl Surface {
@@ -237,6 +239,7 @@ impl Surface {
                 destination: None,
             },
             fractional_scale: 0,
+            subsurface: 0,
         }
     }
 

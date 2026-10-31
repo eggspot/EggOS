@@ -1246,8 +1246,10 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
     if let Some(slot) = client.surface(index) {
         *slot = surface;
     }
-    let attached = match attach {
-        Attach::Buffer(buffer) => Some(buffer),
+    let attached = match (attach, surface.cached) {
+        (Attach::Buffer(buffer), _) | (Attach::Unchanged, Some(Attach::Buffer(buffer))) => {
+            Some(buffer)
+        }
         _ => None,
     };
     if !viewport_fits(client, index, attached) {
@@ -2376,8 +2378,8 @@ fn source_rect(surface: &Surface, buffer: &Buffer) -> Rect {
         Some([x, y, width, height]) => Rect::new(
             (x >> 8).max(0) as u32,
             (y >> 8).max(0) as u32,
-            ((width + 255) >> 8).max(1) as u32,
-            ((height + 255) >> 8).max(1) as u32,
+            (width.saturating_add(255) >> 8).max(1) as u32,
+            (height.saturating_add(255) >> 8).max(1) as u32,
         )
         .clipped(buffer.width, buffer.height),
         None => Rect::new(0, 0, buffer.width, buffer.height),
@@ -3063,7 +3065,8 @@ fn subcompositor_request(client: &mut ClientSlot, message: &Message) {
     };
     let taken = surface.xdg_surface != 0
         || surface.role == Role::Cursor
-        || (surface.role == Role::Subsurface && surface.parent.is_some());
+        || (surface.role == Role::Subsurface
+            && (surface.parent.is_some() || surface.subsurface != 0));
     if taken {
         client.protocol_error(
             message.object,
@@ -3083,6 +3086,7 @@ fn subcompositor_request(client: &mut ClientSlot, message: &Message) {
     let order = client.next_order;
     if let Some(slot) = client.surface(index) {
         slot.role = Role::Subsurface;
+        slot.subsurface = id;
         slot.parent = Some(parent);
         slot.synced = true;
         slot.order = order;
@@ -3130,7 +3134,8 @@ fn restack(client: &mut ClientSlot, message: &Message, index: u16, parent: u16) 
 
 fn subsurface_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
     let index = message.index;
-    let Some(surface) = peek(client, index) else {
+    let Some(surface) = peek(client, index).filter(|surface| surface.subsurface == message.object)
+    else {
         return;
     };
     match message.opcode {
@@ -3138,6 +3143,7 @@ fn subsurface_request<S: System>(client: &mut ClientSlot, system: &mut S, messag
             let root = root_of(client, index);
             let_go(client, index);
             if let Some(slot) = client.surface(index) {
+                slot.subsurface = 0;
                 slot.parent = None;
                 slot.cached = None;
                 slot.pending_position = None;
@@ -3235,16 +3241,18 @@ fn decoration_manager_request(client: &mut ClientSlot, shared: &mut Shared, mess
 
 fn decoration_request(client: &mut ClientSlot, shared: &mut Shared, message: &Message) {
     let index = message.index;
+    let current = peek(client, index).is_some_and(|surface| surface.decoration == message.object);
     match message.opcode {
         0 => {
-            if let Some(slot) = client.surface(index) {
+            if current && let Some(slot) = client.surface(index) {
                 slot.decoration = 0;
             }
         }
         1 if ![decoration::CLIENT_SIDE, decoration::SERVER_SIDE].contains(&message.uint(0)) => {
             client.protocol_error(message.object, display::INVALID_METHOD, b"bad mode");
         }
-        _ => announce_decoration(client, shared, index),
+        _ if current => announce_decoration(client, shared, index),
+        _ => {}
     }
 }
 

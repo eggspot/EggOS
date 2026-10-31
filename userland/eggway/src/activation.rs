@@ -81,16 +81,19 @@ impl Activation {
             issued_ms: now_ms,
             from_focused,
         };
-        let slot = match self.tokens.iter().position(Option::is_none) {
-            Some(free) => free,
-            None => self
-                .tokens
+        let free = self.tokens.iter().position(Option::is_none);
+        let slot = free.or_else(|| {
+            self.tokens
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, token)| token.map_or(0, |token| token.issued_ms))
-                .map_or(0, |(oldest, _)| oldest),
-        };
-        self.tokens[slot] = Some(issued);
+                .filter_map(|(at, token)| token.map(|token| (at, token)))
+                .filter(|(_, token)| from_focused || !token.from_focused)
+                .min_by_key(|(_, token)| (token.from_focused, token.issued_ms))
+                .map(|(oldest, _)| oldest)
+        });
+        if let Some(slot) = slot {
+            self.tokens[slot] = Some(issued);
+        }
         value
     }
 

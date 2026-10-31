@@ -1458,6 +1458,117 @@ fn a_viewport_scales_the_buffer_to_its_destination_and_refuses_a_source_outside_
     session.end();
 }
 
+#[test]
+fn a_subsurface_whose_parent_went_keeps_its_role_until_its_object_is_destroyed() {
+    const PARENT: u32 = 48;
+    const SECOND_SUBSURFACE: u32 = 49;
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.configured_toplevel();
+    session.send(COMPOSITOR, 0, &[Value::NewId(PARENT)]);
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(PARENT),
+        ],
+    );
+    session.send(PARENT, 0, &[]);
+    session.pump();
+    assert!(session.alive());
+    let again = [
+        Value::NewId(SECOND_SUBSURFACE),
+        Value::Object(CHILD),
+        Value::Object(SURFACE),
+    ];
+    session.send(SUBSURFACE, 0, &[]);
+    session.send(SUBCOMPOSITOR, 1, &again);
+    session.pump();
+    assert!(session.alive(), "a new role once the old object is gone");
+    session.end();
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.configured_toplevel();
+    session.send(COMPOSITOR, 0, &[Value::NewId(PARENT)]);
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(PARENT),
+        ],
+    );
+    session.send(PARENT, 0, &[]);
+    session.send(SUBCOMPOSITOR, 1, &again);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((
+            SUBCOMPOSITOR,
+            eggos_wayland::protocol::subsurface::BAD_SURFACE
+        ))
+    );
+    session.end();
+}
+
+#[test]
+fn a_synchronized_subsurface_s_cached_buffer_is_checked_against_its_new_viewport() {
+    const CHILD_VIEWPORT: u32 = 47;
+    let mut session = Session::new();
+    session.globals();
+    session.bind(6, "wl_subcompositor", 1, SUBCOMPOSITOR);
+    session.bind(9, "wp_viewporter", 1, VIEWPORTER);
+    session.configured_toplevel();
+    let parent = (WIDTH * HEIGHT) as usize;
+    let mut pixels = vec![0x0011_1111u32; parent];
+    pixels.extend(vec![0xff22_2222u32; 100]);
+    session.pool(pixels);
+    session.buffer(BUFFER, WIDTH, HEIGHT);
+    session.argb_buffer(POOL, CHILD_BUFFER, parent as i32 * 4, (10, 10));
+    session.send(COMPOSITOR, 0, &[Value::NewId(CHILD)]);
+    session.send(
+        SUBCOMPOSITOR,
+        1,
+        &[
+            Value::NewId(SUBSURFACE),
+            Value::Object(CHILD),
+            Value::Object(SURFACE),
+        ],
+    );
+    session.send(
+        VIEWPORTER,
+        1,
+        &[Value::NewId(CHILD_VIEWPORT), Value::Object(CHILD)],
+    );
+    session.commit_buffer(CHILD, CHILD_BUFFER);
+    session.pump();
+    assert!(session.alive());
+    session.send(
+        CHILD_VIEWPORT,
+        1,
+        &[
+            Value::Fixed(0),
+            Value::Fixed(0),
+            Value::Fixed(i32::MAX),
+            Value::Fixed(i32::MAX),
+        ],
+    );
+    session.send(CHILD, 6, &[]);
+    session.pump();
+    assert_eq!(
+        session.error(),
+        Some((CHILD_VIEWPORT, viewport::OUT_OF_BUFFER))
+    );
+    session.end();
+}
+
 const DATA_MANAGER: u32 = 50;
 const DATA_DEVICE: u32 = 51;
 const SOURCE: u32 = 52;
@@ -1948,6 +2059,27 @@ fn tokens_are_single_use_and_expire() {
         tokens.issue(4000 + at, true, at);
     }
     assert!(!tokens.redeem(first, 5000), "the oldest token made room");
+}
+
+#[test]
+fn background_clients_tokens_never_push_out_a_focused_client_s() {
+    use crate::activation::{Activation, MAX_TOKENS};
+    let mut tokens = Activation::default();
+    let focused = tokens.issue(1000, true, 0x1234);
+    for at in 0..4 * MAX_TOKENS as u64 {
+        tokens.issue(1001 + at, false, at);
+    }
+    assert!(
+        tokens.redeem(focused, 1100),
+        "the focused client's token kept its slot"
+    );
+    for at in 0..MAX_TOKENS as u64 {
+        tokens.issue(2000 + at, true, at);
+    }
+    let late = tokens.issue(3000, false, 0x9999);
+    assert!(!tokens.redeem(late, 3001));
+    let newest = tokens.issue(3002, true, 0x7777);
+    assert!(tokens.redeem(newest, 3003));
 }
 
 #[test]
