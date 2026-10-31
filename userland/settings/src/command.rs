@@ -5,12 +5,12 @@
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
-use crate::keys::{self, Change, InputChange, Key, Refusal};
+use crate::keys::{self, Change, InputChange, Key, KeysChange, Refusal};
 use core::fmt::Write;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
-use eggos_settings_file::{InputPreferences, PATH};
+use eggos_settings_file::{InputPreferences, KeyAccessibility, PATH};
 use eggos_toolkit::text::Text;
 
 /// The command's usage, printed for a usage error.
@@ -55,6 +55,10 @@ pub trait Machine {
     fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]>;
     /// Uses `preferences` from the next mouse and key event on.
     fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]>;
+    /// Saves one key accessibility setting to the settings file (D205).
+    fn save_keys(&mut self, change: KeysChange) -> Result<(), &'static [u8]>;
+    /// Uses `keys` from the next key on.
+    fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]>;
     /// Writes to standard output.
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
@@ -225,6 +229,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::TimeZone(index) => machine.save_time_zone(index),
         Change::DisplayScale(scale) => machine.save_display_scale(scale),
         Change::Input(input) => machine.save_input(input),
+        Change::Keys(keys) => machine.save_keys(keys),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -238,6 +243,10 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Input(input) => {
             let preferences = input.applied_to(machine.facts().input);
             machine.apply_input(preferences)
+        }
+        Change::Keys(keys) => {
+            let applied = keys.applied_to(machine.facts().keys);
+            machine.apply_keys(applied)
         }
     };
     if let Err(why) = applied {
@@ -272,6 +281,7 @@ mod tests {
         scale_saved: Option<u32>,
         input_saved: Option<InputChange>,
         input_applied: Option<InputPreferences>,
+        keys_applied: Option<KeyAccessibility>,
         save_fails: bool,
         apply_fails: bool,
     }
@@ -319,6 +329,15 @@ mod tests {
 
         fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]> {
             self.input_applied = Some(preferences);
+            Ok(())
+        }
+
+        fn save_keys(&mut self, _change: KeysChange) -> Result<(), &'static [u8]> {
+            Ok(())
+        }
+
+        fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]> {
+            self.keys_applied = Some(keys);
             Ok(())
         }
 
@@ -516,6 +535,28 @@ mod tests {
             String::from_utf8(fake.errors)
                 .unwrap()
                 .contains("Europe/Paris")
+        );
+    }
+
+    #[test]
+    fn sticky_keys_take_every_boolean_word_and_are_used_at_once() {
+        let mut fake = Fake::default();
+        assert_eq!(
+            run(&mut fake, &["set", "accessibility.sticky_keys", "on"]),
+            0
+        );
+        assert_eq!(fake.keys_applied.map(|keys| keys.sticky_keys), Some(true));
+        let mut fake = Fake::default();
+        assert_eq!(
+            run(&mut fake, &["set", "accessibility.slow_keys_ms", "50"]),
+            INVALID_VALUE_STATUS
+        );
+        assert_eq!(
+            run(
+                &mut Fake::default(),
+                &["set", "accessibility.keyboard_navigation", "off"]
+            ),
+            FAILURE
         );
     }
 

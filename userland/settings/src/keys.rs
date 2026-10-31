@@ -4,7 +4,7 @@
 
 use crate::facts::Facts;
 use core::fmt::Write;
-use eggos_settings_file::{InputPreferences, KEYBOARD_LAYOUTS, PROFILES};
+use eggos_settings_file::{InputPreferences, KEYBOARD_LAYOUTS, KeyAccessibility, PROFILES};
 use eggos_toolkit::text::Text;
 
 /// A value as it is printed and shown.
@@ -24,6 +24,10 @@ pub enum Key {
     MouseSpeed,
     KeyboardRepeatDelay,
     KeyboardRepeatRate,
+    StickyKeys,
+    SlowKeys,
+    SlowKeysMs,
+    KeyboardNavigation,
     SystemVersion,
     SystemArch,
     SystemCpus,
@@ -55,6 +59,65 @@ pub enum Change {
     DisplayScale(u32),
     /// One mouse or key preference, used from the next event (D195).
     Input(InputChange),
+    /// Sticky keys or slow keys, used from the next key (D205).
+    Keys(KeysChange),
+}
+
+/// One key accessibility setting's new value (D205).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeysChange {
+    StickyKeys(bool),
+    SlowKeys(bool),
+    /// 100 to 1000 milliseconds.
+    SlowKeysMs(u32),
+}
+
+impl KeysChange {
+    /// `keys` with this one changed.
+    pub const fn applied_to(self, keys: KeyAccessibility) -> KeyAccessibility {
+        let mut changed = keys;
+        match self {
+            Self::StickyKeys(on) => changed.sticky_keys = on,
+            Self::SlowKeys(on) => changed.slow_keys = on,
+            Self::SlowKeysMs(delay) => changed.slow_keys_ms = delay,
+        }
+        changed
+    }
+
+    /// The setting it changes and its value as the settings file holds it.
+    pub fn saved(self) -> (&'static str, Value) {
+        let mut value = Value::new();
+        let key = match self {
+            Self::StickyKeys(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::STICKY_KEYS
+            }
+            Self::SlowKeys(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::SLOW_KEYS
+            }
+            Self::SlowKeysMs(delay) => {
+                let _ = write!(value, "{delay}");
+                eggos_settings_file::SLOW_KEYS_MS
+            }
+        };
+        (key, value)
+    }
+}
+
+const fn boolean_name(on: bool) -> &'static str {
+    match on {
+        true => "true",
+        false => "false",
+    }
+}
+
+fn boolean(value: &str) -> Result<bool, Refusal> {
+    match value {
+        "true" | "on" | "yes" | "1" => Ok(true),
+        "false" | "off" | "no" | "0" => Ok(false),
+        _ => Err(Refusal::InvalidValue),
+    }
 }
 
 /// One mouse or key preference's new value (D195).
@@ -145,7 +208,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 20] = [
         Self::ShellProfile,
         Self::DisplayScale,
         Self::DisplayResolution,
@@ -157,6 +220,10 @@ impl Key {
         Self::MouseSpeed,
         Self::KeyboardRepeatDelay,
         Self::KeyboardRepeatRate,
+        Self::StickyKeys,
+        Self::SlowKeys,
+        Self::SlowKeysMs,
+        Self::KeyboardNavigation,
         Self::SystemVersion,
         Self::SystemArch,
         Self::SystemCpus,
@@ -178,6 +245,10 @@ impl Key {
             Self::MouseSpeed => eggos_settings_file::MOUSE_SPEED,
             Self::KeyboardRepeatDelay => eggos_settings_file::KEYBOARD_REPEAT_DELAY,
             Self::KeyboardRepeatRate => eggos_settings_file::KEYBOARD_REPEAT_RATE,
+            Self::StickyKeys => eggos_settings_file::STICKY_KEYS,
+            Self::SlowKeys => eggos_settings_file::SLOW_KEYS,
+            Self::SlowKeysMs => eggos_settings_file::SLOW_KEYS_MS,
+            Self::KeyboardNavigation => "accessibility.keyboard_navigation",
             Self::SystemVersion => "system.version",
             Self::SystemArch => "system.arch",
             Self::SystemCpus => "system.cpus",
@@ -204,6 +275,9 @@ impl Key {
                 | Self::MouseSpeed
                 | Self::KeyboardRepeatDelay
                 | Self::KeyboardRepeatRate
+                | Self::StickyKeys
+                | Self::SlowKeys
+                | Self::SlowKeysMs
         )
     }
 
@@ -243,6 +317,12 @@ impl Key {
             Self::KeyboardRepeatRate => {
                 let _ = choices.write_str("2 to 60");
             }
+            Self::StickyKeys | Self::SlowKeys => {
+                let _ = choices.write_str("true or false");
+            }
+            Self::SlowKeysMs => {
+                let _ = choices.write_str("100 to 1000");
+            }
             _ => {
                 let _ = choices.write_str(PROFILE_CHOICES);
             }
@@ -273,6 +353,10 @@ impl Key {
             Self::MouseSpeed => write!(value, "{}", facts.input.pointer_speed),
             Self::KeyboardRepeatDelay => write!(value, "{}", facts.input.repeat_delay_ms),
             Self::KeyboardRepeatRate => write!(value, "{}", facts.input.repeat_rate),
+            Self::StickyKeys => value.write_str(boolean_name(facts.keys.sticky_keys)),
+            Self::SlowKeys => value.write_str(boolean_name(facts.keys.slow_keys)),
+            Self::SlowKeysMs => write!(value, "{}", facts.keys.slow_keys_ms),
+            Self::KeyboardNavigation => value.write_str("always"),
             Self::SystemVersion => value.write_str(facts.version),
             Self::SystemArch => value.write_str(facts.architecture.as_str()),
             Self::SystemCpus => write!(value, "{}", facts.cpus),
@@ -318,6 +402,10 @@ impl Key {
             Self::KeyboardRepeatRate => {
                 number_within(value, 2, 60).map(|rate| Change::Input(InputChange::RepeatRate(rate)))
             }
+            Self::StickyKeys => boolean(value).map(|on| Change::Keys(KeysChange::StickyKeys(on))),
+            Self::SlowKeys => boolean(value).map(|on| Change::Keys(KeysChange::SlowKeys(on))),
+            Self::SlowKeysMs => number_within(value, 100, 1000)
+                .map(|delay| Change::Keys(KeysChange::SlowKeysMs(delay))),
             _ => Err(Refusal::ReadOnly),
         }
     }
@@ -354,6 +442,10 @@ mod tests {
                 ("mouse.speed", "5".to_owned()),
                 ("keyboard.repeat_delay_ms", "400".to_owned()),
                 ("keyboard.repeat_rate", "25".to_owned()),
+                ("accessibility.sticky_keys", "false".to_owned()),
+                ("accessibility.slow_keys", "false".to_owned()),
+                ("accessibility.slow_keys_ms", "300".to_owned()),
+                ("accessibility.keyboard_navigation", "always".to_owned()),
                 ("system.version", "0.2.0".to_owned()),
                 ("system.arch", "aarch64".to_owned()),
                 ("system.cpus", "4".to_owned()),

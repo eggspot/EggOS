@@ -1,7 +1,7 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
-use eggos_settings_file::InputPreferences;
+use eggos_settings_file::{InputPreferences, KeyAccessibility};
 use eggos_toolkit::text::Text;
 
 /// The system's facts and the current choices.
@@ -41,6 +41,8 @@ pub struct Facts {
     pub time_zone: usize,
     /// The mouse and key preferences (D195).
     pub input: InputPreferences,
+    /// Sticky keys and slow keys (D205).
+    pub keys: KeyAccessibility,
 }
 
 impl Facts {
@@ -66,6 +68,7 @@ impl Facts {
             keyboard: true,
             caps_lock: false,
             input: InputPreferences::DEFAULT,
+            keys: KeyAccessibility::DEFAULT,
         }
     }
 }
