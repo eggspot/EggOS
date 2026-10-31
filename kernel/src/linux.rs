@@ -6192,6 +6192,36 @@ mod tests {
     }
 
     #[test]
+    fn a_setgid_process_reaches_its_own_descriptors_but_not_another_s_with_its_ids() {
+        use credentials::{Ids, Kind};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let setgid = |process: &Process<P>| {
+            let mut locked = process.credentials_and_limits().lock();
+            let user = Ids {
+                real: 1000,
+                effective: 1000,
+                saved: 1000,
+                filesystem: 1000,
+            };
+            let group = Ids {
+                real: 1000,
+                effective: 50,
+                saved: 50,
+                filesystem: 50,
+            };
+            locked.credentials.set_ids(Kind::User, user).unwrap();
+            locked.credentials.set_ids(Kind::Group, group).unwrap();
+        };
+        let process = process_for_status(&kernel);
+        let other = process_for_status(&kernel);
+        setgid(&process);
+        setgid(&other);
+        assert!(proc::may_reach_descriptors(&process, &process));
+        assert!(!proc::may_reach_descriptors(&process, &other));
+    }
+
+    #[test]
     fn execve_makes_the_saved_and_file_system_ids_the_effective_ones() {
         use credentials::{Ids, Kind};
         let _frames = frames_for_test();

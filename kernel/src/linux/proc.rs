@@ -349,9 +349,10 @@ pub fn driver_rtc(seconds: u64) -> Option<Vec<u8>> {
 /// The open file description `node` names when it is a `/proc/<pid>/fd/<n>` link whose process
 /// and descriptor are still there: what opening the link opens again on Linux, where it is a
 /// "magic" link to the open file rather than to a path (D173; a pipe's link text names no
-/// file). `EACCES` when `reader` may not reach that process's descriptors: it is not
-/// privileged, and its file system user and group ids are not the process's real, effective
-/// and saved ones (Linux's `PTRACE_MODE_READ_FSCREDS`).
+/// file). `EACCES` when `reader` may not reach that process's descriptors: it is another
+/// process, it is not privileged, and its file system user and group ids are not the
+/// process's real, effective and saved ones (Linux's `PTRACE_MODE_READ_FSCREDS`, which
+/// always lets a thread group reach its own).
 pub fn described_file<P: Platform>(
     node: crate::vfs::Node,
     reader: &Process<P>,
@@ -372,8 +373,14 @@ pub fn described_file<P: Platform>(
     running.files.file(link.fd).map(Ok)
 }
 
-fn may_reach_descriptors<P: Platform>(reader: &Process<P>, target: &Process<P>) -> bool {
+pub(super) fn may_reach_descriptors<P: Platform>(
+    reader: &Process<P>,
+    target: &Process<P>,
+) -> bool {
     use super::credentials::{Ids, Kind};
+    if core::ptr::eq(reader, target) {
+        return true;
+    }
     let (privileged, user, group) = {
         let reader = reader.credentials_and_limits().lock();
         let credentials = &reader.credentials;

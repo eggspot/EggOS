@@ -432,7 +432,10 @@ fn reopen_described<P: Platform>(
     let Some(described) = described else {
         return Err(walk_error(error));
     };
-    let described = described?;
+    let described = match described {
+        Err(_) if !magic_allowed => return Err(Errno::ELOOP),
+        described => described?,
+    };
     let FileKind::Pipe(end) = described.kind() else {
         return Err(walk_error(error));
     };
