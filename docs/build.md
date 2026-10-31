@@ -423,7 +423,8 @@ holds what used to be written in them.
   script's `--name` spellings alike, no `param` block), so an unknown or misplaced one prints
   one usage line on standard error and exits with 2, as `run-eggos.sh` does (D153). Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
-  `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
+  .NET's `SHA256` (not `Get-FileHash`, which Windows PowerShell started from PowerShell 7
+  cannot find; refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one
   kind of shell and PowerShell file in the repository, generated, never committed, and hold no
   comments. **`cargo xtask screenshot --arch <arch>`** boots the release image headless with

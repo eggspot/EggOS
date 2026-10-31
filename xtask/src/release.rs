@@ -730,7 +730,9 @@ if (Test-Path -LiteralPath $Sums) {{
         exit 1
     }}
     $expected = $line.Substring(0, 64)
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Image).Hash.ToLowerInvariant()
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Image)
+    try {{ $actual = -join ($sha256.ComputeHash($stream) | ForEach-Object {{ $_.ToString('x2') }}) }} finally {{ $stream.Dispose(); $sha256.Dispose() }}
     if ($actual -ne $expected) {{
         [Console]::Error.WriteLine("run-eggos.ps1: $File does not match its checksum in {SUMS_FILE}: download it again")
         exit 1
