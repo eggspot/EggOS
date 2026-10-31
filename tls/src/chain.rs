@@ -151,33 +151,44 @@ pub fn verify<'a>(
     if !any_root {
         return Err(CertificateError::NoRoots);
     }
-    match reaches_root(&parsed[..count], &anchored, 0, 1, now) {
+    let issued_by = |child: usize, authority: usize, below: usize| {
+        let (Some(certificate), Some(issuer)) = (parsed[child], parsed[authority]) else {
+            return false;
+        };
+        issuer.subject == certificate.issuer
+            && may_issue(&issuer, below, now)
+            && certificate.is_signed_by(&issuer.public_key)
+    };
+    match reaches_root(count, &anchored, issued_by) {
         true => Ok(leaf.public_key),
         false => Err(CertificateError::UntrustedIssuer),
     }
 }
 
-fn reaches_root(
-    chain: &[Option<Certificate<'_>>],
+pub(crate) fn reaches_root(
+    count: usize,
     anchored: &[bool; MAX_CHAIN],
-    index: usize,
-    visited: u32,
-    now: i64,
+    mut issued_by: impl FnMut(usize, usize, usize) -> bool,
 ) -> bool {
-    if anchored[index] {
-        return true;
+    let count = count.min(MAX_CHAIN);
+    let mut depth = [usize::MAX; MAX_CHAIN];
+    let mut queue = [0usize; MAX_CHAIN];
+    let mut head = 0;
+    let mut tail = 1;
+    depth[0] = 0;
+    while head < tail {
+        let child = queue[head];
+        head += 1;
+        if anchored[child] {
+            return true;
+        }
+        for authority in 0..count {
+            if depth[authority] == usize::MAX && issued_by(child, authority, depth[child]) {
+                depth[authority] = depth[child] + 1;
+                queue[tail] = authority;
+                tail += 1;
+            }
+        }
     }
-    let Some(certificate) = chain[index] else {
-        return false;
-    };
-    let below = visited.count_ones() as usize - 1;
-    chain.iter().enumerate().any(|(candidate, authority)| {
-        visited & (1 << candidate) == 0
-            && authority.is_some_and(|authority| {
-                authority.subject == certificate.issuer
-                    && may_issue(&authority, below, now)
-                    && certificate.is_signed_by(&authority.public_key)
-                    && reaches_root(chain, anchored, candidate, visited | (1 << candidate), now)
-            })
-    })
+    false
 }

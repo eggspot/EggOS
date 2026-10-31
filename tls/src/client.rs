@@ -737,7 +737,12 @@ impl Handshaking {
                 .incoming
                 .next_record(transport, &mut buffers.incoming)?;
             let (kind, start, data_length) = match (kind, protection.as_deref_mut()) {
-                (CHANGE_CIPHER_SPEC, _) => continue,
+                (CHANGE_CIPHER_SPEC, _)
+                    if length == HEADER_BYTES + 1 && buffers.incoming[at + HEADER_BYTES] == 1 =>
+                {
+                    continue;
+                }
+                (CHANGE_CIPHER_SPEC, _) => return Err(Error::Malformed),
                 (APPLICATION_DATA, Some(protection)) => {
                     unprotect(protection, &mut buffers.incoming, at, length)?
                 }
@@ -836,6 +841,9 @@ pub fn connect<'b>(
     }
     transcript.update(&buffers.handshake[..length]);
     state.consume(buffers, length);
+    if state.filled != 0 {
+        return Err(Error::Malformed);
+    }
 
     let hash = suite.hash();
     let derived = derive_secret(
@@ -945,6 +953,9 @@ pub fn connect<'b>(
                 }
                 transcript.update(&buffers.handshake[..length]);
                 state.consume(buffers, length);
+                if state.filled != 0 {
+                    return Err(Error::Malformed);
+                }
                 break;
             }
             _ => return Err(Error::Malformed),
@@ -1061,7 +1072,7 @@ impl Session<'_> {
                 Err(error) => return Err(error),
             };
             if self.buffers.incoming[at] == CHANGE_CIPHER_SPEC {
-                continue;
+                return Err(Error::Malformed);
             }
             let (kind, start, data_length) =
                 unprotect(&mut self.read, &mut self.buffers.incoming, at, length)?;

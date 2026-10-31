@@ -7,6 +7,8 @@ use crate::sha2::{HashAlgorithm, Hasher, MAX_OUTPUT_BYTES, digest};
 
 /// The smallest modulus accepted, in bits.
 pub const MIN_MODULUS_BITS: usize = 2048;
+/// The longest public exponent accepted, in bits.
+pub const MAX_EXPONENT_BITS: usize = 33;
 
 /// An RSA public key.
 #[derive(Debug, Clone, Copy)]
@@ -19,7 +21,8 @@ pub struct PublicKey {
 /// Why a key is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyError {
-    /// The modulus is shorter than 2048 bits or longer than 4096.
+    /// The modulus is shorter than 2048 bits or longer than 4096, or the exponent is longer
+    /// than [`MAX_EXPONENT_BITS`].
     UnsupportedSize,
     /// The modulus is even or the exponent is not an odd number above 1.
     Malformed,
@@ -49,6 +52,9 @@ impl PublicKey {
         let exponent = Number::from_be_bytes(exponent).ok_or(KeyError::Malformed)?;
         if !exponent.bit(0) || exponent.bits() < 2 {
             return Err(KeyError::Malformed);
+        }
+        if exponent.bits() > MAX_EXPONENT_BITS {
+            return Err(KeyError::UnsupportedSize);
         }
         let modulus = Modulus::new(&value).ok_or(KeyError::Malformed)?;
         Ok(Self {

@@ -238,6 +238,40 @@ fn a_chain_is_trusted_only_up_to_a_root_for_its_host_and_time() {
 }
 
 #[test]
+fn a_path_search_over_mutually_issuing_authorities_checks_each_pair_at_most_once() {
+    let mut checks = 0;
+    let anchored = [false; chain::MAX_CHAIN];
+    let found = chain::reaches_root(chain::MAX_CHAIN, &anchored, |child, authority, _| {
+        checks += 1;
+        child != authority
+    });
+    assert!(!found);
+    assert!(checks <= chain::MAX_CHAIN * (chain::MAX_CHAIN - 1));
+}
+
+#[test]
+fn a_path_through_intermediates_honours_each_authoritys_path_length() {
+    let issuer = [1, 2, 3, usize::MAX];
+    let mut anchored = [false; chain::MAX_CHAIN];
+    anchored[3] = true;
+    let search = |path_length: [usize; 4]| {
+        chain::reaches_root(4, &anchored, |child, authority, below| {
+            issuer[child] == authority && below <= path_length[authority]
+        })
+    };
+    assert!(search([0, 0, 1, 2]));
+    assert!(search([0, 5, 5, 5]));
+    assert!(!search([0, 0, 0, 2]));
+    assert!(!search([0, 0, 1, 1]));
+    let unanchored = [false; chain::MAX_CHAIN];
+    assert!(!chain::reaches_root(
+        4,
+        &unanchored,
+        |child, authority, _| { issuer[child] == authority }
+    ));
+}
+
+#[test]
 fn the_key_schedule_matches_rfc_8448() {
     let early = client::early_secret(HashAlgorithm::Sha256);
     assert_eq!(

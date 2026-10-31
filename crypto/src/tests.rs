@@ -488,6 +488,11 @@ fn rsa_checks_pkcs1_and_pss_signatures_made_by_another_implementation() {
         PublicKey::new(&hex(RSA_MODULUS), &[2]).unwrap_err(),
         KeyError::Malformed
     );
+    assert!(PublicKey::new(&hex(RSA_MODULUS), &[1, 0xff, 0xff, 0xff, 0xff]).is_ok());
+    assert_eq!(
+        PublicKey::new(&hex(RSA_MODULUS), &[3, 0, 0, 0, 1]).unwrap_err(),
+        KeyError::UnsupportedSize
+    );
 }
 
 #[test]
