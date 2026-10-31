@@ -27,8 +27,6 @@ const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.24/main";
 /// The revision of Alpine's `musl` and `musl-dev` the musl build links and boots against.
 pub(crate) const MUSL_VERSION: &str = "1.2.6-r3";
 
-/// Each of the two packages' SHA-256 on each architecture, pinned like every other Alpine
-/// download: a new revision on the mirror fails the check until it is pinned here.
 const MUSL_PACKAGES: [(&str, [(&str, &str); 3]); 2] = [
     (
         "musl",
