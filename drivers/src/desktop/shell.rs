@@ -279,7 +279,7 @@ impl Desktop {
         if title.ends_with(TEXT_EDITOR_TITLE_SUFFIX) {
             return Some(AppId::TextEditor);
         }
-        [AppId::Files, AppId::Settings]
+        [AppId::Files, AppId::Settings, AppId::TaskManager]
             .into_iter()
             .find(|&app| self.catalogue.name(app) == title)
             .or_else(|| self.catalogue.installed_named(title))
@@ -589,6 +589,7 @@ impl Desktop {
             | AppId::Files
             | AppId::Settings
             | AppId::TextEditor
+            | AppId::TaskManager
             | AppId::InstallFromHostShare
             | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {

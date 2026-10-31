@@ -1230,3 +1230,31 @@ fn a_pressed_control_darkens_and_acts_only_when_released_over_it() {
     assert!(desktop.is_shown(window), "released elsewhere: nothing");
     assert_eq!(paint::quarter(colour::BUTTON_CLOSE), 0x00ac_3f39);
 }
+
+#[test]
+fn ctrl_shift_esc_and_cmd_option_esc_open_the_task_manager_in_every_profile() {
+    for profile in [Profile::Windows, Profile::Macos, Profile::Linux] {
+        assert_eq!(
+            shortcut(
+                key::ESC,
+                Modifiers::CTRL.with(Modifiers::SHIFT),
+                profile,
+                true
+            ),
+            Some(Shortcut::TaskManager)
+        );
+        assert_eq!(
+            shortcut(
+                key::ESC,
+                Modifiers::SUPER.with(Modifiers::ALT),
+                profile,
+                false
+            ),
+            Some(Shortcut::TaskManager)
+        );
+    }
+    assert_eq!(
+        shortcut(key::ESC, Modifiers::ALT, Profile::Windows, false),
+        Some(Shortcut::Cycle { back: false })
+    );
+}

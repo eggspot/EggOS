@@ -89,6 +89,9 @@ pub enum Shortcut {
     PowerMenu,
     /// Open the launcher, or close it.
     Launcher,
+    /// Open the Task Manager, or focus it (D200): Ctrl+Shift+Esc, and the Mac habit
+    /// Cmd+Option+Esc, in every profile.
+    TaskManager,
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -114,6 +117,13 @@ pub fn shortcut(
             back: shift,
             held: Held::Super,
         },
+        key::ESC
+            if held == Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::SHIFT.bits())
+                || held
+                    == Modifiers::from_bits(Modifiers::SUPER.bits() | Modifiers::ALT.bits()) =>
+        {
+            Shortcut::TaskManager
+        }
         key::ESC if without_shift == alt => Shortcut::Cycle { back: shift },
         key::F4 if only(alt) => Shortcut::Close,
         key::W if only(super_key) && profile == Profile::Macos => Shortcut::Close,

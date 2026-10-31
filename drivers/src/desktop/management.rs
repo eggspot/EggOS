@@ -726,6 +726,9 @@ impl Desktop {
                 self.menu_hover = Some(0);
             }
             Shortcut::Launcher => self.toggle_launcher(damage, events),
+            Shortcut::TaskManager => {
+                return self.launch(super::catalogue::AppId::TaskManager, damage, events);
+            }
         }
         super::Action::None
     }

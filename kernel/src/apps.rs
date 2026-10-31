@@ -22,6 +22,8 @@ pub const HOST_SHARE: &[u8] = b"/media/host";
 pub const FILES_PROGRAM: &[u8] = b"/bin/files";
 /// The Text Editor's program, when the build has it (D149).
 pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
+/// Where the Task Manager is, when the build has it (D200).
+pub const TASK_MANAGER_PROGRAM: &[u8] = b"/bin/task-manager";
 /// The terminal program (D187), a name of the Settings program.
 pub const TERMINAL_PROGRAM: &[u8] = b"/bin/terminal";
 
@@ -54,6 +56,7 @@ pub fn catalogue() -> Catalogue {
     catalogue.set_host_share(vfs::is_mount_point(HOST_SHARE));
     catalogue.set_files_present(vfs::resolve(root, root, FILES_PROGRAM).is_ok());
     catalogue.set_text_editor_present(vfs::resolve(root, root, TEXT_EDITOR_PROGRAM).is_ok());
+    catalogue.set_task_manager_present(vfs::resolve(root, root, TASK_MANAGER_PROGRAM).is_ok());
     catalogue.set_terminal_present(vfs::resolve(root, root, TERMINAL_PROGRAM).is_ok());
     let Ok(directory) = vfs::resolve(root, root, manifest::DIRECTORY.as_bytes()) else {
         return catalogue;

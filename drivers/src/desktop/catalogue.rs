@@ -22,6 +22,29 @@ const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate",
 const SETTINGS_PROGRAM: &str = "/bin/settings";
 const FILES_PROGRAM: &str = "/bin/files";
 const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
+const TASK_MANAGER_PROGRAM: &str = "/bin/task-manager";
+const TASK_MANAGER_SYNONYMS: [&str; 20] = [
+    "Activity Monitor",
+    "System Monitor",
+    "Force Quit",
+    "taskmgr",
+    "processes",
+    "process",
+    "tasks",
+    "kill",
+    "end task",
+    "top",
+    "htop",
+    "ps",
+    "CPU",
+    "memory",
+    "RAM",
+    "monitor",
+    "performance",
+    "not responding",
+    "frozen",
+    "hung",
+];
 const TERMINAL_PROGRAM: &str = "/bin/terminal";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
 const HOST_SHARE: &str = "/media/host";
@@ -35,11 +58,12 @@ pub const INSTALLER_PROGRAM: &str = "/usr/libexec/app-window";
 /// What separates a started program's path and its arguments in a [`Command`].
 pub const ARGUMENT_SEPARATOR: u8 = 0;
 
-const BUILT_INS: [AppId; 4] = [
+const BUILT_INS: [AppId; 5] = [
     AppId::Terminal,
     AppId::Files,
     AppId::Settings,
     AppId::TextEditor,
+    AppId::TaskManager,
 ];
 
 /// An app the shell can launch.
@@ -54,6 +78,8 @@ pub enum AppId {
     Settings,
     /// The Text Editor (`/bin/text-editor`, D149), when the build has it.
     TextEditor,
+    /// The Task Manager (`/bin/task-manager`, D200), when the build has it.
+    TaskManager,
     /// The host's shared folder at `/media/host`.
     HostShare,
     /// The launcher's row that opens the installer on the host's shared folder.
@@ -243,6 +269,7 @@ pub struct Catalogue {
     host_share: bool,
     files_present: bool,
     text_editor_present: bool,
+    task_manager_present: bool,
     terminal_present: bool,
 }
 
@@ -363,6 +390,16 @@ impl Catalogue {
     }
 
     /// Records whether the build has the Text Editor.
+    /// Records whether the build has the Task Manager (`/bin/task-manager`, D200).
+    pub fn set_task_manager_present(&mut self, present: bool) {
+        self.task_manager_present = present;
+    }
+
+    /// Whether the build has the Task Manager.
+    pub fn task_manager_present(&self) -> bool {
+        self.task_manager_present
+    }
+
     pub fn set_text_editor_present(&mut self, present: bool) {
         self.text_editor_present = present;
     }
@@ -397,6 +434,7 @@ impl Catalogue {
             AppId::HostShare | AppId::InstallFromHostShare => self.host_share,
             AppId::Installed(index) => self.installed(index).is_some(),
             AppId::Terminal | AppId::Files | AppId::Settings | AppId::TextEditor => true,
+            AppId::TaskManager => self.task_manager_present,
         }
     }
 
@@ -424,6 +462,7 @@ impl Catalogue {
             AppId::Files => "Files",
             AppId::Settings => "Settings",
             AppId::TextEditor => "Text Editor",
+            AppId::TaskManager => "Task Manager",
             AppId::HostShare => "Host share",
             AppId::InstallFromHostShare => INSTALL_FROM_HOST_SHARE,
             AppId::Installed(index) => self.installed(index).map_or("", InstalledApp::name),
@@ -445,6 +484,7 @@ impl Catalogue {
             AppId::Files => Icon::Files,
             AppId::Settings => Icon::Settings,
             AppId::TextEditor => Icon::TextEditor,
+            AppId::TaskManager => Icon::TaskManager,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
             AppId::Installed(index) => {
                 match self.installed(index).and_then(|app| app.icon.as_ref()) {
@@ -461,10 +501,12 @@ impl Catalogue {
         [
             AppId::Files,
             AppId::Settings,
+            AppId::TaskManager,
             AppId::Terminal,
             AppId::TextEditor,
         ]
         .into_iter()
+        .filter(|&app| app != AppId::TaskManager || self.task_manager_present)
         .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
         .chain(self.host_share.then_some(AppId::InstallFromHostShare))
     }
@@ -489,6 +531,7 @@ impl Catalogue {
             AppId::Files => &FILES_SYNONYMS,
             AppId::Settings => &SETTINGS_SYNONYMS,
             AppId::TextEditor => &TEXT_EDITOR_SYNONYMS,
+            AppId::TaskManager => &TASK_MANAGER_SYNONYMS,
             AppId::HostShare | AppId::InstallFromHostShare | AppId::Installed(_) => &[],
         };
         if built_in
@@ -526,6 +569,7 @@ impl Catalogue {
             AppId::Files => Some(Launch::Start(Command::from(FILES_PROGRAM))),
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),
             AppId::TextEditor => Some(Launch::Start(Command::from(TEXT_EDITOR_PROGRAM))),
+            AppId::TaskManager => Some(Launch::Start(Command::from(TASK_MANAGER_PROGRAM))),
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
@@ -585,6 +629,32 @@ mod tests {
 
     fn names(catalogue: &Catalogue, apps: impl Iterator<Item = AppId>) -> Vec<String> {
         apps.map(|app| catalogue.name(app).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_task_manager_is_listed_and_found_only_when_the_build_has_it() {
+        let mut catalogue = Catalogue::new();
+        assert!(
+            !catalogue
+                .launcher_apps()
+                .any(|app| app == AppId::TaskManager)
+        );
+        catalogue.set_task_manager_present(true);
+        assert!(
+            catalogue
+                .launcher_apps()
+                .any(|app| app == AppId::TaskManager)
+        );
+        assert!(catalogue.matches(AppId::TaskManager, "force quit"));
+        assert!(catalogue.matches(AppId::TaskManager, "htop"));
+        assert_eq!(
+            catalogue.launch(AppId::TaskManager),
+            Some(Launch::Start(Command::from("/bin/task-manager")))
+        );
+        assert_eq!(
+            catalogue.app_named("Task Manager"),
+            Some(AppId::TaskManager)
+        );
     }
 
     #[test]
