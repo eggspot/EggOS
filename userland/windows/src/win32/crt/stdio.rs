@@ -881,10 +881,20 @@ unsafe fn print_to_stream(
         let bytes = unsafe { render(dialect, format, arguments, &mut output) };
         match output.failed {
             true => -1,
-            false if count_units => output.units as i32,
-            false => bytes as i32,
+            false if count_units => printed_count(output.units),
+            false => printed_count(bytes),
         }
     })
+}
+
+fn printed_count(count: usize) -> i32 {
+    match i32::try_from(count) {
+        Ok(count) => count,
+        Err(_) => {
+            set_errno(errno::EOVERFLOW);
+            -1
+        }
+    }
 }
 
 unsafe extern "efiapi" fn vfprintf(
@@ -961,6 +971,7 @@ fn counted_result<T: Copy + Default>(
     match ending.fault {
         Some(Fault::InvalidParameter) => set_errno(errno::EINVAL),
         Some(Fault::Range) => set_errno(errno::ERANGE),
+        Some(Fault::Overflow) => set_errno(errno::EOVERFLOW),
         None => {}
     }
     ending.result
@@ -984,7 +995,11 @@ fn checked_result<T: Copy + Default>(
     }
     let kept = produced.min(limit).min(room);
     output.terminate_at(kept);
-    if produced > kept { -1 } else { produced as i32 }
+    if produced > kept {
+        -1
+    } else {
+        printed_count(produced)
+    }
 }
 
 unsafe extern "efiapi" fn vsprintf(

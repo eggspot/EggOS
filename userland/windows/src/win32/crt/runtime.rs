@@ -26,6 +26,7 @@ pub mod errno {
     pub const EINVAL: i32 = 22;
     pub const EMFILE: i32 = 24;
     pub const ERANGE: i32 = 34;
+    pub const EOVERFLOW: i32 = 132;
 }
 
 const LAST_LINUX_ERRNO_SHARED_WITH_WINDOWS: u16 = 34;
