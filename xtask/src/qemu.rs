@@ -1828,6 +1828,7 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 const BENCHMARK_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 
 const BANNER_PREFIX: &str = "EggOS ";
+const FIRMWARE_BOOT_LINE: &str = "Booting from ROM..";
 
 const COMMON_ARGS: &[&str] = &["-m", "128M"];
 
@@ -2379,6 +2380,7 @@ fn shell_scripts_to_type(
 fn banner_count(console: &str) -> usize {
     console
         .lines()
+        .map(|l| l.strip_prefix(FIRMWARE_BOOT_LINE).unwrap_or(l))
         .filter(|l| l.starts_with(BANNER_PREFIX) && l.trim_end().ends_with(')'))
         .count()
 }
@@ -3888,6 +3890,13 @@ fn screenshot_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_banner_after_seabios_booting_from_rom_on_the_same_line_counts() {
+        let console = "Booting from ROM..EggOS 0.2.0 (x86_64)\r\nEggOS 0.2.0\r\n\
+                       Booting from ROM..EggOS 0.2.0 (x86_64)\r\n";
+        assert_eq!(banner_count(console), 2);
+    }
 
     #[test]
     fn the_virtio_gpu_and_the_offscreen_display_share_the_default_mode() {
