@@ -281,8 +281,13 @@ impl SharedFile {
             if pages.mappings != 0 {
                 return;
             }
-            if let Some(files) = files.as_deref_mut() {
-                files.retain(|file| !Arc::ptr_eq(file, self));
+            let Some(files) = files.as_deref_mut() else {
+                return;
+            };
+            let listed = files.len();
+            files.retain(|file| !Arc::ptr_eq(file, self));
+            if files.len() == listed {
+                return;
             }
             LIVE.fetch_sub(1, Ordering::Relaxed);
             core::mem::take(&mut pages.frames)

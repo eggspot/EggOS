@@ -138,6 +138,7 @@ fn mix_in<P: Platform>(
 ) -> Result<u64, Errno> {
     let mut chunk = [0u8; CHUNK];
     let mut total = 0u64;
+    let mut since_preemption = 0u64;
     for (base, length) in buffers {
         let length = length.min(MAX_RW_COUNT - total);
         let mut done = 0u64;
@@ -157,6 +158,12 @@ fn mix_in<P: Platform>(
             }
             random::add_user_input(&chunk[..piece]);
             done += piece as u64;
+            since_preemption += piece as u64;
+            if since_preemption >= PREEMPTION_INTERVAL {
+                since_preemption = 0;
+                thread::preemption_point::<P>();
+                process.interrupt_here_if_sent_signals_wait();
+            }
         }
         total += done;
         if total == MAX_RW_COUNT {

@@ -236,15 +236,18 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
                     let is_work = eggos_eggfs::is_work_disk(&mut volume) == Ok(true);
                     let placed = match (is_work, work, persistent) {
                         (true, false, _) => attach_work::<P, _>(volume, console)?,
-                        (false, _, false) => attach_persistent::<P, _>(volume, console)?,
+                        (false, _, false) => {
+                            attach_persistent::<P, _>(volume, console)?.map(|()| WorkDisk::Mounted)
+                        }
                         _ => Err(volume),
                     };
                     match placed {
-                        Ok(()) if is_work => {
+                        Ok(WorkDisk::TakenButNotMounted) => {}
+                        Ok(WorkDisk::Mounted) if is_work => {
                             work = true;
                             block::mark_mounted(index, WORK_PLACE);
                         }
-                        Ok(()) => {
+                        Ok(WorkDisk::Mounted) => {
                             persistent = true;
                             block::mark_mounted(index, PERSISTENT_PLACE);
                         }
@@ -377,10 +380,15 @@ fn attach_persistent<P: Platform, W: Write>(
     Ok(Ok(()))
 }
 
+enum WorkDisk {
+    Mounted,
+    TakenButNotMounted,
+}
+
 fn attach_work<P: Platform, W: Write>(
     mut volume: BlockVolume,
     console: &mut W,
-) -> Result<Result<(), BlockVolume>, core::fmt::Error> {
+) -> Result<Result<WorkDisk, BlockVolume>, core::fmt::Error> {
     use alloc::boxed::Box;
     let root = vfs::root();
     if !vfs::resolve(root, root, WORK_FOLDER_PATH).is_ok_and(|node| node.is_directory()) {
@@ -412,11 +420,12 @@ fn attach_work<P: Platform, W: Write>(
                     console,
                     "vfs: the work disk was not mounted: no room for another mount"
                 )
-                .map(Ok);
+                .map(|()| Ok(WorkDisk::TakenButNotMounted));
             }
         }
         Err(error) => {
-            return writeln!(console, "vfs: the work disk was not mounted: {error:?}").map(Ok);
+            return writeln!(console, "vfs: the work disk was not mounted: {error:?}")
+                .map(|()| Ok(WorkDisk::TakenButNotMounted));
         }
     }
     writeln!(
@@ -430,7 +439,7 @@ fn attach_work<P: Platform, W: Write>(
         "vfs: the work disk could not commit: changes to /work are refused until the next boot",
         console,
     )?;
-    Ok(Ok(()))
+    Ok(Ok(WorkDisk::Mounted))
 }
 
 fn start_committer<P: Platform, W: Write>(

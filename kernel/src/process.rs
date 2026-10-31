@@ -475,6 +475,9 @@ impl<P: Platform> Memory<P> {
         let mut ranges = Vec::new();
         for mark in marks.iter() {
             if mark.marks & fork_mark::DONT_FORK != 0 {
+                if !crate::heap::may_grow_for_user(size_of::<(u64, u64)>()) {
+                    return Err(CopyError::OutOfMemory);
+                }
                 ranges.try_reserve(1).map_err(|_| CopyError::OutOfMemory)?;
                 ranges.push((mark.start, mark.end));
             }
@@ -508,6 +511,9 @@ impl<P: Platform> Memory<P> {
     ) -> Result<(), CopyError> {
         if start >= end {
             return Ok(());
+        }
+        if !crate::heap::may_grow_for_user(size_of::<LentRange>()) {
+            return Err(CopyError::OutOfMemory);
         }
         copied.try_reserve(1).map_err(|_| CopyError::OutOfMemory)?;
         copied.push(LentRange {

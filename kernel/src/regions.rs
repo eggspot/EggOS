@@ -572,9 +572,13 @@ impl ForkMarks {
         if !is_page_range(start, end) {
             return Err(RegionError::Invalid);
         }
+        let capacity = 2 * self.marks.len() + 3;
+        if !crate::heap::may_grow_for_user(capacity * size_of::<ForkMark>()) {
+            return Err(RegionError::OutOfMemory);
+        }
         let mut updated: Vec<ForkMark> = Vec::new();
         updated
-            .try_reserve_exact(2 * self.marks.len() + 3)
+            .try_reserve_exact(capacity)
             .map_err(|_| RegionError::OutOfMemory)?;
         let mut push = |start: u64, end: u64, marks: u8| {
             if start >= end || marks == 0 {
