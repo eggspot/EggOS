@@ -971,7 +971,17 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
     }
     // SAFETY: the picker wrote a NUL-terminated path into the block of `max_file` units.
     let path = unsafe { super::file::wide_string(file.0) };
-    // SAFETY: `lpstrFile` holds `nMaxFile` writable bytes.
+    let needed = text::utf8_length(path) + 1;
+    if needed > max_file {
+        if max_file >= 2 {
+            let size = needed.min(u16::MAX as usize) as u16;
+            // SAFETY: `lpstrFile` holds `nMaxFile` writable bytes, at least two.
+            unsafe { local.file.cast::<u16>().write_unaligned(size) };
+        }
+        LAST_ERROR.store(FNERR_BUFFERTOOSMALL, Ordering::Relaxed);
+        return FALSE;
+    }
+    // SAFETY: `lpstrFile` holds `nMaxFile` writable bytes, room for the path and its NUL.
     unsafe { narrow_into(path, local.file, max_file) };
     if !file_title.0.is_null() {
         // SAFETY: the picker wrote a NUL-terminated name into the title block.
