@@ -295,6 +295,22 @@ pub fn forward_bridge(
     bridge(moves, native, dispatch, Convention::Win64)
 }
 
+/// The bridge for an import whose work translated code never needs: `__chkstk`, whose page
+/// probes a translated thread's guest stack does not need, as it is mapped whole with no guard
+/// page. It changes no guest register and returns to the guest at once, through the shadow
+/// stack when its pair matches, else through the dispatch at `dispatch` (a literal at the end,
+/// as in [`forward_bridge`]).
+pub fn return_bridge(dispatch: u64) -> Result<Vec<u32>, EmitError> {
+    let mut asm = Assembler::new();
+    let dispatch = asm.literal(dispatch);
+    let miss = asm.label();
+    emit_return_to_guest(&mut asm, miss)?;
+    asm.bind(miss);
+    asm.load_literal(LINK_TARGET, dispatch);
+    asm.emit(encode::br(LINK_TARGET));
+    Ok(asm.finish()?.words)
+}
+
 /// The forward bridge from System V AMD64 code (x86_64 macOS) to a native function at `native`
 /// taking arguments as `moves` ([`sysv_argument_moves`]) says: [`forward_bridge`]'s, which
 /// keeps a superset of the registers System V says a callee keeps (`rbx`, `rsp`, `rbp`,
@@ -697,6 +713,32 @@ mod tests {
         assert_eq!(line[2].source, Source::Vector(2));
         assert_eq!(line[5].source, Source::GuestStack(48));
         assert_eq!(native_stack_bytes(&line), 0);
+    }
+
+    #[test]
+    fn a_return_bridge_pops_the_return_address_and_writes_no_other_guest_register() {
+        let dispatch = 0x0000_7E00_0000_0040;
+        let words = return_bridge(dispatch).unwrap();
+        let (code, pool) = words.split_at(words.len() - 2);
+        assert_eq!(pool, [dispatch as u32, (dispatch >> 32) as u32]);
+        assert_eq!(code[0], load(ADDRESS, GUEST_STACK, 0).unwrap());
+        assert_eq!(
+            code[1],
+            encode::add_sub_immediate(AddSub::Add, Size::X, GUEST_STACK, GUEST_STACK, 8, false)
+        );
+        let branch = |word: u32| {
+            word & 0xFC00_0000 == 0x1400_0000
+                || word & 0xFFFF_FC1F == 0xD61F_0000
+                || word & 0xFF00_0010 == 0x5400_0000
+                || word & 0x7E00_0000 == 0x3400_0000
+        };
+        let guest_written = code[2..]
+            .iter()
+            .filter(|&&word| !branch(word) && word & 0x1F < 16)
+            .count();
+        assert_eq!(guest_written, 0);
+        assert!(code.contains(&encode::br(TEMPORARIES[0])));
+        assert!(code.contains(&encode::br(SCRATCH)));
     }
 
     #[test]

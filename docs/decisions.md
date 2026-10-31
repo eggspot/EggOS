@@ -16577,3 +16577,16 @@ the license, by an explicit instruction recorded here.
 - **Follow-up.** A misaligned access costs a signal each time; when a benchmark shows hot ones,
   patch the faulting instruction into a branch to a barrier-plain-access stub, or use LSE2's
   relaxed alignment where the CPU has it.
+
+## D208 A translated x64 program's `__chkstk` returns at once (D191) — Decided by the build loop (engineering)
+- **Why.** Every import of a translated program went through a forward bridge to the layer's
+  native function. `__chkstk` takes its size in `rax` and keeps every argument register, but
+  the bridge moved `rcx`, `rdx`, `r8` and `r9` into the native argument registers and handed
+  back the native `x0` as `rax`, so `sub rsp, rax` after it moved the guest stack to a wild
+  address (`other-cpu.exe` faulted at its next `call`).
+- **Decision.** The Windows layer binds `__chkstk` to `bridge::return_bridge`: it pops the
+  return address and returns to the guest through the shadow stack or the dispatch, changing
+  no guest register. A translated thread's guest stack is one 8 MiB mapping with no guard
+  page, so there are no pages to probe in order.
+- **Follow-up.** The macOS layer's `___chkstk_darwin` for x86_64 programs takes its size in
+  `rax` the same way; bind it to the same bridge when a translated macOS program needs it.

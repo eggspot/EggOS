@@ -104,6 +104,8 @@ fn translation(
     Ok((file, origin))
 }
 
+const STACK_PROBE: &[u8] = b"__chkstk";
+
 fn write_u64(address: usize, value: u64) {
     // SAFETY: every caller passes an 8-byte aligned address in a writable mapping this module
     // made, or in the TEB, which stay mapped for the process's life.
@@ -131,7 +133,11 @@ pub fn install(
     for slot in &slots {
         let native = read_u64(image, slot.rva as usize).map_err(|_| FAILED)?;
         let moves = bridge::argument_moves(slot.arguments());
-        let words = bridge::forward_bridge(&moves, native, 0).map_err(|_| FAILED)?;
+        let words = match slot.function == STACK_PROBE {
+            true => bridge::return_bridge(0),
+            false => bridge::forward_bridge(&moves, native, 0),
+        }
+        .map_err(|_| FAILED)?;
         bridges.push(StubBridge {
             stub_rva: slot.rva,
             words,
