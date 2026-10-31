@@ -44,6 +44,9 @@ pub trait Machine {
     fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Applies the keyboard layout `index` now; the error's text on failure.
     fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves the time zone `index` (of `eggos_calendar::zone::ZONES`) to the settings file;
+    /// programs read it each time they show a time.
+    fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Writes to standard output.
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
@@ -211,6 +214,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     let saved = match change {
         Change::Profile(index) => machine.save_profile(index),
         Change::KeyboardLayout(index) => machine.save_keyboard_layout(index),
+        Change::TimeZone(index) => machine.save_time_zone(index),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -220,6 +224,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     let applied = match change {
         Change::Profile(index) => machine.apply_profile(index),
         Change::KeyboardLayout(index) => machine.apply_keyboard_layout(index),
+        Change::TimeZone(_) => Ok(()),
     };
     if let Err(why) = applied {
         let mut message = Message::new();
@@ -249,6 +254,7 @@ mod tests {
         applied: Option<usize>,
         layout_saved: Option<usize>,
         layout_applied: Option<usize>,
+        zone_saved: Option<usize>,
         save_fails: bool,
         apply_fails: bool,
     }
@@ -276,6 +282,11 @@ mod tests {
 
         fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
             self.layout_saved = Some(index);
+            Ok(())
+        }
+
+        fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
+            self.zone_saved = Some(index);
             Ok(())
         }
 
@@ -460,5 +471,19 @@ mod tests {
         let (status, _, errors) = settings(&mut fake, &["--json", "--bogus"]);
         assert_eq!(status, 2);
         assert!(errors.contains("\"code\":\"usage\""), "{errors}");
+    }
+
+    #[test]
+    fn a_time_zone_is_saved_by_its_iana_name() {
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &["set", "time.zone", "Europe/Paris"]), 0);
+        assert_eq!(fake.zone_saved, crate::facts::zone_index("Europe/Paris"));
+        let mut fake = Fake::default();
+        assert_ne!(run(&mut fake, &["set", "time.zone", "Mars/Olympus"]), 0);
+        assert!(
+            String::from_utf8(fake.errors)
+                .unwrap()
+                .contains("Europe/Paris")
+        );
     }
 }

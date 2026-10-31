@@ -404,6 +404,10 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         keyboard_layout: keyboard.map_or(saved_layout, |keyboard| keyboard.layout as usize),
         keyboard: keyboard.is_none_or(|keyboard| keyboard.present),
         caps_lock: keyboard.is_some_and(|keyboard| keyboard.caps_lock),
+        time_zone: settings_file::value(&file[..length], settings_file::TIME_ZONE)
+            .and_then(|name| core::str::from_utf8(name).ok())
+            .and_then(eggos_settings::facts::zone_index)
+            .unwrap_or_else(eggos_settings::facts::utc_zone),
     }
 }
 
@@ -424,6 +428,13 @@ fn save_profile(index: usize) -> bool {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
     saved.is_ok()
+}
+
+fn save_time_zone(index: usize) -> Result<(), Errno> {
+    let name = eggos_calendar::zone::ZONES
+        .get(index)
+        .map_or("UTC", |(name, _)| *name);
+    save_through_a_temporary_file(settings_file::TIME_ZONE, name)
 }
 
 fn save_keyboard_layout(index: usize) -> Result<(), Errno> {
@@ -519,6 +530,10 @@ impl command::Machine for Machine {
 
     fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
         apply_keyboard_layout(index, self.server.as_ref()).map_err(Errno::message)
+    }
+
+    fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        save_time_zone(index).map_err(Errno::message)
     }
 
     fn write_output(&mut self, bytes: &[u8]) {

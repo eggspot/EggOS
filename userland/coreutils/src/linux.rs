@@ -193,6 +193,21 @@ fn status_at(directory: usize, path: &CStr, flags: usize) -> Result<Status, Errn
 #[derive(Debug)]
 struct Linux {
     no_symlinks: bool,
+    time_zone: Option<([u8; TIME_ZONE_BYTES], usize)>,
+}
+
+const TIME_ZONE_BYTES: usize = 64;
+
+fn time_zone_of<'a>(
+    environment: impl IntoIterator<Item = &'a CStr>,
+) -> Option<([u8; TIME_ZONE_BYTES], usize)> {
+    let value = environment
+        .into_iter()
+        .find_map(|variable| variable.to_bytes().strip_prefix(b"TZ="))?;
+    let mut kept = [0u8; TIME_ZONE_BYTES];
+    let length = value.len().min(TIME_ZONE_BYTES);
+    kept[..length].copy_from_slice(&value[..length]);
+    Some((kept, length))
 }
 
 impl Linux {
@@ -456,6 +471,12 @@ impl System for Linux {
             [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
         )?;
         Ok(length.saturating_sub(1))
+    }
+
+    fn time_zone_variable(&self) -> Option<&[u8]> {
+        self.time_zone
+            .as_ref()
+            .map(|(bytes, length)| &bytes[..*length])
     }
 
     fn now(&mut self) -> u64 {
@@ -820,6 +841,7 @@ pub fn run(startup: &Startup) -> i32 {
     }
     let system = Linux {
         no_symlinks: refuses_symbolic_links(startup.environment()),
+        time_zone: time_zone_of(startup.environment()),
     };
     utilities::run(system, &arguments[..count])
 }

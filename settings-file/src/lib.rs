@@ -91,6 +91,10 @@ pub const PROFILES: [&str; 3] = ["windows", "macos", "linux"];
 /// The keyboard layout: the name of one of [`KEYBOARD_LAYOUTS`] (D185).
 pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
 
+/// The time zone times are shown in: an IANA zone name such as `Europe/Paris`, or `UTC`
+/// (D194); `TZ` in a program's environment comes first.
+pub const TIME_ZONE: &str = "time.zone";
+
 /// A keyboard layout as Settings and `settings` name and describe it
 /// (docs/ux/keyboard-v0.3.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

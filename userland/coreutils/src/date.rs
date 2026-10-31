@@ -1,7 +1,9 @@
 use crate::network::{Shown as ShownText, resolve};
 use crate::output::{FAILURE, Output};
 use crate::system::{DatagramKind, Duration, SymbolicLinks, System};
+use crate::zone::{local_seconds, local_zone};
 use core::ffi::CStr;
+use eggos_calendar::zone::{Rule, UTC};
 use eggos_calendar::{DateTime, MONTHS, ParseError, WEEKDAYS, parse_setting};
 use eggos_net::Ipv4Address;
 use eggos_net::sntp::{self, ReplyError, Timestamp};
@@ -23,6 +25,7 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut sync: Option<&[u8]> = None;
     let mut shown = Shown::Now;
     let mut format: Option<&[u8]> = None;
+    let mut universal = false;
     let mut options_end = false;
     let mut index = 0;
     while let Some(&argument) = arguments.get(index) {
@@ -34,7 +37,7 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         }
         if !options_end && bytes.len() > 1 && bytes[0] == b'-' {
             match bytes {
-                b"-u" | b"--utc" | b"--universal" => {}
+                b"-u" | b"--utc" | b"--universal" => universal = true,
                 b"--sync" => sync = Some(DEFAULT_TIME_SERVER),
                 _ if bytes.starts_with(b"--sync=") => sync = Some(&bytes[b"--sync=".len()..]),
                 b"-s" | b"--set" | b"-r" | b"--reference" => {
@@ -101,7 +104,11 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         }
         (None, None, Shown::Now) => output.system.now() as i64,
     };
-    write_formatted(output, format.unwrap_or(DEFAULT_FORMAT), seconds);
+    let zone = match universal {
+        true => UTC,
+        false => local_zone(&mut output.system),
+    };
+    write_formatted(output, format.unwrap_or(DEFAULT_FORMAT), seconds, &zone);
     output.write(b"\n");
     0
 }
@@ -316,8 +323,9 @@ fn write_padded<S: System>(output: &mut Output<S>, value: i64, width: usize, pad
     output.write(text);
 }
 
-fn write_formatted<S: System>(output: &mut Output<S>, format: &[u8], seconds: i64) {
-    let moment = DateTime::from_unix(seconds);
+fn write_formatted<S: System>(output: &mut Output<S>, format: &[u8], seconds: i64, zone: &Rule) {
+    let local = zone.at(seconds);
+    let moment = DateTime::from_unix(local_seconds(zone, seconds));
     let weekday = WEEKDAYS[moment.weekday()].as_bytes();
     let month = MONTHS[moment.month as usize - 1].as_bytes();
     let hour_12 = match moment.hour % 12 {
@@ -341,12 +349,12 @@ fn write_formatted<S: System>(output: &mut Output<S>, format: &[u8], seconds: i6
             b'A' => output.write(weekday),
             b'b' | b'h' => output.write(&month[..3]),
             b'B' => output.write(month),
-            b'c' => write_formatted(output, b"%a %b %e %H:%M:%S %Y", seconds),
+            b'c' => write_formatted(output, b"%a %b %e %H:%M:%S %Y", seconds, zone),
             b'C' => write_padded(output, moment.year.div_euclid(100), 2, b'0'),
             b'd' => write_padded(output, i64::from(moment.day), 2, b'0'),
-            b'D' => write_formatted(output, b"%m/%d/%y", seconds),
+            b'D' => write_formatted(output, b"%m/%d/%y", seconds, zone),
             b'e' => write_padded(output, i64::from(moment.day), 2, b' '),
-            b'F' => write_formatted(output, b"%Y-%m-%d", seconds),
+            b'F' => write_formatted(output, b"%Y-%m-%d", seconds, zone),
             b'H' => write_padded(output, i64::from(moment.hour), 2, b'0'),
             b'I' => write_padded(output, i64::from(hour_12), 2, b'0'),
             b'j' => write_padded(output, i64::from(moment.day_of_year()), 3, b'0'),
@@ -356,18 +364,18 @@ fn write_formatted<S: System>(output: &mut Output<S>, format: &[u8], seconds: i6
             b'M' => write_padded(output, i64::from(moment.minute), 2, b'0'),
             b'n' => output.write(b"\n"),
             b'p' => output.write(if moment.hour < 12 { b"AM" } else { b"PM" }),
-            b'r' => write_formatted(output, b"%I:%M:%S %p", seconds),
-            b'R' => write_formatted(output, b"%H:%M", seconds),
+            b'r' => write_formatted(output, b"%I:%M:%S %p", seconds, zone),
+            b'R' => write_formatted(output, b"%H:%M", seconds, zone),
             b's' => write_padded(output, seconds, 1, b'0'),
             b'S' => write_padded(output, i64::from(moment.second), 2, b'0'),
             b't' => output.write(b"\t"),
-            b'T' => write_formatted(output, b"%H:%M:%S", seconds),
+            b'T' => write_formatted(output, b"%H:%M:%S", seconds, zone),
             b'u' => write_padded(output, (moment.weekday() as i64 + 6) % 7 + 1, 1, b'0'),
             b'w' => write_padded(output, moment.weekday() as i64, 1, b'0'),
             b'y' => write_padded(output, moment.year.rem_euclid(100), 2, b'0'),
             b'Y' => write_padded(output, moment.year, 4, b'0'),
-            b'z' => output.write(b"+0000"),
-            b'Z' => output.write(b"UTC"),
+            b'z' => output.write(&local.numeric_offset()),
+            b'Z' => output.write(local.abbreviation.as_str().as_bytes()),
             b'%' => output.write(b"%"),
             other => output.write(&[b'%', other]),
         }
@@ -563,5 +571,37 @@ mod tests {
         }
         let (_, _, _, fake) = run(with_time_server(123), &[c"--sync=10.0.2.9"]);
         assert_eq!(fake.network.sent.len(), SYNC_ATTEMPTS as usize);
+    }
+
+    #[test]
+    fn the_time_shows_in_tz_then_the_settings_zone_then_utc() {
+        let mut fake = Fake::default();
+        fake.now = 1_774_746_000;
+        fake.time_zone_variable = Some(b"Europe/Berlin".to_vec());
+        let (status, out, _, _) = run(fake, &[c"+%F %H:%M %Z %z %s"]);
+        assert_eq!(status, 0);
+        assert_eq!(out, "2026-03-29 03:00 CEST +0200 1774746000\n");
+        let mut settings = Fake::default();
+        settings.now = 1_774_746_000;
+        let settings = settings
+            .with_directory("/home", 0)
+            .with_directory("/home/root", 0)
+            .with_directory("/home/root/.config", 0)
+            .with_directory("/home/root/.config/eggos", 0)
+            .with_file(
+                "/home/root/.config/eggos/settings",
+                0o644,
+                b"eggos-settings 1\ntime.zone=Asia/Kolkata\n",
+                0,
+            );
+        let (_, out, _, settings) = run(settings, &[c"+%H:%M %Z"]);
+        assert_eq!(out, "06:30 IST\n");
+        let (_, out, _, _) = run(settings, &[c"-u", c"+%H:%M %Z %z"]);
+        assert_eq!(out, "01:00 UTC +0000\n");
+        let mut unknown = Fake::default();
+        unknown.now = 1_774_746_000;
+        unknown.time_zone_variable = Some(b"Nowhere/Land".to_vec());
+        let (_, out, _, _) = run(unknown, &[c"+%H %Z"]);
+        assert_eq!(out, "01 UTC\n");
     }
 }

@@ -41,6 +41,7 @@ struct Options {
     json: bool,
     layout: Layout,
     line_width: Option<usize>,
+    zone: Option<eggos_calendar::zone::Rule>,
 }
 
 impl Options {
@@ -284,6 +285,9 @@ pub fn ls<S: System>(output: &mut Output<S>, listing: &mut Listing, arguments: &
         return SERIOUS_TROUBLE;
     };
     options.line_width = line_width(output, options);
+    if options.long && !options.json {
+        options.zone = Some(crate::zone::local_zone(&mut output.system));
+    }
     let operands = match operands.all() {
         [] => &[c"."][..],
         given => given,
@@ -599,7 +603,10 @@ fn write_entry<S: System>(
         output.write(b" ");
         output.write_number(status.size, widths.size);
         output.write(b" ");
-        output.write(&time_string(status.modified));
+        let shown = options.zone.map_or(status.modified, |zone| {
+            crate::zone::local_seconds(&zone, status.modified)
+        });
+        output.write(&time_string(shown));
         output.write(b" ");
     }
     output.write(name);

@@ -181,6 +181,7 @@ pub struct Fake {
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
     pub now_nanoseconds: u32,
+    pub time_zone_variable: Option<Vec<u8>>,
     pub set_times: Vec<Duration>,
     pub set_time_error: Option<Errno>,
     pub windows: Vec<FakeWindow>,
@@ -241,6 +242,7 @@ impl Default for Fake {
             cross_device: Vec::new(),
             now: 1_700_000_000,
             now_nanoseconds: 0,
+            time_zone_variable: None,
             set_times: Vec::new(),
             set_time_error: None,
             windows: Vec::new(),
@@ -819,6 +821,10 @@ impl System for Fake {
         self.nodes.insert(existing, (node.clone(), linked));
         self.nodes.insert(path, (node, linked));
         Ok(())
+    }
+
+    fn time_zone_variable(&self) -> Option<&[u8]> {
+        self.time_zone_variable.as_deref()
     }
 
     fn now(&mut self) -> u64 {

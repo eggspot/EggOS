@@ -34,6 +34,8 @@ pub struct Facts {
     pub keyboard: bool,
     /// Whether Caps Lock is on.
     pub caps_lock: bool,
+    /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
+    pub time_zone: usize,
 }
 
 impl Facts {
@@ -54,8 +56,21 @@ impl Facts {
             now_s: 1_793_282_709,
             hardware_clock: true,
             keyboard_layout: 0,
+            time_zone: utc_zone(),
             keyboard: true,
             caps_lock: false,
         }
     }
+}
+
+/// The index of `UTC` in `eggos_calendar::zone::ZONES`.
+pub fn utc_zone() -> usize {
+    zone_index("UTC").unwrap_or(0)
+}
+
+/// The index of the zone `name` in `eggos_calendar::zone::ZONES`.
+pub fn zone_index(name: &str) -> Option<usize> {
+    eggos_calendar::zone::ZONES
+        .binary_search_by(|(zone, _)| (*zone).cmp(name))
+        .ok()
 }

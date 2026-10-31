@@ -21,6 +21,7 @@ eggos-mcp = { path = "../mcp" }
 eggos-net = { path = "../../net" }
 eggos-png = { path = "../../png" }
 eggos-runtime = { path = "../runtime" }
+eggos-settings-file = { path = "../../settings-file" }
 eggos-tls = { path = "../../tls" }
 
 [dev-dependencies]

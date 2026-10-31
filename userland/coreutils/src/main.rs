@@ -97,6 +97,8 @@ mod window_menu;
 mod window_tree;
 #[cfg(any(test, target_env = "musl"))]
 mod wm;
+#[cfg(any(test, target_env = "musl"))]
+mod zone;
 
 #[cfg(target_env = "musl")]
 eggos_runtime::main!(linux::run);

@@ -62,6 +62,7 @@ dependencies = [
  "eggos-net",
  "eggos-png",
  "eggos-runtime",
+ "eggos-settings-file",
  "eggos-tls",
 ]
 

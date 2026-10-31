@@ -216,6 +216,9 @@ pub trait System {
     fn set_mode(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
     fn file_system_usage(&mut self, path: &CStr) -> Result<FileSystemUsage, Errno>;
     fn now(&mut self) -> u64;
+    fn time_zone_variable(&self) -> Option<&[u8]> {
+        None
+    }
     fn now_with_nanoseconds(&mut self) -> Duration;
     fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno>;
     fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno>;

@@ -1470,7 +1470,8 @@ const SETTINGS_SET_ARGUMENTS: [Argument; 3] = [
             64,
         ),
         "The new value: windows, macos or linux for shell.profile; a layout's name such as us, \
-         de, fr or us-intl for keyboard.layout.",
+         de, fr or us-intl for keyboard.layout; an IANA zone such as Europe/Paris, or UTC, for \
+         time.zone.",
     )),
     DRY_RUN,
 ];
@@ -1481,8 +1482,8 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
     "List the settings",
     "Lists every setting and its value, as `settings list` shows them: key=value, one a line. \
      shell.profile (windows, macos or linux: the desktop's layout) and keyboard.layout (us, \
-     us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) can be set with \
-     settings_set; the others report facts: the display's scale, resolution and pointer, the \
+     us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se) and time.zone \
+     (an IANA zone such as Europe/Paris, or UTC) can be set with settings_set; the others report facts: the display's scale, resolution and pointer, the \
      version, architecture, CPUs, memory and uptime.",
     &["settings", "list"],
     &[],
@@ -1509,8 +1510,9 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   desktop's layout (its taskbar, dock or panel and its window buttons) changes \
                   for the person at once. keyboard.layout takes a keyboard layout's name (us, \
                   us-intl, gb, us-dvorak, us-colemak, dk, fi, fr, de, it, no, br, es or se): \
-                  what every key types changes at once. The other keys report facts and fail with \
-                  setting_read_only. dry_run: true checks the key and the value and says what \
+                  what every key types changes at once. time.zone takes an IANA zone such as \
+                  Europe/Paris, or UTC: the zone programs show times in. The other keys report \
+                  facts and fail with setting_read_only. dry_run: true checks the key and the value and says what \
                   would change, and changes nothing. Needs the run grant: a setting changes how \
                   the machine behaves for its user.",
     command: &["settings", "set"],

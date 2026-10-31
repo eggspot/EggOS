@@ -18,6 +18,7 @@ pub enum Key {
     DisplayResolution,
     DisplayPointer,
     KeyboardLayout,
+    TimeZone,
     SystemVersion,
     SystemArch,
     SystemCpus,
@@ -43,19 +44,25 @@ pub enum Change {
     Profile(usize),
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     KeyboardLayout(usize),
+    /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
+    TimeZone(usize),
 }
 
 /// The names `shell.profile` takes, as the refusal of another one lists them.
 pub const PROFILE_CHOICES: &str = "windows, macos or linux";
 
+/// What `time.zone` takes, as the refusal of another value says it.
+pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New_York, or UTC";
+
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ShellProfile,
         Self::DisplayScale,
         Self::DisplayResolution,
         Self::DisplayPointer,
         Self::KeyboardLayout,
+        Self::TimeZone,
         Self::SystemVersion,
         Self::SystemArch,
         Self::SystemCpus,
@@ -71,6 +78,7 @@ impl Key {
             Self::DisplayResolution => "display.resolution",
             Self::DisplayPointer => "display.pointer",
             Self::KeyboardLayout => eggos_settings_file::KEYBOARD_LAYOUT,
+            Self::TimeZone => eggos_settings_file::TIME_ZONE,
             Self::SystemVersion => "system.version",
             Self::SystemArch => "system.arch",
             Self::SystemCpus => "system.cpus",
@@ -86,7 +94,10 @@ impl Key {
 
     /// Whether it can be set; the others report facts.
     pub const fn is_settable(self) -> bool {
-        matches!(self, Self::ShellProfile | Self::KeyboardLayout)
+        matches!(
+            self,
+            Self::ShellProfile | Self::KeyboardLayout | Self::TimeZone
+        )
     }
 
     /// The values it takes, as the refusal of another one lists them: `a, b or c`.
@@ -103,6 +114,9 @@ impl Key {
                     };
                     let _ = write!(choices, "{separator}{}", layout.name);
                 }
+            }
+            Self::TimeZone => {
+                let _ = choices.write_str(ZONE_CHOICES);
             }
             _ => {
                 let _ = choices.write_str(PROFILE_CHOICES);
@@ -124,6 +138,11 @@ impl Key {
             Self::KeyboardLayout => value.write_str(
                 KEYBOARD_LAYOUTS[facts.keyboard_layout.min(KEYBOARD_LAYOUTS.len() - 1)].name,
             ),
+            Self::TimeZone => value.write_str(
+                eggos_calendar::zone::ZONES
+                    .get(facts.time_zone)
+                    .map_or("UTC", |(name, _)| *name),
+            ),
             Self::SystemVersion => value.write_str(facts.version),
             Self::SystemArch => value.write_str(facts.architecture.as_str()),
             Self::SystemCpus => write!(value, "{}", facts.cpus),
@@ -143,6 +162,9 @@ impl Key {
                 .ok_or(Refusal::InvalidValue),
             Self::KeyboardLayout => eggos_settings_file::keyboard_layout_named(value.as_bytes())
                 .map(Change::KeyboardLayout)
+                .ok_or(Refusal::InvalidValue),
+            Self::TimeZone => crate::facts::zone_index(value)
+                .map(Change::TimeZone)
                 .ok_or(Refusal::InvalidValue),
             _ => Err(Refusal::ReadOnly),
         }
@@ -174,6 +196,7 @@ mod tests {
                 ("display.resolution", "1280x800".to_owned()),
                 ("display.pointer", "software".to_owned()),
                 ("keyboard.layout", "us".to_owned()),
+                ("time.zone", "UTC".to_owned()),
                 ("system.version", "0.2.0".to_owned()),
                 ("system.arch", "aarch64".to_owned()),
                 ("system.cpus", "4".to_owned()),

@@ -2548,6 +2548,7 @@ const SETTINGS_LIST_TEXT: &str = concat!(
     "display.resolution=1280x800\n",
     "display.pointer=software\n",
     "keyboard.layout=us\n",
+    "time.zone=UTC\n",
     "system.version=0.2.0\n",
     "system.arch=aarch64\n",
     "system.cpus=4\n",
@@ -2607,8 +2608,10 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     description: "Sets the setting with that key to the value, saves it and applies it at once: \
                   shell.profile takes windows, macos or linux, the desktop's layout; \
                   keyboard.layout takes a keyboard layout's name (us, us-intl, gb, us-dvorak, \
-                  us-colemak, dk, fi, fr, de, it, no, br, es or se). The other keys report facts \
-                  and cannot be set. --dry-run checks the key and the value \
+                  us-colemak, dk, fi, fr, de, it, no, br, es or se); time.zone takes an IANA \
+                  zone such as Europe/Paris, or UTC, which date, ls and the other programs show \
+                  times in unless TZ says another. The other keys report facts and cannot be \
+                  set. --dry-run checks the key and the value \
                   and says what would change, and changes nothing.",
     options: &[DRY_RUN_OPTION],
     operands: &[SETTING_KEY, operand("value", ValueType::Text, Count::One)],
@@ -2625,6 +2628,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     examples: &[
         example("settings set shell.profile linux", ""),
         example("settings set keyboard.layout de", ""),
+        example("settings set time.zone Europe/Paris", ""),
         example(
             "settings set --dry-run shell.profile windows",
             "would set shell.profile from macos to windows\n",
