@@ -81,6 +81,7 @@ impl Lowerer {
         update(self);
         self.emit(encode::stlxr(access(width), SCRATCH, T2, address));
         self.asm.cbz(Size::W, SCRATCH, top, true);
+        self.exclusive_done();
     }
 
     pub(super) fn exchange(&mut self, instruction: &Instruction) -> Lowered {
@@ -202,6 +203,7 @@ impl Lowerer {
                 self.asm.bind(differ);
                 self.emit(encode::clrex());
                 self.asm.bind(compared);
+                self.exclusive_done();
             }
             _ => {
                 let current = self.load(destination, T0);

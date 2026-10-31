@@ -18,6 +18,7 @@ use eggos_translate::image::{BackMapEntry, TranslatedImage};
 
 const MMAP: usize = 222;
 const MPROTECT: usize = 226;
+const PROT_NONE: usize = 0;
 const PROT_READ: usize = 1;
 const PROT_WRITE: usize = 2;
 const PROT_EXEC: usize = 4;
@@ -26,6 +27,7 @@ const MAP_ANONYMOUS: usize = 0x20;
 const PAGE_SIZE: usize = 4096;
 const BRIDGE_ALIGNMENT: usize = 16;
 const GUEST_STACK_BYTES: usize = 8 << 20;
+const GUEST_STACK_GUARD_BYTES: usize = PAGE_SIZE;
 const GUEST_STACK_HEADROOM: u64 = 256;
 const CALL_FRAME_BYTES: u64 = 64;
 const THREAD_BLOCK_BYTES: usize = 4096;
@@ -176,6 +178,26 @@ pub fn callback_thunk_page(entry: u64) -> Option<usize> {
     Some(page)
 }
 
+fn import_stub_literal(host: &[u8], code_bytes: usize, stub: u32) -> Result<usize, InstallError> {
+    let stub = stub as usize;
+    let end = stub
+        .checked_add(bridge::IMPORT_STUB_BYTES as usize)
+        .ok_or(InstallError)?;
+    if end > code_bytes {
+        return Err(InstallError);
+    }
+    let jump = bridge::import_stub(0);
+    let literal = stub + bridge::IMPORT_STUB_LITERAL as usize;
+    let mut words = host[stub..literal].chunks_exact(4);
+    let is_stub = jump[..2]
+        .iter()
+        .all(|word| words.next() == Some(word.to_le_bytes().as_slice()));
+    match is_stub {
+        true => Ok(literal),
+        false => Err(InstallError),
+    }
+}
+
 /// Maps `translation`, made for a guest image preferred at `preferred_base` and loaded at
 /// `guest_base` (`guest_size` bytes): the code with its guest addresses moved by the load
 /// difference, each stub's bridge after it with the stub pointed at it, a procedure
@@ -232,8 +254,8 @@ pub fn install(
         let stub = translation
             .entries
             .lookup(stub_bridge.stub_rva)
-            .ok_or(InstallError)? as usize;
-        let literal = stub + bridge::IMPORT_STUB_LITERAL as usize;
+            .ok_or(InstallError)?;
+        let literal = import_stub_literal(host, code_bytes, stub)?;
         host[literal..literal + 8].copy_from_slice(&((code + at) as u64).to_le_bytes());
         at += (length * 4).next_multiple_of(BRIDGE_ALIGNMENT);
     }
@@ -245,8 +267,8 @@ pub fn install(
         let at = trampolines_start + index * trampoline_bytes;
         let words = bridge::procedure_trampoline((procedures + 8 * index) as u64);
         put_words(host, at, &words);
-        let stub = translation.entries.lookup(rva).ok_or(InstallError)? as usize;
-        let literal = stub + bridge::IMPORT_STUB_LITERAL as usize;
+        let stub = translation.entries.lookup(rva).ok_or(InstallError)?;
+        let literal = import_stub_literal(host, code_bytes, stub)?;
         host[literal..literal + 8].copy_from_slice(&((code + at) as u64).to_le_bytes());
     }
     let table = translation.entries.runtime_bytes(guest_base, code as u64);
@@ -285,13 +307,15 @@ pub struct GuestThread {
 
 /// Makes a thread's guest state: a block (state block with MXCSR `0x1F80`, the x87 control
 /// word `0x037F` and `gs_base`, then the bridge fields), a 64 KiB shadow ring aligned to
-/// 64 KiB and an 8 MiB guest stack.
+/// 64 KiB and an 8 MiB guest stack above an inaccessible guard page, so an overflow faults.
 pub fn new_guest_thread(gs_base: u64) -> Option<GuestThread> {
     let block = map(THREAD_BLOCK_BYTES).ok()?;
     let ring_bytes = shadow_stack::BYTES as usize;
     let ring = map(2 * ring_bytes).ok()?;
     let ring = shadow_stack::initial(ring.next_multiple_of(ring_bytes) as u64)?;
-    let stack = map(GUEST_STACK_BYTES).ok()?;
+    let guard = map(GUEST_STACK_GUARD_BYTES + GUEST_STACK_BYTES).ok()?;
+    protect(guard, GUEST_STACK_GUARD_BYTES, PROT_NONE).ok()?;
+    let stack = guard + GUEST_STACK_GUARD_BYTES;
     let top = (stack + GUEST_STACK_BYTES) as u64;
     write_u64(block + state::GS_BASE as usize, gs_base);
     // SAFETY: the state block's MXCSR field is aligned and inside the new block.

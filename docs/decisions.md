@@ -15050,7 +15050,9 @@ the license, by an explicit instruction recorded here.
   (`codegen::trap`). Host tests: encodings, the buffer's fixups and ranges, liveness, block
   forming and lowering shapes (`add eax, ebx` is one `add w0, w0, w3`).
 - **Slice 39b's choices made without research.** A shift or rotate whose masked count is 0
-  (also from `cl`) changes nothing, not even the upper half of a 32-bit register; `bswap` of
+  (also from `cl`) changes no flags and no bits of the value, but a 32-bit register destination
+  still gets its upper half cleared, as every 32-bit operand write does on x86-64 (Intel SDM
+  vol. 1, 3.4.1.1; changed in review round 1); `bswap` of
   a 16-bit register writes 0; `ret` and `call` assume no flags are passed across them beyond
   `live_out`; `lock adc`, `lock sbb`, `lock neg` and 16-bit `shld`/`shrd` are reported as not
   lowered; `cmpxchg` on memory is always atomic; undefined flags (`mul`'s SF/ZF, `bsf`'s
@@ -15078,7 +15080,8 @@ the license, by an explicit instruction recorded here.
   `CPUID_LEAVES`: vendor GenuineIntel, family 6, FPU, TSC, CX8, CMOV, CLFSH, SSE, SSE2, CX16,
   POPCNT, LAHF/SAHF, LZCNT, SYSCALL, NX, long mode, the brand "EggOS x86-64 translated to
   Arm"; no SSE3, BMI1, AVX, OSXSAVE; other leaves zero), `rdtsc`/`rdtscp` (`cntvct_el0` times
-  `1e9 / cntfrq_el0`, so a 1 GHz time stamp), `xgetbv` (x87 and SSE), `lahf`, `sahf`,
+  `1e9 / cntfrq_el0`, so a 1 GHz time stamp; since review round 1 a 32.32 fixed-point
+  multiplier, so a 24 or 54 MHz counter gives 1 GHz rather than 984 or 972 MHz), `xgetbv` (x87 and SSE), `lahf`, `sahf`,
   `pushf`, `popf` (CF, PF, AF, ZF, SF, OF and DF, IF reads as set), `cld`/`std` (the state
   block's direction byte), `ldmxcsr` (rounding control, FZ and DAZ into FPCR; the value kept
   at `state::MXCSR`), `stmxcsr`, `clflush` (`dc civac`), `movnti` and `cmpxchg8b`/`16b`
@@ -15589,6 +15592,35 @@ the license, by an explicit instruction recorded here.
   stale keys); and the 39e2c "Not yet" above (floating-point and long callbacks, Swift,
   exceptions through translated frames, `GetProcAddress` past 64 functions, freeing a thread's
   guest state).
+- **Review round 1.** A translated macOS program's own `va_list` passed to the layer's `v`
+  functions (`vfprintf`, `vsnprintf`, `vasprintf`, `vsscanf`, `NSLogv`, ...) is tagged by its
+  bridge (`bridge::sysv_va_list_bridge`), so the layer reads it as System V; a 128-bit `idiv`
+  that overflows leaves `rax` as it was; `popcnt` clears AF; every non-LSE exclusive loop
+  (locked read-modify-writes, `xchg`, `cmpxchg`, `cmpxchg8b`/`16b`) ends with `dmb ish`, so a
+  locked instruction is a full barrier against the plain accesses around it; a guest stack has
+  an inaccessible guard page below it; a guest signal handler runs with DF clear and the
+  interrupted code gets its flag bytes, MXCSR and x87 area back. The shared cache's trust
+  question was decided: per-user cache directories, not a keyed MAC (below).
+- **Not yet** (review round 1): the cache under `/var/cache/eggos/translate` is checked only by
+  an unkeyed SHA-256, and anyone who can write the directory could plant code once the kernel
+  enforces permissions; decided: translations made at run time go to a per-user cache
+  (`~/.cache/eggos/translate`, mode 0700, files 0600) and installed apps' translations to a
+  root-owned system cache the component manager writes, and `load` refuses a file or directory
+  not owned by the caller (or root) or writable by group or others (a keyed MAC would need a
+  per-user key kept by the same permissions, so it adds nothing over them; Apple's Rosetta keeps
+  its cache in a root-owned directory written by a privileged daemon); `-initWithFormat:arguments:`
+  and other Objective-C methods taking a `va_list` are reached through `objc_msgSend` and still
+  get the program's list untagged; a program that sets a fault signal to `SIG_IGN` loses the
+  completion of misaligned accesses (the default action and handlers keep it); the bridges'
+  dispatch literal is patched as "the last two words" by convention instead of an index the
+  generators return; `add_import_stubs` silently skips a slot that is already code, which the
+  loader now refuses at install rather than overwriting; `CachedFile::in_use` is never set
+  (harmless while cache files are read, never mapped); the kernel links `eggos-translate` for
+  one benchmark, which grows the base kernel (move it behind a bench-only build); the fatal
+  fault line flushes the program's streams inside the signal handler, which can repeat output
+  a faulting `fwrite` was writing; invalid SSE and x87 operations give Arm's default NaN (sign
+  clear) where x86 gives its negative "real indefinite"; differential tests that run lowered
+  blocks against the SDM's results.
 
 ## D192 Checking, repairing and formatting EggFS disks, and big directories that stay fast: the checker and repairer, `format_with` with a size and a label, and an in-memory name index (batch part 40, slice 40a; roadmap item 25's "Next"; extends D131, D170, D171) — Decided by the build loop (the name index decided by research)
 
@@ -16757,8 +16789,9 @@ the license, by an explicit instruction recorded here.
   address (`other-cpu.exe` faulted at its next `call`).
 - **Decision.** The Windows layer binds `__chkstk` to `bridge::return_bridge`: it pops the
   return address and returns to the guest through the shadow stack or the dispatch, changing
-  no guest register. A translated thread's guest stack is one 8 MiB mapping with no guard
-  page, so there are no pages to probe in order.
+  no guest register. A translated thread's guest stack is one 8 MiB mapping, so there are no
+  pages to probe in order; since review round 1 one inaccessible guard page lies below it, so
+  an overflow faults instead of writing over the mapping below.
 - **Follow-up.** The macOS layer's `___chkstk_darwin` for x86_64 programs takes its size in
   `rax` the same way; bind it to the same bridge when a translated macOS program needs it.
 

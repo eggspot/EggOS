@@ -52,6 +52,7 @@ pub(super) const CPUID_LEAVES: [(u32, [u32; 4]); 8] = [
 ];
 
 const TIME_STAMP_HZ: u64 = 1_000_000_000;
+const TIME_STAMP_FRACTION_BITS: u32 = 32;
 const MXCSR_DENORMALS_ARE_ZERO: u8 = 6;
 const MXCSR_ROUNDING_LOW: u8 = 13;
 const MXCSR_FLUSH_TO_ZERO: u8 = 15;
@@ -164,10 +165,10 @@ impl Lowerer {
     }
 
     fn time_stamp(&mut self, with_processor: bool) {
-        let scaled = self.asm.label();
+        let unscaled = self.asm.label();
         self.emit(simd::mrs_cntvct(SCRATCH));
         self.emit(simd::mrs_cntfrq(ADDRESS));
-        self.move_immediate(Size::W, T0, TIME_STAMP_HZ);
+        self.move_immediate(Size::X, T0, TIME_STAMP_HZ << TIME_STAMP_FRACTION_BITS);
         self.emit(encode::two_source(
             TwoSource::Udiv,
             Size::X,
@@ -175,17 +176,31 @@ impl Lowerer {
             T0,
             ADDRESS,
         ));
-        self.asm.cbz(Size::X, T0, scaled, true);
-        self.move_immediate(Size::W, T0, 1);
-        self.asm.bind(scaled);
+        self.asm.cbz(Size::X, T0, unscaled, false);
         self.emit(encode::multiply(
             Multiply::Madd,
             Size::X,
-            SCRATCH,
+            T1,
             SCRATCH,
             T0,
             Reg::ZR,
         ));
+        self.emit(encode::multiply(
+            Multiply::Umulh,
+            Size::X,
+            T2,
+            SCRATCH,
+            T0,
+            Reg::ZR,
+        ));
+        self.emit(encode::extr(
+            Size::X,
+            SCRATCH,
+            T2,
+            T1,
+            TIME_STAMP_FRACTION_BITS as u8,
+        ));
+        self.asm.bind(unscaled);
         self.copy(Size::W, RAX, SCRATCH);
         self.shift_right(Size::X, RDX, SCRATCH, 32);
         if with_processor {
@@ -347,6 +362,7 @@ impl Lowerer {
         self.asm.bind(failed);
         self.emit(encode::clrex());
         self.asm.bind(done);
+        self.exclusive_done();
     }
 
     fn exchange_joined(&mut self, address: Reg) {
@@ -380,6 +396,7 @@ impl Lowerer {
             self.asm.bind(failed);
             self.emit(encode::clrex());
             self.asm.bind(done);
+            self.exclusive_done();
         }
         self.emit(encode::logical_shifted(
             Logic::Eor,

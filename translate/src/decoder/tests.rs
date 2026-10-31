@@ -872,6 +872,20 @@ fn unsupported_instructions_report_their_length() {
     assert_eq!(refused(&[0x67, 0x8B, 0x00]), Refusal::AddressSize);
     assert_eq!(refused(&[0x67, 0xA4]), Refusal::AddressSize);
     assert_eq!(
+        refused(&[0x67, 0xA1, 0x10, 0x20, 0x30, 0x40]),
+        Refusal::AddressSize
+    );
+    assert_eq!(refused(&[0x66, 0xC7, 0xF8, 0x10, 0x00]), Refusal::System);
+    assert_eq!(
+        refused(&[0x66, 0x0F, 0x78, 0xC0, 0x04, 0x08]),
+        Refusal::System
+    );
+    assert_eq!(
+        refused(&[0xF2, 0x0F, 0x78, 0xC1, 0x04, 0x08]),
+        Refusal::System
+    );
+    assert_eq!(refused(&[0x0F, 0x78, 0xC0]), Refusal::System);
+    assert_eq!(
         refused(&[0x66, 0xE8, 0x00, 0x00, 0x00, 0x00]),
         Refusal::Branch16
     );
@@ -998,4 +1012,68 @@ fn x87_memory_and_register_forms_decode() {
     assert_eq!(refused(&[0xDD, 0x08]), Refusal::Sse3);
     assert_eq!(refused(&[0xD9, 0x30]), Refusal::X87);
     assert_eq!(error(&[0xD9, 0x08]), DecodeErrorKind::Invalid);
+}
+
+fn next_random(seed: &mut u64) -> u8 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    (*seed >> 24) as u8
+}
+
+fn decodes_within_bounds(bytes: &[u8]) {
+    for end in 0..=bytes.len() {
+        match decode(&bytes[..end], AT) {
+            Ok(instruction) => {
+                assert!(usize::from(instruction.length) <= end, "{bytes:02x?}");
+                assert!(usize::from(instruction.length) <= MAX_INSTRUCTION_LENGTH);
+            }
+            Err(error) => assert_eq!(error.address, AT),
+        }
+    }
+}
+
+#[test]
+fn any_bytes_decode_or_fail_without_a_panic() {
+    let mut seed = 0x9E37_79B9_7F4A_7C15;
+    let mut bytes = [0u8; 18];
+    for first in 0..=255u8 {
+        for second in 0..=255u8 {
+            bytes[0] = first;
+            bytes[1] = second;
+            for byte in &mut bytes[2..] {
+                *byte = next_random(&mut seed);
+            }
+            decodes_within_bounds(&bytes);
+        }
+    }
+    let leads: [&[u8]; 14] = [
+        &[0x0F],
+        &[0x0F, 0x38],
+        &[0x0F, 0x3A],
+        &[0x66, 0x0F],
+        &[0xF2, 0x0F],
+        &[0xF3, 0x0F],
+        &[0x48, 0x0F],
+        &[0xF0, 0x0F],
+        &[0x67, 0x66, 0x0F],
+        &[0xC4],
+        &[0xC5],
+        &[0x62],
+        &[0x8F],
+        &[0x26, 0x64, 0xF0, 0x48],
+    ];
+    for lead in leads {
+        for byte in 0..=255u8 {
+            for _ in 0..16 {
+                let mut bytes = [0u8; 20];
+                bytes[..lead.len()].copy_from_slice(lead);
+                bytes[lead.len()] = byte;
+                for tail in &mut bytes[lead.len() + 1..] {
+                    *tail = next_random(&mut seed);
+                }
+                decodes_within_bounds(&bytes);
+            }
+        }
+    }
 }

@@ -185,6 +185,104 @@ fn division_checks_for_a_zero_divisor() {
 }
 
 #[test]
+fn a_wide_signed_division_leaves_rax_alone_until_it_cannot_fault() {
+    use crate::codegen::aarch64::encode::Logic;
+    use crate::codegen::aarch64::{Reg, Shift, Size};
+    use crate::codegen::registers::SCRATCH;
+    use crate::instruction::Gpr;
+    let code = translate_block(&straight(&[0x48, 0xF7, 0xFB]), ORDERED, Flags::NONE).unwrap();
+    let sign_into_rax = encode::logical_shifted(
+        Logic::Orr,
+        false,
+        Size::X,
+        Reg(Gpr::RAX.0),
+        Reg::ZR,
+        SCRATCH,
+        Shift::Lsl,
+        0,
+    );
+    assert!(!code.code.contains(&sign_into_rax));
+    assert!(code.code.contains(&encode::brk(trap::DIVIDE_ERROR)));
+}
+
+#[test]
+fn a_32_bit_shift_by_zero_still_clears_the_upper_half() {
+    use crate::codegen::aarch64::encode::Logic;
+    use crate::codegen::aarch64::{Reg, Shift, Size};
+    let clear_eax = encode::logical_shifted(
+        Logic::Orr,
+        false,
+        Size::W,
+        Reg(0),
+        Reg::ZR,
+        Reg(0),
+        Shift::Lsl,
+        0,
+    );
+    for bytes in [
+        [0xC1, 0xE0, 0x00].as_slice(),
+        &[0xD3, 0xE8],
+        &[0xC1, 0xC0, 0x00],
+        &[0x0F, 0xA4, 0xD8, 0x00],
+    ] {
+        let code = translate_block(&straight(bytes), ORDERED, Flags::NONE).unwrap();
+        assert!(code.code.contains(&clear_eax));
+    }
+    let wide = translate_block(&straight(&[0x48, 0xC1, 0xE0, 0x00]), ORDERED, Flags::NONE).unwrap();
+    assert!(!wide.code.contains(&clear_eax));
+}
+
+#[test]
+fn a_locked_exclusive_loop_is_a_full_barrier_after_it() {
+    let armv8_0 = CodegenMode {
+        lse: false,
+        ..ORDERED
+    };
+    let full = encode::dmb(encode::Barrier::Ish);
+    for bytes in [
+        [0x87, 0x03].as_slice(),
+        &[0xF0, 0x0F, 0xB1, 0x0B],
+        &[0xF0, 0x0F, 0xAB, 0x03],
+        &[0xF0, 0x48, 0x0F, 0xC7, 0x0B],
+    ] {
+        let code = translate_block(&straight(bytes), armv8_0, Flags::NONE).unwrap();
+        assert!(code.code.contains(&full));
+    }
+}
+
+#[test]
+fn popcnt_clears_the_adjust_flag_when_it_is_live() {
+    use crate::codegen::aarch64::Reg;
+    use crate::codegen::aarch64::encode::LoadStore;
+    use crate::codegen::state;
+    let clear = super::state_access(LoadStore::Strb, Reg::ZR, state::ADJUST);
+    let bytes = [0xF3, 0x0F, 0xB8, 0xC3];
+    let live = translate_block(&straight(&bytes), ORDERED, Flags::AF).unwrap();
+    assert!(live.code.contains(&clear));
+    let dead = translate_block(&straight(&bytes), ORDERED, Flags::NONE).unwrap();
+    assert!(!dead.code.contains(&clear));
+}
+
+#[test]
+fn rdtsc_scales_the_counter_by_a_fixed_point_multiplier() {
+    use crate::codegen::aarch64::encode::{Multiply, TwoSource};
+    use crate::codegen::aarch64::{Reg, Size};
+    let code = translate_block(&straight(&[0x0F, 0x31]), ORDERED, Flags::NONE).unwrap();
+    let high = |word: u32| {
+        word & 0xFFE0_FC00
+            == encode::multiply(Multiply::Umulh, Size::X, Reg(0), Reg(0), Reg(0), Reg::ZR)
+                & 0xFFE0_FC00
+    };
+    assert!(code.code.iter().any(|&word| high(word)));
+    let divide = encode::two_source(TwoSource::Udiv, Size::X, Reg(0), Reg(0), Reg(0));
+    assert!(
+        code.code
+            .iter()
+            .any(|&word| word & 0xFFE0_FC00 == divide & 0xFFE0_FC00)
+    );
+}
+
+#[test]
 fn every_integer_form_lowers() {
     let sequences: [&[u8]; 24] = [
         &[0x48, 0x0F, 0xAF, 0xC3],

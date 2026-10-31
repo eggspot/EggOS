@@ -1,7 +1,7 @@
 use super::{
     ADDRESS, AddSub, Bitfield, CarrySense, Flags, Instruction, Logic, Lowered, Lowerer, Mnemonic,
-    Operand, Place, Reg, SCRATCH, Shift, Size, T0, T1, T2, T3, T4, T5, Width, bits, encode, size,
-    trap, truncate,
+    Operand, Place, Reg, SCRATCH, Shift, Size, T0, T1, T2, T3, T4, T5, T6, Width, bits, encode,
+    size, trap, truncate,
 };
 use crate::codegen::aarch64::Cond;
 use crate::codegen::aarch64::encode::{Carry, Multiply, TwoSource};
@@ -952,20 +952,11 @@ impl Lowerer {
             0,
         ));
         self.asm.b_cond(Cond::Cs, fault);
-        self.emit(encode::logical_shifted(
-            Logic::Orr,
-            false,
-            Size::X,
-            rax,
-            Reg::ZR,
-            SCRATCH,
-            Shift::Lsl,
-            0,
-        ));
+        self.copy(Size::X, T6, SCRATCH);
         self.divide_128();
         let quotient_positive = self.asm.label();
         let quotient_done = self.asm.label();
-        self.asm.cbz(Size::X, rax, quotient_positive, false);
+        self.asm.cbz(Size::X, T6, quotient_positive, false);
         self.move_immediate(Size::X, SCRATCH, 1 << 63);
         self.emit(encode::add_sub_shifted(
             AddSub::Subs,

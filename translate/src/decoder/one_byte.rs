@@ -120,9 +120,14 @@ pub(super) fn form(
         0xC6 if modrm? == XBEGIN_OR_XABORT => Form::refused(Refusal::System)
             .modrm()
             .with(Imm(Immediate::UnsignedByte)),
-        0xC7 if modrm? == XBEGIN_OR_XABORT => Form::refused(Refusal::System)
-            .modrm()
-            .with(Rel(Relative::Dword)),
+        0xC7 if modrm? == XBEGIN_OR_XABORT => {
+            Form::refused(Refusal::System)
+                .modrm()
+                .with(Rel(match prefixes.operand_size {
+                    true => Relative::Word,
+                    false => Relative::Dword,
+                }))
+        }
         0xC6 if reg_field(modrm?) == 0 => Form::new(M::Mov, byte)
             .with(Rm(B))
             .with(Imm(Immediate::SignedByte)),

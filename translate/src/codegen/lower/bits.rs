@@ -1,9 +1,9 @@
 use super::arith::{Binary, Source};
 use super::{
     AddSub, CarrySense, Flags, Instruction, Logic, Lowered, Lowerer, Mnemonic, Operand, Place, Reg,
-    SCRATCH, Shift, Size, T0, T1, T2, T3, T4, T5, Width, bits, encode, size,
+    SCRATCH, Shift, Size, T0, T1, T2, T3, T4, T5, Width, bits, encode, size, state, state_access,
 };
-use crate::codegen::aarch64::encode::{Atomic, Bitfield, OneSource, TwoSource};
+use crate::codegen::aarch64::encode::{Atomic, Bitfield, LoadStore, OneSource, TwoSource};
 use crate::codegen::flags;
 use crate::codegen::registers::{ADDRESS, VECTOR_TEMPORARY};
 
@@ -51,6 +51,7 @@ impl Lowerer {
         let mnemonic = instruction.mnemonic;
         let count = Self::count(instruction);
         if count == Count::Immediate(0) {
+            self.zero_extend_dword(place);
             return Ok(());
         }
         let done = self.asm.label();
@@ -114,6 +115,9 @@ impl Lowerer {
             self.store(place, result);
         }
         self.asm.bind(done);
+        if count == Count::Cl {
+            self.zero_extend_dword(place);
+        }
         Ok(())
     }
 
@@ -196,6 +200,7 @@ impl Lowerer {
         let left = instruction.mnemonic == Mnemonic::Rol;
         let count = Self::count(instruction);
         if count == Count::Immediate(0) {
+            self.zero_extend_dword(place);
             return Ok(());
         }
         let done = self.asm.label();
@@ -295,6 +300,9 @@ impl Lowerer {
             self.insert_carry_overflow(Some(T4), Some(T5));
         }
         self.asm.bind(done);
+        if count == Count::Cl {
+            self.zero_extend_dword(place);
+        }
         Ok(())
     }
 
@@ -308,6 +316,7 @@ impl Lowerer {
         let need = self.defined_and_live(instruction);
         let count = Self::count(instruction);
         if count == Count::Immediate(0) {
+            self.zero_extend_dword(place);
             return Ok(());
         }
         let done = self.asm.label();
@@ -367,6 +376,9 @@ impl Lowerer {
         }
         self.store(place, T2);
         self.asm.bind(done);
+        if count == Count::Cl {
+            self.zero_extend_dword(place);
+        }
         Ok(())
     }
 
@@ -457,6 +469,7 @@ impl Lowerer {
                     ));
                     self.emit(encode::stlxr(super::access(width), SCRATCH, T2, address));
                     self.asm.cbz(Size::W, SCRATCH, top, true);
+                    self.exclusive_done();
                 }
             } else {
                 let value = self.load(place, T0);
@@ -570,6 +583,9 @@ impl Lowerer {
                 self.move_immediate(Size::W, SCRATCH, 1);
                 self.save_lazy_flags(Flags::PF, SCRATCH, Reg::ZR, Reg::ZR);
             }
+            if need.any(Flags::AF) {
+                self.emit(state_access(LoadStore::Strb, Reg::ZR, state::ADJUST));
+            }
         }
         self.store(place, T2);
         Ok(())
@@ -596,6 +612,7 @@ impl Lowerer {
         let left = instruction.mnemonic == Mnemonic::Rcl;
         let count = Self::count(instruction);
         if count == Count::Immediate(0) {
+            self.zero_extend_dword(place);
             return Ok(());
         }
         let done = self.asm.label();
@@ -664,6 +681,9 @@ impl Lowerer {
         self.insert_carry_overflow(Some(T2), Some(T4));
         self.store(place, T0);
         self.asm.bind(done);
+        if count == Count::Cl {
+            self.zero_extend_dword(place);
+        }
         Ok(())
     }
 }

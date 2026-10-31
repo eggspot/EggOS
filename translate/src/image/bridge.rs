@@ -296,8 +296,8 @@ pub fn forward_bridge(
 }
 
 /// The bridge for an import whose work translated code never needs: `__chkstk`, whose page
-/// probes a translated thread's guest stack does not need, as it is mapped whole with no guard
-/// page. It changes no guest register and returns to the guest at once, through the shadow
+/// probes a translated thread's guest stack does not need, as it is mapped whole, with one
+/// guard page below it. It changes no guest register and returns to the guest at once, through the shadow
 /// stack when its pair matches, else through the dispatch at `dispatch` (a literal at the end,
 /// as in [`forward_bridge`]).
 pub fn return_bridge(dispatch: u64) -> Result<Vec<u32>, EmitError> {

@@ -34,6 +34,7 @@ pub(super) enum Immediate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Relative {
     Byte,
+    Word,
     Dword,
 }
 

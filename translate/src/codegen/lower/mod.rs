@@ -301,6 +301,16 @@ impl Lowerer {
         Ok(())
     }
 
+    fn exclusive_done(&mut self) {
+        self.emit(encode::dmb(encode::Barrier::Ish));
+    }
+
+    fn zero_extend_dword(&mut self, place: Place) {
+        if let Place::Low32(host) = place {
+            self.copy(Size::W, host, host);
+        }
+    }
+
     fn copy(&mut self, size: Size, d: Reg, n: Reg) {
         self.emit(encode::logical_shifted(
             Logic::Orr,

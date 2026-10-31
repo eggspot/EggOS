@@ -152,6 +152,7 @@ fn operand(
         Spec::Rel(kind) => {
             let offset = match kind {
                 Relative::Byte => i64::from(cursor.i8()?),
+                Relative::Word => i64::from(cursor.i16()?),
                 Relative::Dword => i64::from(cursor.i32()?),
             };
             let end = context.address.wrapping_add(cursor.position() as u64);
@@ -160,7 +161,10 @@ fn operand(
         Spec::St0 => Operand::Register(Register::St(0)),
         Spec::StRm => Operand::Register(Register::St(modrm()?.raw_rm)),
         Spec::Moffs(size) => {
-            let absolute = cursor.i64()? as u64;
+            let absolute = match context.prefixes.address_size {
+                true => u64::from(cursor.i32()? as u32),
+                false => cursor.i64()? as u64,
+            };
             memory(Address::Absolute(absolute), resolve(size, context), context)
         }
     })

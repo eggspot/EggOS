@@ -37,6 +37,16 @@ pub(super) fn form(
         0x1E if repeat && modrm? == ENDBR64 => Form::new(M::Endbr64, byte).modrm(),
         0x1E if repeat && modrm? == ENDBR32 => Form::new(M::Endbr32, byte).modrm(),
         0x18..=0x1F => Form::new(M::Nop, Normal).with(Rm(V)),
+        0x78 if matches!(
+            prefixes.mandatory(),
+            Mandatory::OperandSize | Mandatory::RepeatNotEqual
+        ) =>
+        {
+            Form::refused(Refusal::System)
+                .modrm()
+                .with(Spec::Imm(Immediate::UnsignedByte))
+                .with(Spec::Imm(Immediate::UnsignedByte))
+        }
         0x20..=0x23 | 0x78 | 0x79 => Form::refused(Refusal::System).modrm(),
         0x10..=0x17 | 0x28..=0x2F | 0x50..=0x7F | 0xC2 | 0xC4..=0xC6 | 0xD0..=0xFE => {
             sse::form(opcode, modrm, prefixes)?

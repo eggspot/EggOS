@@ -24,6 +24,7 @@ use core::ffi::c_int;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use eggos_runtime::startup::{Startup, auxv};
 use eggos_translate::cache::{self, CacheFile};
+use eggos_translate::codegen::state;
 use eggos_translate::image::bridge;
 use eggos_translate::image::{ImageInput, TranslatedImage, translate_image};
 use eggos_translation_loader::cache_files;
@@ -55,6 +56,7 @@ const GUEST_STACK_REGISTER: usize = 4;
 const SHADOW_STACK_REGISTER: usize = 20;
 const GUEST_STACK_REACH: u64 = 8 << 20;
 const GUEST_RED_ZONE: u64 = 128;
+const INTERRUPTED_STATE_BYTES: usize = (state::SIZE - state::PARITY) as usize;
 
 struct Translation {
     code: InstalledCode,
@@ -383,9 +385,21 @@ pub fn call_signal_handler(handler: usize, arguments: [u64; 3], context: *mut u8
             field(shadow_field).store(shadow, Ordering::Relaxed);
         }
     }
+    let kept = (block + state::PARITY as usize) as *mut u8;
+    let mut interrupted = [0u8; INTERRUPTED_STATE_BYTES];
+    // SAFETY: the flag bytes, MXCSR and x87 area run from `PARITY` to the end of this thread's
+    // own state block, which nothing else writes while its handler runs.
+    unsafe {
+        core::ptr::copy_nonoverlapping(kept, interrupted.as_mut_ptr(), INTERRUPTED_STATE_BYTES)
+    };
+    // SAFETY: the direction byte is in the same block; a handler starts with it clear, as a
+    // function the System V convention calls does.
+    unsafe { ((block + state::DIRECTION as usize) as *mut u8).write(0) };
     // SAFETY: the program installed `handler` as a signal handler, which takes the signal
     // number, a `siginfo_t` and a context.
     let _ = unsafe { call_guest(handler as u64, &arguments) };
+    // SAFETY: as above: the interrupted code gets back its flags, MXCSR and x87 state.
+    unsafe { core::ptr::copy_nonoverlapping(interrupted.as_ptr(), kept, INTERRUPTED_STATE_BYTES) };
     field(stack_field).store(saved.0, Ordering::Relaxed);
     field(shadow_field).store(saved.1, Ordering::Relaxed);
     true
