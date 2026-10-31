@@ -128,7 +128,8 @@ pub struct Surface {
     pub frames: [u32; MAX_FRAMES],
     pub frame_count: usize,
     pub last_done_ms: u64,
-    pub ever_attached: bool,
+    /// Its committed buffer is not null: it may not get an `xdg_surface`.
+    pub has_buffer: bool,
     pub xdg_surface: u32,
     pub toplevel: u32,
     pub initial_configure_sent: bool,
@@ -196,7 +197,7 @@ impl Surface {
             frames: [0; MAX_FRAMES],
             frame_count: 0,
             last_done_ms: 0,
-            ever_attached: false,
+            has_buffer: false,
             xdg_surface: 0,
             toplevel: 0,
             initial_configure_sent: false,
@@ -257,7 +258,7 @@ impl Surface {
         self.viewport_pending = kept.viewport_pending;
         self.viewport_current = kept.viewport_current;
         self.fractional_scale = kept.fractional_scale;
-        self.ever_attached = true;
+        self.has_buffer = kept.has_buffer;
     }
 }
 

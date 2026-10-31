@@ -6,7 +6,7 @@ use eggos_wayland::protocol::{
     data_offer, data_source, decoration, display, fractional_scale, keyboard, output, pointer,
     primary_selection_device, primary_selection_offer, primary_selection_source, registry,
     server_decoration, shm, surface, text_input, viewport, xdg_popup, xdg_positioner, xdg_surface,
-    xdg_toplevel,
+    xdg_toplevel, xdg_wm_base,
 };
 use eggos_wayland::wire::Value;
 
@@ -411,6 +411,88 @@ fn a_buffer_before_the_first_configure_is_an_error() {
     );
     assert!(!session.alive());
     assert!(session.fake.open.is_empty());
+}
+
+#[test]
+fn a_surface_whose_last_commit_attached_null_gets_a_new_xdg_surface_as_sdl_shows_it_again() {
+    const XDG_SURFACE_AGAIN: u32 = 30;
+    const TOPLEVEL_AGAIN: u32 = 31;
+    let mut session = Session::new();
+    let first = session.shown();
+    let detach_and_commit = |session: &mut Session| {
+        session.send(
+            SURFACE,
+            1,
+            &[Value::Object(0), Value::Int(0), Value::Int(0)],
+        );
+        session.send(SURFACE, 6, &[]);
+    };
+    detach_and_commit(&mut session);
+    session.send(TOPLEVEL, 0, &[]);
+    session.send(XDG_SURFACE, 0, &[]);
+    detach_and_commit(&mut session);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(XDG_SURFACE_AGAIN), Value::Object(SURFACE)],
+    );
+    session.send(XDG_SURFACE_AGAIN, 1, &[Value::NewId(TOPLEVEL_AGAIN)]);
+    session.send(SURFACE, 6, &[]);
+    let events = session.pump();
+    assert_eq!(session.error(), None);
+    assert!(session.alive());
+    assert!(session.fake.windows[&first].destroyed);
+    let serial = events
+        .iter()
+        .find(|event| event.object == XDG_SURFACE_AGAIN)
+        .map(|event| event.word(0))
+        .expect("a configure");
+    session.send(XDG_SURFACE_AGAIN, 4, &[Value::Uint(serial)]);
+    session.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
+    session.pump();
+    assert_eq!(session.error(), None);
+    assert_eq!(
+        session
+            .fake
+            .windows
+            .values()
+            .filter(|window| !window.destroyed)
+            .count(),
+        1
+    );
+    session.end();
+}
+
+#[test]
+fn a_surface_with_a_committed_or_attached_buffer_gets_no_xdg_surface() {
+    for commits in [true, false] {
+        let mut session = Session::new();
+        session.globals();
+        session.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)]);
+        session.pool(vec![0; 64 * 64]);
+        session.buffer(BUFFER, 64, 64);
+        session.send(
+            SURFACE,
+            1,
+            &[Value::Object(BUFFER), Value::Int(0), Value::Int(0)],
+        );
+        if commits {
+            session.send(SURFACE, 6, &[]);
+        }
+        session.send(
+            WM_BASE,
+            2,
+            &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+        );
+        session.pump();
+        assert_eq!(
+            session.error(),
+            Some((WM_BASE, xdg_wm_base::INVALID_SURFACE_STATE)),
+            "commits: {commits}"
+        );
+        assert!(!session.alive());
+        assert!(session.fake.open.is_empty());
+    }
 }
 
 #[test]

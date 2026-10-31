@@ -1240,8 +1240,10 @@ fn commit<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut 
     surface.attach = Attach::Unchanged;
     surface.damage = Rect::default();
     surface.viewport_current = surface.viewport_pending;
-    if attach != Attach::Unchanged {
-        surface.ever_attached = true;
+    match attach {
+        Attach::Unchanged => {}
+        Attach::Null => surface.has_buffer = false,
+        Attach::Buffer(_) => surface.has_buffer = true,
     }
     if let Some(slot) = client.surface(index) {
         *slot = surface;
@@ -1677,7 +1679,7 @@ fn wm_base_request(client: &mut ClientSlot, message: &Message) {
                 client.protocol_error(message.object, xdg_wm_base::ROLE, b"surface has a role");
                 return;
             }
-            if surface.ever_attached {
+            if surface.has_buffer || matches!(surface.attach, Attach::Buffer(_)) {
                 client.protocol_error(
                     message.object,
                     xdg_wm_base::INVALID_SURFACE_STATE,
