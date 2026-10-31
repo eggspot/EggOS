@@ -133,7 +133,10 @@ impl Display {
             self.logical = Vec::new();
             return true;
         }
-        if scale != MAX_SCALE || device.width % scale != 0 || device.height % scale != 0 {
+        if scale != MAX_SCALE
+            || !device.width.is_multiple_of(scale)
+            || !device.height.is_multiple_of(scale)
+        {
             return false;
         }
         let pixels = (device.width / scale) as usize * (device.height / scale) as usize;

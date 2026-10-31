@@ -55,7 +55,11 @@ pub mod shadow_stack {
     /// The `x20` value a new thread starts with, for a ring at `base` (aligned to
     /// [`BYTES`]); `None` when `base` is not aligned.
     pub const fn initial(base: u64) -> Option<u64> {
-        if base % BYTES == 0 { Some(base) } else { None }
+        if base.is_multiple_of(BYTES) {
+            Some(base)
+        } else {
+            None
+        }
     }
 }
 

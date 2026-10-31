@@ -2232,7 +2232,9 @@ mod tests {
 
     #[test]
     fn a_script_line_names_its_interpreter_and_one_argument_as_linux_reads_it() {
-        let line = |head: &[u8]| script_line(head).map(|line| (line.interpreter, line.argument));
+        fn line(head: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
+            script_line(head).map(|line| (line.interpreter, line.argument))
+        }
         assert_eq!(
             line(b"#!/bin/eggsh\necho"),
             Some((&b"/bin/eggsh"[..], None))

@@ -620,7 +620,7 @@ fn deliver<P: Platform>(
 }
 
 /// `write` or `writev` on a datagram socket: one datagram to its peer, with no flags.
-pub fn write<P: Platform>(
+pub(in crate::linux) fn write<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
@@ -762,7 +762,7 @@ fn recvfrom<P: Platform>(
 }
 
 /// `read` or `readv` on a datagram socket: one datagram, with no flags.
-pub fn read<P: Platform>(
+pub(in crate::linux) fn read<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,

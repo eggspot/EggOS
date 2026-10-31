@@ -8,7 +8,9 @@ const RUNTIME_FUNCTION_BYTES: usize = 12;
 /// ignored.
 pub fn pdata_function_starts(pdata: &[u8]) -> Vec<u32> {
     pdata
-        .chunks_exact(RUNTIME_FUNCTION_BYTES)
+        .as_chunks::<RUNTIME_FUNCTION_BYTES>()
+        .0
+        .iter()
         .filter_map(|entry| {
             let begin = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
             let end = u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]);

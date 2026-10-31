@@ -34,7 +34,7 @@ const LED_CAPS_LOCK: u16 = 0x01;
 
 const _: () = assert!(super::queue::memory_size(QUEUE_SIZE) <= EVENTS);
 const _: () = assert!(EVENTS + QUEUE_SIZE as usize * EVENT_BYTES <= MEMORY_BYTES);
-const _: () = assert!(STATUS_RING % 16 == 0);
+const _: () = assert!(STATUS_RING.is_multiple_of(16));
 const _: () = assert!(super::queue::memory_size(STATUS_QUEUE_SIZE) <= STATUS_EVENTS - STATUS_RING);
 const _: () = assert!(STATUS_EVENTS + STATUS_QUEUE_SIZE as usize * EVENT_BYTES <= MEMORY_BYTES);
 

@@ -31,6 +31,10 @@ const PAGE: usize = FRAME_SIZE as usize;
 
 const CHUNK: usize = 512;
 
+#[expect(
+    clippy::box_collection,
+    reason = "a null box keeps the static all zeros, in .bss"
+)]
 static FILES: SpinLock<Option<Box<Vec<Arc<SharedFile>>>>> = SpinLock::new(None);
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);

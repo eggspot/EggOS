@@ -196,6 +196,19 @@ pub struct ImageLayout {
     pub stack_pointer: u64,
 }
 
+impl core::fmt::Debug for ImageLayout {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ImageLayout")
+            .field("executable", &self.executable.is_some())
+            .field("arguments", &self.arguments)
+            .field("environment", &self.environment)
+            .field("stack", &self.stack)
+            .field("stack_pointer", &self.stack_pointer)
+            .finish()
+    }
+}
+
 /// What a [`Mapping`] is, besides its file: `/proc/<pid>/maps`' label for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MappingLabel {
@@ -222,13 +235,32 @@ pub struct Mapping {
     pub label: MappingLabel,
 }
 
+impl core::fmt::Debug for Mapping {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Mapping")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("attributes", &self.attributes)
+            .field("shared", &self.shared)
+            .field(
+                "file_offset",
+                &self.file.as_ref().map(|(_, offset)| *offset),
+            )
+            .field("label", &self.label)
+            .finish()
+    }
+}
+
+type SharedPidRecord<P> = Arc<SpinLock<PidRecord<P>>>;
+
 /// A user address space, the frames its pages map and its regions. See the module
 /// documentation.
 pub struct Process<P: Platform> {
     memory: Arc<Memory<P>>,
     root: u64,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
-    record: Arc<SpinLock<PidRecord<P>>>,
+    record: SharedPidRecord<P>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
     /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
@@ -430,6 +462,7 @@ impl<P: Platform> Memory<P> {
             fork_marks: LeafSpinLock::new_leaf(marks),
             has_fork_marks: AtomicBool::new(has_fork_marks),
             image: self.image.clone(),
+            cpu_ticks: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -700,7 +733,7 @@ impl<P: Platform> Process<P> {
 
     fn with_memory(
         memory: Arc<Memory<P>>,
-        record: Arc<SpinLock<PidRecord<P>>>,
+        record: SharedPidRecord<P>,
         id: ProcessId,
         credentials_and_limits: CredentialsAndLimits,
         signals: Signals,
@@ -813,9 +846,7 @@ impl<P: Platform> Process<P> {
     /// as its parent, and the child's record, which takes it out of the table again if the
     /// child is dropped before it ends. An id another process took between its allocation and
     /// the table's lock is passed over (D183).
-    fn add_child_to_table(
-        &self,
-    ) -> Result<(ProcessId, Arc<SpinLock<PidRecord<P>>>), NewChildError> {
+    fn add_child_to_table(&self) -> Result<(ProcessId, SharedPidRecord<P>), NewChildError> {
         for _ in 0..CHILD_ID_ATTEMPTS {
             let id = ProcessId::allocate::<P>().ok_or(NewChildError::OutOfIds)?;
             let added = {

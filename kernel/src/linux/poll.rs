@@ -450,13 +450,13 @@ pub fn uses_input_key(kind: &FileKind) -> bool {
 /// wakes: it may change with nothing to wake (a timer's expiry, a signal sent, a file woken
 /// through the input key, an `epoll` instance's own such files), or it keeps no list.
 pub fn needs_looking_at(kind: &FileKind) -> bool {
-    match kind {
+    !matches!(
+        kind,
         FileKind::Event(EventFile::EventFd(_) | EventFile::Inotify(_))
-        | FileKind::Pipe(_)
-        | FileKind::PseudoTerminal(_)
-        | FileKind::Socket(_) => false,
-        _ => true,
-    }
+            | FileKind::Pipe(_)
+            | FileKind::PseudoTerminal(_)
+            | FileKind::Socket(_)
+    )
 }
 
 /// When `kind` may become ready with nothing to wake its waiters, in clock ticks: a timer's

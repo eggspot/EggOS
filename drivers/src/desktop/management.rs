@@ -634,7 +634,7 @@ impl Desktop {
         let normal = self.window_at(window.parent.map_or(slot, usize::from));
         if normal.role == Role::Normal && normal.desktop != self.current_desktop {
             let desktop = normal.desktop;
-            self.switch_desktop(desktop, damage, events);
+            let _ = self.switch_desktop(desktop, damage, events);
         }
         if self.window_at(slot).minimised {
             self.restore(slot, damage, events);

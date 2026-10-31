@@ -129,6 +129,7 @@ impl SourceLines {
     }
 
     /// The source routed to `line`, if any.
+    #[cfg(test)]
     pub(crate) fn source_of(&self, line: DeviceLine) -> Option<u32> {
         use core::sync::atomic::Ordering;
         let source = self.sources.get(line.index())?.load(Ordering::Acquire);

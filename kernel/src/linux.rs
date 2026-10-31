@@ -1605,7 +1605,6 @@ fn write_iovecs_to_console<P: Platform>(
 
 const NOT_THE_CONSOLE: Errno = Errno(u16::MAX);
 
-#[cfg(target_arch = "x86_64")]
 const CWD: u64 = stat::at::FDCWD as u64;
 
 #[inline(never)]

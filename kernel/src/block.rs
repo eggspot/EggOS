@@ -85,7 +85,9 @@ static DISKS: LeafSpinLock<[Option<Box<dyn BlockDevice>>; MAX_DISKS]> =
 
 static FACTS: LeafSpinLock<[DiskFacts; MAX_DISKS]> = LeafSpinLock::new_leaf([NO_DISK; MAX_DISKS]);
 
-static NEW_DEADLINE: LeafSpinLock<Option<fn(u64) -> Deadline>> = LeafSpinLock::new_leaf(None);
+type NewDeadline = fn(u64) -> Deadline;
+
+static NEW_DEADLINE: LeafSpinLock<Option<NewDeadline>> = LeafSpinLock::new_leaf(None);
 
 /// Installs `disk` for a file system to take, at the first free place; gives it back when
 /// [`MAX_DISKS`] are installed.
@@ -211,7 +213,7 @@ pub fn write_at(index: usize, offset: u64, bytes: &[u8]) -> Result<usize, WholeD
         .min(usize::try_from(left).unwrap_or(usize::MAX));
     let span = Span::of(offset, length);
     let mut bounce = span.buffer()?;
-    let partial = span.skip != 0 || (span.skip + length) % SECTOR_SIZE != 0;
+    let partial = span.skip != 0 || !(span.skip + length).is_multiple_of(SECTOR_SIZE);
     with_disk(index, WHOLE_DISK_TIMEOUT_MS, |disk, deadline| {
         if partial {
             disk.read(span.first, &mut bounce, deadline)?;

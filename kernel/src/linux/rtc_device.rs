@@ -57,7 +57,7 @@ pub fn rtc_time(seconds: i64) -> [u8; TIME_BYTES] {
         0,
     ];
     let mut bytes = [0u8; TIME_BYTES];
-    for (place, field) in bytes.chunks_exact_mut(4).zip(fields) {
+    for (place, field) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(fields) {
         place.copy_from_slice(&field.to_ne_bytes());
     }
     bytes

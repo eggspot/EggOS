@@ -50,14 +50,14 @@ pub(super) fn enable() -> Result<(), &'static str> {
                 .is_some_and(|input| input < controller.lines())
         })
         .ok_or("no I/O APIC receives the system control interrupt")?;
-    // SAFETY: the FADT's PM1a status and enable ports: writing the power button's bit to the
-    // status register clears a stale press, and to the enable register turns the event on;
+    // SAFETY: the FADT's PM1a status port: writing the power button's bit clears a stale
+    // press and leaves every other status bit as it was.
+    unsafe { port::out16(button.pm1a_status_port, acpi::PM1_POWER_BUTTON) };
+    // SAFETY: the FADT's PM1a enable port: reading it has no side effect.
+    let enabled = unsafe { port::in16(button.pm1a_enable_port) };
+    // SAFETY: the FADT's PM1a enable port: the power button's bit turns the event on, and
     // every other event stays as the firmware left it, off.
-    unsafe {
-        port::out16(button.pm1a_status_port, acpi::PM1_POWER_BUTTON);
-        let enabled = port::in16(button.pm1a_enable_port);
-        port::out16(button.pm1a_enable_port, enabled | acpi::PM1_POWER_BUTTON);
-    }
+    unsafe { port::out16(button.pm1a_enable_port, enabled | acpi::PM1_POWER_BUTTON) };
     PORTS.store(
         u32::from(button.pm1a_status_port) | u32::from(button.pm1a_enable_port) << 16,
         Ordering::Relaxed,

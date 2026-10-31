@@ -521,7 +521,7 @@ pub fn vector_load_store(op: VectorLoadStore, t: u8, n: Reg, offset: u32) -> Opt
         VectorLoadStore::StrD => (0xFD00_0000, 8),
         VectorLoadStore::StrQ => (0x3D80_0000, 16),
     };
-    if offset % scale != 0 || offset / scale >= 4096 {
+    if !offset.is_multiple_of(scale) || offset / scale >= 4096 {
         return None;
     }
     Some(base | ((offset / scale) << 10) | gn(n) | vd(t))

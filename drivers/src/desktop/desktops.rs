@@ -4,8 +4,8 @@
 //! show on every desktop). A new window opens on the current desktop; focusing a window on
 //! another switches to it first.
 
-use super::protocol::{EventSink, WindowError, desktop_action};
 use super::protocol::Role;
+use super::protocol::{EventSink, WindowError, desktop_action};
 use super::{Damage, Desktop, Rect};
 
 /// The most desktops.
@@ -134,9 +134,9 @@ impl Desktop {
         Ok(())
     }
 
-    /// Does `wm desktop`'s `action` ([`desktop_action`]'s numbers) with desktop `number` (from
-    /// 1) and window `window`: what it reports back (the new desktop's number for `NEW`, the
-    /// windows moved for `CLOSE`, else 0).
+    /// Does `wm desktop`'s `action` ([`desktop_action`]'s numbers) with desktop `number`
+    /// (from 1) and window `window`: what it reports back (the new desktop's number for
+    /// `NEW`, the windows moved for `CLOSE`, else 0).
     pub fn desktop_action(
         &mut self,
         action: u32,

@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn a_signalfd_never_holds_sigkill_or_sigstop_and_reports_its_own_signals() {
         let signal_file = SignalFd::new(u64::MAX);
-        assert_eq!(signal_file.mask(), u64::MAX & !UNTAKEABLE);
+        assert_eq!(signal_file.mask(), !UNTAKEABLE);
         signal_file.set_mask(1 << (SIGUSR1 - 1));
         assert_eq!(signal_file.events(event::IN, 1 << (SIGUSR1 - 1)), event::IN);
         assert_eq!(signal_file.events(event::IN, 1 << (SIGCHLD - 1)), 0);

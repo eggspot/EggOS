@@ -20,11 +20,21 @@ fn the_kernel_picks_free_ports_and_a_taken_port_is_refused() {
     let two = second.bind(Ipv4Address::UNSPECIFIED, 0).unwrap();
     assert!(EPHEMERAL_PORTS.contains(&one) && EPHEMERAL_PORTS.contains(&two));
     assert_ne!(one, two);
-    assert_eq!(first.bind(Ipv4Address::UNSPECIFIED, 0), Err(BindError::AlreadyBound));
+    assert_eq!(
+        first.bind(Ipv4Address::UNSPECIFIED, 0),
+        Err(BindError::AlreadyBound)
+    );
     let third = Endpoint::new(Protocol::Udp);
-    assert_eq!(third.bind(Ipv4Address::LOOPBACK, one), Err(BindError::InUse));
+    assert_eq!(
+        third.bind(Ipv4Address::LOOPBACK, one),
+        Err(BindError::InUse)
+    );
     let ping = Endpoint::new(Protocol::Ping);
-    assert_eq!(ping.bind(Ipv4Address::UNSPECIFIED, one), Ok(one), "ping identifiers are apart");
+    assert_eq!(
+        ping.bind(Ipv4Address::UNSPECIFIED, one),
+        Ok(one),
+        "ping identifiers are apart"
+    );
     let specific = Endpoint::new(Protocol::Udp);
     assert_eq!(specific.bind(Ipv4Address::LOOPBACK, 5101), Ok(5101));
     let other_address = Endpoint::new(Protocol::Udp);
@@ -34,7 +44,11 @@ fn the_kernel_picks_free_ports_and_a_taken_port_is_refused() {
     );
     drop(specific);
     let again = Endpoint::new(Protocol::Udp);
-    assert_eq!(again.bind(Ipv4Address::LOOPBACK, 5101), Ok(5101), "a dropped endpoint frees its port");
+    assert_eq!(
+        again.bind(Ipv4Address::LOOPBACK, 5101),
+        Ok(5101),
+        "a dropped endpoint frees its port"
+    );
 }
 
 #[test]
@@ -57,7 +71,12 @@ fn datagrams_reach_the_endpoint_of_their_port_and_a_connected_one_hears_only_its
     assert_eq!(endpoint.take(false), None);
     endpoint.connect(Some((HOST, 53)));
     assert!(!deliver(udp(HOST, 54, 5102, b"other port")));
-    assert!(!deliver(udp(Ipv4Address::new(10, 0, 2, 3), 53, 5102, b"other host")));
+    assert!(!deliver(udp(
+        Ipv4Address::new(10, 0, 2, 3),
+        53,
+        5102,
+        b"other host"
+    )));
     assert!(deliver(udp(HOST, 53, 5102, b"peer")));
     endpoint.shut_down(true, false);
     assert!(!deliver(udp(HOST, 53, 5102, b"after shutdown")));

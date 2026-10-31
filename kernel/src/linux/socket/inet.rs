@@ -694,6 +694,7 @@ fn send<P: Platform>(
             let sequence = u16::from_be_bytes([header[6], header[7]]);
             crate::net::send_echo::<P>(address, local_port, sequence, payload, ttl)
         }
+        Protocol::Tcp => return Err(Errno::EOPNOTSUPP),
     };
     sent.map_err(send_error)?;
     Ok(data.len() as u64)
@@ -713,7 +714,7 @@ pub(super) fn finish_send<P: Platform>(
 }
 
 /// `write` or `writev` on an `AF_INET` socket: a send to its peer with no flags.
-pub fn write<P: Platform>(
+pub(in crate::linux) fn write<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
@@ -763,7 +764,7 @@ fn recvfrom<P: Platform>(
 }
 
 /// `read` or `readv` on an `AF_INET` socket: a receive with no flags.
-pub fn read<P: Platform>(
+pub(in crate::linux) fn read<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,

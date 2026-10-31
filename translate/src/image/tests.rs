@@ -60,8 +60,10 @@ fn block_starts(discovery: &Discovery) -> Vec<u64> {
 }
 
 fn words(code: &[u8]) -> Vec<u32> {
-    code.chunks_exact(4)
-        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+    code.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect()
 }
 

@@ -447,7 +447,8 @@ pub mod tests {
         let _guard = NAMES_TEST.lock().unwrap();
         forget_changed_names();
         let mut name = [0; MAX_NAME];
-        assert_eq!(&name[..host_name(&mut name)], b"localhost");
+        let length = host_name(&mut name);
+        assert_eq!(&name[..length], b"localhost");
         CHANGED_NAMES.lock()[Which::Host.index()] = ChangedName {
             set: true,
             length: 3,
@@ -457,7 +458,8 @@ pub mod tests {
                 bytes
             },
         };
-        assert_eq!(&name[..host_name(&mut name)], b"egg");
+        let length = host_name(&mut name);
+        assert_eq!(&name[..length], b"egg");
         let image = current_utsname();
         assert_eq!(&image[utsname::FIELD..][..4], b"egg\0");
         assert!(

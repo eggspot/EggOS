@@ -686,6 +686,7 @@ fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
     let devices = LeafSpinLock::new_leaf(Some(Box::new(Input {
         sources: [const { None }; MAX_DEVICES],
         state: InputState::new(),
+        caps_lock_shown: false,
     })));
     let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     if let Some(input) = devices.lock().as_mut() {
@@ -848,10 +849,19 @@ fn sticky_keys_latch_a_tapped_modifier_for_the_next_key_and_a_second_tap_locks_i
     let mut sticky = Sticky::new();
     let shift = Modifiers::SHIFT.bits();
     let none = Modifiers::NONE;
-    assert_eq!(sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift), Modifiers::SHIFT);
+    assert_eq!(
+        sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift),
+        Modifiers::SHIFT
+    );
     assert_eq!(sticky.apply(42, KeyChange::Released, none, 0), none);
-    assert_eq!(sticky.apply(30, KeyChange::Pressed, none, 0), Modifiers::SHIFT);
-    assert_eq!(sticky.apply(30, KeyChange::Released, none, 0), Modifiers::SHIFT);
+    assert_eq!(
+        sticky.apply(30, KeyChange::Pressed, none, 0),
+        Modifiers::SHIFT
+    );
+    assert_eq!(
+        sticky.apply(30, KeyChange::Released, none, 0),
+        Modifiers::SHIFT
+    );
     assert_eq!(sticky.apply(30, KeyChange::Pressed, none, 0), none);
     for _ in 0..2 {
         sticky.apply(42, KeyChange::Pressed, Modifiers::SHIFT, shift);
@@ -859,9 +869,15 @@ fn sticky_keys_latch_a_tapped_modifier_for_the_next_key_and_a_second_tap_locks_i
     }
     assert_eq!(sticky.locked, shift);
     sticky.apply(30, KeyChange::Released, none, 0);
-    assert_eq!(sticky.apply(31, KeyChange::Pressed, none, 0), Modifiers::SHIFT);
+    assert_eq!(
+        sticky.apply(31, KeyChange::Pressed, none, 0),
+        Modifiers::SHIFT
+    );
     sticky.apply(31, KeyChange::Released, none, 0);
-    assert_eq!(sticky.apply(32, KeyChange::Pressed, none, 0), Modifiers::SHIFT);
+    assert_eq!(
+        sticky.apply(32, KeyChange::Pressed, none, 0),
+        Modifiers::SHIFT
+    );
 }
 
 #[test]

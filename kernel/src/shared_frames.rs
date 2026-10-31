@@ -114,7 +114,7 @@ pub fn share(frame: u64) -> bool {
     let Some(count) = count_of(frame, true) else {
         return false;
     };
-    match count.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |sharers| {
+    match count.try_update(Ordering::AcqRel, Ordering::Relaxed, |sharers| {
         sharers.checked_add(1).filter(|&sharers| sharers < u16::MAX)
     }) {
         Ok(0) => {
@@ -151,7 +151,7 @@ fn release_counted(frame: u64) -> bool {
     let Some(count) = count_of(frame, false) else {
         return true;
     };
-    match count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |sharers| {
+    match count.try_update(Ordering::AcqRel, Ordering::Acquire, |sharers| {
         sharers.checked_sub(1)
     }) {
         Ok(1) => {

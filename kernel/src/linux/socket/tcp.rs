@@ -514,7 +514,7 @@ fn send<P: Platform>(
 }
 
 /// `write` or `writev` on a stream socket: a send with no flags.
-pub fn write<P: Platform>(
+pub(in crate::linux) fn write<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
@@ -769,7 +769,7 @@ fn receive_bytes<P: Platform>(
 }
 
 /// `read` or `readv` on a stream socket: a receive with no flags.
-pub fn read<P: Platform>(
+pub(in crate::linux) fn read<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,

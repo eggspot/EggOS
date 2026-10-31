@@ -362,7 +362,7 @@ pub fn parse(bytes: &[u8]) -> Result<CacheFile, CacheError> {
         return Err(CacheError::KeyMismatch);
     }
     let code_end = code_bytes as u64;
-    let in_code = |offset: u32| offset % 4 == 0 && u64::from(offset) < code_end;
+    let in_code = |offset: u32| offset.is_multiple_of(4) && u64::from(offset) < code_end;
     if code_offset != CODE_OFFSET
         || reserved != 0
         || counters[7] != 0

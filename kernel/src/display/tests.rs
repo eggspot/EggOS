@@ -4,11 +4,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use std::sync::{Arc, Mutex};
 
+type PointerCall = (&'static str, (u32, u32), (u32, u32));
+
 #[derive(Default)]
 struct Shown {
     flushed: Vec<Vec<Rect>>,
     failing: bool,
-    pointer: Vec<(&'static str, (u32, u32), (u32, u32))>,
+    pointer: Vec<PointerCall>,
 }
 
 struct FakeScanout {
@@ -174,9 +176,7 @@ fn a_display_too_small_for_the_boot_screen_starts_in_the_background_colour() {
 #[test]
 fn a_hash_taken_a_row_at_a_time_is_the_whole_frame_s() {
     let frame: Vec<u32> = (0..64).map(|pixel| pixel * 0x0101_0101).collect();
-    let rows = frame
-        .chunks(8)
-        .fold(PIXEL_HASH_START, |hash, row| continue_pixel_hash(hash, row));
+    let rows = frame.chunks(8).fold(PIXEL_HASH_START, continue_pixel_hash);
     assert_eq!(rows, pixel_hash(&frame));
 }
 

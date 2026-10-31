@@ -84,6 +84,10 @@ pub enum BindError {
     NoMemory,
 }
 
+#[expect(
+    clippy::box_collection,
+    reason = "a null box keeps the static all zeros, in .bss"
+)]
 static BOUND: LeafSpinLock<Option<Box<Vec<Weak<Endpoint>>>>> = LeafSpinLock::new_leaf(None);
 
 static NEXT_PORT: AtomicU64 = AtomicU64::new(0);
@@ -253,7 +257,12 @@ impl Endpoint {
         Some(datagram)
     }
 
-    fn accepts(&self, protocol: Protocol, from: (Ipv4Address, u16), to: (Ipv4Address, u16)) -> bool {
+    fn accepts(
+        &self,
+        protocol: Protocol,
+        from: (Ipv4Address, u16),
+        to: (Ipv4Address, u16),
+    ) -> bool {
         if self.protocol != protocol {
             return false;
         }
@@ -273,7 +282,10 @@ impl Endpoint {
     fn push(&self, source: Ipv4Address, source_port: u16, data: &[u8]) -> bool {
         let mut state = self.state.lock();
         let fits = state.queued_bytes + data.len() <= state.receive_limit;
-        if !fits || !crate::heap::may_grow_for_user(data.len()) || state.queue.try_reserve(1).is_err() {
+        if !fits
+            || !crate::heap::may_grow_for_user(data.len())
+            || state.queue.try_reserve(1).is_err()
+        {
             state.dropped += 1;
             return false;
         }

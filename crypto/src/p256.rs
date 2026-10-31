@@ -181,6 +181,7 @@ impl Modulus {
         self.multiply(a, &self.r_squared)
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_montgomery(&self, a: &Limbs) -> Limbs {
         self.multiply(a, &[1, 0, 0, 0])
     }

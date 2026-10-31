@@ -416,7 +416,7 @@ pub fn load_store(op: LoadStore, t: Reg, n: Reg, offset: u32) -> Option<u32> {
         LoadStore::LdrX => (0xF940_0000, 3),
     };
     let unit = 1u32 << scale;
-    if offset % unit != 0 || offset / unit > 0xFFF {
+    if !offset.is_multiple_of(unit) || offset / unit > 0xFFF {
         return None;
     }
     Some(base | ((offset / unit) << 10) | rn(n) | rd(t))

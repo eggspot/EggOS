@@ -2516,6 +2516,10 @@ mod tests {
             cpu: here,
             user,
             fp,
+            ran: Cell::new(0),
+            since: Cell::new(0),
+            account: None,
+            allowed: Cell::new(u64::MAX),
         };
         let layout = Layout::new::<FpState>();
         // SAFETY: `FpState` is not zero-sized.
@@ -2584,6 +2588,10 @@ mod tests {
             cpu: cpu::current::<P>(),
             user: false,
             fp: OnceCell::new(),
+            ran: Cell::new(0),
+            since: Cell::new(0),
+            account: None,
+            allowed: Cell::new(u64::MAX),
         });
         thread.check_stack();
         memory[0] = 0;

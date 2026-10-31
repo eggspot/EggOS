@@ -20,7 +20,7 @@ static LINES_TAKEN: AtomicUsize = AtomicUsize::new(0);
 /// Takes the next device line and the message that raises it on the boot CPU.
 pub(super) fn take() -> Result<(DeviceLine, InterruptMessage), &'static str> {
     let index = LINES_TAKEN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |taken| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |taken| {
             (taken < DeviceLine::COUNT).then_some(taken + 1)
         })
         .map_err(|_| "every device interrupt line is taken")?;

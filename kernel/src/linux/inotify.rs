@@ -88,6 +88,10 @@ pub const MAX_WATCHES: usize = 8_192;
 
 /// How many watches every instance holds together: while it is 0, a change reports nothing.
 pub static WATCHES: AtomicUsize = AtomicUsize::new(0);
+#[expect(
+    clippy::box_collection,
+    reason = "a null box keeps the static all zeros, in .bss"
+)]
 static INSTANCES: SpinLock<Option<Box<Vec<Weak<Inotify>>>>> = SpinLock::new(None);
 static COOKIES: AtomicU32 = AtomicU32::new(0);
 

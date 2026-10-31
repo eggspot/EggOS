@@ -1685,7 +1685,7 @@ mod tests {
         assert_eq!(mapping(READ_WRITE, map::SHARED, 0), Err(Errno::EACCES));
         assert_eq!(mapping(prot::READ, map::PRIVATE, 1), Err(Errno::EINVAL));
         assert_eq!(
-            mapping(prot::READ, map::PRIVATE, u64::MAX & !(PAGE - 1)),
+            mapping(prot::READ, map::PRIVATE, !(PAGE - 1)),
             Err(Errno::EOVERFLOW)
         );
         let (writable, fd) = open_file(&contents, open_flag::RDWR);
