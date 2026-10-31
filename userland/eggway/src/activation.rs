@@ -19,6 +19,9 @@ pub const TOKEN_LIFETIME_MS: u64 = 10_000;
 pub const TOKEN_PREFIX: &[u8] = b"eggway-";
 /// A token's length.
 pub const TOKEN_BYTES: usize = TOKEN_PREFIX.len() + 16;
+/// The token given when the kernel's random source fails: no token reads it, so it raises
+/// nothing, rather than a token someone could predict.
+pub const UNUSABLE_TOKEN: &[u8] = b"eggway-unavailable";
 
 const COMMITTED: u16 = 1;
 
@@ -179,13 +182,18 @@ pub(crate) fn token_request<S: System>(
         COMMITTED,
     );
     let focused = shared.keyboard_client == Some(client.index);
-    let value = shared
-        .activation
-        .issue(system.now_ms(), focused, system.random());
+    let text = system.random().map(|random| {
+        let value = shared.activation.issue(system.now_ms(), focused, random);
+        token_text(value)
+    });
+    let text: &[u8] = match &text {
+        Some(text) => text,
+        None => UNUSABLE_TOKEN,
+    };
     client.post(
         message.object,
         message.version,
         activation_token::DONE,
-        &[Value::String(&token_text(value))],
+        &[Value::String(text)],
     );
 }

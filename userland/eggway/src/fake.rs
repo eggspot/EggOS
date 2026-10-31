@@ -104,6 +104,8 @@ pub struct Fake {
     pub answers: Vec<(u32, u32, Vec<u8>)>,
     /// The windows raised and focused, in order (D176).
     pub focused: Vec<u32>,
+    /// The kernel's random source cannot give bytes.
+    pub random_unavailable: bool,
 }
 
 std::thread_local! {
@@ -132,6 +134,7 @@ impl Default for Fake {
             keymaps: 0,
             answers: Vec::new(),
             focused: Vec::new(),
+            random_unavailable: false,
         }
     }
 }
@@ -497,8 +500,8 @@ impl System for Fake {
         self.work_area
     }
 
-    fn random(&mut self) -> u64 {
-        self.now.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    fn random(&mut self) -> Option<u64> {
+        (!self.random_unavailable).then(|| self.now.wrapping_mul(0x9e37_79b9_7f4a_7c15))
     }
 
     fn read_events(&mut self, device: Fd, records: &mut [u8]) -> Result<usize, Errno> {

@@ -2043,6 +2043,33 @@ fn an_activation_token_from_the_focused_client_raises_a_window_once() {
 }
 
 #[test]
+fn without_random_bytes_the_token_given_raises_nothing() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.bind(12, "xdg_activation_v1", 1, ACTIVATION);
+    session.focus(None, window);
+    session.fake.random_unavailable = true;
+    session.send(ACTIVATION, 1, &[Value::NewId(TOKEN)]);
+    session.send(TOKEN, 3, &[]);
+    let events = session.pump();
+    let token = text_of(
+        events
+            .iter()
+            .find(|event| event.object == TOKEN && event.opcode == activation_token::DONE.opcode)
+            .expect("a token"),
+    );
+    assert_eq!(token.as_bytes(), crate::activation::UNUSABLE_TOKEN);
+    assert_eq!(crate::activation::token_value(token.as_bytes()), None);
+    session.send(
+        ACTIVATION,
+        2,
+        &[Value::String(token.as_bytes()), Value::Object(SURFACE)],
+    );
+    session.pump();
+    assert!(session.fake.focused.is_empty());
+}
+
+#[test]
 fn tokens_are_single_use_and_expire() {
     use crate::activation::{Activation, TOKEN_LIFETIME_MS, token_text, token_value};
     let mut tokens = Activation::default();
