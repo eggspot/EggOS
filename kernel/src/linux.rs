@@ -6217,8 +6217,8 @@ mod tests {
         let other = process_for_status(&kernel);
         setgid(&process);
         setgid(&other);
-        assert!(proc::may_reach_descriptors(&process, &process));
-        assert!(!proc::may_reach_descriptors(&process, &other));
+        assert!(proc::may_reach_descriptors::<P>(&process, &process));
+        assert!(!proc::may_reach_descriptors::<P>(&process, &other));
     }
 
     #[test]
