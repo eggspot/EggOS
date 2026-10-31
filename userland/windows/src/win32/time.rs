@@ -121,7 +121,7 @@ fn seconds_of(intervals: u64) -> i64 {
 }
 
 fn shifted(intervals: u64, seconds: i64) -> u64 {
-    (intervals as i64).saturating_add(seconds.saturating_mul(INTERVALS_PER_SECOND)) as u64
+    intervals.saturating_add_signed(seconds.saturating_mul(INTERVALS_PER_SECOND))
 }
 
 unsafe extern "efiapi" fn get_local_time(time: *mut u8) {
@@ -265,3 +265,23 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"Sleep" => sleep,
     b"SleepEx" => sleep_ex,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shift_stays_within_a_file_time_s_range() {
+        assert_eq!(shifted(0, -3600), 0);
+        assert_eq!(shifted(5 * INTERVALS_PER_SECOND as u64, -3600), 0);
+        assert_eq!(shifted(u64::MAX - 1, 3600), u64::MAX);
+        assert_eq!(
+            shifted(u64::MAX, -1),
+            u64::MAX - INTERVALS_PER_SECOND as u64
+        );
+        assert_eq!(
+            shifted(7200 * INTERVALS_PER_SECOND as u64, -3600),
+            3600 * INTERVALS_PER_SECOND as u64
+        );
+    }
+}
