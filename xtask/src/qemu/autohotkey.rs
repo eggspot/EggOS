@@ -7,13 +7,15 @@
 //! Each step is checked by pixels of the design's tables in a screendump: the first frame (the
 //! list's first row selected, the progress bar at 40, the picture GDI+ decoded, the status bar's
 //! two parts), Down Down (the third row selected), a click on the toolbar's `Step` (the progress
-//! bar at 60), the element tree `wm show` reads (the selected row, the progress bar's per mille),
+//! bar at 60), the element tree `wm show` reads once `^Z` and `bg` have put AutoHotkey, which
+//! the icon's line runs in the console shell's foreground, in the background (the selected row,
+//! the progress bar's per mille),
 //! a click on the `Tree` tab (the tree shows with its `+` boxes), a click on `Fruit`'s box (it
 //! opens and is selected), Down (`Apples` selected); Alt+F4 closes the window, AutoHotkey exits
 //! and `wm list` has no such window.
 
 use super::settings::{Boot, Screen};
-use super::win32_app::{changed, crop, picture, pixel, tap, type_line, window_area};
+use super::win32_app::{SUSPEND, changed, crop, picture, pixel, tap, type_line, window_area};
 use super::*;
 use crate::autohotkey::{
     APP, ARCHIVE, PICTURE, PICTURE_FILL_COLOUR, PICTURE_RING_COLOUR, PICTURE_SQUARE_COLOUR,
@@ -72,7 +74,7 @@ fn open_line() -> String {
 }
 
 fn listed_line() -> String {
-    format!("wm list; echo {STATUS_PREFIX}listed $?\r")
+    format!("bg; wm list; echo {STATUS_PREFIX}listed $?\r")
 }
 
 fn show_line(window: &str) -> String {
@@ -323,6 +325,8 @@ impl Session<'_, '_> {
     }
 
     fn element_tree(&mut self) -> Result<(), String> {
+        type_line(self.boot, SUSPEND)?;
+        std::thread::sleep(ECHO_PAUSE);
         type_line(self.boot, &listed_line())?;
         let console = wait_for_line(self.boot, &format!("{STATUS_PREFIX}listed 0"))?;
         let Some(window) = window_id(&console).map(str::to_owned) else {

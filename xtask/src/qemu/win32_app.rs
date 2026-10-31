@@ -66,6 +66,8 @@ fn after_line() -> String {
 
 const POWER_OFF: &str = "poweroff\r";
 
+pub(super) const SUSPEND: &str = "\u{1a}";
+
 pub(super) fn type_line(boot: &mut Boot<'_>, line: &str) -> Result<(), String> {
     boot.keyboard
         .write_all(line.as_bytes())

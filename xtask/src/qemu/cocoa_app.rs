@@ -6,13 +6,17 @@
 //! with the same colours: 21 presses of `d` bring the player back where it started, `d`, `w` or
 //! `s` and the Left or Right arrow move it one cell (choosing the key that does not land on
 //! the food), and steering onto the food eats it, which places new food anywhere but the
-//! player's row and column. `wm show` lists the window and the game's view; `wm menu --choose`
+//! player's row and column. `^Z` and `bg` put the game, which the icon's line runs in the
+//! console shell's foreground, in the background; `wm show` lists the window and the game's
+//! view; `wm menu --choose`
 //! chooses `About CocoaGame`, whose panel is found on the screen as the host renders it with
 //! the icon the installer made; `wm show` lists the panel's elements, Esc closes it, and Cmd+Q
 //! quits the game, after which `wm list` has none of its windows.
 
 use super::settings::{Boot, Screen};
-use super::win32_app::{changed, crop, picture, press, tap, type_line, whole, window_area};
+use super::win32_app::{
+    SUSPEND, changed, crop, picture, press, tap, type_line, whole, window_area,
+};
 use super::*;
 use crate::cocoa_app::{APP, ARCHIVE, BUILD, VERSION};
 use eggos_drivers::desktop::{CONTENT_CORNER_INSETS, Profile};
@@ -640,31 +644,33 @@ pub fn check(
     let board = board_rect(session.origin);
     let last_board = session.shot("-cocoa-app-before-about")?;
     let (player, food) = (session.player, session.food);
-    type_line(&mut boot, &list_line("listed"))?;
+    type_line(&mut boot, SUSPEND)?;
     boot.wait_for_prompts(4)?;
+    type_line(&mut boot, &format!("bg; {}", list_line("listed")))?;
+    boot.wait_for_prompts(5)?;
     let console = console_text(&mut boot);
     let Some(window) = window_titled(&console, "listed", APP) else {
         return Err(boot.fail(format!("{}: `wm list` does not list {APP}", arch.name)));
     };
     type_line(&mut boot, &show_line(window, "tree"))?;
-    boot.wait_for_prompts(5)?;
+    boot.wait_for_prompts(6)?;
     let console = console_text(&mut boot);
     if let Some(problem) = game_tree_problem(&shown_tree(&console, "tree")) {
         return Err(boot.fail(format!("{}: `wm show {window}`: {problem}", arch.name)));
     }
     type_line(&mut boot, &about_line(window))?;
-    boot.wait_for_prompts(6)?;
+    boot.wait_for_prompts(7)?;
     let expected = render_panel(icon_file);
     wait_for_panel(&mut boot, &mut screen, &last_board, &expected)?;
     type_line(&mut boot, &list_line("panel"))?;
-    boot.wait_for_prompts(7)?;
+    boot.wait_for_prompts(8)?;
     let console = console_text(&mut boot);
     let title = format!("{PANEL_PREFIX}{APP}");
     let Some(panel) = window_titled(&console, "panel", &title) else {
         return Err(boot.fail(format!("{}: `wm list` does not list `{title}`", arch.name)));
     };
     type_line(&mut boot, &show_line(panel, "panel-tree"))?;
-    boot.wait_for_prompts(8)?;
+    boot.wait_for_prompts(9)?;
     let console = console_text(&mut boot);
     if let Some(problem) =
         panel_tree_problem(&shown_tree(&console, "panel-tree"), icon_file.is_some())
@@ -696,7 +702,7 @@ pub fn check(
         return Err(boot.fail(format!("{}: Cmd+Q left the game on the screen", arch.name)));
     }
     type_line(&mut boot, &list_line("after"))?;
-    boot.wait_for_prompts(9)?;
+    boot.wait_for_prompts(10)?;
     type_line(&mut boot, POWER_OFF)?;
     let (console, clean_exit) = boot.finish()?;
     verdict(arch.name, &console, clean_exit)?;
