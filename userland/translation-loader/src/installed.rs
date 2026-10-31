@@ -188,10 +188,10 @@ fn import_stub_literal(host: &[u8], code_bytes: usize, stub: u32) -> Result<usiz
     }
     let jump = bridge::import_stub(0);
     let literal = stub + bridge::IMPORT_STUB_LITERAL as usize;
-    let mut words = host[stub..literal].chunks_exact(4);
+    let mut words = host[stub..literal].as_chunks::<4>().0.iter();
     let is_stub = jump[..2]
         .iter()
-        .all(|word| words.next() == Some(word.to_le_bytes().as_slice()));
+        .all(|word| words.next() == Some(&word.to_le_bytes()));
     match is_stub {
         true => Ok(literal),
         false => Err(InstallError),

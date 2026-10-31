@@ -101,17 +101,15 @@ const EPHEMERAL_WORDS: usize = EPHEMERAL_COUNT.div_ceil(64);
 /// Keys the order in which ephemeral ports are picked with `key`, random bytes drawn at
 /// boot, so no one off the path can guess the next port (RFC 6056).
 pub fn seed_ports(key: [u8; 32]) {
-    for (word, bytes) in PORT_KEY.iter().zip(key.chunks_exact(8)) {
-        let mut value = [0u8; 8];
-        value.copy_from_slice(bytes);
-        word.store(u64::from_ne_bytes(value), Ordering::Relaxed);
+    for (word, bytes) in PORT_KEY.iter().zip(key.as_chunks::<8>().0) {
+        word.store(u64::from_ne_bytes(*bytes), Ordering::Relaxed);
     }
 }
 
 fn ephemeral_start() -> usize {
     let mut key = [0u8; 32];
-    for (bytes, word) in key.chunks_exact_mut(8).zip(&PORT_KEY) {
-        bytes.copy_from_slice(&word.load(Ordering::Relaxed).to_ne_bytes());
+    for (bytes, word) in key.as_chunks_mut::<8>().0.iter_mut().zip(&PORT_KEY) {
+        *bytes = word.load(Ordering::Relaxed).to_ne_bytes();
     }
     let counter = NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u32;
     let block = crate::random::chacha20::block(&key, counter, &[0; 12]);

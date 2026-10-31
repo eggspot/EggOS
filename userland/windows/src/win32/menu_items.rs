@@ -79,7 +79,9 @@ impl ProgramInfo {
         }
         // SAFETY: every caller passes the program's readable `MENUITEMINFOW`, which starts with
         // its size.
-        let size = unsafe { (&raw const (*at).size).read_unaligned() } as usize;
+        let size_at = unsafe { &raw const (*at).size };
+        // SAFETY: as above.
+        let size = unsafe { size_at.read_unaligned() } as usize;
         if size < SMALLEST_INFO {
             return Err(error::INVALID_PARAMETER);
         }

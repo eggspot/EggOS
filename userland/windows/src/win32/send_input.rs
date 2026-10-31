@@ -301,7 +301,9 @@ unsafe extern "efiapi" fn get_cursor_info(out: *mut CursorInfo) -> Bool {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
     // SAFETY: the caller passes a readable `CURSORINFO`, which starts with its size.
-    let size = unsafe { (&raw const (*out).size).read_unaligned() };
+    let size_at = unsafe { &raw const (*out).size };
+    // SAFETY: as above.
+    let size = unsafe { size_at.read_unaligned() };
     if size as usize != core::mem::size_of::<CursorInfo>() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
@@ -334,7 +336,9 @@ unsafe extern "efiapi" fn get_last_input_info(out: *mut LastInputInfo) -> Bool {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
     // SAFETY: the caller passes a readable `LASTINPUTINFO`, which starts with its size.
-    let size = unsafe { (&raw const (*out).size).read_unaligned() };
+    let size_at = unsafe { &raw const (*out).size };
+    // SAFETY: as above.
+    let size = unsafe { size_at.read_unaligned() };
     if size as usize != core::mem::size_of::<LastInputInfo>() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
@@ -389,7 +393,9 @@ unsafe extern "efiapi" fn get_gui_thread_info(thread: u32, out: *mut GuiThreadIn
         return fail(error::INVALID_PARAMETER, FALSE);
     }
     // SAFETY: the caller passes a readable `GUITHREADINFO`, which starts with its size.
-    let size = unsafe { (&raw const (*out).size).read_unaligned() };
+    let size_at = unsafe { &raw const (*out).size };
+    // SAFETY: as above.
+    let size = unsafe { size_at.read_unaligned() };
     if size as usize != core::mem::size_of::<GuiThreadInfo>() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }

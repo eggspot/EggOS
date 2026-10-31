@@ -416,16 +416,16 @@ fn attach_work<P: Platform, W: Write>(
     match eggfs.folder(eggos_eggfs::WORK_FOLDER, now) {
         Ok(folder) => {
             if vfs::mount(WORK_FOLDER_PATH, Box::leak(Box::new(folder))).is_err() {
-                return writeln!(
+                writeln!(
                     console,
                     "vfs: the work disk was not mounted: no room for another mount"
-                )
-                .map(|()| Ok(WorkDisk::TakenButNotMounted));
+                )?;
+                return Ok(Ok(WorkDisk::TakenButNotMounted));
             }
         }
         Err(error) => {
-            return writeln!(console, "vfs: the work disk was not mounted: {error:?}")
-                .map(|()| Ok(WorkDisk::TakenButNotMounted));
+            writeln!(console, "vfs: the work disk was not mounted: {error:?}")?;
+            return Ok(Ok(WorkDisk::TakenButNotMounted));
         }
     }
     writeln!(
