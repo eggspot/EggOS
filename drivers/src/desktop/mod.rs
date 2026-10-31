@@ -1035,6 +1035,24 @@ impl Desktop {
         Ok(())
     }
 
+    /// Sets `client`'s window `id`'s flags named in `mask` to their bits in `values`: only
+    /// [`flags::CHANGEABLE`] ones, [`WindowError::Invalid`] for any other (D193).
+    pub fn change_flags(
+        &mut self,
+        client: u16,
+        id: u32,
+        mask: u32,
+        values: u32,
+    ) -> Result<(), WindowError> {
+        let slot = self.owned(client, id)?;
+        if mask & !flags::CHANGEABLE != 0 || values & !mask != 0 {
+            return Err(WindowError::Invalid);
+        }
+        let window = self.window_mut(slot);
+        window.flags = (window.flags & !mask) | values;
+        Ok(())
+    }
+
     /// Minimises, maximises or restores `client`'s window `id`, as its controls and chip do.
     /// Only a normal window that is not fixed-size maximises; dialogs do not minimise.
     pub fn set_state(

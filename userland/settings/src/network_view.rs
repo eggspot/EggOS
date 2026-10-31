@@ -259,7 +259,7 @@ impl NetworkView {
             at(PAIR_AT.0, PAIR_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1),
             Kind::button("Pair", true),
         );
-        for id in [pair, switch, id_field, name_field, cancel, primary] {
+        for id in [pair, switch, id_field, name_field, cancel, primary, code] {
             tree.set_person_only(id, true);
         }
         tree.set_shown(panel, false);

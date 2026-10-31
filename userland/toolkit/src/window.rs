@@ -25,6 +25,7 @@ const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
 const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
+const CHANGE_FLAGS: usize = 0x400c_7725;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const CAPS_LOCK_FLAG: u32 = 1;
 const KEYBOARD_FLAG: u32 = 2;
@@ -38,6 +39,9 @@ pub const FIXED_SIZE: u32 = 1;
 /// chosen for an agent): only the person's own pointer and keys reach it (`CREATE`'s
 /// `PERSON_INPUT_ONLY`, D193's grant prompt).
 pub const PERSON_INPUT_ONLY: u32 = 4;
+/// The window flag that keeps its pixels for the person's eyes only: `wm capture` of it is
+/// refused while it is on (`PERSON_VIEW_ONLY`, D193's pairing code).
+pub const PERSON_VIEW_ONLY: u32 = 8;
 
 const TITLE_CAPACITY: usize = 64;
 const AT_FDCWD: usize = -100isize as usize;
@@ -349,6 +353,15 @@ impl Window {
         put(&mut set_title, 4, title.len() as u32);
         set_title[8..8 + title.len()].copy_from_slice(title);
         self.server.ioctl(SET_TITLE, &mut set_title)
+    }
+
+    /// Turns [`PERSON_VIEW_ONLY`] on or off while the window is open (`CHANGE_FLAGS`).
+    pub fn set_person_view_only(&self, on: bool) -> Result<(), Errno> {
+        let mut change = [0u8; 12];
+        put(&mut change, 0, self.id);
+        put(&mut change, 4, PERSON_VIEW_ONLY);
+        put(&mut change, 8, if on { PERSON_VIEW_ONLY } else { 0 });
+        self.server.ioctl(CHANGE_FLAGS, &mut change)
     }
 
     /// The connection the window was made on.

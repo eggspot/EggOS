@@ -16230,6 +16230,19 @@ the license, by an explicit instruction recorded here.
     name checked as the CLI checks them, then the code at 2x, the address, the fingerprint and
     a countdown read again each second until the server takes the code), to Claude Fable's
     design; the switch, `Pair an agent...`, the fields and the panel's buttons are person-only.
+    The code itself is for the person's eyes only (review round 1): an agent with only `view`
+    could otherwise read it with `wm_show` or `wm_capture` and send it to `/pair` first, taking
+    the identity of the agent being paired, whose grants re-pairing keeps per Fable's design.
+    So the code label is person-only, and a person-only widget's value, and a person-only
+    label's text, are left out of element trees (control names stay, so the panel still reads);
+    and the window server gains the window flag `PERSON_VIEW_ONLY` (8): `CAPTURE_WINDOW` of a
+    window flagged so fails with `EACCES` (`wm capture` names the refusal, as it does the
+    kernel's terminal), whoever asks, the person's own tools included. A live window changes it
+    with the new request `CHANGE_FLAGS` (37: window, mask, values; only `PERSON_VIEW_ONLY` may
+    change), the toolkit's `Window::set_person_view_only`; the event loop asks the program
+    (`Application::person_view_only`) each turn, turns the flag on before drawing and off only
+    after the drawing that removed the content, and Settings answers true while its Agents pane
+    shows a code. Nothing visible changes.
     `agent pair` and `agent network` and the pane share one code path,
     `eggos_mcp::pairing::{begin_pairing, turn_network, network_state, certificate_fingerprint,
     pending}` over `PairingFiles`; the Settings tree's `CAPACITY` is 140 (the installer's

@@ -81,6 +81,7 @@ pub mod size {
     pub const LIST_DESKTOPS: usize = 16;
     pub const DESKTOP_ACTION: usize = 16;
     pub const SET_KEY_ACCESSIBILITY: usize = 12;
+    pub const CHANGE_FLAGS: usize = 12;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -126,6 +127,7 @@ pub mod request {
     pub const LIST_DESKTOPS: u32 = encode(READ, 34, size::LIST_DESKTOPS);
     pub const DESKTOP_ACTION: u32 = encode(READ | WRITE, 35, size::DESKTOP_ACTION);
     pub const SET_KEY_ACCESSIBILITY: u32 = encode(WRITE, 36, size::SET_KEY_ACCESSIBILITY);
+    pub const CHANGE_FLAGS: u32 = encode(WRITE, 37, size::CHANGE_FLAGS);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -203,8 +205,13 @@ pub mod flags {
     /// The window takes input from the person only: `SendInput` and `ChooseMenu` aimed at it
     /// are refused with `NotAllowed` (the grant prompt, D193).
     pub const PERSON_INPUT_ONLY: u32 = 4;
+    /// The window's pixels are for the person's eyes only: `CaptureWindow` of it is refused
+    /// with `PersonViewOnly` (a pairing code on screen, D193).
+    pub const PERSON_VIEW_ONLY: u32 = 8;
     /// Every flag there is.
-    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY;
+    pub const KNOWN: u32 = FIXED_SIZE | TAKES_CTRL_KEYS | PERSON_INPUT_ONLY | PERSON_VIEW_ONLY;
+    /// The flags `ChangeFlags` may turn on or off on a live window.
+    pub const CHANGEABLE: u32 = PERSON_VIEW_ONLY;
 }
 
 /// The kinds of event records.
@@ -339,6 +346,8 @@ pub enum WindowError {
     TableFull,
     /// Something this version does not do yet (`EOPNOTSUPP`).
     Unsupported,
+    /// A capture of a window whose pixels are for the person's eyes only (`EACCES`, D193).
+    PersonViewOnly,
     /// No window at that place in the list, or no window of that id (`ENOENT`).
     NoSuchWindow,
     /// A person is using the keyboard or pointer, so injected input waits (`EBUSY`).
@@ -514,6 +523,13 @@ pub enum Request {
         length: u64,
         offset: u64,
     },
+    /// Sets the caller's window `window`'s flags named in `mask` (only [`flags::CHANGEABLE`]
+    /// ones) to their bits in `values` (D193).
+    ChangeFlags {
+        window: u32,
+        mask: u32,
+        values: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -578,6 +594,7 @@ impl Request {
             request::LIST_DESKTOPS => size::LIST_DESKTOPS,
             request::DESKTOP_ACTION => size::DESKTOP_ACTION,
             request::SET_KEY_ACCESSIBILITY => size::SET_KEY_ACCESSIBILITY,
+            request::CHANGE_FLAGS => size::CHANGE_FLAGS,
             _ => return None,
         })
     }
@@ -752,6 +769,11 @@ impl Request {
                 sticky_keys: at(0),
                 slow_keys: at(4),
                 slow_keys_ms: at(8),
+            },
+            request::CHANGE_FLAGS => Self::ChangeFlags {
+                window: at(0),
+                mask: at(4),
+                values: at(8),
             },
             request::DESKTOP_ACTION => Self::DesktopAction {
                 action: at(0),

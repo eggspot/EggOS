@@ -280,6 +280,9 @@ impl Desktop {
         if window.client == KERNEL_CLIENT {
             return Err(WindowError::Unsupported);
         }
+        if window.is_person_view_only() {
+            return Err(WindowError::PersonViewOnly);
+        }
         Ok(ContentLayout {
             width: window.content_width,
             height: window.content_height,

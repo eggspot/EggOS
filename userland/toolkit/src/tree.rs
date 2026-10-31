@@ -361,7 +361,8 @@ impl<const N: usize> WidgetTree<N> {
     }
 
     /// Marks widget `id` as one only a person operates (D193): [`Self::act`] refuses every
-    /// agent action on it and `wm show` lists it `person-only`; pointer and keys still work.
+    /// agent action on it and `wm show` lists it `person-only`, without its value or, for a
+    /// label, its text; pointer and keys still work.
     pub fn set_person_only(&mut self, id: WidgetId, person_only: bool) {
         if let Some(node) = self.node_mut(id) {
             node.person_only = person_only;

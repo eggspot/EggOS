@@ -973,3 +973,62 @@ fn a_window_that_takes_only_the_person_s_input_refuses_injected_input() {
         Ok(Injected::Queued)
     );
 }
+
+#[test]
+fn a_window_for_the_person_s_eyes_only_refuses_capture_while_the_flag_is_on() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let created = desktop.create(CLIENT, 0, 0, 480, 200, 0).unwrap();
+    let window = u32::from(created.window);
+    desktop
+        .commit(CLIENT, window, &[], &mut Damage::new(), &mut DiscardEvents)
+        .unwrap();
+    assert!(desktop.content_layout(window).is_ok());
+    let view_only = protocol::flags::PERSON_VIEW_ONLY;
+    assert_eq!(
+        desktop.change_flags(CLIENT, window, view_only, view_only),
+        Ok(())
+    );
+    assert_eq!(
+        desktop.content_layout(window),
+        Err(WindowError::PersonViewOnly)
+    );
+    assert_eq!(desktop.change_flags(CLIENT, window, view_only, 0), Ok(()));
+    assert!(desktop.content_layout(window).is_ok());
+    let fixed = protocol::flags::FIXED_SIZE;
+    assert_eq!(
+        desktop.change_flags(CLIENT, window, fixed, fixed),
+        Err(WindowError::Invalid)
+    );
+    assert_eq!(
+        desktop.change_flags(CLIENT, window, 0, view_only),
+        Err(WindowError::Invalid)
+    );
+    assert!(
+        desktop
+            .change_flags(CLIENT + 1, window, view_only, view_only)
+            .is_err()
+    );
+    let created = desktop.create(CLIENT, 0, 0, 480, 200, view_only).unwrap();
+    assert_eq!(
+        desktop.content_layout(u32::from(created.window)),
+        Err(WindowError::PersonViewOnly)
+    );
+    assert_eq!(request::CHANGE_FLAGS, 0x400c_7725);
+    let mut change = [0u8; size::CHANGE_FLAGS];
+    for (place, word) in change
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([window, view_only, view_only])
+    {
+        *place = word.to_ne_bytes();
+    }
+    assert_eq!(
+        Request::parse(request::CHANGE_FLAGS, &change),
+        Some(Request::ChangeFlags {
+            window,
+            mask: view_only,
+            values: view_only
+        })
+    );
+}

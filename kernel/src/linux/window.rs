@@ -48,6 +48,7 @@ fn errno(error: ServerError) -> Errno {
         ServerError::Refused(WindowError::NotAllowed) => Errno::EPERM,
         ServerError::Refused(WindowError::TableFull) => Errno::ENOSPC,
         ServerError::Refused(WindowError::Unsupported) => Errno::EOPNOTSUPP,
+        ServerError::Refused(WindowError::PersonViewOnly) => Errno::EACCES,
         ServerError::Refused(WindowError::NoSuchWindow) => Errno::ENOENT,
         ServerError::Refused(WindowError::Busy) => Errno::EBUSY,
         ServerError::Refused(WindowError::QueueFull) => Errno::EAGAIN,
@@ -202,6 +203,13 @@ pub fn ioctl<P: Platform>(
         })?,
         Request::SetState { window, state } => on_windows::<P, _>(|desktop, _, damage, events| {
             desktop.set_state(client, window, state, damage, events)
+        })?,
+        Request::ChangeFlags {
+            window,
+            mask,
+            values,
+        } => on_windows::<P, _>(|desktop, _, _, _| {
+            desktop.change_flags(client, window, mask, values)
         })?,
         Request::SetPointer { window, shape } => on_windows::<P, _>(|desktop, _, damage, _| {
             desktop.set_pointer(client, window, shape, damage)

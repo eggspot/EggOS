@@ -300,6 +300,14 @@ fn capture_refused<S: System>(output: &mut Output<S>, window_text: &[u8], errno:
             ]);
             FAILURE
         }
+        Errno::EACCES => {
+            output.error(&[
+                window_text,
+                b": shows something for the person's eyes only now, such as a pairing code; \
+                capture it again once that is gone",
+            ]);
+            FAILURE
+        }
         errno => refused(output, window_text, errno),
     }
 }
@@ -480,6 +488,16 @@ mod tests {
         let (status, fake) = run(&[c"capture", c"7"], machine(10, 10));
         assert_eq!(status, FAILURE);
         assert_eq!(fake.errors(), "wm: 7: no such window\n  try: wm list\n");
+        let mut pairing = machine(10, 10);
+        pairing.capture_fails_at = Some((0, Errno::EACCES));
+        let (status, fake) = run(&[c"capture", c"129"], pairing);
+        assert_eq!(status, FAILURE);
+        assert_eq!(
+            fake.errors(),
+            "wm: 129: shows something for the person's eyes only now, such as a pairing code; \
+             capture it again once that is gone\n"
+        );
+        assert!(!fake.nodes.contains_key(&b"window-129.png"[..]));
     }
 
     #[test]

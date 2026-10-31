@@ -742,6 +742,30 @@ fn a_person_only_widget_refuses_every_agent_action_and_is_listed_so() {
 }
 
 #[test]
+fn a_person_only_label_s_text_and_field_s_value_stay_out_of_the_tree() {
+    let mut form = form();
+    form.tree.set_text(form.field, "ABCD-EFGH");
+    let find = |tree: &WidgetTree<24>, id: WidgetId| {
+        described(tree)
+            .into_iter()
+            .find(|element| element.0 == element_of(id))
+            .unwrap()
+    };
+    assert_eq!(find(&form.tree, form.value).4, "Right");
+    assert_eq!(find(&form.tree, form.field).5, "ABCD-EFGH");
+    form.tree.set_person_only(form.value, true);
+    form.tree.set_person_only(form.field, true);
+    form.tree.set_person_only(form.ok, true);
+    let label = find(&form.tree, form.value);
+    assert_eq!((label.4.as_str(), label.5.as_str()), ("", ""));
+    assert_ne!(label.3 & flags::PERSON_ONLY, 0);
+    let field = find(&form.tree, form.field);
+    assert_eq!((field.4.as_str(), field.5.as_str()), ("Search", ""));
+    assert_eq!(find(&form.tree, form.ok).4, "OK");
+    assert_eq!(form.tree.text_of(form.value), Some("Right"));
+}
+
+#[test]
 fn acting_on_an_element_does_what_a_person_s_input_does() {
     let mut form = form();
     let cards = element_of(form.cards);

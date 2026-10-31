@@ -867,6 +867,10 @@ impl Application<CAPACITY> for Settings {
         }
     }
 
+    fn person_view_only(&self) -> bool {
+        self.window.pairing_counting_down()
+    }
+
     fn deadline(&self, now_ms: u32) -> Option<u32> {
         if self.unsaved_profile.is_some() || self.disk_work.is_some() {
             return Some(now_ms);

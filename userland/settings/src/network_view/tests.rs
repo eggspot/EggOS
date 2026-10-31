@@ -227,6 +227,16 @@ fn pairing_asks_for_a_valid_id_then_shows_the_code_until_it_is_used() {
     assert_eq!(lines[3], "https://<this machine>:8443/pair");
     assert_eq!(lines[4], "Ends in 5:00.");
     assert!(window.pairing_counting_down());
+    let mut bytes = alloc::vec![0u8; eggos_toolkit::elements::MAX_TREE_BYTES];
+    let mut tree = eggos_toolkit::elements::TreeWriter::new(&mut bytes);
+    window.tree().describe(&mut tree);
+    let described = tree.bytes();
+    assert!(
+        described
+            .windows(4)
+            .any(|bytes| bytes == b"/mcp" || bytes == b"pair")
+    );
+    assert!(!described.windows(9).any(|bytes| bytes == b"BCDE-FGHJ"));
     let mut later = network(NetworkState::On(8443), Some(waiting("tv", NOW)));
     later.now = NOW + 1;
     window.show_network(later);

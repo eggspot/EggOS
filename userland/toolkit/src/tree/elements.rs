@@ -37,6 +37,13 @@ fn part_element(id: WidgetId, part: usize) -> u32 {
     element_of(id) + part as u32 + 1
 }
 
+fn for_agents(person_only: bool, text: &[u8]) -> &[u8] {
+    match person_only {
+        true => b"",
+        false => text,
+    }
+}
+
 impl<const N: usize> WidgetTree<N> {
     fn widget_of(&self, element: u32) -> Option<(WidgetId, Option<usize>)> {
         let index = (element / PER_WIDGET).checked_sub(1)? as usize;
@@ -85,7 +92,7 @@ impl<const N: usize> WidgetTree<N> {
                 Kind::Panel { .. } | Kind::Column { .. } | Kind::ScrollView { .. } => here,
                 Kind::Label { text, .. } => Element {
                     role: Role::Label,
-                    ..here.named(text.as_str().as_bytes())
+                    ..here.named(for_agents(node.person_only, text.as_str().as_bytes()))
                 },
                 Kind::Button { text, primary } => {
                     let default = *primary || self.default_button == Some(id);
@@ -112,11 +119,14 @@ impl<const N: usize> WidgetTree<N> {
                     role: Role::TextField,
                     ..here
                         .named(field.placeholder.as_bytes())
-                        .valued(field.text.as_str().as_bytes())
+                        .valued(for_agents(node.person_only, field.text.as_str().as_bytes()))
                 },
                 Kind::Progress { permille } => Element {
                     role: Role::Progress,
-                    ..here.valued(decimal(u32::from(*permille), &mut digits))
+                    ..here.valued(for_agents(
+                        node.person_only,
+                        decimal(u32::from(*permille), &mut digits),
+                    ))
                 },
                 Kind::Slider(slider) => {
                     let _ = core::fmt::Write::write_fmt(
@@ -130,17 +140,18 @@ impl<const N: usize> WidgetTree<N> {
                         role: Role::Slider,
                         ..here
                             .named(slider.name.as_bytes())
-                            .valued(range.as_str().as_bytes())
+                            .valued(for_agents(node.person_only, range.as_str().as_bytes()))
                     }
                 }
                 Kind::Dropdown(dropdown) => Element {
                     role: Role::ComboBox,
-                    ..here.named(dropdown.name.as_bytes()).valued(
+                    ..here.named(dropdown.name.as_bytes()).valued(for_agents(
+                        node.person_only,
                         dropdown
                             .options
                             .get(dropdown.selected)
                             .map_or(&b""[..], |option| option.as_bytes()),
-                    )
+                    ))
                 },
                 Kind::Custom { .. } => Element {
                     role: Role::Graphic,

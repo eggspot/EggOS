@@ -36,6 +36,12 @@ pub trait Application<const N: usize> {
     /// Called when the window gets the keyboard focus, after its widgets saw it: the moment to
     /// pick up what changed outside the program meanwhile.
     fn focused(&mut self, _now_ms: u32) {}
+
+    /// Whether the window shows something for the person's eyes only now, such as a pairing
+    /// code: while it does, no agent may capture its pixels (`PERSON_VIEW_ONLY`, D193).
+    fn person_view_only(&self) -> bool {
+        false
+    }
 }
 
 fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(), Errno> {
@@ -190,6 +196,13 @@ pub trait View {
     fn descriptor_ready(&mut self, _time_ms: u32) -> bool {
         true
     }
+
+    /// Whether the content shows something for the person's eyes only now: the loop keeps
+    /// the window's pixels from agents from before it is drawn until after it is gone
+    /// (`PERSON_VIEW_ONLY`, D193).
+    fn person_view_only(&mut self) -> bool {
+        false
+    }
 }
 
 struct Tree<'a, A, const N: usize>(&'a mut A, Option<WindowServer>);
@@ -274,6 +287,10 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
         soonest(tree, self.0.deadline(now_ms), now_ms)
     }
 
+    fn person_view_only(&mut self) -> bool {
+        self.0.person_view_only()
+    }
+
     fn tick(&mut self, now_ms: u32) {
         self.0.tree().tick(now_ms);
         if self
@@ -303,11 +320,20 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     view.resize((width / scale) as i32, (height / scale) as i32);
     let mut everything = true;
     let mut records = [0u8; RECORD_SIZE * RECORDS_READ];
+    let mut view_only = false;
     loop {
         if let Some(title) = view.take_title() {
             window.set_title(title)?;
         }
+        let wanted = view.person_view_only();
+        if wanted && !view_only {
+            window.set_person_view_only(true)?;
+            view_only = true;
+        }
         draw(window, view, everything)?;
+        if view_only && !wanted && window.set_person_view_only(false).is_ok() {
+            view_only = false;
+        }
         everything = false;
         let shape = view.pointer_shape();
         window.set_pointer(shape)?;

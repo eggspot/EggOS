@@ -213,6 +213,10 @@ impl Window {
         self.flags & flags::PERSON_INPUT_ONLY != 0
     }
 
+    pub fn is_person_view_only(&self) -> bool {
+        self.flags & flags::PERSON_VIEW_ONLY != 0
+    }
+
     pub fn is_resizable(&self) -> bool {
         self.role == Role::Normal && !self.maximised && !self.is_fixed_size()
     }
