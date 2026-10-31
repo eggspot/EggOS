@@ -469,7 +469,10 @@ fn finish(
     summary: Option<CheckReport>,
     (blocks, free_blocks): (u64, u64),
 ) -> DiskCheck {
-    if mode == CheckMode::Repair {
+    let stopped = findings
+        .iter()
+        .any(|finding| finding.problem == Problem::RepairFailed);
+    if mode == CheckMode::Repair && !stopped {
         for finding in &mut findings {
             if finding.outcome == Outcome::Repairable {
                 finding.outcome = Outcome::Repaired;
@@ -1193,5 +1196,31 @@ impl<D: Disk> Volume<D> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repair_that_stopped_on_an_error_reports_nothing_as_repaired() {
+        let found = Finding {
+            problem: Problem::OrphanLeft,
+            inode: 7,
+            block: 0,
+            outcome: Outcome::Repairable,
+        };
+        let stopped = finish(
+            CheckMode::Repair,
+            alloc::vec![found, unrepairable(Problem::RepairFailed, 0)],
+            None,
+            (0, 0),
+        );
+        assert_eq!(stopped.findings[0].outcome, Outcome::Repairable);
+        let finished = finish(CheckMode::Repair, alloc::vec![found], None, (0, 0));
+        assert_eq!(finished.findings[0].outcome, Outcome::Repaired);
+        let checked = finish(CheckMode::ReadOnly, alloc::vec![found], None, (0, 0));
+        assert_eq!(checked.findings[0].outcome, Outcome::Repairable);
     }
 }
