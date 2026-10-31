@@ -61,6 +61,36 @@ pub fn sleep_until<P: Platform>(
     }
 }
 
+/// The futex key `thread` of `process` sleeps on, which [`sleep_once_until`] also wakes on.
+pub fn sleep_key_of<P: Platform>(process: &Process<P>, thread: &LinuxThread) -> futex::Key {
+    sleep_key(process, thread.id)
+}
+
+/// As [`sleep_until`], but returns too when the thread's sleep word ([`sleep_key_of`]) is
+/// woken, so a sleep until a time on the wall clock can be measured again after the clock is
+/// set (D194).
+pub fn sleep_once_until<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    deadline: u64,
+) -> ControlFlow<()> {
+    let key = sleep_key(process, thread.id);
+    if !signals::take_in_sent(process, thread) && !process.has_ended() {
+        let _ = futex::wait_interruptibly::<P>(
+            key,
+            u32::MAX,
+            deadline,
+            &thread.wait_slot,
+            unless_signalled_or_ended(process, thread),
+        );
+        signals::take_in_sent_now(process, thread);
+    }
+    match process.has_ended() {
+        true => ControlFlow::Break(()),
+        false => ControlFlow::Continue(()),
+    }
+}
+
 /// A `futex` wait's last check for `thread`, the calling thread of `process`: `EINTR` if a
 /// signal was sent to it since it last took them in, or its process has ended, so it does
 /// not start waiting ([`futex::wait_interruptibly`]'s `still_expected`).

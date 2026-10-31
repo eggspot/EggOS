@@ -83,6 +83,7 @@ pub mod properties;
 pub mod pseudo_terminal;
 pub mod random;
 pub mod reboot;
+pub mod rtc_device;
 pub mod signal_frame;
 pub mod signalfd;
 pub mod signals;
@@ -1803,6 +1804,9 @@ fn ioctl<P: Platform>(
         }
         FileKind::Regular(node) if crate::vfs::devfs::is_android_log(*node) => {
             android_log::ioctl(process, request, argument)
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::is_rtc(*node) => {
+            rtc_device::ioctl(process, request, argument)
         }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);

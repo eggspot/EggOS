@@ -17,7 +17,9 @@
 //! Each device has Linux's number and mode. The disks no file system holds are `vda` to `vdd`
 //! (D192), by the place their driver installed them at: regular files of root's, as large as
 //! the disk, read and written whole ([`crate::block::read_at`]); a mounted disk's file is
-//! listed, but reading or writing it fails.
+//! listed, but reading or writing it fails. `rtc0` is the real-time clock's device, a regular
+//! file whose `ioctl`s read and set the clock and its alarm, on a machine with one
+//! ([`crate::linux::rtc_device`], D194).
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, Refused, StorageError, Usage,
@@ -158,7 +160,9 @@ const DEVICE: (u32, u32) = (0, 5);
 
 const DISKS: [u64; MAX_DISKS] = [26, 27, 28, 29];
 
-const FILES: [(&[u8], u64); 23] = [
+const RTC: u64 = 30;
+
+const FILES: [(&[u8], u64); 24] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
@@ -169,6 +173,7 @@ const FILES: [(&[u8], u64); 23] = [
     (b"ptmx", PTMX),
     (b"pts", PTS),
     (b"random", RANDOM),
+    (b"rtc0", RTC),
     (b"shm", SHM),
     (eggos_android_log::SOCKETS_NAME, SOCKETS),
     (b"stderr", STDERR),
@@ -202,6 +207,11 @@ pub fn is_log_writer(node: Node) -> bool {
     node.file_system().device() == DEVICE && node.id() == LOG_WRITER
 }
 
+/// Whether `node` is `/dev/rtc0`, the real-time clock device (D194).
+pub fn is_rtc(node: Node) -> bool {
+    node.file_system().device() == DEVICE && node.id() == RTC
+}
+
 /// Whether `node` is `/dev/android_log`, the Android log.
 pub fn is_android_log(node: Node) -> bool {
     node.file_system().device() == DEVICE && node.id() == ANDROID_LOG
@@ -210,6 +220,7 @@ pub fn is_android_log(node: Node) -> bool {
 fn is_listed(node: u64) -> bool {
     match disk_of(node) {
         Some(index) => block::facts(index).present,
+        None if node == RTC => crate::wall_clock::has_clock(),
         None => node != AGENT || crate::agent_channel::is_present(),
     }
 }
@@ -241,7 +252,7 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 fn kind_of(node: u64) -> NodeKind {
     match node {
         ROOT | SHM | PTS | SOCKETS => NodeKind::Directory,
-        PROPERTIES | ANDROID_LOG => NodeKind::Regular,
+        PROPERTIES | ANDROID_LOG | RTC => NodeKind::Regular,
         _ if disk_of(node).is_some() => NodeKind::Regular,
         LOG_WRITER => NodeKind::Socket,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
@@ -279,7 +290,7 @@ impl FileSystem for DeviceFiles {
                 SHM => 0o1777,
                 PROPERTIES | ANDROID_LOG => 0o444,
                 LOG_WRITER => 0o222,
-                AGENT | CONSOLE => 0o600,
+                AGENT | CONSOLE | RTC => 0o600,
                 _ if disk_of(node).is_some() => 0o600,
                 _ if link_of(node).is_some() => 0o777,
                 _ if pseudo_terminal_of(node).is_some() => 0o620,
