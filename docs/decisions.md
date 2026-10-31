@@ -16360,3 +16360,40 @@ the license, by an explicit instruction recorded here.
 - Not yet: system time apart from user time, children's times in `getrusage` and `times`,
   `pthread_getcpuclockid`'s per-thread clock ids, another thread's or process's affinity, the
   CPU column in `ps` and the task manager, the invariant-TSC check, per-CPU run-queue locks.
+
+## D199 The toolkit's next widgets, first slice: the slider, the dropdown, and selection and the shared clipboard in text fields (batch part 46; docs/ux/toolkit-v0.3.md section 10; extends D132, D197) — Decided by the build loop (the design is Claude Fable's, docs/ux/toolkit-v0.4.md)
+
+- `Kind::Slider` (`Kind::slider(name, min, max, step, value, unit)`): a 4 px track, a 16 px
+  thumb and the value drawn at the right; a press on the track jumps there and drags, a press
+  on the thumb drags keeping the grab; arrows, Home, End, PageUp and PageDown step; the wheel
+  does nothing. Every change, a drag's steps included, is `Response::Adjusted(id, value)`, so
+  a setting applies while the thumb moves; `WidgetTree::value` and `set_value` read and set
+  it. Agents see the role `slider`, valued `<value> <min>..<max> by <step>`, and set it with
+  `set-text`.
+- `Kind::Dropdown` (`Kind::dropdown(name, options, selected)`): a 28 px button with the chosen
+  option and a chevron; its popup of up to 8 rows opens below it (above, or cut and scrolled,
+  when there is no room), is drawn over every other widget, and chooses by click, by press,
+  slide and release, or by keys (arrows, Home, End, PageUp, PageDown, a letter, Enter or
+  Space; Esc, Tab, a click outside or the window losing focus close it); closed and focused,
+  arrows and letters choose at once. A choice is `Response::Chosen`. Agents see the role
+  `combo-box`, valued with the chosen option, and choose with `set-text`.
+- Text fields keep a selection (`Field::anchor`): Shift with the moves, a drag, a double-click
+  (a word), a triple-click (all), Shift+click, Tab into the field (all); typing, Backspace and
+  Delete replace or remove it; it is drawn in `selection`. Ctrl or Super (in every profile)
+  with A selects all, with C answers `Response::Copied`, with X `Response::Cut`, with V
+  `Response::PasteWanted`; the tree keeps the copied text (`WidgetTree::copied`) and takes a
+  paste with `WidgetTree::paste`, and `application::run` answers all three through the
+  clipboard every app shares (D197), so an `Application` still sees only `Edited`.
+- Settings' pointer speed, repeat delay and repeat rate are sliders now in place of D195's
+  steppers (the rate steps by 1, so every value from 2 to 60 is reachable).
+- Choices made without research: the dropdown's options are not yet listed as children for
+  agents and its popup has no scroll bar (the wheel and the keys scroll it); the field's
+  selection is not exposed to agents; a slider's hover lights the thumb anywhere over the
+  control.
+- Check. Host tests: the slider's click, drag by whole steps, grab, keys, range snapping and
+  element; the dropdown's popup place, open, choose by click, keys open and closed; a field's
+  Shift selection, typing over it, Backspace, select all, copy, cut, paste with control
+  characters, a word's bounds; the Settings panes' sliders.
+- Not yet: tooltips, menus and context menus in the toolkit, tables with resizable columns,
+  multi-line text with wrapping, horizontal scrolling, drag and drop, the light theme (the
+  later slices of docs/ux/toolkit-v0.4.md section 9).
