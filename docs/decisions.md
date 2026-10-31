@@ -11534,8 +11534,9 @@ the license, by an explicit instruction recorded here.
 - **Front-ends (D22).** CLI: `ln [-s] [-f] [-n] [-T] [-v]` and `readlink [-f] [-n] [-v]
   [--json]` (GNU semantics; `readlink --json` gives `path` and `target` per record, the new
   error code `not_a_link`), and `chmod [-R] [-v] mode file...` (octal and GNU symbolic modes,
-  links named followed, links met by `-R` skipped), in the registry with examples run as tests
-  (62 commands). MCP: the tool `ln` (grant `write`, effect `change`, twin `/bin/ln -T [-s]`,
+  `=` keeping a directory's set-user-ID and set-group-ID bits unless its clause names `s`, as
+  GNU does (review round 2), links named followed, links met by `-R` skipped), in the registry
+  with examples run as tests (62 commands). MCP: the tool `ln` (grant `write`, effect `change`, twin `/bin/ln -T [-s]`,
   arguments `target`, `link` strictly under `/home/root` outside the Trash, `symbolic`
   default true; a hard link's target must be a writable path too, so a system file cannot be
   hard-linked into the home and changed with `tee`; never replaces). GUI: Files (Claude Fable's
@@ -11626,7 +11627,8 @@ the license, by an explicit instruction recorded here.
   removing the name a multiply named file records as its parent without walking the whole
   volume (EggFS) or every slot (tmpfs) for another holder; mounting a disk that cannot be
   written and carries orphans (freeing them takes a commit, so the mount fails today);
-  `openat2` refusing open flags Linux does not know (`EINVAL` outside `VALID_OPEN_FLAGS`).
+  `openat2` refusing open flags Linux does not know (`EINVAL` outside `VALID_OPEN_FLAGS`);
+  an octal mode of four digits or fewer keeping a directory's set-ID bits, as GNU does.
 
 ## D171 A hello-world crate builds and runs inside EggOS: file locks, `statfs` with `/proc/mounts`, `df` and Files' free space, RAM above 4 GiB on x86_64, `--memory` and `--room`, and CI's `hello-crate` job comparing the program with Linux's (the CI track's stage 2, milestone 2; extends D33, D101, D131, D135, D137, D160, D163, D166, D167, D168, D169, D170) — Decided by the build loop (the linker path decided by research; the Files free space designed by Claude Fable)
 - **Why.** The CI track's second milestone (D166) is `cargo build` and `cargo run` of a small

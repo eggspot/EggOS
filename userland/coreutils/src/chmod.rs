@@ -81,6 +81,8 @@ fn is_clause(clause: &[u8]) -> bool {
     true
 }
 
+const SET_ID_BITS: u32 = 0o6000;
+
 fn who_bits(letter: u8) -> u32 {
     match letter {
         b'u' => 0o4700,
@@ -123,6 +125,11 @@ fn applied_clause(clause: &[u8], mut mode: u32, directory: bool) -> u32 {
     let mut rest = &clause[start..];
     while let Some((&operation, after)) = rest.split_first() {
         let end = operation_end(after);
+        let names_set_id = after[..end].contains(&b's');
+        let kept_by_equals = match directory && !names_set_id {
+            true => SET_ID_BITS,
+            false => 0,
+        };
         let bits = match &after[..end] {
             [letter @ (b'u' | b'g' | b'o')] => copied_bits(*letter, mode),
             permissions => permissions.iter().fold(0, |bits, &letter| {
@@ -132,7 +139,7 @@ fn applied_clause(clause: &[u8], mut mode: u32, directory: bool) -> u32 {
         mode = match operation {
             b'+' => mode | bits,
             b'-' => mode & !bits,
-            _ => (mode & !cleared_by_equals) | bits,
+            _ => (mode & !(cleared_by_equals & !kept_by_equals)) | bits,
         };
         rest = &after[end..];
     }
@@ -403,6 +410,20 @@ mod tests {
             assert_eq!(applied(mode, before, false), after, "{mode} on {before:o}");
         }
         assert_eq!(applied("a+X", 0o644, true), 0o755);
+        for (mode, before, after) in [
+            ("=", 0o2775, 0o2000),
+            ("g=rx", 0o2775, 0o2755),
+            ("=rwx", 0o6777, 0o6755),
+            ("u=s", 0o4755, 0o4055),
+            ("g=", 0o2775, 0o2705),
+            ("g-s", 0o2775, 0o775),
+        ] {
+            assert_eq!(
+                applied(mode, before, true),
+                after,
+                "{mode} on directory {before:o}"
+            );
+        }
         for bad in [
             "", "8", "75555", "u", "x", "u+q", "u+ug", ",u+x", "u+x,", "a+w=k",
         ] {
