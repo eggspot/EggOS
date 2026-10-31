@@ -14,6 +14,7 @@ pub mod command;
 pub mod disk;
 pub mod facts;
 pub mod grant_prompt;
+pub mod input_panes;
 pub mod keys;
 pub mod network_view;
 pub mod settings_window;

@@ -19,8 +19,10 @@ pub struct Facts {
     pub uptime_s: u64,
     /// The screen's size in pixels.
     pub resolution: (u32, u32),
-    /// The display's scale.
+    /// The display's scale as saved for the next boot (the scale in force when none is saved).
     pub scale: u32,
+    /// The scale the display shows at now (D195).
+    pub scale_in_force: u32,
     /// The desktop's layout profile: its index in the settings file's `PROFILES`.
     pub profile: usize,
     /// Whether `/home` is on a disk, so a choice survives a power-off.
@@ -54,6 +56,7 @@ impl Facts {
             uptime_s: 3725,
             resolution: (1280, 800),
             scale: 1,
+            scale_in_force: 1,
             profile: 1,
             on_disk: true,
             now_s: 1_793_282_709,

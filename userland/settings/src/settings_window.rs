@@ -9,6 +9,8 @@ use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::facts::Facts;
+use crate::input_panes::{self, DisplayPane, InputPanes};
+use crate::keys::InputChange;
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use crate::zone_picker::{self, ZonePicker};
@@ -35,7 +37,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 149;
+pub const CAPACITY: usize = 164;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -46,7 +48,6 @@ const HEADING_TOP: i32 = 16;
 const FIRST_ROW: i32 = 64;
 const SETTING_ROW: i32 = 40;
 const TEXT_IN_ROW: i32 = 12;
-const CONTROL_IN_ROW: i32 = 6;
 const APPEARANCE_ROWS: i32 = 192;
 const NO_DISK_LINE: i32 = 316;
 const PANE_HEIGHT: i32 = 348;
@@ -133,8 +134,6 @@ const PANE_WORDS: [&[&str]; 9] = [
         "Linux",
         "Primary modifier",
         "Window controls",
-        "Scale",
-        "HiDPI",
     ],
     &[
         "Resolution",
@@ -143,6 +142,13 @@ const PANE_WORDS: [&[&str]; 9] = [
         "Pointer",
         "screen",
         "monitor",
+        "Displays",
+        "2x",
+        "Retina",
+        "DPI",
+        "zoom",
+        "size of text",
+        "restart",
     ],
     &[
         "Layout",
@@ -159,8 +165,31 @@ const PANE_WORDS: [&[&str]; 9] = [
         "international",
         "Key repeat",
         "shortcuts",
+        "Repeat delay",
+        "Repeat rate",
+        "delay until repeat",
+        "typing",
+        "held key",
     ],
-    &["Primary button", "Wheel", "trackpad", "pointer"],
+    &[
+        "Primary button",
+        "Wheel",
+        "trackpad",
+        "pointer",
+        "Buttons",
+        "Right-handed",
+        "Left-handed",
+        "swap",
+        "Scrolling",
+        "natural scrolling",
+        "scroll direction",
+        "Pointer speed",
+        "sensitivity",
+        "tracking speed",
+        "acceleration",
+        "cursor",
+        "touchpad",
+    ],
     &[
         "disks",
         "drives",
@@ -238,8 +267,6 @@ const PANE_WORDS: [&[&str]; 9] = [
 /// The profile cards' labels, in the settings file's `PROFILES` order.
 pub const PROFILE_LABELS: [&str; 3] = ["Windows", "macOS", "Linux"];
 
-const SCALES: [&str; 2] = ["1x", "2x"];
-
 /// What the program must do for the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
@@ -255,6 +282,12 @@ pub enum Request {
     /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
     /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
     SetTimeZone(usize),
+    /// Save this scale, 1 or 2, as `display.scale` for the next boot, then say how it went
+    /// ([`SettingsWindow::display_scale_saved`]) (D195).
+    SetDisplayScale(u32),
+    /// Save this mouse or key preference, then apply it, then say how both went
+    /// ([`SettingsWindow::input_changed`]) (D195).
+    ChangeInput(InputChange),
     /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
     ReadDisks,
     /// Check this disk without writing, read the disks again, then show both
@@ -313,7 +346,6 @@ struct Widgets {
     cards: WidgetId,
     modifier: WidgetId,
     controls: WidgetId,
-    resolution: WidgetId,
     uptime: WidgetId,
     now: WidgetId,
     set_field: WidgetId,
@@ -334,6 +366,8 @@ pub struct SettingsWindow {
     storage: StoragePane,
     agents: AgentsPane,
     zones: ZonePicker,
+    display: DisplayPane,
+    inputs: InputPanes,
     facts: Facts,
     pane: usize,
 }
@@ -551,40 +585,10 @@ impl SettingsWindow {
             colour::TEXT,
         );
         let controls = build.value(appearance, row_y(1) + TEXT_IN_ROW, CONTROL_SIDES[profile]);
-        build.label(
-            appearance,
-            PADDING,
-            row_y(2) + TEXT_IN_ROW,
-            "Scale",
-            colour::TEXT,
-        );
-        let scale_radios = Kind::radios(&SCALES, 0, true);
-        let radios_width = scale_radios.content_size().0;
-        let radios = build.add(
-            Some(appearance),
-            Place::right(PADDING, row_y(2) + CONTROL_IN_ROW),
-            scale_radios,
-        );
-        build.add(
-            Some(appearance),
-            Place::right(PADDING + radios_width + PADDING, row_y(2) + TEXT_IN_ROW),
-            Kind::label("2x comes in a later version", colour::TEXT_DIM),
-        );
         let no_disk = build.label(appearance, PADDING, NO_DISK_LINE, NO_DISK, colour::TEXT_DIM);
 
-        let display = panes[DISPLAY];
-        build.heading(display, PANES[DISPLAY]);
-        let mut resolution_text = Text::<64>::new();
-        let _ = write!(
-            resolution_text,
-            "{} \u{d7} {}",
-            facts.resolution.0, facts.resolution.1
-        );
-        let resolution = build.row(display, 0, "Resolution", resolution_text.as_str());
-        let mut scale_text = Text::<64>::new();
-        let _ = write!(scale_text, "{}x", facts.scale);
-        build.row(display, 1, "Scale", scale_text.as_str());
-        build.row(display, 2, "Pointer", "Software");
+        build.heading(panes[DISPLAY], PANES[DISPLAY]);
+        build.heading(panes[MOUSE], PANES[MOUSE]);
 
         let keyboard = panes[KEYBOARD];
         build.heading(keyboard, PANES[KEYBOARD]);
@@ -633,16 +637,14 @@ impl SettingsWindow {
         let keyboard_no_disk =
             build.label(keyboard, PADDING, NO_DISK_LINE, NO_DISK, colour::TEXT_DIM);
 
-        for later in [MOUSE, COMPONENTS] {
-            build.heading(panes[later], PANES[later]);
-            build.label(
-                panes[later],
-                PADDING,
-                FIRST_ROW,
-                "Coming in a later version.",
-                colour::TEXT_DIM,
-            );
-        }
+        build.heading(panes[COMPONENTS], PANES[COMPONENTS]);
+        build.label(
+            panes[COMPONENTS],
+            PADDING,
+            FIRST_ROW,
+            "Coming in a later version.",
+            colour::TEXT_DIM,
+        );
 
         let date_and_time = panes[DATE_AND_TIME];
         build.heading(date_and_time, PANES[DATE_AND_TIME]);
@@ -740,13 +742,20 @@ impl SettingsWindow {
 
         let storage = StoragePane::build(&mut tree, panes[STORAGE], set_button);
         let agents = AgentsPane::build(&mut tree, panes[AGENTS], set_button);
+        let display = DisplayPane::build(&mut tree, panes[DISPLAY], &facts);
+        let inputs = InputPanes::build(
+            &mut tree,
+            panes[MOUSE],
+            panes[KEYBOARD],
+            keyboard_no_disk,
+            facts.input,
+        );
         let zones = ZonePicker::build(
             &mut tree,
             panes[DATE_AND_TIME],
             facts.time_zone,
             facts.now_s as i64,
         );
-        tree.set_enabled(radios, false);
         tree.set_enabled(set_button, false);
         tree.set_default_button(set_button);
         tree.set_shown(no_disk, !facts.on_disk);
@@ -767,7 +776,6 @@ impl SettingsWindow {
                 cards,
                 modifier,
                 controls,
-                resolution,
                 uptime,
                 now,
                 set_field,
@@ -782,6 +790,8 @@ impl SettingsWindow {
             storage,
             agents,
             zones,
+            display,
+            inputs,
             facts,
             pane: APPEARANCE,
         };
@@ -813,7 +823,40 @@ impl SettingsWindow {
 
     /// The resolution shown in the Display pane.
     pub fn resolution_shown(&self) -> Option<&str> {
-        self.tree.text_of(self.widgets.resolution)
+        self.display.resolution_shown(&self.tree)
+    }
+
+    /// The Display pane.
+    pub fn display_pane(&self) -> &DisplayPane {
+        &self.display
+    }
+
+    /// The Mouse pane and the Keyboard pane's repeat rows.
+    pub fn input_panes(&self) -> &InputPanes {
+        &self.inputs
+    }
+
+    /// How saving the display's scale went ([`Request::SetDisplayScale`]).
+    pub fn display_scale_saved(&mut self, scale: u32, saved: Result<(), Errno>) {
+        if saved.is_ok() {
+            self.facts.scale = scale;
+        }
+        self.display.saved(&mut self.tree, &self.facts, saved);
+    }
+
+    /// How saving, then applying, a mouse or key preference went ([`Request::ChangeInput`]):
+    /// `applied` is only looked at when `saved` worked.
+    pub fn input_changed(
+        &mut self,
+        change: InputChange,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        if saved.is_ok() {
+            self.facts.input = change.applied_to(self.facts.input);
+        }
+        self.inputs
+            .changed(&mut self.tree, change, self.facts.input, saved, applied);
     }
 
     fn show_pane(&mut self, pane: usize) -> Option<Request> {
@@ -828,6 +871,12 @@ impl SettingsWindow {
         }
         if pane == KEYBOARD {
             self.tree.set_text(self.widgets.try_field, "");
+        }
+        if pane == DISPLAY {
+            self.display.show(&mut self.tree, &self.facts);
+        }
+        if pane == MOUSE || pane == KEYBOARD {
+            self.inputs.reset(&mut self.tree, &self.facts);
         }
         if pane == STORAGE {
             self.storage.reset(&mut self.tree);
@@ -1153,6 +1202,12 @@ impl SettingsWindow {
         {
             return request;
         }
+        if let input_panes::Reply::Done(request) = self.display.respond(response, &self.facts) {
+            return request;
+        }
+        if let input_panes::Reply::Done(request) = self.inputs.respond(response, self.facts.input) {
+            return request;
+        }
         if let zone_picker::Reply::Done(request) =
             self.zones
                 .respond(&mut self.tree, response, now_ms, self.widgets.set_button)
@@ -1205,6 +1260,7 @@ mod tests {
     }
 
     use super::*;
+    use eggos_settings_file::InputPreferences;
     use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 
     fn click(window: &mut SettingsWindow, x: i32, y: i32) -> Option<Request> {
@@ -1293,9 +1349,9 @@ mod tests {
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
         type_text(&mut window, "hidpi");
-        assert_eq!(window.pane(), APPEARANCE);
+        assert_eq!(window.pane(), DISPLAY);
         type_text(&mut window, "x");
-        assert_eq!(window.pane(), APPEARANCE);
+        assert_eq!(window.pane(), DISPLAY);
         let response = window.tree().handle(
             Input::Key {
                 code: key::ESC,
@@ -1666,6 +1722,130 @@ mod tests {
         assert_eq!(
             click(&mut window, 540, 120),
             Some(Request::SetTime(1_793_282_700))
+        );
+    }
+
+    const DISPLAY_ROW: i32 = 44 + 32 + 10;
+    const KEYBOARD_ROW: i32 = 44 + 2 * 32 + 10;
+    const MOUSE_ROW: i32 = 44 + 3 * 32 + 10;
+
+    #[test]
+    fn the_display_pane_saves_the_scale_for_the_next_restart() {
+        let mut window = SettingsWindow::new(Facts::example());
+        click(&mut window, 40, DISPLAY_ROW);
+        assert_eq!(
+            window.display_pane().state(window.widgets()),
+            (
+                Some(0),
+                Some("At 2x the desktop looks like 640 \u{d7} 400.")
+            )
+        );
+        assert_eq!(
+            click(&mut window, 600, 124),
+            Some(Request::SetDisplayScale(2))
+        );
+        window.display_scale_saved(2, Ok(()));
+        assert_eq!(
+            window.display_pane().state(window.widgets()),
+            (
+                Some(1),
+                Some("From the next restart the desktop looks like 640 \u{d7} 400.")
+            )
+        );
+        assert_eq!(
+            click(&mut window, 540, 124),
+            Some(Request::SetDisplayScale(1))
+        );
+        window.display_scale_saved(1, Err(Errno::EPERM));
+        assert_eq!(
+            window.display_pane().state(window.widgets()),
+            (
+                Some(1),
+                Some("Not allowed: this user may not set the scale.")
+            )
+        );
+    }
+
+    #[test]
+    fn without_a_disk_the_scale_cannot_be_chosen() {
+        let mut window = SettingsWindow::new(Facts {
+            on_disk: false,
+            ..Facts::example()
+        });
+        click(&mut window, 40, DISPLAY_ROW);
+        assert_eq!(click(&mut window, 600, 124), None);
+        assert_eq!(
+            window.display_pane().state(window.widgets()).1,
+            Some("No disk attached: the scale cannot be saved for a restart.")
+        );
+    }
+
+    #[test]
+    fn the_mouse_pane_asks_for_each_change_and_shows_how_it_went() {
+        let mut window = SettingsWindow::new(Facts::example());
+        click(&mut window, 40, MOUSE_ROW);
+        assert_eq!(
+            click(&mut window, 560, 84),
+            Some(Request::ChangeInput(InputChange::LeftHanded(true)))
+        );
+        window.input_changed(InputChange::LeftHanded(true), Err(Errno::EPERM), Ok(()));
+        assert_eq!(
+            window.input_panes().mouse_status(window.widgets()),
+            Some("Not allowed: this user may not change the mouse settings.")
+        );
+        assert!(!window.facts().input.left_handed);
+        assert_eq!(
+            click(&mut window, 580, 124),
+            Some(Request::ChangeInput(InputChange::NaturalScrolling(true)))
+        );
+        assert_eq!(
+            click(&mut window, 610, 164),
+            Some(Request::ChangeInput(InputChange::PointerSpeed(6)))
+        );
+        window.input_changed(InputChange::PointerSpeed(6), Ok(()), Err(Errno::ENODEV));
+        assert_eq!(window.input_panes().values(window.widgets())[0], Some("6"));
+        assert_eq!(
+            window.input_panes().mouse_status(window.widgets()),
+            Some("Saved for the next boot, but the window server did not take it.")
+        );
+        let mut fastest = SettingsWindow::new(Facts {
+            input: InputPreferences {
+                pointer_speed: 10,
+                ..InputPreferences::DEFAULT
+            },
+            ..Facts::example()
+        });
+        click(&mut fastest, 40, MOUSE_ROW);
+        assert_eq!(click(&mut fastest, 610, 164), None);
+    }
+
+    #[test]
+    fn the_keyboard_pane_steps_the_repeat_delay_and_rate() {
+        let mut window = SettingsWindow::new(Facts {
+            input: InputPreferences {
+                repeat_delay_ms: 437,
+                repeat_rate: 23,
+                ..InputPreferences::DEFAULT
+            },
+            ..Facts::example()
+        });
+        click(&mut window, 40, KEYBOARD_ROW);
+        assert_eq!(
+            window.input_panes().values(window.widgets()),
+            [Some("5"), Some("437 ms"), Some("23/s")]
+        );
+        assert_eq!(
+            click(&mut window, 610, 196),
+            Some(Request::ChangeInput(InputChange::RepeatDelayMs(450)))
+        );
+        assert_eq!(
+            click(&mut window, 518, 236),
+            Some(Request::ChangeInput(InputChange::RepeatRate(20)))
+        );
+        window.input_changed(InputChange::RepeatRate(20), Ok(()), Ok(()));
+        assert_eq!(
+            window.input_panes().values(window.widgets())[2],
+            Some("20/s")
         );
     }
 }

@@ -393,12 +393,13 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         uptime_s: uptime_s(),
         resolution: area.map_or((0, 0), |area| {
             (
-                area.rect.right().max(0) as u32,
-                area.rect.bottom().max(0) as u32,
+                area.rect.right().max(0) as u32 * area.scale.max(1),
+                area.rect.bottom().max(0) as u32 * area.scale.max(1),
             )
         }),
         scale: settings_file::display_scale(&file[..length])
             .unwrap_or_else(|| area.map_or(1, |area| area.scale)),
+        scale_in_force: area.map_or(1, |area| area.scale.max(1)),
         profile,
         on_disk: home_is_on_a_disk(),
         now_s: wall_clock().0,
@@ -431,6 +432,14 @@ fn save_profile(index: usize) -> bool {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
     saved.is_ok()
+}
+
+fn save_display_scale(scale: u32) -> Result<(), Errno> {
+    let value = match scale {
+        2 => "2",
+        _ => "1",
+    };
+    save_through_a_temporary_file(settings_file::DISPLAY_SCALE, value)
 }
 
 fn save_time_zone(index: usize) -> Result<(), Errno> {
@@ -561,11 +570,7 @@ impl command::Machine for Machine {
     }
 
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
-        let value = match scale {
-            2 => "2",
-            _ => "1",
-        };
-        save_through_a_temporary_file(settings_file::DISPLAY_SCALE, value).map_err(Errno::message)
+        save_display_scale(scale).map_err(Errno::message)
     }
 
     fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]> {
@@ -746,6 +751,22 @@ impl Application<CAPACITY> for Settings {
             }
             Some(Request::SetTimeZone(index)) => {
                 self.window.time_zone_saved(index, save_time_zone(index));
+            }
+            Some(Request::SetDisplayScale(scale)) => {
+                self.window
+                    .display_scale_saved(scale, save_display_scale(scale));
+            }
+            Some(Request::ChangeInput(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match saved {
+                    Ok(()) => {
+                        let input = change.applied_to(self.window.facts().input);
+                        apply_input(input, self.server.as_ref())
+                    }
+                    Err(_) => Ok(()),
+                };
+                self.window.input_changed(change, saved, applied);
             }
             Some(Request::ReadDisks) => self.window.show_disks(storage::list(&mut LinuxDisks)),
             Some(Request::CheckDisk(device)) => {
