@@ -15,8 +15,12 @@
 //!   an open file is held on the volume, so a file whose last name goes while open stays
 //!   until its last close. A release may come under a spin lock (a mapping's last reference),
 //!   so it never takes the volume's lock: it is queued in [`RELEASE_SLOTS`] lock-free slots,
-//!   or past them in a list under a leaf lock, which the next commit applies (only a release
-//!   that finds no memory for the list leaves the file until the next mount, which frees it).
+//!   or past them in a list of [`RELEASES_PER_CHUNK`]-entry chunks under a leaf lock, which
+//!   the next commit applies and frees. The list is not held to the user reserve (D155): the
+//!   release cannot wait for the volume under a spin lock, and a lost one would keep a removed
+//!   file's blocks until the next mount; one entry per close, freed within [`COMMIT_DELAY`],
+//!   on top of the open file the close just freed. Only a release that finds no memory at all
+//!   leaves the file until the next mount, which frees it.
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Refused, StorageError, Usage, WriteAt,
@@ -41,6 +45,10 @@ pub const COMMIT_DELAY: core::time::Duration = core::time::Duration::from_secs(5
 /// How many releases of held files wait for the next commit in lock-free slots; more wait in
 /// a list.
 pub const RELEASE_SLOTS: usize = 64;
+
+/// How many releases one chunk of the list past [`RELEASE_SLOTS`] holds: a page of them, so
+/// the list never needs a larger contiguous allocation however long it grows.
+pub const RELEASES_PER_CHUNK: usize = 512;
 
 const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
 
@@ -130,7 +138,7 @@ pub struct EggFs<D: Disk + Send> {
     changed: AtomicBool,
     committer: WaitQueue,
     releases: [AtomicU64; RELEASE_SLOTS],
-    releases_past_slots: LeafSpinLock<Vec<u64>>,
+    releases_past_slots: LeafSpinLock<Vec<Vec<u64>>>,
 }
 
 impl<D: Disk + Send> core::fmt::Debug for EggFs<D> {
@@ -217,7 +225,7 @@ impl<D: Disk + Send> EggFs<D> {
             }
         }
         let past_slots = core::mem::take(&mut *self.releases_past_slots.lock());
-        for node in past_slots {
+        for node in past_slots.into_iter().flatten() {
             let _ = volume.release(node);
         }
         volume.commit().map_err(|_| StorageError)
@@ -234,11 +242,19 @@ impl<D: Disk + Send> EggFs<D> {
     }
 
     fn release_past_slots(&self, node: u64) -> bool {
-        let mut past_slots = self.releases_past_slots.lock();
-        if past_slots.try_reserve(1).is_err() {
+        let mut chunks = self.releases_past_slots.lock();
+        if let Some(chunk) = chunks.last_mut()
+            && chunk.len() < RELEASES_PER_CHUNK
+        {
+            chunk.push(node);
+            return true;
+        }
+        let mut chunk = Vec::new();
+        if chunks.try_reserve(1).is_err() || chunk.try_reserve_exact(RELEASES_PER_CHUNK).is_err() {
             return false;
         }
-        past_slots.push(node);
+        chunk.push(node);
+        chunks.push(chunk);
         true
     }
 
@@ -684,6 +700,42 @@ mod tests {
         for &file in &files {
             assert_eq!(read_all(home.with_id(file)), b"");
         }
+        assert_eq!(fs.usage().free_nodes, before.free_nodes);
+        eggfs.with_volume(|volume| volume.check().unwrap());
+    }
+    #[test]
+    fn releases_past_the_slots_queue_in_page_sized_chunks_and_all_apply() {
+        let (eggfs, home, _) = mounted();
+        let fs = home.file_system();
+        let before = fs.usage();
+        let file = fs
+            .create(home.id(), b"held", NodeKind::Regular, 0o644, 1)
+            .unwrap();
+        fs.write(file, WriteAt::End, &[7; BLOCK_SIZE], 2).unwrap();
+        let holds = RELEASE_SLOTS + 2 * RELEASES_PER_CHUNK + 3;
+        for _ in 0..holds {
+            fs.hold(file);
+        }
+        fs.remove(home.id(), b"held", false, 3).unwrap();
+        for _ in 0..holds {
+            fs.release(file);
+        }
+        {
+            let chunks = eggfs.releases_past_slots.lock();
+            assert_eq!(chunks.len(), 3);
+            assert!(
+                chunks
+                    .iter()
+                    .all(|chunk| chunk.capacity() == RELEASES_PER_CHUNK)
+            );
+            assert_eq!(
+                chunks.iter().map(Vec::len).sum::<usize>(),
+                holds - RELEASE_SLOTS
+            );
+        }
+        fs.sync().unwrap();
+        assert!(eggfs.releases_past_slots.lock().is_empty());
+        assert_eq!(read_all(home.with_id(file)), b"");
         assert_eq!(fs.usage().free_nodes, before.free_nodes);
         eggfs.with_volume(|volume| volume.check().unwrap());
     }
