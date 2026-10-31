@@ -16472,3 +16472,20 @@ the license, by an explicit instruction recorded here.
 - Not yet: the AML interpreter and ACPI devices from the DSDT, a control-method power button,
   the power button on AArch64 and RISC-V, a QEMU check that QMP's `system_powerdown` ends in a
   clean power-off, the sleep button.
+
+## D203 Size, memory and boot budgets, first slice: idle memory at the first prompt gated with the image's size (batch part 63; M10; D24, D69, D116) — Decided by the build loop
+
+- The boot-clock kernel (`qemu-boot-clock`, D116) writes, when the shell first waits at its
+  prompt, `EGGOS-BENCH: idle_memory_bytes`, the frames in use then times the frame size,
+  before its `boot_to_prompt` line, so `cargo xtask bench` reads both from the same boot
+  under `-icount`. `idle_memory_bytes` joins `release_image_bytes` and
+  `translate_install_bytes` among the results gated exactly: any growth fails until the
+  baseline is updated with a reason (CLAUDE.md note 8).
+- Choices made without research: memory in use is total minus free frames, the kernel's own
+  heap and page tables included, as `free` counts it; measured on the deterministic boot, not
+  the release image's wall-clock boot.
+- Check. The bench run on all three architectures records the new line; its baseline lines are
+  added in the build phase.
+- Not yet: idle memory and boot time to the GUI in the release notes, each optional
+  component's size and memory once the component manager exists (part 69), download and
+  install time (D69).
