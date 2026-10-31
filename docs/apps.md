@@ -110,7 +110,10 @@ is built on a Mac (Apple's linker builds it).
 - **A dynamically linked Linux program** (D172) installs from a `.zip` that also holds the
   dynamic loader its `PT_INTERP` names (a file of that name anywhere in the archive, such as
   `lib/ld-musl-x86_64.so.1`) and its libraries: the manifest gets `loader` (that file) and
-  `libraries` (the folders of the archive's `.so` files, at most four, separated by `:`), and
+  `libraries` (the folders of the archive's versioned libraries, `*.so.<n>`, at most four,
+  separated by `:`; plugin folders holding only unversioned `.so` files, such as Qt's
+  `plugins/platforms`, stay off the path, as the app loads them itself; an archive with no
+  versioned library lists the folders of its `.so` files), and
   opening the app runs the loader with `--library-path` and those folders, then the program,
   as glibc's and musl's loaders take them. Without the loader in the archive, or on its own,
   it is refused (`it needs a dynamic loader: install it in a .zip that holds its loader and

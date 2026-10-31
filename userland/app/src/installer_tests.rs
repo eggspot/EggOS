@@ -1203,6 +1203,43 @@ fn a_dynamically_linked_program_installs_with_the_loader_and_libraries_its_zip_h
 }
 
 #[test]
+fn plugin_folders_stay_off_the_library_path_when_the_zip_holds_versioned_libraries() {
+    let program = dynamic_program(62, b"/lib/ld-musl-x86_64.so.1");
+    let archive = zip(&[
+        stored("corepad", &program),
+        stored("lib/ld-musl-x86_64.so.1", &linux_program(62)),
+        stored("lib/libQt6Core.so.6", b"library"),
+        stored(
+            "plugins/platforminputcontexts/libcomposeplatforminputcontextplugin.so",
+            b"plugin",
+        ),
+        stored("plugins/platforms/libqwayland.so", b"plugin"),
+        stored("plugins/wayland-decoration-client/libbradient.so", b"plugin"),
+        stored("plugins/wayland-shell-integration/libxdg-shell.so", b"plugin"),
+    ]);
+    let mut files = host_with("/media/host/corepad.zip", &archive);
+    let plan = planned(&mut files, "/media/host/corepad.zip", X86_64);
+    assert_eq!(
+        plan.loader().map(|loader| loader.libraries.as_bytes()),
+        Some(&b"lib"[..])
+    );
+
+    let program = dynamic_program(62, b"/lib/ld-eggos.so");
+    let unversioned = zip(&[
+        stored("player", &program),
+        stored("lib/ld-eggos.so", &linux_program(62)),
+        stored("lib/libplayer.so", b"library"),
+        stored("codecs/libffmpeg.so", b"library"),
+    ]);
+    let mut files = host_with("/media/host/player.zip", &unversioned);
+    let plan = planned(&mut files, "/media/host/player.zip", X86_64);
+    assert_eq!(
+        plan.loader().map(|loader| loader.libraries.as_bytes()),
+        Some(&b"lib:codecs"[..])
+    );
+}
+
+#[test]
 fn an_app_s_environment_is_written_and_its_fonts_are_linked_where_fontconfig_looks() {
     let program = dynamic_program(183, b"/lib/ld-musl-aarch64.so.1");
     let archive = zip(&[

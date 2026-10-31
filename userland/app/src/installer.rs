@@ -909,6 +909,7 @@ struct Scanned {
 
 const MAX_LIBRARY_FOLDERS: usize = 4;
 const SHARED_OBJECT: &[u8] = b".so";
+const VERSIONED_SHARED_OBJECT: &[u8] = b".so.";
 
 fn parent_folder(name: &[u8]) -> Option<&[u8]> {
     name.iter()
@@ -916,10 +917,43 @@ fn parent_folder(name: &[u8]) -> Option<&[u8]> {
         .map(|slash| &name[..slash])
 }
 
+fn holds(file_name: &[u8], part: &[u8]) -> bool {
+    file_name.windows(part.len()).any(|window| window == part)
+}
+
 fn is_shared_object(file_name: &[u8]) -> bool {
-    file_name
-        .windows(SHARED_OBJECT.len())
-        .any(|window| window == SHARED_OBJECT)
+    holds(file_name, SHARED_OBJECT)
+}
+
+fn is_versioned_shared_object(file_name: &[u8]) -> bool {
+    holds(file_name, VERSIONED_SHARED_OBJECT)
+}
+
+struct LibraryFolders {
+    folders: [Path; MAX_LIBRARY_FOLDERS],
+    count: usize,
+}
+
+impl LibraryFolders {
+    fn new() -> Self {
+        Self {
+            folders: [Path::new(); MAX_LIBRARY_FOLDERS],
+            count: 0,
+        }
+    }
+
+    fn add(&mut self, folder: &[u8]) -> Result<(), Problem> {
+        let known = self.listed().iter().any(|listed| listed.as_bytes() == folder);
+        if !known && self.count < MAX_LIBRARY_FOLDERS {
+            self.folders[self.count] = Path::from(folder).ok_or(Problem::PathTooLong)?;
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn listed(&self) -> &[Path] {
+        &self.folders[..self.count]
+    }
 }
 
 fn find_loader(
@@ -929,8 +963,8 @@ fn find_loader(
 ) -> Result<Loader, Problem> {
     let wanted = files::file_name(interpreter);
     let mut loader = None;
-    let mut folders = [Path::new(); MAX_LIBRARY_FOLDERS];
-    let mut count = 0;
+    let mut versioned = LibraryFolders::new();
+    let mut any = LibraryFolders::new();
     let mut cursor = archive.first();
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
         if entry.is_metadata() || entry.is_directory() {
@@ -947,23 +981,24 @@ fn find_loader(
         let Some(folder) = parent_folder(name).filter(|folder| !folder.is_empty()) else {
             continue;
         };
-        let known = folders[..count]
-            .iter()
-            .any(|listed| listed.as_bytes() == folder);
-        if !known && count < MAX_LIBRARY_FOLDERS {
-            folders[count] = Path::from(folder).ok_or(Problem::PathTooLong)?;
-            count += 1;
+        any.add(folder)?;
+        if is_versioned_shared_object(file_name) {
+            versioned.add(folder)?;
         }
     }
     let path = loader.ok_or(Problem::NotRunnable(NotRunnable::NeedsDynamicLoader))?;
+    let folders = match versioned.count {
+        0 => any.listed(),
+        _ => versioned.listed(),
+    };
     let mut libraries = Path::new();
-    for (at, folder) in folders[..count].iter().enumerate() {
+    for (at, folder) in folders.iter().enumerate() {
         if (at > 0 && !libraries.append(b":")) || !libraries.append(folder.as_bytes()) {
             return Err(Problem::PathTooLong);
         }
     }
     if !manifest::is_icon(path.as_bytes())
-        || (count > 0 && !manifest::is_libraries(libraries.as_bytes()))
+        || (!folders.is_empty() && !manifest::is_libraries(libraries.as_bytes()))
     {
         return Err(Problem::InvalidProgramPath);
     }
