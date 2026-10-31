@@ -162,7 +162,7 @@ pub(super) extern "C" fn destroy_array(object: usize) {
             metadata::destroy_value((start + index * table.stride) as *mut u8, element);
         }
     }
-    crate::libsystem::heap::release(object as *mut u8);
+    heap_object::free_unless_on_the_stack(object as *mut u8);
 }
 
 fn bucket_count(storage: usize) -> usize {
@@ -189,7 +189,7 @@ pub(super) extern "C" fn destroy_dictionary(object: usize) {
             }
         }
     }
-    crate::libsystem::heap::release(object as *mut u8);
+    heap_object::free_unless_on_the_stack(object as *mut u8);
 }
 
 fn allocate_dictionary(class: Metadata, scale: u8, age: Option<u32>, seed: Option<usize>) -> usize {

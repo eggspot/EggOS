@@ -15,7 +15,7 @@ use crate::darwin_signals::{
 };
 use crate::linux;
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering, fence};
 use eggos_runtime::errno::Errno;
 
 const SIGNALS: usize = LAST_SIGNAL as usize + 1;
@@ -78,6 +78,8 @@ static HANDLERS: [AtomicUsize; SIGNALS] = [const { AtomicUsize::new(SIG_DFL) }; 
 static MASKS: [AtomicU32; SIGNALS] = [const { AtomicU32::new(0) }; SIGNALS];
 static FLAGS: [AtomicI32; SIGNALS] = [const { AtomicI32::new(0) }; SIGNALS];
 static CHANGING: Exclusive<()> = Exclusive::new(());
+static RESETS_RUNNING: AtomicU32 = AtomicU32::new(0);
+static RESETS_DONE: AtomicU32 = AtomicU32::new(0);
 
 fn recorded(index: usize) -> Action {
     Action {
@@ -165,14 +167,28 @@ fn change(signal: c_int, new: Option<Action>) -> Result<Action, c_int> {
         let Some(new) = new else {
             return Ok(previous);
         };
+        let mut resets_seen = RESETS_DONE.load(Ordering::SeqCst);
         record(index, new);
-        if let Some(linux_signal) = darwin::linux_signal(signal)
-            && let Err(errno) = install_linux(linux_signal, &linux_words(linux_signal, &new), None)
-        {
+        fence(Ordering::SeqCst);
+        let Some(linux_signal) = darwin::linux_signal(signal) else {
+            return Ok(previous);
+        };
+        let words = linux_words(linux_signal, &new);
+        if let Err(errno) = install_linux(linux_signal, &words, None) {
             record(index, previous);
             return Err(darwin::darwin_errno(errno.0));
         }
-        Ok(previous)
+        loop {
+            while RESETS_RUNNING.load(Ordering::SeqCst) != 0 {
+                core::hint::spin_loop();
+            }
+            let resets = RESETS_DONE.load(Ordering::SeqCst);
+            if resets == resets_seen {
+                return Ok(previous);
+            }
+            resets_seen = resets;
+            let _ = install_linux(linux_signal, &words, None);
+        }
     })
 }
 
@@ -198,11 +214,17 @@ extern "C" fn deliver(
         HANDLERS[index].store(SIG_DFL, Ordering::Release);
         let linux_signal = linux_signal as usize;
         if crate::callback::translated_fault_handler(linux_signal).is_some() {
-            let default = Action {
-                handler: SIG_DFL,
-                ..recorded(index)
-            };
-            let _ = install_linux(linux_signal, &linux_words(linux_signal, &default), None);
+            RESETS_RUNNING.fetch_add(1, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
+            if HANDLERS[index].load(Ordering::SeqCst) == SIG_DFL {
+                let default = Action {
+                    handler: SIG_DFL,
+                    ..recorded(index)
+                };
+                let _ = install_linux(linux_signal, &linux_words(linux_signal, &default), None);
+            }
+            RESETS_DONE.fetch_add(1, Ordering::SeqCst);
+            RESETS_RUNNING.fetch_sub(1, Ordering::SeqCst);
         }
     }
     let mut darwin_info = if info.is_null() {

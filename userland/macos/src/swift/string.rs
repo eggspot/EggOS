@@ -30,7 +30,7 @@ pub fn set_up() {
 }
 
 pub(super) extern "C" fn destroy_storage(object: usize) {
-    heap::release(object as *mut u8);
+    heap_object::free_unless_on_the_stack(object as *mut u8);
 }
 
 /// The UTF-8 bytes of `raw`, the string kept alive by its owner; a small string's are copied

@@ -110,6 +110,12 @@ pub fn mark_weakly_referenced(object: *mut u8) {
 }
 
 extern "C" fn swift_dealloc_object(object: *mut u8, _: usize, _: usize) {
+    free_unless_on_the_stack(object);
+}
+
+/// Gives the deinitialized native object `object`'s memory back to the heap, unless it lives
+/// on a stack (`swift_initStackObject`) or unowned references still hold it.
+pub fn free_unless_on_the_stack(object: *mut u8) {
     if refcount::frees_on_dealloc(header(object).refcount.load(Ordering::Acquire)) {
         heap::release(object);
     }
