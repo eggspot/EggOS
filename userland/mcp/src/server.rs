@@ -516,7 +516,10 @@ impl Server {
                     &pending,
                     b"the client started a new session",
                 );
-                self.cancel_question(&pending, "a new session started", out);
+                self.end_prompt_of(&pending, system);
+                if !pending.on_screen {
+                    self.cancel_question(&pending, "a new session started", out);
+                }
                 refused(
                     out,
                     pending.id.as_bytes(),
@@ -526,6 +529,7 @@ impl Server {
                 out.end_line();
                 reply.main_start = out.len();
             }
+            self.session_classes = [false; Grant::ALL.len()];
             self.initialize(id, params, system, scratch, out);
             return reply;
         }
@@ -1245,9 +1249,6 @@ impl Server {
         scratch: &mut Scratch<'_>,
         out: &mut JsonWriter<'_>,
     ) {
-        if let Some(earlier) = self.pending.take() {
-            self.end_prompt_of(&earlier, system);
-        }
         let Some(id_copy) = IdCopy::of(id) else {
             if on_screen {
                 system.end_grant_prompt();
@@ -1305,7 +1306,9 @@ impl Server {
         if let Some(place) = scratch.held_arguments.get_mut(..pending.arguments_length) {
             place.copy_from_slice(shown.get(..pending.arguments_length).unwrap_or_default());
         }
-        self.pending = Some(pending);
+        if let Some(earlier) = self.pending.replace(pending) {
+            self.end_prompt_of(&earlier, system);
+        }
         if on_screen {
             return;
         }
