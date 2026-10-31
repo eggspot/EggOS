@@ -16110,4 +16110,9 @@ the license, by an explicit instruction recorded here.
     `Mcp-Session-Id`; more than one connection at a time; turning the server on or off without
     a restart; certificate renewal when the machine's address changes (remove the files and
     start again); mDNS; IPv6; the Agents pane's controls for pairing and the network
-    (slice 41d6); a QEMU check over the network (slice 41d7).
+    (slice 41d6).
+  - QEMU check (`xtask/src/qemu/agent_network.rs`, every architecture): `agent network on` and a
+    restart on the same disk, then the test pairs as the agent's client with our own TLS client
+    pinning the certificate the console printed, sends `initialize` (no elicitation offered
+    back), `notifications/initialized` (202) and `tools/list`, sees a used code answered 404 and
+    another token 401, and reads the session in `agentlog --agent laptop`.

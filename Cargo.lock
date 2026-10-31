@@ -396,6 +396,7 @@ dependencies = [
  "eggos-png",
  "eggos-settings",
  "eggos-settings-file",
+ "eggos-tls",
  "eggos-toolkit",
  "eggos-translate",
  "eggos-wayland",

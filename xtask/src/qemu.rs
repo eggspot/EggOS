@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod agent_network;
 pub mod android_dynamic;
 pub mod autohotkey;
 pub mod cocoa_app;

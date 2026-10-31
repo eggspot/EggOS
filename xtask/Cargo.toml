@@ -19,6 +19,7 @@ eggos-wayland = { path = "../wayland" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-calendar = { path = "../calendar" }
 eggos-net = { path = "../net" }
+eggos-tls = { path = "../tls" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
 eggos-png = { path = "../png" }
