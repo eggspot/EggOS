@@ -255,6 +255,29 @@ impl ReadyQueue {
 struct Interest {
     items: Vec<Arc<Item>>,
     looked_at: Vec<Arc<Item>>,
+    sweep_closed_at: usize,
+}
+
+const FEWEST_ITEMS_BETWEEN_SWEEPS: usize = 64;
+
+impl Interest {
+    fn forget_closed(&mut self) {
+        for item in self
+            .items
+            .extract_if(.., |item| item.file.strong_count() == 0)
+        {
+            item.removed.store(true, Ordering::Release);
+            item.forget_list();
+        }
+        self.looked_at.retain(|item| item.file.strong_count() > 0);
+    }
+
+    fn forget_closed_when_grown(&mut self) {
+        if self.items.len() >= self.sweep_closed_at {
+            self.forget_closed();
+            self.sweep_closed_at = (2 * self.items.len()).max(FEWEST_ITEMS_BETWEEN_SWEEPS);
+        }
+    }
 }
 
 /// An `epoll` instance: see the module documentation.
@@ -332,6 +355,7 @@ impl Epoll {
         });
         {
             let mut interest = self.interest.lock();
+            interest.forget_closed_when_grown();
             let index = match interest.items.binary_search_by(|item| item.key.cmp(&key)) {
                 Ok(_) => return Err(Errno::EEXIST),
                 Err(index) => index,
@@ -473,17 +497,7 @@ impl Epoll {
     }
 
     fn forget_closed(&self) {
-        let mut interest = self.interest.lock();
-        for item in interest
-            .items
-            .extract_if(.., |item| item.file.strong_count() == 0)
-        {
-            item.removed.store(true, Ordering::Release);
-            item.forget_list();
-        }
-        interest
-            .looked_at
-            .retain(|item| item.file.strong_count() > 0);
+        self.interest.lock().forget_closed();
     }
 
     fn has_events<P: Platform>(&self, pending: &dyn Fn() -> u64, depth: usize) -> bool {
@@ -1097,6 +1111,25 @@ mod tests {
         assert!(collected(&epoll).is_empty());
         assert_eq!(epoll.interest_count(), 0);
         assert!(!counter.wake_list().is_watched());
+    }
+
+    #[test]
+    fn items_of_closed_files_that_never_became_ready_leave_the_list_as_it_grows() {
+        let epoll = Epoll::new();
+        let counters: Vec<Arc<EventFd>> = (0..4 * FEWEST_ITEMS_BETWEEN_SWEEPS)
+            .map(|_| EventFd::new(0, false))
+            .collect();
+        for (fd, counter) in counters.iter().enumerate() {
+            let file = counter_file(counter);
+            epoll.add(&file, fd as u32, event::IN, 0).unwrap();
+            drop(file);
+        }
+        assert!(epoll.interest_count() <= FEWEST_ITEMS_BETWEEN_SWEEPS);
+        let swept = counters
+            .iter()
+            .filter(|counter| !counter.wake_list().is_watched())
+            .count();
+        assert!(swept >= counters.len() - FEWEST_ITEMS_BETWEEN_SWEEPS);
     }
 
     #[test]
