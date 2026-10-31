@@ -4,7 +4,7 @@
 //! messages from the registered names.
 
 use super::gui::{Gui, try_with, with};
-use super::{Bool, FALSE, TRUE, error, fail};
+use super::{Bool, FALSE, error, fail};
 use crate::gui::classes::{Class, ClassName};
 use crate::gui::objects::{self, cursor};
 use crate::gui::windows::{CommonKind, ControlKind, Procedure, Window};
@@ -118,6 +118,29 @@ fn system_atom(kind: ControlKind) -> u16 {
         ControlKind::ComboBox => 0x85,
         ControlKind::Common(kind) => FIRST_COMMON_ATOM + kind as u16,
     }
+}
+
+const SYSTEM_KINDS: [ControlKind; 12] = [
+    ControlKind::Button,
+    ControlKind::Edit,
+    ControlKind::Static,
+    ControlKind::ListBox,
+    ControlKind::ComboBox,
+    ControlKind::Common(CommonKind::StatusBar),
+    ControlKind::Common(CommonKind::Progress),
+    ControlKind::Common(CommonKind::TabControl),
+    ControlKind::Common(CommonKind::ListView),
+    ControlKind::Common(CommonKind::Header),
+    ControlKind::Common(CommonKind::TreeView),
+    ControlKind::Common(CommonKind::Toolbar),
+];
+
+/// The system control class whose atom is `atom`, the atom `GetClassInfoExW` answers for it,
+/// which programs pass to `CreateWindowExW` in place of the class's name.
+pub fn system_kind_of_atom(atom: u16) -> Option<ControlKind> {
+    SYSTEM_KINDS
+        .into_iter()
+        .find(|kind| system_atom(*kind) == atom)
 }
 
 fn system_class(kind: ControlKind) -> (u16, Class) {
@@ -263,11 +286,13 @@ unsafe extern "efiapi" fn get_class_info_ex_w(
     let found = with(|gui| gui.classes.find(name))
         .flatten()
         .map(|(atom, class)| (Bool::from(atom), class))
-        .or_else(|| match name {
-            ClassName::Name(units) => {
-                super::controls::system_class(units).map(|kind| (TRUE, system_class(kind).1))
-            }
-            ClassName::Atom(_) => None,
+        .or_else(|| {
+            let kind = match name {
+                ClassName::Name(units) => super::controls::system_class(units),
+                ClassName::Atom(atom) => system_kind_of_atom(atom),
+            }?;
+            let (atom, class) = system_class(kind);
+            Some((Bool::from(atom), class))
         });
     let Some((answer, class)) = found else {
         return fail(error::CLASS_DOES_NOT_EXIST, FALSE);

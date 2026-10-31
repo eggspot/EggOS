@@ -239,7 +239,7 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     });
     let system_class = match name {
         ClassName::Name(name) => controls::system_class(name),
-        ClassName::Atom(_) => None,
+        ClassName::Atom(atom) => super::window_class::system_kind_of_atom(atom),
     };
     let window_text = match window_name.is_null() {
         true => &[][..],
