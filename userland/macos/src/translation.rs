@@ -489,6 +489,27 @@ extern "C" fn on_fault(signal: c_int, info: *const u8, context: *mut u8) {
         }
     }
     set_action(signal as usize, SIG_DFL);
+    if code <= 0 {
+        send_to_this_thread(signal as usize);
+    }
+}
+
+fn send_to_this_thread(signal: usize) {
+    // SAFETY: `tgkill` touches no memory; the signal stays pending while this handler blocks
+    // it and takes its default action once the handler returns.
+    let _ = unsafe {
+        linux::syscall(
+            linux::number::TGKILL,
+            [
+                linux::process_id(),
+                linux::thread_id() as usize,
+                signal,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
 }
 
 fn set_action(signal: usize, handler: usize) {
