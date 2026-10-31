@@ -41,14 +41,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   the machine's eight virtio slots: add `--no-network` there.
 
 ## What the system can do
-- **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
+- **Agents, under the grants the user gives.** The built-in MCP server (D136, D137,
   docs/mcp.md) lets an MCP client read files in `/home`, `/media/host` and `/work` and list processes,
   windows and installed apps; with grants given when starting EggOS (`--mcp-allow
   view,write,run,install`) it also sees what app windows show (`view`), writes and trashes
   files below `/home/root`, runs programs, clicks and types in windows, and installs, opens and
-  uninstalls apps. Each agent has its own grants, read again before every call, which the
-  boot's grants cap for the local agent (D193), but every connection is the local agent until
-  41b and nothing but a file write changes them yet; `run` is full control, the audit log included. Agents read toolkit and Wayland
+  uninstalls apps. Each agent has its own grants, read again before every call and capped by the
+  boot's grants (D193), which the user gives and takes back with `agent grant` and `agent
+  revoke`; a client names its agent in `initialize` or the boot pins it (`--mcp-agent`), and on
+  the local channel that name is the client's own word (paired connections come with MCP over
+  the network), and Settings' Agents pane comes next; `run` is full control, the audit log included. Agents read toolkit and Wayland
   windows as element trees and act on their controls by id (D161), Windows programs too, with
   the text they draw (D162), and macOS apps' windows, their views and the About panel (D175;
   a macOS alert is pixels only); a Windows list box's items and a check box's state are not in

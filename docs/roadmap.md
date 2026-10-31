@@ -410,8 +410,10 @@ D16):
     `confirm: true`; every call goes to `/var/log/agent-audit.log` (seven generations, a budget
     per run, content never logged), which `agentlog` shows; `kill` reaches other processes and
     groups, init excepted; each agent has its own grants, checked before every call, with
-    time limits and ask-each-time, and the log names the agent (D193). Next: the `agent`
-    command and agents naming themselves, network MCP, the log in Settings.
+    time limits and ask-each-time, and the log names the agent (D193); clients name their agent in `initialize` (or
+    `--mcp-agent`), `agent grant|revoke|list|show|forget` changes and shows grants, `agent_list`
+    and `agent_show` read them, and `agentlog` filters by agent, tool, outcome and time. Next:
+    Settings' Agents pane and the grant prompt, network MCP, resources and prompts.
 38. **done** — users can now run Linux programs that talk over local stream sockets, pass
     descriptors and share memory (D138, D139): `AF_UNIX` stream sockets, `socketpair`,
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals

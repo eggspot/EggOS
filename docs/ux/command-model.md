@@ -196,7 +196,7 @@ definition (D163), and each example runs as a test against the fakes of the prog
 it (the core utilities' fake system with a home folder holding `notes.txt`; Settings' example
 facts).
 
-**Kept names:** `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `df` (D171), `echo`, `edit`, `false`, `fetch`,
+**Kept names:** `agent` (D193), `agentlog`, `app`, `cat`, `chmod` (D170), `cp`, `date`, `df` (D171), `echo`, `edit`, `false`, `fetch`,
 `free`, `getprop` (D188), `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln` (D170), `logcat` (D188), `ls`, `mkdir`, `mv`, `nslookup`,
 `ping`, `poweroff`, `ps`, `readlink` (D170), `reboot`, `rm`, `setprop` (D188), `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `[`, `bg`,
@@ -209,7 +209,11 @@ tests, D165, D181, D182).
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,
 item 48; `show` is a core verb), `drag` (D162).
 
-**Commands in the registry** (68, D163, D170, D171, D188: every command EggOS ships): `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
+**`agent`'s own verbs** (D193): `grant`, `revoke`, `forget` (`list` and `show` are core
+verbs). Its MCP tools are `agent_list` (`view`) and `agent_show`, which shows the calling
+agent's own grants; no tool changes grants.
+
+**Commands in the registry** (78, D163, D170, D171, D188, D193: every command EggOS ships): `agent forget|grant|list|revoke|show`, `agentlog`, `app install|list|open|uninstall`, `cat`, `chmod`, `cp`, `date`, `df`, `echo`, `edit`, `false`,
 `fetch`, `free`, `getprop`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ln`, `logcat`, `ls`, `mkdir`, `mv`,
 `nslookup`, `ping`, `poweroff`, `ps`, `readlink`, `reboot`, `rm`, `setprop`, `settings` (the window), `settings
 get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`, `uptime`,
@@ -225,7 +229,8 @@ get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`
 | `wm list --json` | `id`, `state`, `x`, `y`, `width`, `height`, `client_pid` (`null` for the kernel's windows), `title` |
 | `wm show --json` | `id`, `parent` (`null` for the root), `role`, `x`, `y`, `width`, `height`, `flags` (list), `name`, `value`: one element of the window's tree (D161) |
 | `app list --json` | `name`, `source`, `architecture` (or `null`), `program`, `icon` (or `null`) |
-| `agentlog --json` | `called_at`, `call`, `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log |
+| `agent list --json`, `agent show --json` | `id`, `name`, `view`, `view_ends_at`, `write`, `write_ends_at`, `install`, `install_ends_at`, `run`, `run_ends_at` (each grant `allow`, `ask` or `deny`; `null` for never): one per agent, or one object (D193) |
+| `agentlog --json` | `called_at`, `call`, `agent` (D193), `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log (`--agent`, `--tool`, `--outcome` and `--since` keep the matching ones) |
 | `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
 | `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
 | `readlink --json` | `path`, `target`, one per link (D170) |
@@ -304,7 +309,8 @@ exactly the `destroy` tools, each with a `confirm` argument; `run` and the input
 
 **GUI surfaces** (D22): each command's `surface` names its GUI (Files for `ls`, the Text
 Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launcher for `app`,
-the Agent chip for `agentlog`), or why there is none (`ps` waits for a task manager; `wm
+the Agent chip for `agentlog`), or why there is none (`agent` waits for Settings' Agents pane, D193
+slice 41c; `ps` waits for a task manager; `wm
 capture` and the input verbs are for agents, people use the window itself; `wm show` and `wm
 act` likewise; `help` describes the
 command line). D163's commands name theirs too: Files for `cp`, `mv`, `rm` and `mkdir`, Settings'

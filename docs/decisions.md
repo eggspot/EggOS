@@ -15844,3 +15844,36 @@ the license, by an explicit instruction recorded here.
     `TOOLS`/`GRANTED_TOOLS`/`TWIN_CALLS`, docs/mcp.md, command-model.md, schema fixtures,
     server tests); server tests for `_meta`, the empty list and `agent_show`; the QEMU
     revoke-mid-session check; docs/mcp.md, coreutils.md, limitations and roadmap item 28.
+- **Slice 41b2 (the log's filters, the boot's agent, the QEMU revoke check).** `agentlog`
+  gains an `AGENT` column (after the time), an `agent` field in `--json` (after `call`;
+  `AGENTLOG_FIELDS` 8) and the filters `--agent <id>`, `--tool <name>`, `--outcome <result>`
+  and `--since <time>` (each also as `--name=value`), built on 41a's `audit::Filter`: agent,
+  tool and time narrow the records; in rows a call's row matches `--outcome` by how it ended
+  (an interrupted call's by `asked` or `started`), in `--raw` and `--json` each record by its
+  own. `--since` takes a time ago (`30s`, `15m`, `2h`, `7d`, the `agent grant --for` units) or
+  a UTC date and time `date -s` takes (`2026-10-31 09:00`); a bad value is a usage error
+  naming what the option takes. `-n` counts the rows left after the filters. The kernel
+  command line's `eggos.mcp_agent=<id>` (`grants::agent_from_command_line`, `ChannelAgent`)
+  pins the local channel's agent for clients that cannot send `_meta`: `eggmcpd` calls
+  `set_agent`, so no client on the channel can name another; `local` or no word leaves the
+  channel unpinned, and an id that is not one gives the channel no grants (it only reads)
+  rather than the local agent's. `run-eggos.sh --mcp-agent <id>` and `run-eggos.ps1 -McpAgent
+  <id>` (with `--mcp` only) check the id (1 to 32 letters, digits, `.`, `_`, `-`, not `local`)
+  and add the word after `eggos.mcp_allow=`. The MCP check's tables have `agent_show` (a
+  reading call, `"id":"local"`) and `agent_list` (`view`), and the granted session ends with
+  `agent_list`, a `run` of `/bin/agent revoke local` (every grant: `run` brings the others, so
+  revoking `write` alone would not stop `tee`), a `tee` refused with "has taken back" and
+  `agent_show` showing `run` denied; the disk read back must hold that refused `tee` and the
+  store line `local deny deny deny deny local`. Server tests cover `_meta` naming and binding
+  an agent, bad identities, the empty `tools/list` and `initialize`'s hint for an agent
+  without grants, and `agent_show` running for the caller only.
+  - Choices made without research: `cargo xtask run` gets no `--mcp-agent`, since it has no
+    MCP channel (only the release scripts do); `eggos.mcp_agent=local` means unpinned; an
+    invalid pin fails closed to reading only rather than refusing every call; the store line
+    is checked by its text rather than by decoding it in xtask; no MCP `agentlog` tool (agents
+    read the log through `run`, which already shows every agent's calls; a reading tool that
+    shows other agents' calls is a privacy decision for 41c's design).
+  - Not yet (after 41b): Settings' Agents pane, the grant prompt on EggOS's screen and the
+    log there (41c); network connections that prove who they are (41d); resources, prompts
+    and the 2026-07-28 protocol (41e); stopping a twin already running when its grant is
+    taken back; an `agentlog --until`.

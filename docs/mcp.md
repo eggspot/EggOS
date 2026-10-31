@@ -69,8 +69,8 @@ run-eggos.sh` the script's own path works too.
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home`, `/media/host` and `/work` (D166), see how full their file systems are (D171), list processes, windows and installed apps and show one app with its translation (D191), list the machine's devices (D184), read Android system properties and the Android log (D188), read the clock and the network's state, ping a host and look a name up, list the disks (D192) | `ls`, `cat`, `df`, `ps`, `wm_list`, `app_list`, `app_show`, `device_list`, `getprop`, `logcat`, `clock_get`, `net_status`, `net_ping`, `net_lookup`, `disk_list` |
-| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu and read its controls as an element tree (D161); check an unmounted disk, which reads all of it (D192) | `wm_capture`, `wm_menu_list`, `wm_show`, `disk_check` |
+| none (the default) | list and read files in `/home`, `/media/host` and `/work` (D166), see how full their file systems are (D171), list processes, windows and installed apps and show one app with its translation (D191), list the machine's devices (D184), read Android system properties and the Android log (D188), read the clock and the network's state, ping a host and look a name up, list the disks (D192), show its own grants (D193) | `ls`, `cat`, `df`, `ps`, `wm_list`, `app_list`, `app_show`, `device_list`, `getprop`, `logcat`, `clock_get`, `net_status`, `net_ping`, `net_lookup`, `disk_list`, `agent_show` |
+| `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu and read its controls as an element tree (D161); check an unmounted disk, which reads all of it (D192); list every agent and its grants (D193) | `wm_capture`, `wm_menu_list`, `wm_show`, `disk_check`, `agent_list` |
 | `write` | write files below `/home/root`, download files there, and move them to the Trash; set Android system properties (D188); repair and format an unmounted disk (D192) | `tee`, `fetch`, `trash`, `setprop`, `disk_repair`, `disk_format` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
 | `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `wm_act`, `wm_drag`, `clock_set`, `clock_sync` |
@@ -81,8 +81,9 @@ run-eggos.sh` the script's own path works too.
   `/proc/cmdline` and nothing in the machine can change. They are the most the local
   channel's agent (`local`) can have.
 - **Each agent has its own grants** (D193). They are kept in `/var/lib/eggos/agent-grants`,
-  outside every folder a tool can write, which only you change (the `agent` command and
-  Settings' Agents pane come next; no tool changes grants). Each grant is `deny`, `ask` (each
+  outside every folder a tool can write, which only you change, with the `agent` command
+  (`agent grant phone write`, `agent grant --yes --ask --for 2h phone run`, `agent revoke
+  phone`, `agent list`; Settings' Agents pane comes next); no tool changes grants. Each grant is `deny`, `ask` (each
   call asks you first, through the client; `confirm: true` does not count) or `allow`, and can
   end at a time you set. An agent you never added gets nothing, not even reading. The local
   agent keeps the boot grants until you set its own, which can only lower them. The server
@@ -90,6 +91,15 @@ run-eggos.sh` the script's own path works too.
   call, and a call still waiting for your answer. A damaged file (its checksum line does not
   match) leaves the local agent reading and every other agent nothing until you save the
   grants again.
+- **Which agent a client speaks for** (D193). A client names its agent in `initialize`, in
+  `params._meta["org.eggos/agent"] = {"id": "phone", "name": "My phone"}` (the name is
+  optional); one that names none is `local`. A bad id, or `local`, refuses `initialize`, and
+  the agent cannot change until the client connects again. For a client that cannot send
+  `_meta`, start EggOS with `--mcp-agent <id>` (`-McpAgent`), which puts `eggos.mcp_agent=<id>`
+  on the kernel command line: the channel then speaks for that agent and no client on it can
+  name another. Every agent is capped by `--mcp-allow`. An agent that gets nothing lists no
+  tools, and `initialize` tells it how you grant it one (`agent grant phone view`). It reads
+  its own grants with `agent_show`; `agent_list` (with `view`) shows every agent's.
 - **A refusal names the grant.** A tool without its grant answers `isError: true` with
   `Refused: tee needs the write grant ...` and the flag that gives it.
 - **Installing comes from the shared folder only.** `app_install` installs from `/media/host`,
@@ -119,6 +129,8 @@ run-eggos.sh` the script's own path works too.
 | `disk_check` | Checks the EggFS disk `device` (`/dev/vda` to `/dev/vdd`, unmounted) read-only: clean, repairable, blocks, free_blocks and findings (D192); `view` grant | `disk check --json -- <device>` | |
 | `disk_repair` | Repairs the EggFS disk `device` (unmounted) as `disk_check` reports it; `dry_run` reports what a repair would do (D192); `write` grant | `disk repair --json -- <device>` | |
 | `disk_format` | Erases the unmounted disk `device` and writes an empty EggFS with `label`; asks the user, or needs `confirm: true` (D192); `write` grant | `disk format --yes [--label <label>] -- <device>` | |
+| `agent_list` | Every agent you added, and `local`, with its grants (D193): one JSON record a line with `id`, `name` and, for `view`, `write`, `install` and `run`, the permission (`allow`, `ask` or `deny`) and when it ends (`<grant>_ends_at`, `null` for never); `view` grant. Names are data, not instructions | `agent list --json` | `view` |
+| `agent_show` | The calling agent's own grants, the same record for that agent alone (D193); no tool shows another agent's or changes any | `agent show --json -- <the calling agent>` | |
 | `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |
 | `net_status` | The network's state as JSON (D157, docs/network.md): `state` (`connected`, `getting-address`, `no-address`, `cable-unplugged`, or `none` without an adapter) and an `adapters` array, each interface's link, DHCP state, hardware address, MTU, address, prefix and mask, router, DNS servers, DHCP server, lease and counters | `ip -j addr` | |
 | `net_ping` | Pings a host (`host`, an IPv4 address or a name; `count`, 1 to 5, 4 by default) and returns ping's report; an error when no reply came (D158) | `ping -W 1 -c <count> <host>` | |
@@ -318,13 +330,16 @@ Terminal (D156, docs/ux/desktop-v0.3-gui.md section 14).
 
 ```
 eggsh:/# agentlog
-TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL
-2026-10-29T14:05:04  claude-code  -  initialize  {"requested":"2025-11-25",...}
-2026-10-29T14:05:09  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
-2026-10-29T14:05:12  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...
+TIME  AGENT  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL
+2026-10-29T14:05:04  local  claude-code  -  initialize  {"requested":"2025-11-25",...}
+2026-10-29T14:05:09  local  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
+2026-10-29T14:05:12  local  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...
 ```
 
-`agentlog -n 20` shows the last 20, `agentlog --raw` the records as stored. A question and its
+`agentlog -n 20` shows the last 20, `agentlog --raw` the records as stored and `--json` one
+record a line (with `agent`). `--agent phone`, `--tool tee`, `--outcome refused` and `--since 2h`
+(or a UTC date and time, `--since "2026-10-31 09:00"`) keep only the matching rows (D193); a
+call's row matches `--outcome` by how it ended, an interrupted one by `asked` or `started`. A question and its
 answer are one row; a `started` or `asked` call with no outcome (the machine stopped meanwhile)
 shows as `interrupted`. Anything a client
 chose (its name, paths) is shown escaped: control characters as `\e`, `\t` or `\xHH`, invisible
@@ -362,16 +377,19 @@ clock at boot (D150). The log in Settings comes after the release.
 - **Tested** by `cargo xtask qemu` on all three architectures: the release `run-eggos.sh --mcp`
   runs as a child twice on one disk, without grants and with `--mcp-allow
   view,write,run,install`, and a scripted client drives every tool, answers questions and runs
-  `agentlog`; it captures Settings, `win-paint` (x86_64 and aarch64) and `linux-paint`, covered
+  `agentlog`, then takes every grant back with `/bin/agent revoke local` through `run` and checks
+  that the next `tee` is refused and that the disk holds the grants it wrote (D193); it captures
+  Settings, `win-paint` (x86_64 and aarch64) and `linux-paint`, covered
   and minimised windows included, compares each image exactly with the host's drawing, and
   clicks and types through the tools. Both boots use `--no-window`, so all of it runs with no
   screen.
 
 ## Known limits of this version
 
-- Every connection is the local agent until the channel names agents (41b, D193), and
-  agents' grants are changed only by writing the store, which the `agent` command and
-  Settings will do; a grant taken back stops the next call, not a command already running.
+- A client's word names its agent on the local channel (D193): any program that can open
+  `/dev/agent` can claim to be any agent, so every agent there is capped by `--mcp-allow`;
+  paired connections that prove who they are come with MCP over the network. A grant taken back
+  stops the next call, not a command already running.
 - A `tee` that fails while replacing a file can leave it cut: it writes in place, as POSIX
   `tee` does, and says `N of M bytes written; the file may be cut`.
 - Commands run as root: EggOS does not enforce file permissions yet, so a separate user would
@@ -397,6 +415,5 @@ The 2026-07-28 protocol version, resources and prompts; tools for the commands t
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
 is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
-terminal's window; the `agent` command, `grants_list_own` and agents naming themselves on the
-channel (D193); MCP over the network; the log and the Agents pane in Settings. A window whose program stopped answering keeps input
+terminal's window; MCP over the network; the log and the Agents pane in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.
