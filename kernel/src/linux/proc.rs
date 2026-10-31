@@ -349,14 +349,47 @@ pub fn driver_rtc(seconds: u64) -> Option<Vec<u8>> {
 /// The open file description `node` names when it is a `/proc/<pid>/fd/<n>` link whose process
 /// and descriptor are still there: what opening the link opens again on Linux, where it is a
 /// "magic" link to the open file rather than to a path (D173; a pipe's link text names no
-/// file).
-pub fn described_file(node: crate::vfs::Node) -> Option<Arc<super::descriptors::OpenFile>> {
+/// file). `EACCES` when `reader` may not reach that process's descriptors: it is not
+/// privileged, and its file system user and group ids are not the process's real, effective
+/// and saved ones (Linux's `PTRACE_MODE_READ_FSCREDS`).
+pub fn described_file<P: Platform>(
+    node: crate::vfs::Node,
+    reader: &Process<P>,
+) -> Option<Result<Arc<super::descriptors::OpenFile>, super::Errno>> {
     let link = ProcessNode::of(node.id())?;
     if link.part != part::DESCRIPTOR || node.file_system().usage().magic != magic::PROC {
         return None;
     }
     let (_, running) = TABLE.lock().describe(link.pid)?;
-    running?.files.file(link.fd)
+    let running = running?;
+    let target = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())?;
+    if !may_reach_descriptors(reader, &target) {
+        return Some(Err(super::Errno::EACCES));
+    }
+    running.files.file(link.fd).map(Ok)
+}
+
+fn may_reach_descriptors<P: Platform>(reader: &Process<P>, target: &Process<P>) -> bool {
+    use super::credentials::{Ids, Kind};
+    let (privileged, user, group) = {
+        let reader = reader.credentials_and_limits().lock();
+        let credentials = &reader.credentials;
+        (
+            credentials.is_privileged(),
+            credentials.ids(Kind::User).filesystem,
+            credentials.ids(Kind::Group).filesystem,
+        )
+    };
+    if privileged {
+        return true;
+    }
+    let target = target.credentials_and_limits().lock();
+    let all_are = |ids: Ids, id: u32| ids.real == id && ids.effective == id && ids.saved == id;
+    all_are(target.credentials.ids(Kind::User), user)
+        && all_are(target.credentials.ids(Kind::Group), group)
 }
 
 /// `/proc/mounts`' text (D171): a line per mounted file system, the root's first, in Linux's

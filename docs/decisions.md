@@ -11483,7 +11483,8 @@ the license, by an explicit instruction recorded here.
   `struct open_how` checked as Linux (size 24 up to a page, extra bytes zero else `E2BIG`,
   flags within 32 bits, a mode only with `O_CREAT`/`O_TMPFILE`), `RESOLVE_NO_SYMLINKS`
   (walks, creation's directory included, follow no link) and `RESOLVE_NO_MAGICLINKS` (nothing
-  more: EggOS has no magic links); `number::LAST` is `FCHMODAT2`. Every path call now walks as
+  more until D173 made `/proc/<pid>/fd` links reopen pipes: both then refuse that reopen with
+  `ELOOP`, as Linux); `number::LAST` is `FCHMODAT2`. Every path call now walks as
   its process (`parent_and_name` takes the caller; `bind` and `connect` of `AF_UNIX` sockets
   too), so `/proc/self` in a link resolves for it.
 - **`#!` scripts** (`linux::exec`). A file starting with `#!` (read from its first
@@ -11920,7 +11921,9 @@ the license, by an explicit instruction recorded here.
   writing end for `O_WRONLY`, with its own status flags (`pipe::reopen`; `EINVAL` for
   `O_RDWR`). The open path is unchanged until a walk fails with `ENOENT` (a pipe's link text,
   `pipe:[n]`, names no file): a cold function then walks again without following the last
-  link and asks `/proc` (`proc::described_file`) for the description it names. The jobserver
+  link and asks `/proc` (`proc::described_file`) for the description it names; as Linux's
+  `PTRACE_MODE_READ` check, a caller that is not root reopens only a process whose real,
+  effective and saved user and group ids are all its file system ids, else `EACCES`. The jobserver
   crate that cargo and rustc use reopens its pipe this way so `O_NONBLOCK` stays its own; it
   falls back to `dup` when that fails, so this changes how, not whether, builds run.
 - **A job per CPU.** `hello_crate::cargo_environment` no longer sets `CARGO_BUILD_JOBS=1`:

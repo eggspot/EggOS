@@ -186,7 +186,7 @@ pub fn openat<P: Platform>(
     flags: u64,
     mode: u64,
 ) -> Result<u64, Errno> {
-    open(process, thread, dirfd, path, flags, mode, true)
+    open(process, thread, dirfd, path, flags, mode, Links::All)
 }
 
 /// `openat2`'s `resolve` flags (`RESOLVE_*`).
@@ -217,7 +217,8 @@ pub const OPEN_HOW_SIZE: u64 = 24;
 /// not zero, `EFAULT`, `EINVAL` for flags above 32 bits, a mode without `O_CREAT` or
 /// `O_TMPFILE` or with bits above `07777`, or an unknown `resolve` flag. `RESOLVE_NO_SYMLINKS`
 /// refuses every symbolic link with `ELOOP` (a last one with `O_PATH | O_NOFOLLOW` is opened
-/// as a location), `RESOLVE_NO_MAGICLINKS` refuses nothing more (there are no magic links);
+/// as a location), and it and `RESOLVE_NO_MAGICLINKS` refuse reopening a pipe through its
+/// `/proc/<pid>/fd` link, the one magic link (D173), with `ELOOP`;
 /// `RESOLVE_CACHED` is `EAGAIN` (nothing is answered from a cache alone), and `RESOLVE_BENEATH`,
 /// `RESOLVE_IN_ROOT` and `RESOLVE_NO_XDEV` are `EINVAL` until they are walked.
 pub fn openat2<P: Platform>(
@@ -267,8 +268,21 @@ pub fn openat2<P: Platform>(
     if walk & (resolve::BENEATH | resolve::IN_ROOT | resolve::NO_XDEV) != 0 {
         return Err(Errno::EINVAL);
     }
-    let links_allowed = walk & resolve::NO_SYMLINKS == 0;
-    open(process, thread, dirfd, path, flags, mode, links_allowed)
+    let links = if walk & resolve::NO_SYMLINKS != 0 {
+        Links::None
+    } else if walk & resolve::NO_MAGICLINKS != 0 {
+        Links::NotMagic
+    } else {
+        Links::All
+    };
+    open(process, thread, dirfd, path, flags, mode, links)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Links {
+    All,
+    NotMagic,
+    None,
 }
 
 #[inline(always)]
@@ -279,8 +293,9 @@ fn open<P: Platform>(
     path: u64,
     flags: u64,
     mode: u64,
-    links_allowed: bool,
+    links: Links,
 ) -> Result<u64, Errno> {
+    let links_allowed = links != Links::None;
     let flags = flags as u32;
     let only_path = flags & open_flag::PATH != 0;
     let writes = flags & open_flag::ACCMODE != open_flag::RDONLY;
@@ -328,7 +343,10 @@ fn open<P: Platform>(
                 Err(error) => return Err(error),
             }
         }
-        Err(error) => return reopen_described(process, thread, (root, start, path), flags, error),
+        Err(error) => {
+            let magic_allowed = links == Links::All;
+            return reopen_described(process, thread, (root, start, path), flags, error, magic_allowed);
+        }
     };
     let directory = node.is_directory();
     let kind = if only_path {
@@ -393,22 +411,27 @@ fn reopen_described<P: Platform>(
     (root, start, path): (Node, Node, &[u8]),
     flags: u32,
     error: vfs::Error,
+    magic_allowed: bool,
 ) -> Result<u64, Errno> {
     let follows = flags & (open_flag::PATH | open_flag::NOFOLLOW) == 0;
     let described = match error {
         vfs::Error::NotFound if follows => {
             vfs::resolve_as(root, start, path, process.id().get(), false)
                 .ok()
-                .and_then(super::proc::described_file)
+                .and_then(|node| super::proc::described_file(node, process))
         }
         _ => None,
     };
     let Some(described) = described else {
         return Err(walk_error(error));
     };
+    let described = described?;
     let FileKind::Pipe(end) = described.kind() else {
         return Err(walk_error(error));
     };
+    if !magic_allowed {
+        return Err(Errno::ELOOP);
+    }
     let file = super::pipe::reopen(end, flags)?;
     let limit = open_file_limit(process);
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
