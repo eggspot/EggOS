@@ -9898,11 +9898,12 @@ the license, by an explicit instruction recorded here.
   issue's first choice; the alternative it named, each layer as its own release asset that
   `app install` copies onto the disk on first need, needs that installing path (part 69) and
   could not land before the release.
-- **What it costs (D24).** The layers' size in the image, measured from the initramfs archives
-  built on 2026-10-29 (the archive with one layer minus the archive without): the Windows layer
-  502 KB on aarch64 and 593 KB on x86_64, the macOS layer 630 KB and 680 KB, so the aarch64
-  image grows by about 1.13 MB and the x86_64 image by about 1.27 MB; riscv64's does not
-  change. The image is loaded whole into memory, so idle memory grows by the same amount; boot
+- **What it costs (D24).** The layers' size in the image, measured on #149's release images
+  (D214; the 0.5 to 0.7 MB per layer first estimated here from the initramfs archives of
+  2026-10-29 was stale): the Windows layer 1.85 MB on aarch64 and 1.77 MB on x86_64, the macOS
+  layer 1.39 MB and 1.13 MB, so the layers are about 3.24 MB of the aarch64 image and about
+  2.90 MB of the x86_64 image, about 40% of each; riscv64's carries neither. The image is
+  loaded whole into memory, so idle memory grows by the same amount; boot
   time does not measurably, since the initramfs is indexed by its headers and file data is
   never copied (D102). The pull request states each image's exact size before and after, from
   `cargo xtask release`, and `benchmarks/baseline.txt`'s `release_image_bytes` lines move with
@@ -17007,3 +17008,46 @@ the license, by an explicit instruction recorded here.
   writing and running a page, far slower than on Windows; a cheaper scheme (a second, writable
   view of the same pages mapped elsewhere, as some JITs use on W^X systems) is not built.
   More than 64 such ranges fail the call with `ERROR_NOT_ENOUGH_MEMORY`.
+
+## D214 The batch's growth of the release images and of the boot time is accepted as a forced exception, as D134's was: `/bin/app` becomes a hard link to `/bin/settings` and only the `release_image_bytes` and `boot_to_prompt` baseline lines take #149's values (extends D24, D78, D122, D152) — Decided by the build loop (decided by research; flagged for the owner)
+
+- **Context.** PR #149's CI (run 41236888710) blocked on `release_image_bytes` on every
+  architecture and on `boot_to_prompt` on riscv64, the two more-than-2x results besides
+  `input_key_to_bytes`, which 5706b0ce fixed. The baseline's lines were stale: D134 last set the
+  image lines, and `main` itself had already grown by 58 to 77% since. Against `main`:
+  - `release_image_bytes`: x86_64 2404528 -> 7993648 bytes (3.32x), aarch64 2407160 ->
+    8159544 (3.39x), riscv64 2627424 -> 5263952 (2.00x); against the old baseline 5.90x, 5.74x
+    and 3.16x.
+  - `boot_to_prompt` (instructions): x86_64 1664113 -> 2348339 (1.41x), aarch64 1352560 ->
+    1802320 (1.33x), riscv64 1105500 -> 1760800 (1.59x); against the old baseline 1.79x, 1.79x
+    and 2.12x.
+- **What the growth is.** The Windows and macOS layers are about 40% of the aarch64 and x86_64
+  images (aarch64 1.85 MB and 1.39 MB, x86_64 1.77 MB and 1.13 MB; D152's estimates corrected);
+  the desktop suite, `/bin/settings` with its hard links, 1.2 to 1.4 MB; the core utilities 0.8
+  to 0.9 MB; `eggmcpd` 0.4 MB; the kernel 0.6 to 0.8 MB more. Userland already carries no
+  symbols, so stripping saves nothing. The boot time grows mostly with the image the kernel
+  maps at boot; about 400k instructions of riscv64's growth are not explained yet.
+- **Why it can't be fixed here.** The layers, the desktop and the apps are D18 optional
+  components, but the component manager (M14) is not built, so they ship in the base image
+  under D152's and D109's recorded exceptions. Even without the layers the aarch64 and x86_64
+  images would stay about 3.5 to 3.8x the old baseline, and riscv64, which carries no layer, is
+  3.16x: no change inside this PR gets under 2x.
+- **D78's tests, answered honestly.** Unavoidable: not in the long run; M14 takes most of it out
+  of the base. Already minimal: not proven; the hard link below is the one trim found. Compared
+  with Linux, Windows and macOS: an 8 MB image that boots to a desktop is far below their
+  installs (gigabytes) and their kernels with an initramfs (tens of megabytes).
+- **Decision.** As D134's forced exception: `/bin/app` becomes a hard link to `/bin/settings`,
+  which runs the `app` command when started as `app` (dispatch on `argv[0]`, as
+  `/usr/libexec/app-window`, D134). That saves 172032, 159744 and 188416 bytes of the aarch64,
+  riscv64 and x86_64 images, measured with `cargo xtask build` with and without the link:
+  `/bin/app` had grown to 207 to 244 KB, and `/bin/settings` grows by 46 to 53 KB with the
+  command. The command behaves as before, and a headless image now keeps the toolkit with it
+  (D134's stated price). In `benchmarks/baseline.txt` only the six `release_image_bytes` and
+  `boot_to_prompt` lines change, to CI's values for #149 (x86_64 7993648 and 2348339.00,
+  aarch64 8159544 and 1802320.00, riscv64 5263952 and 1760800.00); every other line stays for
+  the weekly pass (D122). No other benchmark in that run was over 2x besides
+  `input_key_to_bytes`, which 5706b0ce fixed.
+- **Not yet.** M14 moves the layers, the desktop and the apps out of the base image, so a
+  component that is not installed costs nothing again (D18); stage ticks on the boot-clock
+  kernel to find riscv64's unexplained ~400k instructions; aligning the initramfs to 2 MiB so
+  the kernel maps it with large pages.
