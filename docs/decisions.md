@@ -13968,7 +13968,9 @@ the license, by an explicit instruction recorded here.
   Canadian); a layout switch key and several layouts; Num and Scroll Lock lights, LEDs on
   other keyboards; the launcher's search beyond ASCII; characters beyond Latin-1 and `€` in
   the fonts (Ÿ first, D185's glyph notes); the Settings pane's Caps Lock line follows the key
-  only while Settings is focused; measured costs.
+  only while Settings is focused; measured costs. From round 2 review: a Caps Lock light a
+  keyboard refused is retried only at the next poll, so it can stay wrong until the next
+  input event.
 
 ## D186 Desktop polish: the boot screen with its progress, the pointer drawn by the GPU's cursor, the `Hand` and `Busy` pointers, windows dragged partly off screen, F11, a full-screen terminal on small displays, the cursor's blink, console output that never waits for the desktop's repaint, `TERM=xterm` (batch part 34; v0.3.0 items 14, 30 and 31's "Next"; D114's, D115's and D128's "Not yet"; extends D109, D112, D114, D115, D127, D128, D156, D184) — Decided by the build loop (the screendump's pointer decided by research; the hand, the hourglass, the full-screen console and the boot screen's tiers and end designed by Claude Fable, `docs/ux/desktop-polish-v0.3.md`)
 
@@ -14449,7 +14451,9 @@ the license, by an explicit instruction recorded here.
   in the signal frame, `riscv_hwprobe`, QEMU's `-cpu rv64,v=true,zba=true,zbb=true,zbs=true`;
   then the riscv64 runtime module, the NDK's `riscv64-linux-android35` and a staticlib built
   for `riscv64gc-unknown-linux-musl`); `debuggerd`'s `crash_dump64`; `PR_SET_VMA` names in
-  `/proc/<pid>/maps`; a vDSO; `rseq` and `clone3`.
+  `/proc/<pid>/maps`; a vDSO; `rseq` and `clone3`. From round 2 review: a datagram sender
+  refused by the user reserve under memory pressure is never registered as a waiter, so its
+  `POLLOUT` wait gets no wake-up.
 
 ## D189 Windows console breadth: programs that start other programs through `CreateProcessW` and `CreateProcessA`, anonymous pipes, inherited, duplicated and protected handles, waits, exit codes and `TerminateProcess` on children (batch part 37, slice 37a; v0.3.0 items 18, 19 and 19b's "Next"; D121's, D124's and D178's "Not yet"; extends D118, D121, D146, D177, D178) — Decided by the build loop (pipe errors, protected handles, `CREATE_SUSPENDED` and object handles' flags decided by research; MinGW's toolchain and imports decided by research)
 
@@ -16959,3 +16963,6 @@ the license, by an explicit instruction recorded here.
   child's. A wait that finds only a hidden change yields and looks again instead of sleeping
   or taking `EINTR` for the signal. Sending the signal stays outside the table's lock, which
   remains a leaf lock.
+- **Not yet.** From round 2 review: a wait that finds only a hidden change yields with no
+  bound, so a future caller that drops an announcement would leave its parent's waits
+  spinning (`#[must_use]` on the notices would catch it).
