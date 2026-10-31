@@ -11391,7 +11391,10 @@ the license, by an explicit instruction recorded here.
   `pselect6`; copy on write after `fork`; `MAP_SHARED` anonymous memory across `fork`;
   `shm_open`'s path in `/dev/shm` shared with a child; a writable `MAP_SHARED` of a `/tmp` file
   seen by `pread` after `msync` and seeing a `write`; `MADV_DONTFORK`'s `SIGSEGV` and
-  `MADV_WIPEONFORK`'s zeros).
+  `MADV_WIPEONFORK`'s zeros). The `MADV_DONTFORK` child sets `SIGSEGV` back to its default
+  before it touches the page, so the line checks the kernel's answer (the page is gone in the
+  child: a fault and `SIGSEGV`) and not Rust std's own `SIGSEGV` handler, which on Linux
+  resets itself to the default, returns and faults again.
 - **Decided without research.** Shared file pages read in full when a mapping is made rather
   than when touched, and past the end read as zeros rather than `SIGBUS`, to reuse the lent
   frames that memory files already use (their limits come with them: no `mremap`,
@@ -11427,7 +11430,10 @@ the license, by an explicit instruction recorded here.
   mappings; `mremap`, `MADV_DONTNEED`, `PROT_NONE` and executable shared mappings (lent frames'
   limits); `MAP_SHARED` anonymous memory taking frames when touched, and with no access or
   executable surviving `fork`; dirty tracking for write-back and a periodic write-back;
-  `MADV_DONTFORK`'s mark on the part an in-place `mremap` grows by; wake lists for the
+  `MADV_DONTFORK`'s mark on the part an in-place `mremap` grows by; a check that a forked
+  child faulting with Rust std's `SIGSEGV` handler still in place (its alternate stack
+  inherited, the handler resetting itself and returning, the fault repeating) ends with
+  `SIGSEGV` as on Linux, which the `linux-events` child no longer exercises; wake lists for the
   console, windows, network sockets and `/dev/agent`; `TFD_TIMER_CANCEL_ON_SET` and a
   `CLOCK_REALTIME` timer noticing `clock_settime` while a waiter sleeps; `EPOLLEXCLUSIVE`
   waking one waiter; more than 64 events per `epoll_wait`; signalfd readiness per file rather
