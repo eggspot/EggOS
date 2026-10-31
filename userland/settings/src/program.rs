@@ -9,7 +9,10 @@ use eggos_eggfs::CheckMode;
 use eggos_files::storage;
 use eggos_mcp::audit::calls::LogFiles;
 use eggos_mcp::grant_files::{self, GrantFiles, SaveError};
-use eggos_mcp::grants;
+use eggos_mcp::grant_prompt::{
+    ANSWER_BYTES, PROMPT_OPTION, PromptAnswer, QUESTION_BYTES, offers_always, read_question,
+};
+use eggos_mcp::grants::{self, AgentId, Grant};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
@@ -17,6 +20,7 @@ use eggos_settings::activity::read_activity;
 use eggos_settings::agents_pane::GrantsRead;
 use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
+use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
@@ -24,10 +28,16 @@ use eggos_settings::settings_window::{
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
 };
-use eggos_toolkit::application::{self, Application};
+use eggos_toolkit::application::{self, Application, View};
+use eggos_toolkit::canvas::Canvas;
+use eggos_toolkit::damage::Damage;
+use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
+use eggos_toolkit::input::Input;
 use eggos_toolkit::text::Text;
-use eggos_toolkit::tree::{Response, WidgetTree};
-use eggos_toolkit::window::{Keyboard, Window, WindowServer, now_ms};
+use eggos_toolkit::tree::{PointerShape, Response, WidgetTree};
+use eggos_toolkit::window::{
+    FIXED_SIZE, Keyboard, PERSON_INPUT_ONLY, Window, WindowServer, now_ms,
+};
 
 const STANDARD_OUTPUT: usize = 1;
 const STANDARD_ERROR: usize = 2;
@@ -772,6 +782,162 @@ impl Settings {
     }
 }
 
+const STANDARD_INPUT: usize = 0;
+
+struct PromptWindow {
+    prompt: GrantPrompt,
+    agent: Option<AgentId>,
+    class: Option<Grant>,
+    destructive: bool,
+}
+
+impl PromptWindow {
+    fn finish(&mut self) -> ! {
+        let mut answer = self.prompt.answer().unwrap_or(PromptAnswer::Deny);
+        if answer == PromptAnswer::Always {
+            answer = match offers_always(self.class, self.destructive) {
+                true if self.write_always() => PromptAnswer::Always,
+                true => PromptAnswer::Once,
+                false => PromptAnswer::Deny,
+            };
+        }
+        let mut line = Text::<ANSWER_BYTES>::new();
+        let _ = line.write_str(answer.word());
+        let _ = line.write_str("\n");
+        write_all(STANDARD_OUTPUT, line.as_str().as_bytes());
+        eggos_runtime::syscall::exit(0)
+    }
+
+    fn write_always(&self) -> bool {
+        let (Some(agent), Some(class)) = (self.agent, self.class) else {
+            return false;
+        };
+        let Some(store) = allowed_always(grant_files::load(&mut LinuxGrantFiles), &agent, class)
+        else {
+            return false;
+        };
+        grant_files::save(&mut LinuxGrantFiles, &store).is_ok()
+    }
+
+    fn finish_if_answered(&mut self) {
+        if self.prompt.answer().is_some() {
+            self.finish();
+        }
+    }
+}
+
+impl View for PromptWindow {
+    fn resize(&mut self, width: i32, height: i32) {
+        self.prompt.tree().resize(width, height);
+    }
+
+    fn handle(&mut self, input: Input, time_ms: u32) -> bool {
+        self.prompt.handle(input, time_ms);
+        self.finish_if_answered();
+        true
+    }
+
+    fn take_damage(&mut self) -> Damage {
+        self.prompt.tree().take_damage()
+    }
+
+    fn paint(&mut self, canvas: &mut Canvas<'_>) {
+        self.prompt.tree().paint(canvas);
+    }
+
+    fn pointer_shape(&mut self) -> PointerShape {
+        self.prompt.tree().pointer_shape()
+    }
+
+    fn deadline(&mut self, now_ms: u32) -> Option<u32> {
+        Some(self.prompt.deadline(now_ms))
+    }
+
+    fn tick(&mut self, now_ms: u32) {
+        self.prompt.tick(now_ms);
+        self.finish_if_answered();
+    }
+
+    fn close_requested(&mut self, _time_ms: u32) -> bool {
+        self.prompt.close_requested();
+        self.finish()
+    }
+
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.prompt.tree().describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
+        let (outcome, response) = self.prompt.tree().act(element, action, text, time_ms);
+        self.prompt.respond(response);
+        self.finish_if_answered();
+        outcome
+    }
+}
+
+fn read_question_line(line: &mut [u8]) -> usize {
+    let mut length = 0;
+    while length < line.len() && !line[..length].contains(&b'\n') {
+        let space = &mut line[length..];
+        match call(
+            number::READ,
+            [
+                STANDARD_INPUT,
+                space.as_mut_ptr() as usize,
+                space.len(),
+                0,
+                0,
+                0,
+            ],
+        ) {
+            Ok(0) => break,
+            Ok(read) => length += read,
+            Err(Errno::EINTR) => {}
+            Err(_) => break,
+        }
+    }
+    length
+}
+
+fn grant_prompt() -> i32 {
+    let mut line = [0u8; QUESTION_BYTES];
+    let length = read_question_line(&mut line);
+    let Some(question) = read_question(&line[..length]) else {
+        say_error(&[b"--grant-prompt: stdin holds no question; the answer is deny"]);
+        write_all(STANDARD_OUTPUT, b"deny\n");
+        return USAGE_STATUS;
+    };
+    let mut window = match Window::create_with_flags(
+        prompt::TITLE,
+        prompt::WIDTH,
+        prompt::HEIGHT,
+        (prompt::WIDTH, prompt::HEIGHT),
+        FIXED_SIZE | PERSON_INPUT_ONLY,
+    ) {
+        Ok(window) => window,
+        Err(error) => {
+            say_error(&[b"cannot open the grant prompt: ", error.message()]);
+            return 1;
+        }
+    };
+    let mut id = [0u8; grants::MAX_AGENT_ID_BYTES];
+    let mut view = PromptWindow {
+        prompt: GrantPrompt::new(&question, now_ms()),
+        agent: question
+            .agent
+            .decode_into(&mut id)
+            .and_then(|id| AgentId::stored(id.as_bytes())),
+        class: question.class,
+        destructive: question.destructive,
+    };
+    if let Err(error) = application::run_view(&mut window, &mut view) {
+        say_error(&[b"the grant prompt: ", error.message()]);
+    }
+    view.prompt.close_requested();
+    view.finish()
+}
+
 fn open_window() -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
@@ -814,6 +980,10 @@ pub fn run(startup: &Startup) -> i32 {
         DISK_COMMAND_NAME => return crate::disk_system::run(startup),
         TERMINAL_PROGRAM_NAME => return eggos_terminal_window::program::run(startup),
         _ => {}
+    }
+    let mut options = startup.arguments().skip(1).map(CStr::to_bytes);
+    if options.next() == Some(PROMPT_OPTION.as_bytes()) && options.next().is_none() {
+        return grant_prompt();
     }
     let mut arguments = [""; MAX_ARGUMENTS];
     let mut count = 0;
