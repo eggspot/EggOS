@@ -16200,7 +16200,7 @@ the license, by an explicit instruction recorded here.
   them sleeps as the clock read when it started.
 - Choices made without research: the zone table from the TZif footers of the host's tzdata
   2026e, generated once and kept in the tree as data; abbreviations as Windows's zone names;
-  `date -s` and the Settings pane still set the clock in UTC; the alarm is kept and reported,
+  `date -s` and `clock_set` still set the clock in UTC; the alarm is kept and reported,
   and reading `/dev/rtc0` to wait for it is not answered yet; the layers read the settings
   file at each call (Windows) or once until `tzset` (macOS).
 - Check. Host tests: every zone's rule reads; Berlin, New York, Sydney, Nuuk (a change at
@@ -16208,7 +16208,16 @@ the license, by an explicit instruction recorded here.
   local times back to instants; `date` with `TZ`, with `time.zone`, with `-u` and with an unknown
   zone; `settings set time.zone`; `struct rtc_time` both ways and an alarm's next time of day.
   QEMU: the shell session runs `TZ=Asia/Kolkata date +...%Z%z` and expects `IST+0530`.
-- Not yet: the zone picker in Settings' Date & time pane (Claude Fable's design,
-  docs/ux/date-time-v0.3.md), the desktop's clock in local time, the C runtime's `localtime`
+- The zone picker (slice 42e; Claude Fable's design, docs/ux/date-time-v0.3.md section 8): the
+  Date & time pane shows `Now` in the chosen zone (`..., 15:05:09 CET`, a numeric
+  abbreviation shown as `UTC-03:00`), the zone's name and facts (`UTC+01:00 CET, standard
+  time`), a search field and a list whose first row is always the chosen zone, then the zones
+  whose name (`_` and `/` read as spaces) or current abbreviation match. A click or an arrow
+  step on a row saves `time.zone` at once (`Request::SetTimeZone`); a refused write puts the
+  selection back and says why on the status line. `Set to` reads the typed time in the chosen
+  zone (`eggos_calendar::parse_local_setting`: a trailing `Z` or ` UTC` still means UTC, the
+  year range applies to the instant). The Settings tree's `CAPACITY` is 149.
+- Not yet: the desktop's clock in local time, `date -s` and `clock_set` reading local time as
+  the pane does, the list's rows named by their text in `wm show`, the C runtime's `localtime`
   and `_tzset` in the Windows layer, past rules of a zone, reading `/dev/rtc0` for its alarm and
   `poll` on it, `timerfd` on the alarm clocks, the real-time clock's own interrupt.

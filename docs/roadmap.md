@@ -535,8 +535,9 @@ D16):
     Time zones (D194, written, unchecked): `TZ` and `settings set time.zone` choose one of the
     419 IANA zones, which `date`, `ls -l` and the Windows and macOS layers' local-time calls
     follow; `/dev/rtc0`'s time and alarm `ioctl`s; the alarm clocks; absolute wall-clock sleeps
-    re-measured when the clock is set. Next: the zone picker in Settings, the desktop's clock
-    in local time, waiting for the alarm on `/dev/rtc0`.
+    re-measured when the clock is set; Settings' zone picker (Claude Fable's design), with
+    `Set to` in local time. Next: the desktop's clock in local time, `date -s` in local time,
+    waiting for the alarm on `/dev/rtc0`.
 
 The release path (the release-path review's issues #141-#145, after the items above):
 - #141 **done** — users who download the release can install and open Windows and macOS apps
