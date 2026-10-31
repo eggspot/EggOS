@@ -1199,6 +1199,24 @@ fn write_integer(target: usize, value: u64, size: eggos_c_format::scan::Size) {
     }
 }
 
+fn write_wide(target: usize, bytes: &[u8], nul: bool) {
+    let target = target as *mut u16;
+    let mut count = 0;
+    for character in text::utf8_chars(bytes) {
+        let mut units = [0u16; 2];
+        for &unit in character.encode_utf16(&mut units).iter() {
+            // SAFETY: the argument for `%lc`, `%ls`, `%l[`, `%S` and `%C` points at room for
+            // the field's UTF-16 units and, but for `%lc` and `%C`, a NUL.
+            unsafe { target.wrapping_add(count).write_unaligned(unit) };
+            count += 1;
+        }
+    }
+    if nul {
+        // SAFETY: as above.
+        unsafe { target.wrapping_add(count).write_unaligned(0) };
+    }
+}
+
 fn store_field(
     field: eggos_c_format::scan::Field<'_>,
     take: &mut dyn FnMut() -> usize,
@@ -1221,14 +1239,33 @@ fn store_field(
         Field::Float(value, Precision::Single) => unsafe {
             (target as *mut f32).write_unaligned(value as f32)
         },
-        Field::Characters(bytes) | Field::WideCharacters(bytes) => {
+        Field::Characters(bytes) => {
             if secure && (take() as u32 as usize) < bytes.len() {
                 return false;
             }
             // SAFETY: the argument for `%c` points at room for its characters.
             unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len()) };
         }
-        Field::Text(bytes) | Field::WideText(bytes) => {
+        Field::WideCharacters(bytes) => {
+            if secure && (take() as u32 as usize) < text::utf16_length(bytes) {
+                return false;
+            }
+            write_wide(target, bytes, false);
+        }
+        Field::WideText(bytes) => {
+            if secure {
+                let room = take() as u32 as usize;
+                if room <= text::utf16_length(bytes) {
+                    if room > 0 {
+                        // SAFETY: the buffer holds `room` wide characters, at least one.
+                        unsafe { (target as *mut u16).write_unaligned(0) };
+                    }
+                    return false;
+                }
+            }
+            write_wide(target, bytes, true);
+        }
+        Field::Text(bytes) => {
             if secure {
                 let room = take() as u32 as usize;
                 if room <= bytes.len() {

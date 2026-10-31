@@ -6,7 +6,8 @@
 //! next argument points. A field is the longest prefix of a number the input holds; what the
 //! number does not use (the `x` of `0x`, the `e` of `1e`) goes back to the input, as Darwin's
 //! does. The [`Dialect`] says what a size means: Darwin's `l` is 64 bits and makes `%lc`,
-//! `%ls` and `%l[` wide; Windows' `l` is 32 bits.
+//! `%ls` and `%l[` wide; Windows' `l` is 32 bits and makes them wide too, as do `w`, `%S` and
+//! `%C` in the narrow functions, while `h` keeps them narrow.
 
 use crate::Dialect;
 use crate::number::{self, parse_float, parse_integer};
@@ -137,6 +138,7 @@ fn parse_spec(format: &[u8], mut at: usize, dialect: Dialect) -> Option<(Spec, u
     }
     let darwin = matches!(dialect, Dialect::Darwin);
     let (mut size, mut precision, mut wide) = (Size::Int, Precision::Single, false);
+    let mut narrow = false;
     let rest = &format[at.min(format.len())..];
     let taken = match rest {
         [b'h', b'h', ..] => {
@@ -145,6 +147,7 @@ fn parse_spec(format: &[u8], mut at: usize, dialect: Dialect) -> Option<(Spec, u
         }
         [b'h', ..] => {
             size = Size::Short;
+            narrow = true;
             1
         }
         [b'l', b'l', ..] => {
@@ -155,8 +158,8 @@ fn parse_spec(format: &[u8], mut at: usize, dialect: Dialect) -> Option<(Spec, u
             precision = Precision::Double;
             if darwin {
                 size = Size::Wide;
-                wide = true;
             }
+            wide = true;
             1
         }
         [b'L', ..] => {
@@ -183,14 +186,22 @@ fn parse_spec(format: &[u8], mut at: usize, dialect: Dialect) -> Option<(Spec, u
             size = Size::Wide;
             1
         }
-        [b'w', ..] if !darwin => 1,
+        [b'w', ..] if !darwin => {
+            wide = true;
+            1
+        }
         _ => 0,
     };
     at += taken;
     let mut conversion = *format.get(at)?;
-    if darwin && matches!(conversion, b'C' | b'S') {
-        wide = true;
+    let upper = matches!(conversion, b'C' | b'S');
+    if upper {
         conversion = conversion.to_ascii_lowercase();
+    }
+    match dialect {
+        Dialect::Darwin => wide |= upper,
+        Dialect::Windows { wide_strings } if !wide && !narrow => wide = wide_strings != upper,
+        Dialect::Windows { .. } => {}
     }
     if conversion == b'p' {
         size = Size::Wide;
@@ -679,7 +690,47 @@ mod tests {
         assert_eq!(seen, ["WideCharacters([195, 169])"]);
         let (_, seen) = fields_by(DARWIN, "\u{e9}\u{e9}\u{e9}", "%2ls");
         assert_eq!(seen, ["WideText([195, 169, 195, 169])"]);
-        assert_eq!(fields("ab", "%ls").1, ["Text([97, 98])"]);
+        assert_eq!(fields("ab", "%ls").1, ["WideText([97, 98])"]);
+    }
+
+    #[test]
+    fn windows_narrow_scanf_reads_l_w_capital_s_and_c_wide_and_h_narrow() {
+        let (count, seen) = fields("ab c d e", "%S %C %wc %l[a-z]");
+        assert_eq!(count, 4);
+        assert_eq!(
+            seen,
+            [
+                "WideText([97, 98])",
+                "WideCharacters([99])",
+                "WideCharacters([100])",
+                "WideText([101])"
+            ]
+        );
+        let (_, seen) = fields("ab c", "%hS %hC");
+        assert_eq!(seen, ["Text([97, 98])", "Characters([99])"]);
+        let (_, seen) = fields("ab c 7", "%s %c %ld");
+        assert_eq!(
+            seen,
+            ["Text([97, 98])", "Characters([99])", "Signed(7, Int)"]
+        );
+    }
+
+    #[test]
+    fn windows_wide_scanf_reads_s_and_c_wide_and_capital_ones_narrow() {
+        let wide = Rules {
+            dialect: Dialect::Windows { wide_strings: true },
+            utf8: true,
+        };
+        let (_, seen) = fields_by(wide, "ab c de f", "%s %c %S %C");
+        assert_eq!(
+            seen,
+            [
+                "WideText([97, 98])",
+                "WideCharacters([99])",
+                "Text([100, 101])",
+                "Characters([102])"
+            ]
+        );
     }
 
     #[test]
