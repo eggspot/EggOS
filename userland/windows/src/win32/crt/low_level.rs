@@ -107,16 +107,18 @@ unsafe extern "efiapi" fn sopen_s(
     sharing: i32,
     _permissions: i32,
 ) -> i32 {
-    // SAFETY: `_sopen_s`'s contract: a writable `int` and a NUL-terminated path.
-    unsafe {
-        opened_into(out, sharing, || match narrow_path(path) {
+    let open = || {
+        // SAFETY: `_sopen_s`'s contract: a NUL-terminated path.
+        match unsafe { narrow_path(path) } {
             Some(path) => open_path(text::utf8_chars(path), flags),
             None => {
                 set_errno(errno::EINVAL);
                 FAILED
             }
-        })
-    }
+        }
+    };
+    // SAFETY: `_sopen_s`'s contract: a writable `int`.
+    unsafe { opened_into(out, sharing, open) }
 }
 
 unsafe extern "efiapi" fn wsopen_s(
@@ -126,16 +128,18 @@ unsafe extern "efiapi" fn wsopen_s(
     sharing: i32,
     _permissions: i32,
 ) -> i32 {
-    // SAFETY: `_wsopen_s`'s contract: a writable `int` and a NUL-terminated path.
-    unsafe {
-        opened_into(out, sharing, || match wide_path(path) {
+    let open = || {
+        // SAFETY: `_wsopen_s`'s contract: a NUL-terminated path.
+        match unsafe { wide_path(path) } {
             Some(path) => open_path(text::utf16_chars(path), flags),
             None => {
                 set_errno(errno::EINVAL);
                 FAILED
             }
-        })
-    }
+        }
+    };
+    // SAFETY: `_wsopen_s`'s contract: a writable `int`.
+    unsafe { opened_into(out, sharing, open) }
 }
 
 fn descriptor(fd: i32) -> Option<usize> {

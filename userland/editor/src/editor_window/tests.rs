@@ -388,9 +388,12 @@ fn the_scroll_bars_of_a_very_wide_line_stay_in_their_tracks() {
     let area = window.area();
     let (x, y) = (area.x + area.width / 2, area.y + area.height / 2);
     window.handle(&mut files, Input::SidewaysWheel { x, y, notches: 2 }, 30);
-    let (_, right) = window.horizontal_bar().unwrap();
-    assert!(right.x > thumb.x, "the wheel's sideways turn scrolls right");
+    assert!(
+        window.scroll_x > 0,
+        "the wheel's sideways turn scrolls right"
+    );
     window.handle(&mut files, Input::SidewaysWheel { x, y, notches: -2 }, 40);
+    assert_eq!(window.scroll_x, 0);
     let (_, back) = window.horizontal_bar().unwrap();
     assert_eq!(back.x, thumb.x);
 }

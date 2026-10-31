@@ -214,7 +214,6 @@ struct FindInfo {
     lparam: usize,
 }
 
-/// Win32's `NMLISTVIEW`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct NmListView {
@@ -229,7 +228,6 @@ struct NmListView {
     lparam: usize,
 }
 
-/// Win32's `NMITEMACTIVATE`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct NmItemActivate {
@@ -245,7 +243,6 @@ struct NmItemActivate {
     key_flags: u32,
 }
 
-/// Win32's `NMLVKEYDOWN`, packed to one byte as commctrl.h declares it.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct NmListKeyDown {
@@ -254,7 +251,6 @@ struct NmListKeyDown {
     flags: u32,
 }
 
-/// The start of Win32's `NMHEADERW`: the item an `HDN_ITEMCLICKW` names.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct HeaderNotification {
@@ -328,8 +324,6 @@ fn colour_parameter(value: usize) -> Option<u32> {
     }
 }
 
-/// Repaints the list and its header, after moving and showing the header where the list's
-/// style and scroll bars put it.
 fn refresh(window: usize) {
     with(|gui| {
         let (header, bounds) = read_state::<ListState, _>(gui, window, |entry, control| {
@@ -464,9 +458,6 @@ fn send_activation(
     });
 }
 
-/// Pairs `LVN_ITEMCHANGING` and `LVN_ITEMCHANGED` for every row `wanted` changes, the rows
-/// losing a bit first, each in index order; a row whose `LVN_ITEMCHANGING` is answered nonzero
-/// keeps its state.
 fn change_states(window: usize, wanted: Wanted) {
     for gaining in [false, true] {
         let mut from = 0;
@@ -1287,19 +1278,25 @@ fn get_item(window: usize, index: Option<usize>, lparam: usize, text_only: bool)
                 )
             };
         }
-        // SAFETY: `target` is the program's `LVITEMW`, as read above; each write is one of its
-        // fields.
-        unsafe {
-            if mask & LVIF_IMAGE != 0 {
-                (&raw mut (*target).image).write_unaligned(list.image(index));
-            }
-            if mask & LVIF_PARAM != 0 {
-                (&raw mut (*target).lparam).write_unaligned(list.lparam(index));
-            }
-            if mask & LVIF_STATE != 0 {
-                let bits = list.state(index) & item.state_mask;
-                (&raw mut (*target).state).write_unaligned(bits);
-            }
+        if mask & LVIF_IMAGE != 0 {
+            // SAFETY: `target` is the program's `LVITEMW`, as read above; each write is one of
+            // its fields.
+            let image = unsafe { &raw mut (*target).image };
+            // SAFETY: as above.
+            unsafe { image.write_unaligned(list.image(index)) };
+        }
+        if mask & LVIF_PARAM != 0 {
+            // SAFETY: as above.
+            let lparam = unsafe { &raw mut (*target).lparam };
+            // SAFETY: as above.
+            unsafe { lparam.write_unaligned(list.lparam(index)) };
+        }
+        if mask & LVIF_STATE != 0 {
+            let bits = list.state(index) & item.state_mask;
+            // SAFETY: as above.
+            let state = unsafe { &raw mut (*target).state };
+            // SAFETY: as above.
+            unsafe { state.write_unaligned(bits) };
         }
         match text_only {
             true => copied,
@@ -1423,15 +1420,16 @@ fn hit_test(window: usize, lparam: usize, subitems: bool) -> usize {
     if lparam == 0 {
         return FAILED;
     }
+    let info = lparam as *mut HitTestInfo;
     // SAFETY: `LVM_HITTEST`'s and `LVM_SUBITEMHITTEST`'s `lParam` is the program's
     // `LVHITTESTINFO`, whose point is read here.
-    let (x, y) = unsafe {
-        let info = lparam as *const HitTestInfo;
-        (
-            (&raw const (*info).x).read_unaligned(),
-            (&raw const (*info).y).read_unaligned(),
-        )
-    };
+    let x_at = unsafe { &raw const (*info).x };
+    // SAFETY: as above.
+    let y_at = unsafe { &raw const (*info).y };
+    // SAFETY: as above.
+    let x = unsafe { x_at.read_unaligned() };
+    // SAFETY: as above.
+    let y = unsafe { y_at.read_unaligned() };
     let answer = with_state::<ListState, _>(window, |entry, control| {
         let layout = layout_of(entry, &control.list);
         let client = entry.client();
@@ -1466,15 +1464,20 @@ fn hit_test(window: usize, lparam: usize, subitems: bool) -> usize {
         }
     });
     let (found, item, sub_item) = answer.unwrap_or((LVHT_NOWHERE, -1, -1));
-    // SAFETY: the program's `LVHITTESTINFO`, as above; `iSubItem` is written only for
-    // `LVM_SUBITEMHITTEST`, which needs the longer structure.
-    unsafe {
-        let info = lparam as *mut HitTestInfo;
-        (&raw mut (*info).flags).write_unaligned(found);
-        (&raw mut (*info).item).write_unaligned(item);
-        if subitems {
-            (&raw mut (*info).sub_item).write_unaligned(sub_item);
-        }
+    // SAFETY: the program's `LVHITTESTINFO`, as above.
+    let flags_at = unsafe { &raw mut (*info).flags };
+    // SAFETY: as above.
+    let item_at = unsafe { &raw mut (*info).item };
+    // SAFETY: as above.
+    unsafe { flags_at.write_unaligned(found) };
+    // SAFETY: as above.
+    unsafe { item_at.write_unaligned(item) };
+    if subitems {
+        // SAFETY: as above; `iSubItem` is written only for `LVM_SUBITEMHITTEST`, which needs the
+        // longer structure.
+        let sub_item_at = unsafe { &raw mut (*info).sub_item };
+        // SAFETY: as above.
+        unsafe { sub_item_at.write_unaligned(sub_item) };
     }
     item as isize as usize
 }
@@ -1536,25 +1539,34 @@ fn column_message(window: usize, number: u32, wparam: usize, lparam: usize) -> u
                 if wparam >= columns.count() {
                     return 0;
                 }
-                // SAFETY: `target` is the program's `LVCOLUMNW`, as read above; `pszText` holds
-                // `cchTextMax` writable units when `LVCF_TEXT` asks for the title.
-                unsafe {
-                    if column.mask & LVCF_FMT != 0 {
-                        (&raw mut (*target).format).write_unaligned(columns.format(wparam));
-                    }
-                    if column.mask & LVCF_WIDTH != 0 {
-                        (&raw mut (*target).width).write_unaligned(columns.width(wparam));
-                    }
-                    if column.mask & LVCF_SUBITEM != 0 {
-                        (&raw mut (*target).sub_item).write_unaligned(wparam as i32);
-                    }
-                    if column.mask & LVCF_TEXT != 0 {
+                if column.mask & LVCF_FMT != 0 {
+                    // SAFETY: `target` is the program's `LVCOLUMNW`, as read above.
+                    let format = unsafe { &raw mut (*target).format };
+                    // SAFETY: as above.
+                    unsafe { format.write_unaligned(columns.format(wparam)) };
+                }
+                if column.mask & LVCF_WIDTH != 0 {
+                    // SAFETY: as above.
+                    let width = unsafe { &raw mut (*target).width };
+                    // SAFETY: as above.
+                    unsafe { width.write_unaligned(columns.width(wparam)) };
+                }
+                if column.mask & LVCF_SUBITEM != 0 {
+                    // SAFETY: as above.
+                    let sub_item = unsafe { &raw mut (*target).sub_item };
+                    // SAFETY: as above.
+                    unsafe { sub_item.write_unaligned(wparam as i32) };
+                }
+                if column.mask & LVCF_TEXT != 0 {
+                    // SAFETY: `pszText` holds `cchTextMax` writable units when `LVCF_TEXT` asks
+                    // for the title.
+                    unsafe {
                         window_text::copy_out(
                             columns.text(wparam),
                             column.text,
                             column.text_max.max(0) as usize,
-                        );
-                    }
+                        )
+                    };
                 }
                 1
             })

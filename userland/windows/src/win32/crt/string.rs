@@ -273,12 +273,9 @@ unsafe extern "efiapi" fn strrchr(text: *const u8, value: i32) -> *mut u8 {
 
 unsafe fn span_length(text: *const u8, set: *const u8, inside: bool) -> usize {
     // SAFETY: the caller's duty: two NUL-terminated strings.
-    let (text, set) = unsafe {
-        (
-            core::ffi::CStr::from_ptr(text.cast()).to_bytes(),
-            core::ffi::CStr::from_ptr(set.cast()).to_bytes(),
-        )
-    };
+    let text = unsafe { core::ffi::CStr::from_ptr(text.cast()) }.to_bytes();
+    // SAFETY: as above.
+    let set = unsafe { core::ffi::CStr::from_ptr(set.cast()) }.to_bytes();
     text.iter()
         .take_while(|byte| set.contains(byte) == inside)
         .count()

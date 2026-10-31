@@ -365,7 +365,6 @@ unsafe extern "C" fn pointer_store_tag(value: *mut u8, case: u32, empty_cases: u
     store_pointer_word_tag(value, case, empty_cases, 8, 0);
 }
 
-/// How a reference-counted word is retained and released.
 #[derive(Debug, Clone, Copy)]
 enum Reference {
     Native,
@@ -1033,10 +1032,10 @@ impl ClassMetadata {
 
 /// Fills the descriptors' relative pointers; once, before the program runs.
 pub fn set_up() {
-    store_relative(&SWIFT_MODULE.name, b"Swift\0".as_ptr() as usize);
+    store_relative(&SWIFT_MODULE.name, c"Swift".as_ptr() as usize);
     store_relative(
         &CORE_GRAPHICS_MODULE.name,
-        b"CoreGraphics\0".as_ptr() as usize,
+        c"CoreGraphics".as_ptr() as usize,
     );
     fill_standard_structs();
     CGFLOAT_DESCRIPTOR.fill_in(&CORE_GRAPHICS_MODULE, b"CGFloat\0");

@@ -85,8 +85,10 @@ pub fn forget_dispatches_below(stack: u64) {
 
 /// The unwind in progress on this thread, if any.
 pub fn unwind_target() -> Option<&'static UnwindTarget> {
+    // SAFETY: the slot is this thread's TEB word.
+    let target = unsafe { slot(teb::UNWIND_TARGET).read() } as *const UnwindTarget;
     // SAFETY: the slot holds null or the target of an unwind whose frame is running.
-    unsafe { (slot(teb::UNWIND_TARGET).read() as *const UnwindTarget).as_ref() }
+    unsafe { target.as_ref() }
 }
 
 /// Resumes the thread at `context`, forgetting the layer's calls and dispatches below it.
@@ -154,8 +156,10 @@ pub fn dispatch(record: *mut ExceptionRecord, context: *mut Context, origin: Ori
 }
 
 fn continue_execution(record: *mut ExceptionRecord, context: *mut Context) -> ! {
-    // SAFETY: the dispatch's record and `CONTEXT`.
-    let (flags, pc) = unsafe { ((*record).flags, (*context).pc()) };
+    // SAFETY: the dispatch's record.
+    let flags = unsafe { (*record).flags };
+    // SAFETY: the dispatch's `CONTEXT`.
+    let pc = unsafe { (*context).pc() };
     if flags & flag::NONCONTINUABLE != 0 {
         crate::fault_handler::end_with_exception(status::NONCONTINUABLE_EXCEPTION, pc);
     }
@@ -296,18 +300,22 @@ pub fn deliver_fault(ucontext: *mut u8, exception: &fault::Exception, signal: i3
     let record_at = (block + context_size) as *mut ExceptionRecord;
     // SAFETY: the block lies on the thread's stack below the faulting frame's stack pointer
     // (and the gap Windows' conventions leave free), which nothing uses; it is 16-byte aligned.
-    unsafe {
-        context_at.write(context);
-        record_at.write(record);
-    }
+    unsafe { context_at.write(context) };
+    // SAFETY: as above.
+    unsafe { record_at.write(record) };
     let arguments = [record_at as u64, context_at as u64, signal as u64];
     let put = |offset: usize, value: u64| {
         // SAFETY: the offsets are the frame's `sp`, `pc` and argument registers, which
         // `rt_sigreturn` loads back.
-        unsafe { ucontext.add(offset).cast::<u64>().write_unaligned(value) };
+        unsafe {
+            ucontext
+                .wrapping_add(offset)
+                .cast::<u64>()
+                .write_unaligned(value)
+        };
     };
     put(UCONTEXT_SP, block);
-    put(UCONTEXT_PC, fault_entry as usize as u64);
+    put(UCONTEXT_PC, fault_entry as *const () as u64);
     for (offset, value) in UCONTEXT_ARGUMENTS.iter().zip(arguments) {
         put(*offset, value);
     }
@@ -343,7 +351,11 @@ extern "C" fn raise_exception(
         let count = (count as u32 as usize).min(MAX_PARAMETERS);
         for (index, parameter) in record.parameters.iter_mut().take(count).enumerate() {
             // SAFETY: `RaiseException`'s contract: `count` parameters at `parameters`.
-            *parameter = unsafe { (parameters as *const u64).add(index).read_unaligned() };
+            *parameter = unsafe {
+                (parameters as *const u64)
+                    .wrapping_add(index)
+                    .read_unaligned()
+            };
         }
         record.parameter_count = count as u32;
     }
@@ -378,8 +390,6 @@ extern "C" fn unwind_ex(frame: u64, ip: u64, record: u64, value: u64, context: *
     resume(&reached)
 }
 
-/// `_local_unwind`: unwinds the caller's own frame to `ip`, running the termination handlers
-/// of the scopes it leaves, and continues there.
 extern "C" fn local_unwind(frame: u64, ip: u64, _: u64, _: u64, context: *mut Context) -> ! {
     unwind_ex(frame, ip, 0, 0, context)
 }

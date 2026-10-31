@@ -181,7 +181,7 @@ fn fork_loop(startup: &Startup, touch: bool) -> i32 {
         let child = call(number::CLONE, [CLONE_VFORK | SIGCHLD, 0, 0, 0, 0, 0]);
         if child == 0 {
             if touch {
-                FORK_TOUCHED.fetch_add(1, Ordering::Relaxed);
+                FORK_TOUCHED.store(FORK_TOUCHED.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
             }
             syscall::exit(0);
         }

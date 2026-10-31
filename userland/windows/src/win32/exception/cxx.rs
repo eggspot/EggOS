@@ -33,7 +33,6 @@ fn is_cxx(record: &ExceptionRecord) -> bool {
         && (CXX_MAGIC..=MAGIC_LAST).contains(&record.parameters[0])
 }
 
-/// Ends the process as `std::terminate` does, saying why.
 fn terminate_with(reason: &[u8]) -> ! {
     super::super::crt::end_abnormally(reason, TERMINATE_STATUS)
 }
@@ -57,10 +56,9 @@ pub fn refresh_current_exception() {
         None => (0, 0),
     };
     // SAFETY: this thread's TEB words.
-    unsafe {
-        slot(teb::CURRENT_EXCEPTION).write(record);
-        slot(teb::CURRENT_EXCEPTION_CONTEXT).write(context);
-    }
+    unsafe { slot(teb::CURRENT_EXCEPTION).write(record) };
+    // SAFETY: as above.
+    unsafe { slot(teb::CURRENT_EXCEPTION_CONTEXT).write(context) };
 }
 
 fn destroy_object(record: &ExceptionRecord) {
@@ -124,8 +122,6 @@ fn function_data(data: FrameData) -> Option<FunctionData<'static>> {
     }
 }
 
-/// Undoes the states of a frame from `from` until `to` (or all of them), calling each state's
-/// destructor or unwind funclet.
 fn unwind_states(function: &FunctionData<'_>, frame: u64, frame_pointer: u64, from: i32, to: i32) {
     let mut state = from;
     for _ in 0..MAX_UNWIND_STEPS {
@@ -169,11 +165,10 @@ fn adjust(object: u64, catchable: &CatchableType) -> u64 {
         let base_pointer = object.wrapping_add(catchable.virtual_base_pointer as u64);
         // SAFETY: an object with a virtual base holds its virtual base table's address at
         // `virtual_base_pointer`, and the table the base's offset at the displacement.
-        let offset = unsafe {
-            let table = (base_pointer as *const u64).read_unaligned();
-            let entry = table.wrapping_add(catchable.virtual_base_displacement as i64 as u64);
-            (entry as *const i32).read_unaligned()
-        };
+        let table = unsafe { (base_pointer as *const u64).read_unaligned() };
+        let entry = table.wrapping_add(catchable.virtual_base_displacement as i64 as u64);
+        // SAFETY: as above.
+        let offset = unsafe { (entry as *const i32).read_unaligned() };
         result = result
             .wrapping_add(offset as i64 as u64)
             .wrapping_add(catchable.virtual_base_pointer as u64);
@@ -181,9 +176,6 @@ fn adjust(object: u64, catchable: &CatchableType) -> u64 {
     result
 }
 
-/// Puts the thrown `object` into the catch block's parameter at `slot`: its address for a
-/// reference, a copy of its bytes for a simple type (a pointer adjusted to the base it is
-/// caught as), or a copy made by its copy constructor.
 fn build_catch_object(
     image: &Image<'_>,
     slot: u64,
@@ -233,8 +225,6 @@ fn build_catch_object(
     }
 }
 
-/// Catches the exception `record` in the frame `frame` with `handler` of `block`: unwinds to
-/// the frame, builds the catch object, runs the catch block and resumes the function after it.
 fn catch(
     record: *mut ExceptionRecord,
     function: &FunctionData<'_>,
@@ -279,15 +269,14 @@ fn catch(
     };
     let mut bridge = Bridge::new(frames::caller_of(&parent, true), Some(state));
     let frame_pointer = frames::frame_pointer(&parent);
+    let caught = bridge
+        .catch
+        .as_ref()
+        .map_or(0, |catch| &raw const catch.record as u64);
     // SAFETY: this thread's TEB words; the record lives in the bridge while the block runs.
-    unsafe {
-        let caught = bridge
-            .catch
-            .as_ref()
-            .map_or(0, |catch| &raw const catch.record as u64);
-        slot(teb::CURRENT_EXCEPTION).write(caught);
-        slot(teb::CURRENT_EXCEPTION_CONTEXT).write(dispatch.context as u64);
-    }
+    unsafe { slot(teb::CURRENT_EXCEPTION).write(caught) };
+    // SAFETY: as above.
+    unsafe { slot(teb::CURRENT_EXCEPTION_CONTEXT).write(dispatch.context as u64) };
     // SAFETY: the catch block's funclet, of the function whose frame is `frame`, which the
     // unwind left in the try block's state.
     let returned =
@@ -305,8 +294,6 @@ fn catch(
     dispatch::resume(&resumed)
 }
 
-/// Searches the try blocks around `state` for a handler of `record`; catches it (and does
-/// not return) if one is found.
 fn search(
     record: *mut ExceptionRecord,
     function: &FunctionData<'_>,
@@ -365,10 +352,6 @@ fn search(
     }
 }
 
-/// # Safety
-/// Called as a language handler: a record, the frame's establisher, a `CONTEXT` and the
-/// dispatcher context of a frame whose handler data starts with the image-relative address of
-/// its C++ data, compressed when `compressed`.
 unsafe fn frame_handler(
     compressed: bool,
     record: *mut ExceptionRecord,
@@ -437,8 +420,6 @@ unsafe fn frame_handler(
     disposition::CONTINUE_SEARCH
 }
 
-/// # Safety
-/// As [`frame_handler`].
 unsafe extern "efiapi" fn frame_handler_3(
     record: *mut ExceptionRecord,
     establisher: u64,
@@ -449,8 +430,6 @@ unsafe extern "efiapi" fn frame_handler_3(
     unsafe { frame_handler(false, record, establisher, dispatcher) }
 }
 
-/// # Safety
-/// As [`frame_handler`].
 unsafe extern "efiapi" fn frame_handler_4(
     record: *mut ExceptionRecord,
     establisher: u64,
@@ -469,7 +448,9 @@ struct ExceptionData {
 
 unsafe extern "efiapi" fn std_exception_copy(from: *const ExceptionData, to: *mut ExceptionData) {
     // SAFETY: `std::exception`'s copy: two `__std_exception_data`.
-    let (from, to) = unsafe { (&*from, &mut *to) };
+    let from = unsafe { &*from };
+    // SAFETY: as above.
+    let to = unsafe { &mut *to };
     if from.do_free == 0 || from.what.is_null() {
         to.what = from.what;
         to.do_free = 0;
@@ -514,7 +495,7 @@ const TYPE_INFO_NAME: usize = 16;
 
 fn decorated_name(type_info: *const u8) -> &'static [u8] {
     // SAFETY: a `type_info` holds its decorated name, NUL-terminated, after two pointers.
-    unsafe { core::ffi::CStr::from_ptr(type_info.add(TYPE_INFO_NAME).cast()) }.to_bytes()
+    unsafe { core::ffi::CStr::from_ptr(type_info.wrapping_add(TYPE_INFO_NAME).cast()) }.to_bytes()
 }
 
 unsafe extern "efiapi" fn type_info_compare(left: *const u8, right: *const u8) -> i32 {
@@ -553,8 +534,6 @@ extern "efiapi" fn current_exception_context() -> *mut u64 {
     slot(teb::CURRENT_EXCEPTION_CONTEXT)
 }
 
-/// `type_info`'s virtual function table, which every type descriptor the program has points
-/// at: its scalar deleting destructor.
 #[repr(C)]
 struct VirtualTable([*const (); 1]);
 

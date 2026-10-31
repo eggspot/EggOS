@@ -346,7 +346,6 @@ const USER_CRATES: &[&str] = &[
     "eggos-eggsh",
     "eggos-commands",
     "eggos-element-tree",
-    "eggos-coreutils",
     "eggos-hello-window",
     "eggos-toolkit",
     "eggos-settings",
@@ -373,6 +372,8 @@ const USER_CRATES: &[&str] = &[
     "eggos-windows-gui",
     "eggos-macos",
 ];
+
+const USER_CRATES_WITHOUT_ALLOCATOR: &[&str] = &["eggos-coreutils"];
 
 struct UserProgram {
     package: &'static str,
@@ -412,6 +413,8 @@ const INIT_PATH: &str = "init";
 const SHELL_PATH: &str = "bin/eggsh";
 
 const COREUTILS_PATH: &str = "bin/coreutils";
+
+const DATE_PATH: &str = "bin/date";
 
 const SETTINGS_PATH: &str = "bin/settings";
 
@@ -1219,6 +1222,18 @@ fn clippy_targets() -> Result<(), String> {
         }
         args.extend(["--", "-D", "warnings"]);
         cargo(&args)?;
+        for krate in USER_CRATES_WITHOUT_ALLOCATOR {
+            cargo(&[
+                "clippy",
+                "--target",
+                arch.user_target,
+                "-p",
+                krate,
+                "--",
+                "-D",
+                "warnings",
+            ])?;
+        }
         let mut programs = build_user_programs(arch)?;
         programs.push(initramfs_variable(arch, &programs)?);
         let env = program_variables(&programs);
@@ -1757,6 +1772,7 @@ fn build_init_test_kernel(arch: &Arch, login_exit: &str) -> Result<std::path::Pa
 fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let init = build_init(arch)?;
     let shell = build_shell(arch)?;
+    let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
     let programs = build_user_programs(arch)?;
     let commands = programs
         .iter()
@@ -1771,6 +1787,8 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
                 initramfs::Content::Text(SHELL_TEST_CONFIG),
             ),
             (SHELL_PATH, initramfs::Content::Program(&shell)),
+            (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+            (DATE_PATH, initramfs::Content::HardLink(COREUTILS_PATH)),
             (INIT_TEST_LOGIN_PATH, initramfs::Content::Program(commands)),
             (
                 SHELL_TEST_SCRIPT_PATH,
@@ -2458,8 +2476,8 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_PATH, COREUTILS, DISK_PATH, EDIT_PATH, arch_option, foreign_layers, host_folder,
-        json_string_field, room_bytes, size_in_mebibytes, with_value, without_flag,
+        APP_PATH, COREUTILS, DISK_PATH, EDIT_PATH, SETTINGS_PATH, arch_option, foreign_layers,
+        host_folder, json_string_field, room_bytes, size_in_mebibytes, with_value, without_flag,
     };
 
     #[test]
@@ -2497,6 +2515,7 @@ mod tests {
                 format!("/{APP_PATH}"),
                 format!("/{EDIT_PATH}"),
                 format!("/{DISK_PATH}"),
+                format!("/{SETTINGS_PATH}"),
             ])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {

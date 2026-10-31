@@ -64,7 +64,6 @@ struct KeyboardInput {
     extra: usize,
 }
 
-/// Win32's `INPUT`: its kind, then a `MOUSEINPUT`, `KEYBDINPUT` or `HARDWAREINPUT`.
 #[repr(C)]
 struct InputRecord {
     kind: u32,
@@ -77,7 +76,6 @@ struct Point {
     y: i32,
 }
 
-/// The program's top-level window that has the keyboard, which the input it sends reaches.
 fn active_root() -> Option<usize> {
     with(|gui| {
         let root = gui.active_root;
@@ -227,7 +225,7 @@ unsafe extern "efiapi" fn send_input(count: u32, inputs: *const InputRecord, siz
     };
     for index in 0..count as usize {
         // SAFETY: the caller passes `count` readable `INPUT`s of the size it gave.
-        let record = unsafe { &*inputs.add(index) };
+        let record = unsafe { &*inputs.wrapping_add(index) };
         let sent = match record.kind {
             INPUT_KEYBOARD => {
                 // SAFETY: a keyboard `INPUT`'s payload is a `KEYBDINPUT`, which fits in the

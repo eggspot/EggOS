@@ -1071,7 +1071,7 @@ fn read_question_line(line: &mut [u8]) -> usize {
     let mut length = 0;
     while length < line.len() && !line[..length].contains(&b'\n') {
         let space = &mut line[length..];
-        match call(
+        match syscall(
             number::READ,
             [
                 STANDARD_INPUT,

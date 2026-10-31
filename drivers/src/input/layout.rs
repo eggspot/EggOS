@@ -185,15 +185,11 @@ impl Layout {
             .is_some_and(|levels| levels.iter().any(|&symbol| symbol != 0))
     }
 
-    /// What key `code` types at its first two levels with `modifiers`' Shift and Caps Lock: a
-    /// character, a dead key's combining mark, or 0.
     fn base_symbol(&self, code: u16, modifiers: Modifiers) -> u16 {
         self.levels(code)
             .map_or(0, |levels| pick(levels[0], levels[1], modifiers))
     }
 
-    /// What key `code` types at the third level with `modifiers`' Shift and Caps Lock: a
-    /// character, a dead key's combining mark, or 0.
     fn third_symbol(&self, code: u16, modifiers: Modifiers) -> u16 {
         self.levels(code).map_or(0, |levels| {
             let symbol = pick(levels[2], levels[3], modifiers);

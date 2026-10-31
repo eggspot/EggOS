@@ -36,7 +36,6 @@ pub(super) const UART0_INTERRUPT: u32 = 33;
 const CONSOLE_INPUT_PRIORITY: u8 = 0xa0;
 /// The first shared peripheral interrupt's id: UART0's and the devices' are from here on.
 pub(super) const FIRST_SHARED_INTERRUPT: u32 = 32;
-/// Below the console's input: a device's interrupt waits for the timer, wake-ups and typing.
 const DEVICE_PRIORITY: u8 = 0xc0;
 /// The shared peripheral interrupts routed for devices, by line.
 pub(super) static DEVICE_LINES: SourceLines = SourceLines::new();

@@ -103,3 +103,12 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     syscall::write_all(2, b"eggos-runtime: the program panicked\n");
     syscall::exit(101)
 }
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+extern "C" fn _Unwind_Resume(_: *mut u8) -> ! {
+    fail(b"eggos-runtime: the program tried to unwind\n")
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rust_eh_personality() {}

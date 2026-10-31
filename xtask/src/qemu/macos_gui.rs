@@ -148,6 +148,7 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
 
 fn catalogue(arch: &Arch, installed: bool) -> Result<Catalogue, String> {
     let mut catalogue = Catalogue::new();
+    catalogue.set_task_manager_present(true);
     catalogue.set_host_share(true);
     if installed {
         catalogue.add_installed(NAME.as_bytes(), &manifest_of(arch));

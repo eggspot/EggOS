@@ -45,8 +45,6 @@ const LARGEST_FILE: usize = 64 << 20;
 const IDS: usize = 0x1_0000;
 const WHITE: u32 = 0x00ff_ffff;
 
-/// An icon or cursor: its colour and mask bitmaps (handles in gdi's object table), their size,
-/// the hotspot, and whether it is an icon (`TRUE`) or a cursor.
 #[derive(Debug, Clone, Copy)]
 struct Icon {
     colour: usize,
@@ -216,7 +214,6 @@ fn read_all(fd: usize) -> Result<HeapBlock, u32> {
     Ok(block)
 }
 
-/// A copy of bitmap `handle`'s pixels.
 fn copy_pixels(handle: usize) -> Result<Decoded, u32> {
     gdi::read_bitmap(handle, |bitmap, pixels| -> Result<Decoded, u32> {
         let mut copy = Decoded::new(bitmap.width, bitmap.height)?;
@@ -227,8 +224,6 @@ fn copy_pixels(handle: usize) -> Result<Decoded, u32> {
     })?
 }
 
-/// A new bitmap of `target` pixels (a top-down 32-bit DIB section when `section`), `image`
-/// scaled into it.
 fn bitmap_from(image: &Decoded, target: (u32, u32), section: bool) -> Result<usize, u32> {
     let (handle, pixels) = gdi::new_bitmap(target.0, target.1, section)?;
     // SAFETY: a fresh bitmap's `target.0 * target.1` pixels, which nothing else uses yet.
@@ -278,8 +273,6 @@ fn scaled(point: (u32, u32), from: (u32, u32), to: (u32, u32)) -> (u32, u32) {
     )
 }
 
-/// What the program asks a width or height to be: its own value, the system's icon size for
-/// 0 with `LR_DEFAULTSIZE`, or 0 for the image's own.
 fn desired(width: i32, height: i32, flags: u32) -> (u32, u32) {
     let side = |value: i32| match value {
         value if value > 0 => value as u32,
@@ -498,9 +491,6 @@ extern "efiapi" fn destroy_icon(handle: usize) -> Bool {
     }
 }
 
-/// What a point of an icon drawn with `DrawIconEx`'s `flags` becomes over `under`: with alpha,
-/// the image blended (or copied without `DI_MASK`); without, `under` AND the mask, then XOR
-/// the image.
 fn icon_pixel(colour: u32, masked: bool, under: u32, alpha: bool, flags: u32) -> u32 {
     let (image, mask) = (flags & DI_IMAGE != 0, flags & DI_MASK != 0);
     if alpha && image {
@@ -642,8 +632,6 @@ extern "efiapi" fn copy_image(
     }
 }
 
-/// The index of the image to take for a `aim`-pixel icon among `(side, bits)` candidates: the
-/// exact size with the most colours, else the smallest larger one, else the largest smaller.
 fn choose(candidates: impl Iterator<Item = (u32, u16)>, aim: u32) -> Option<usize> {
     candidates
         .enumerate()
@@ -669,7 +657,6 @@ fn entry_count(directory: &[u8]) -> usize {
     usize::from(dib::u16_at(directory, 4).unwrap_or(0))
 }
 
-/// The resource id of the image a group icon or group cursor resource names for `aim`.
 fn group_choice(group: &[u8], cursor: bool, aim: u32) -> Option<u16> {
     let entry = |index: usize| DIRECTORY_HEADER + index * GROUP_ENTRY;
     let count = (0..entry_count(group))
@@ -687,7 +674,6 @@ fn group_choice(group: &[u8], cursor: bool, aim: u32) -> Option<u16> {
     dib::u16_at(group, entry(chosen) + 12)
 }
 
-/// The image a `.ico` or `.cur` file holds for `aim`: its bytes' range and its hotspot.
 fn file_choice(file: &[u8], aim: u32) -> Option<(core::ops::Range<usize>, (u32, u32))> {
     let cursor = dib::u16_at(file, 2)? == CURSOR_FILE;
     let entry = |index: usize| DIRECTORY_HEADER + index * FILE_ENTRY;

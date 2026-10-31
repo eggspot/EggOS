@@ -1,6 +1,6 @@
 //! Android's log (D188): the kernel is Android's `logd`. Android programs send their log
 //! entries as datagrams to `/dev/socket/logdw` ([`eggos_android_log::WRITER_PATH`]), which the
-//! kernel's `AF_UNIX` datagram sockets hand to [`write`]; the entries are kept as records
+//! kernel's `AF_UNIX` datagram sockets hand to [`write()`]; the entries are kept as records
 //! ([`eggos_android_log`]) in one log of at most [`CAPACITY`] bytes, the oldest dropped first,
 //! which `/dev/android_log` shows as a read-only file of root's and `logcat` copies whole with
 //! [`SNAPSHOT_REQUEST`].

@@ -170,8 +170,6 @@ fn url_error(error: http::UrlError) -> u32 {
     }
 }
 
-/// What a response's head said: how its body is framed, where it redirects, and how many
-/// bytes of the buffer the head took.
 struct Answer {
     framing: Framing,
     redirect: bool,

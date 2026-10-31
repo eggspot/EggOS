@@ -38,7 +38,6 @@ extern "efiapi" fn is_child(parent: usize, window: usize) -> Bool {
     Bool::from(inside)
 }
 
-/// The top-level window `window` belongs to, then its owner's, up to one without an owner.
 fn root_owner(gui: &Gui, window: usize) -> Option<usize> {
     let mut root = windows::root_of(&gui.windows, window)?;
     for _ in 0..MAX_WINDOWS {
@@ -336,7 +335,7 @@ unsafe extern "efiapi" fn map_window_points(
     if !points.is_null() {
         for index in 0..count as usize {
             // SAFETY: the caller passes `count` readable and writable `POINT`s.
-            let point = unsafe { &mut *points.add(index) };
+            let point = unsafe { &mut *points.wrapping_add(index) };
             point.x = point.x.saturating_add(dx);
             point.y = point.y.saturating_add(dy);
         }

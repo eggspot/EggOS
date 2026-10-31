@@ -675,13 +675,14 @@ pub extern "C" fn getchar() -> c_int {
 /// `file` must be a stream.
 pub unsafe extern "C" fn ungetc(character: c_int, file: *mut Stream) -> c_int {
     // SAFETY: the caller's promise.
-    match unsafe { stream(file) } {
-        Some(stream) if character != EOF && stream.push_back(character as u8) => {
-            stream.end = false;
-            character & 0xff
-        }
-        _ => EOF,
+    let Some(stream) = (unsafe { stream(file) }) else {
+        return EOF;
+    };
+    if character == EOF || !stream.push_back(character as u8) {
+        return EOF;
     }
+    stream.end = false;
+    character & 0xff
 }
 
 /// # Safety

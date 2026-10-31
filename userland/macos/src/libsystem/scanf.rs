@@ -108,14 +108,15 @@ impl Drop for StreamSource<'_> {
 }
 
 fn write_integer(target: usize, value: u64, size: Size) {
-    // SAFETY: the program's argument for the conversion points at an integer of its size.
-    unsafe {
-        match size {
-            Size::Byte => (target as *mut u8).write_unaligned(value as u8),
-            Size::Short => (target as *mut u16).write_unaligned(value as u16),
-            Size::Int => (target as *mut u32).write_unaligned(value as u32),
-            Size::Wide => (target as *mut u64).write_unaligned(value),
-        }
+    match size {
+        // SAFETY: the program's argument for the conversion points at an integer of its size.
+        Size::Byte => unsafe { (target as *mut u8).write_unaligned(value as u8) },
+        // SAFETY: as above.
+        Size::Short => unsafe { (target as *mut u16).write_unaligned(value as u16) },
+        // SAFETY: as above.
+        Size::Int => unsafe { (target as *mut u32).write_unaligned(value as u32) },
+        // SAFETY: as above.
+        Size::Wide => unsafe { (target as *mut u64).write_unaligned(value) },
     }
 }
 
@@ -130,23 +131,27 @@ fn write_long_double(target: usize, value: f64) {
         let (significand, sign_exponent) = crate::format::double_to_extended(value);
         let target = target as *mut u8;
         // SAFETY: the argument for `%Lf` points at a 16-byte x87 `long double`.
-        unsafe {
-            target.cast::<u64>().write_unaligned(significand);
-            target.add(8).cast::<u16>().write_unaligned(sign_exponent);
-            target.add(10).write_bytes(0, 6);
-        }
+        unsafe { target.cast::<u64>().write_unaligned(significand) };
+        // SAFETY: as above; byte 8 is inside it.
+        let exponent_at = unsafe { target.add(8) };
+        // SAFETY: as above; bytes 8 and 9 hold the sign and exponent.
+        unsafe { exponent_at.cast::<u16>().write_unaligned(sign_exponent) };
+        // SAFETY: as above; byte 10 is inside it.
+        let padding_at = unsafe { target.add(10) };
+        // SAFETY: as above; bytes 10 to 15 are its padding.
+        unsafe { padding_at.write_bytes(0, 6) };
     }
 }
 
 fn write_bytes(target: usize, bytes: &[u8], nul: bool) {
     let target = target as *mut u8;
-    // SAFETY: the argument for `%c`, `%s` or `%[` points at room for the characters and,
-    // for the last two, a NUL.
-    unsafe {
-        target.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
-        if nul {
-            target.add(bytes.len()).write(0);
-        }
+    // SAFETY: the argument for `%c`, `%s` or `%[` points at room for the characters.
+    unsafe { target.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len()) };
+    if nul {
+        // SAFETY: for `%s` and `%[` the room holds a NUL after the characters.
+        let end = unsafe { target.add(bytes.len()) };
+        // SAFETY: as above; `end` is that NUL's byte.
+        unsafe { end.write(0) };
     }
 }
 

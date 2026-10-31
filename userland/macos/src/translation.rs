@@ -282,7 +282,8 @@ impl Thunks {
             return Some(thunk);
         }
         if self.used == callback_thunks::THUNKS_PER_PAGE {
-            self.page = installed::callback_thunk_page(callback_entry as usize as u64)?;
+            self.page =
+                installed::callback_thunk_page(callback_entry as *const () as usize as u64)?;
             self.used = 0;
         }
         let index = self.used;
@@ -437,6 +438,6 @@ fn set_action(signal: usize, handler: usize) {
 /// for one of these signals replaces this one.
 pub fn install_fault_handler() {
     for signal in [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV] {
-        set_action(signal, on_fault as usize);
+        set_action(signal, on_fault as *const () as usize);
     }
 }

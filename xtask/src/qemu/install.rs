@@ -87,6 +87,7 @@ fn manifest_of(arch: &Arch, app: &TestApp) -> Vec<u8> {
 
 fn catalogue(arch: &Arch, app: Option<&TestApp>) -> Catalogue {
     let mut catalogue = Catalogue::new();
+    catalogue.set_task_manager_present(true);
     catalogue.set_host_share(true);
     if let Some(app) = app {
         catalogue.add_installed(app.name.as_bytes(), &manifest_of(arch, app));

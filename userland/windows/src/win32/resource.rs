@@ -101,9 +101,14 @@ fn matches(section: &[u8], raw: u32, name: Name<'_>) -> bool {
         (false, Name::Id(id)) => raw == u32::from(id),
         (true, Name::Text(wanted)) => entry_name(section, raw).is_some_and(|stored| {
             stored.len() == 2 * wanted.len()
-                && stored.chunks_exact(2).zip(wanted).all(|(unit, &other)| {
-                    text::upper(u16::from_le_bytes([unit[0], unit[1]])) == text::upper(other)
-                })
+                && stored
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .zip(wanted)
+                    .all(|(unit, &other)| {
+                        text::upper(u16::from_le_bytes(*unit)) == text::upper(other)
+                    })
         }),
         _ => false,
     }
@@ -119,9 +124,6 @@ fn subdirectory(target: u32) -> Option<usize> {
     (target & SUBDIRECTORY != 0).then_some((target & !SUBDIRECTORY) as usize)
 }
 
-/// Where in `section` (a resource directory, its root at 0) the data entry of resource
-/// `kind`/`name` is: in `language`, or with `None` the neutral language, the user's default,
-/// US English, then the first there is.
 fn find_in(
     section: &[u8],
     kind: Name<'_>,
@@ -154,7 +156,6 @@ fn find_in(
     }
 }
 
-/// The program's resource directory as the image maps it.
 #[derive(Debug, Clone, Copy)]
 struct Resources {
     base: usize,
@@ -282,10 +283,10 @@ fn call_with_name(callback: usize, arguments: [usize; 4], name: &[u8]) -> Option
     if copy.is_null() {
         return None;
     }
-    for (index, unit) in name.chunks_exact(2).enumerate() {
+    for (index, unit) in name.as_chunks::<2>().0.iter().enumerate() {
         let slot = copy.wrapping_add(index);
         // SAFETY: `copy` holds `units + 1` units and `index < units`.
-        unsafe { slot.write(u16::from_le_bytes([unit[0], unit[1]])) };
+        unsafe { slot.write(u16::from_le_bytes(*unit)) };
     }
     let [module, kind, _, parameter] = arguments;
     // SAFETY: `EnumResourceNamesW`'s contract: `callback` is the program's

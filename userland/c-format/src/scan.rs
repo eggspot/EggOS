@@ -252,7 +252,6 @@ enum IntegerStage {
     Digits,
 }
 
-/// The longest prefix of an integer in a base: a sign, `0x` when the base allows it, digits.
 struct IntegerShape {
     stage: IntegerStage,
     base: u32,
@@ -314,7 +313,6 @@ enum FloatStage {
     ExponentDigits,
 }
 
-/// The longest prefix of a decimal floating-point number or of `infinity` or `nan`.
 struct FloatShape {
     stage: FloatStage,
     word: &'static [u8],
@@ -369,13 +367,10 @@ impl FloatShape {
     }
 }
 
-/// Whether `byte` continues a UTF-8 sequence rather than starting a character.
 fn continues_character(byte: u8) -> bool {
     byte & 0xc0 == 0x80
 }
 
-/// Takes at most `limit` characters while `accept` takes their first bytes: bytes when
-/// `utf8` is false, UTF-8 sequences when it is true.
 fn take_characters<'s>(
     source: &'s mut (dyn Source + '_),
     limit: usize,

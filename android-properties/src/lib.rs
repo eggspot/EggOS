@@ -74,10 +74,7 @@ pub enum PropertyError {
     /// The name starts with `ro.` and the property has a value already.
     ReadOnly,
     /// The area has no room: an area of `needed` bytes would have.
-    Full {
-        /// The area's size that would hold the change.
-        needed: usize,
-    },
+    Full { needed: usize },
     /// The bytes are not a property area, or it is damaged.
     NotAnArea,
     /// The trie is deeper than a walk follows.

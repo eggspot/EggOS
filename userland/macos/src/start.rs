@@ -627,9 +627,6 @@ core::arch::global_asm!(
 );
 
 unsafe extern "C" {
-    /// Copies `count` words from `words` to the 16-byte-aligned place below the stack pointer,
-    /// moves the stack pointer there and jumps to `entry`, as the kernel and dyld start an
-    /// `LC_UNIXTHREAD` program.
     #[link_name = "eggos_macos_enter_start"]
     fn enter_start(entry: usize, words: *const usize, count: usize) -> !;
 }

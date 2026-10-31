@@ -114,11 +114,19 @@ mod arch {
             if fpstate != 0 {
                 let image = fpstate as *const u8;
                 // SAFETY: an `FXSAVE` image holds `mxcsr` at 24 and the sixteen `xmm` at 160.
-                context.mx_csr = unsafe { image.add(FXSAVE_MXCSR).cast::<u32>().read_unaligned() };
+                context.mx_csr = unsafe {
+                    image
+                        .wrapping_add(FXSAVE_MXCSR)
+                        .cast::<u32>()
+                        .read_unaligned()
+                };
                 for (index, xmm) in context.xmm.iter_mut().enumerate() {
                     let at = image.wrapping_add(FXSAVE_XMM + index * 16).cast::<u64>();
                     // SAFETY: as above.
-                    *xmm = unsafe { [at.read_unaligned(), at.add(1).read_unaligned()] };
+                    let low = unsafe { at.read_unaligned() };
+                    // SAFETY: as above.
+                    let high = unsafe { at.wrapping_add(1).read_unaligned() };
+                    *xmm = [low, high];
                 }
             }
             context.flags = CONTEXT_FULL;
@@ -235,10 +243,6 @@ mod arch {
         )
     }
 
-    /// Defines `$entry`, a function the program calls with Windows' convention, which
-    /// captures its caller's registers into a `CONTEXT` on the stack (as `RtlCaptureContext`
-    /// would, as the caller sees them after the call returns) and calls `$target` with the
-    /// entry's first four arguments and that `CONTEXT`; `$target` never returns.
     macro_rules! capturing_entry {
         ($visibility:vis $entry:ident => $target:path) => {
             #[unsafe(naked)]
@@ -414,22 +418,28 @@ mod arch {
                 *x = unsafe { word(UCONTEXT_REGS + index * 8).read_unaligned() };
             }
             // SAFETY: as above, then `sp`, `pc` and `pstate`.
-            unsafe {
-                context.sp = word(UCONTEXT_FAULT_SP).read_unaligned();
-                context.pc = word(UCONTEXT_FAULT_PC).read_unaligned();
-                context.cpsr = word(UCONTEXT_PSTATE).read_unaligned() as u32;
-            }
+            context.sp = unsafe { word(UCONTEXT_FAULT_SP).read_unaligned() };
+            // SAFETY: as above.
+            context.pc = unsafe { word(UCONTEXT_FAULT_PC).read_unaligned() };
+            // SAFETY: as above.
+            context.cpsr = unsafe { word(UCONTEXT_PSTATE).read_unaligned() } as u32;
             let record = ucontext.wrapping_add(UCONTEXT_FPSIMD);
             // SAFETY: the first record after `pstate` is the kernel's `fpsimd_context`, whose
             // magic number says so: then `fpsr`, `fpcr` and `v0` to `v31`.
-            unsafe {
-                if record.cast::<u32>().read_unaligned() == FPSIMD_MAGIC {
-                    context.fpsr = record.add(8).cast::<u32>().read_unaligned();
-                    context.fpcr = record.add(12).cast::<u32>().read_unaligned();
-                    for (index, v) in context.v.iter_mut().enumerate() {
-                        let at = record.add(16 + index * 16).cast::<u64>();
-                        *v = [at.read_unaligned(), at.add(1).read_unaligned()];
-                    }
+            let magic = unsafe { record.cast::<u32>().read_unaligned() };
+            if magic == FPSIMD_MAGIC {
+                let field = |offset: usize| record.wrapping_add(offset).cast::<u32>();
+                // SAFETY: as above.
+                context.fpsr = unsafe { field(8).read_unaligned() };
+                // SAFETY: as above.
+                context.fpcr = unsafe { field(12).read_unaligned() };
+                for (index, v) in context.v.iter_mut().enumerate() {
+                    let at = record.wrapping_add(16 + index * 16).cast::<u64>();
+                    // SAFETY: as above.
+                    let low = unsafe { at.read_unaligned() };
+                    // SAFETY: as above.
+                    let high = unsafe { at.wrapping_add(1).read_unaligned() };
+                    *v = [low, high];
                 }
             }
             context.flags = CONTEXT_FULL;
@@ -547,10 +557,6 @@ mod arch {
         )
     }
 
-    /// Defines `$entry`, a function the program calls with Windows' convention, which
-    /// captures its caller's registers (`x18`, the TEB, included) into a `CONTEXT` on the stack
-    /// (as the caller sees them after the call returns) and calls `$target` with the entry's
-    /// first four arguments and that `CONTEXT`; `$target` never returns.
     macro_rules! capturing_entry {
         ($visibility:vis $entry:ident => $target:path) => {
             #[unsafe(naked)]

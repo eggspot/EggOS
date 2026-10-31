@@ -42,15 +42,13 @@ unsafe fn give_main_arguments<T>(
         runtime::set_new_mode(unsafe { startup.read() }.new_mode);
     }
     // SAFETY: `__getmainargs`'s contract: each out pointer is the startup's writable variable.
-    unsafe {
-        count_out.write(runtime::ARGUMENT_COUNT.load(Ordering::Acquire));
-        arguments_out.write(arguments);
-        environment_out.write(environment);
-    }
+    unsafe { count_out.write(runtime::ARGUMENT_COUNT.load(Ordering::Acquire)) };
+    // SAFETY: as above.
+    unsafe { arguments_out.write(arguments) };
+    // SAFETY: as above.
+    unsafe { environment_out.write(environment) };
 }
 
-/// The UCRT's argument mode for `__getmainargs`' `_DoWildCard` (MinGW's `_dowildcard`):
-/// nonzero expands wildcards (D189).
 fn argument_mode(expand_wildcards: i32) -> i32 {
     match expand_wildcards {
         0 => 0,
@@ -170,14 +168,14 @@ struct LocaleConventions {
 // SAFETY: the conventions are read-only for the program's life.
 unsafe impl Sync for LocaleConventions {}
 
-const EMPTY: *const u8 = b"\0".as_ptr();
+const EMPTY: *const u8 = c"".as_ptr().cast();
 const WIDE_DECIMAL_POINT: &[u16] = &[b'.' as u16, 0];
 const WIDE_EMPTY_TEXT: &[u16] = &[0];
 const WIDE_EMPTY: *const u16 = WIDE_EMPTY_TEXT.as_ptr();
 
 static C_LOCALE_CONVENTIONS: LocaleConventions = LocaleConventions {
     texts: [
-        b".\0".as_ptr(),
+        c".".as_ptr().cast(),
         EMPTY,
         EMPTY,
         EMPTY,

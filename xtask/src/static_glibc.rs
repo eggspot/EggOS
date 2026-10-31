@@ -22,12 +22,9 @@ const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const PT_INTERP: u32 = 3;
 
-/// The two kinds of static program the test boots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Linkage {
-    /// A static executable at a fixed address (`ET_EXEC`, `crt1.o`).
     Executable,
-    /// A static PIE (`ET_DYN` with no interpreter, `rcrt1.o`).
     PositionIndependent,
 }
 
@@ -143,8 +140,6 @@ fn build(arch: &Arch, glibc: &Glibc, linkage: Linkage) -> Result<PathBuf, String
     })
 }
 
-/// Checks that `image` is a static program of `linkage`'s kind: its ELF type, and no
-/// interpreter.
 fn is_static(image: &[u8], linkage: Linkage) -> Result<(), String> {
     let field = |at: usize, size: usize| -> Result<u64, String> {
         let bytes = image.get(at..at + size).ok_or("the ELF image ends early")?;

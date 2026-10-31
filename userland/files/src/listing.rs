@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(text(FreeSpace::Bytes(0)).as_deref(), Some("0 B free"));
         assert_eq!(
             text(FreeSpace::Bytes(12_300 * (1 << 20))).as_deref(),
-            Some("12.0 GB free")
+            Some("12 GB free")
         );
         assert_eq!(text(FreeSpace::ReadOnly).as_deref(), Some("Read-only"));
         assert_eq!(text(FreeSpace::Unknown), None);

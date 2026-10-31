@@ -79,12 +79,7 @@ impl Width {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Register {
     /// The low `width` bits of a general-purpose register (`al`, `spl`, `r9w`, `eax`, `rax`, ...).
-    General {
-        /// Which register.
-        gpr: Gpr,
-        /// How much of it.
-        width: Width,
-    },
+    General { gpr: Gpr, width: Width },
     /// Bits 8 to 15 of `rax`, `rcx`, `rdx` or `rbx` (`ah`, `ch`, `dh`, `bh`), only reachable
     /// without a REX prefix.
     HighByte(Gpr),
@@ -118,18 +113,12 @@ pub enum Address {
     /// `base + index * scale + displacement`; with neither base nor index, the sign-extended
     /// displacement is the address.
     Based {
-        /// The base register, if any.
         base: Option<Gpr>,
-        /// The scaled index, if any.
         index: Option<Index>,
-        /// The sign-extended displacement.
         displacement: i32,
     },
     /// A RIP-relative operand, already resolved to the address it names.
-    Rip {
-        /// The absolute address.
-        target: u64,
-    },
+    Rip { target: u64 },
     /// A 64-bit absolute address (`mov` to or from `moffs`).
     Absolute(u64),
 }
@@ -170,7 +159,6 @@ pub enum Repeat {
     Repne,
 }
 
-/// The most operands one instruction has.
 const MAX_OPERANDS: usize = 4;
 
 /// One decoded instruction.

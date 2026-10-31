@@ -90,7 +90,6 @@ const OWN_STYLES: u32 = 0xffff;
 const STRING_INDICES: isize = 0x1_0000;
 const NONE: usize = usize::MAX;
 
-/// Win32's `TBBUTTON` on 64-bit Windows.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct TbButton {
@@ -103,7 +102,6 @@ struct TbButton {
     string: isize,
 }
 
-/// Win32's `TBBUTTONINFOW`.
 #[repr(C)]
 struct TbButtonInfo {
     size: u32,
@@ -252,22 +250,15 @@ fn left_button_up(window: usize, (x, y): (i32, i32)) {
     }
 }
 
-/// The NUL-separated strings of `TB_ADDSTRINGW`, up to the empty one that ends them.
-///
-/// # Safety
-/// `text` is a run of NUL-terminated strings ending with an empty one.
 unsafe fn string_run<'a>(text: *const u16) -> &'a [u16] {
     let mut length = 0;
     loop {
         // SAFETY: the caller's duty: every unit up to the empty string's NUL is readable.
-        let (unit, previous) = unsafe {
-            (
-                text.add(length).read(),
-                match length {
-                    0 => 0,
-                    _ => text.add(length - 1).read(),
-                },
-            )
+        let unit = unsafe { text.wrapping_add(length).read() };
+        let previous = match length {
+            0 => 0,
+            // SAFETY: as above, for the unit before.
+            _ => unsafe { text.wrapping_add(length - 1).read() },
         };
         if unit == 0 && (length == 0 || previous == 0) {
             break;
@@ -278,7 +269,6 @@ unsafe fn string_run<'a>(text: *const u16) -> &'a [u16] {
     unsafe { core::slice::from_raw_parts(text, length) }
 }
 
-/// The button `raw` describes and the text it brings when `iString` is a pointer.
 fn button_of(raw: &TbButton) -> (Button, &'static [u16]) {
     let (text, own) = match raw.string {
         string if (0..STRING_INDICES).contains(&string) => {

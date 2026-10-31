@@ -60,8 +60,6 @@ pub fn same_name(a: &[u16], b: &[u16]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| upper(*x) == upper(*y))
 }
 
-/// Each line of `text`: where it starts, where its content ends and where it ends with its
-/// line end.
 fn lines(text: &[u16]) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
     let mut at = 0;
     core::iter::from_fn(move || {

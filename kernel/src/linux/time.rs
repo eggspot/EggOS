@@ -233,9 +233,6 @@ pub fn clock_gettime<P: Platform>(
     Ok(0)
 }
 
-/// The CPU time clocks (D198): `CLOCK_PROCESS_CPUTIME_ID`, the nanoseconds the calling
-/// process's threads have run, and `CLOCK_THREAD_CPUTIME_ID`, the calling thread's; `None` for
-/// another clock.
 fn cpu_clock<P: Platform>(process: &Process<P>, clock_id: u64) -> Option<u64> {
     let ticks = match clock_id as u32 as i32 {
         clock::PROCESS_CPUTIME_ID => process.cpu_ticks(true),
@@ -478,8 +475,6 @@ pub fn clock_nanosleep<P: Platform>(
     }
 }
 
-/// The most threads whose sleeps until a wall-clock time are measured again when the clock is
-/// set; a thread past them sleeps as the clock read when it started.
 const MAX_WALL_SLEEPERS: usize = 64;
 
 static WALL_SLEEPERS: LeafSpinLock<[Option<futex::Key>; MAX_WALL_SLEEPERS]> =
@@ -498,8 +493,6 @@ fn release_wall_sleeper(slot: Option<usize>) {
     }
 }
 
-/// Wakes every thread sleeping until a wall-clock time, after the clock was set, so each
-/// measures its deadline again (D194).
 fn wake_wall_sleepers<P: Platform>() {
     let sleepers = *WALL_SLEEPERS.lock();
     for key in sleepers.into_iter().flatten() {
@@ -507,9 +500,6 @@ fn wake_wall_sleepers<P: Platform>() {
     }
 }
 
-/// Sleeps until the wall clock reads `time` nanoseconds since the epoch, measuring again each
-/// time the clock is set; interrupted by a signal as [`sleep_until_nanoseconds`] is, with no
-/// time left to write (an absolute sleep has none).
 fn sleep_until_wall<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,

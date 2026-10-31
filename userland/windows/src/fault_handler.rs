@@ -109,17 +109,12 @@ fn completed_current_el_read(_pc: u64, _context: *mut u8) -> bool {
     false
 }
 
-/// What a memory fault's trap information says the instruction did: x86_64's page-fault
-/// error code (bit 1 a write, bit 4 an instruction fetch).
 #[cfg(target_arch = "x86_64")]
 fn access(context: *mut u8) -> u64 {
     // SAFETY: the kernel's `ucontext_t` for a fault holds `err` and `trapno`.
-    let (error, trap) = unsafe {
-        (
-            word(context, UCONTEXT_ERR).read_unaligned(),
-            word(context, UCONTEXT_TRAPNO).read_unaligned(),
-        )
-    };
+    let error = unsafe { word(context, UCONTEXT_ERR).read_unaligned() };
+    // SAFETY: as above.
+    let trap = unsafe { word(context, UCONTEXT_TRAPNO).read_unaligned() };
     match trap {
         PAGE_FAULT if error & 0x10 != 0 => fault::access::EXECUTE,
         PAGE_FAULT if error & 0x02 != 0 => fault::access::WRITE,
@@ -127,8 +122,6 @@ fn access(context: *mut u8) -> u64 {
     }
 }
 
-/// What a memory fault's trap information says the instruction did: AArch64's syndrome in
-/// the frame's `esr_context` (an instruction abort, or a data abort's write bit).
 #[cfg(target_arch = "aarch64")]
 fn access(context: *mut u8) -> u64 {
     let record = context.wrapping_add(UCONTEXT_ESR_RECORD);
@@ -139,7 +132,7 @@ fn access(context: *mut u8) -> u64 {
         return fault::access::READ;
     }
     // SAFETY: as above; the syndrome follows the record's header.
-    let syndrome = unsafe { record.add(8).cast::<u64>().read_unaligned() };
+    let syndrome = unsafe { record.wrapping_add(8).cast::<u64>().read_unaligned() };
     match syndrome >> 26 & 0x3f {
         0x20 | 0x21 => fault::access::EXECUTE,
         0x24 | 0x25 if syndrome & 1 << 6 != 0 => fault::access::WRITE,
@@ -147,8 +140,6 @@ fn access(context: *mut u8) -> u64 {
     }
 }
 
-/// Whether the fault at `pc` goes to the program's handlers: it is in the program's code, or
-/// in code outside the layer (code the program made), rather than in the layer's own.
 fn dispatches(pc: u64) -> bool {
     in_image(pc) || !win32::in_layer_code(pc)
 }
@@ -245,9 +236,6 @@ fn end_fail_fast(pc: u64) -> ! {
     linux::exit(fault::status::STACK_BUFFER_OVERRUN)
 }
 
-/// Ends an x64 program on ARM64 whose translated code trapped (`cause`) or faulted at guest
-/// address `guest` (D191): the line that names the place, then the Windows status as the
-/// process's status. Exceptions in translated code do not reach the program's handlers yet.
 #[cfg(target_arch = "aarch64")]
 fn end_translated(signal: i32, cause: Option<crate::translated::TrapCause>, guest: u64) -> ! {
     let line = crate::translated::report(program(), image(), cause, guest);

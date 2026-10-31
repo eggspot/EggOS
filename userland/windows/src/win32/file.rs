@@ -168,8 +168,6 @@ fn open_flags(access: u32, disposition: u32) -> Option<usize> {
     Some(mode | creation)
 }
 
-/// Opens `path` with `flags`; the descriptor and, when the flags may create the file, whether it
-/// was there already.
 fn open_noting_existing(path: &[u8], flags: usize) -> Result<(usize, bool), Errno> {
     if flags & O_CREAT == 0 || flags & O_EXCL != 0 {
         return linux::open(path, flags).map(|fd| (fd, false));

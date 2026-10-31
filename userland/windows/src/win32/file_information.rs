@@ -19,10 +19,6 @@ fn descriptor(handle: usize) -> Result<usize, u32> {
     super::file::fd_of(handle).ok_or(error::INVALID_HANDLE)
 }
 
-/// Fills the caller's `size` bytes at `out` for `class` from `fd`'s status.
-///
-/// # Safety
-/// `out` must hold `size` writable bytes.
 unsafe fn fill(fd: usize, class: u32, out: *mut u8, size: usize) -> Result<(), u32> {
     let needed = match class {
         FILE_BASIC_INFO => find::BASIC_INFORMATION_SIZE,
@@ -68,10 +64,6 @@ unsafe extern "efiapi" fn get_file_information_by_handle_ex(
     }
 }
 
-/// Sets `fd`'s length for `class` from the 64-bit size at `information`.
-///
-/// # Safety
-/// `information` must hold `size` readable bytes.
 unsafe fn set(fd: usize, class: u32, information: *const u8, size: usize) -> Result<(), u32> {
     if !matches!(class, FILE_ALLOCATION_INFO | FILE_END_OF_FILE_INFO) {
         return Err(error::INVALID_PARAMETER);

@@ -133,15 +133,12 @@ impl DispatcherContext {
         }
     }
 
-    /// The image-relative address of the instruction the frame is in: before the return
-    /// address when the frame called out, so the call itself decides the scope or state.
     fn control_rva(&self) -> u64 {
         self.control_pc
             .wrapping_sub(self.image_base)
             .wrapping_sub(u64::from(self.control_pc_is_unwound != 0))
     }
 
-    /// The image-relative start of the frame's function.
     fn function_begin(&self) -> u32 {
         match self.function_entry {
             0 => 0,

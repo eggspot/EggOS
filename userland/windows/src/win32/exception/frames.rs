@@ -277,6 +277,7 @@ pub fn frame_pointer(_context: &Context) -> u64 {
 }
 
 /// What a walk meets next.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Frame(Frame),
     /// It left the program code a bridge called and continued where the bridge says.
@@ -376,8 +377,6 @@ impl Walk {
     }
 }
 
-/// Undoes a leaf function's frame, which has no unwind data: its return address is on top
-/// of the stack. Returns its establisher frame.
 #[cfg(target_arch = "x86_64")]
 fn leaf(registers: &mut unwinder::Registers) -> Option<u64> {
     let rsp = registers.rsp();
@@ -386,8 +385,6 @@ fn leaf(registers: &mut unwinder::Registers) -> Option<u64> {
     Some(rsp)
 }
 
-/// Undoes a leaf function's frame, which has no unwind data: it returns to `lr`. Returns its
-/// establisher frame.
 #[cfg(target_arch = "aarch64")]
 fn leaf(registers: &mut unwinder::Registers) -> Option<u64> {
     registers.pc = registers.x[30];

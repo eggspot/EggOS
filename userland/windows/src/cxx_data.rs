@@ -53,7 +53,6 @@ pub mod flags {
     pub const CATCHABLE_VIRTUAL_BASE: u32 = 0x04;
 }
 
-/// The offset of a type descriptor's decorated name, after its vtable and spare pointers.
 const TYPE_NAME_OFFSET: u64 = 16;
 const MAX_ENTRIES: u32 = 1 << 16;
 

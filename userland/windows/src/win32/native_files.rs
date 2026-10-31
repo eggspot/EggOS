@@ -34,42 +34,39 @@ static UNCLAIMED: SpinLock<[(usize, usize); UNCLAIMED_ENDS]> =
     SpinLock::new([(usize::MAX, usize::MAX); UNCLAIMED_ENDS]);
 static ANY_UNCLAIMED: AtomicBool = AtomicBool::new(false);
 
-/// The name and root directory of the `OBJECT_ATTRIBUTES` at `attributes`, and whether they
-/// ask for an inherited handle.
-///
-/// # Safety
-/// `attributes` must be a readable `OBJECT_ATTRIBUTES` whose name is null or a readable
-/// `UNICODE_STRING`.
 unsafe fn object<'a>(attributes: *const u8) -> (&'a [u16], usize, bool) {
     // SAFETY: the caller's duty: the root follows the length, the name the root, and the
     // attributes the name.
-    let (root, name, flags) = unsafe {
-        (
-            attributes
-                .wrapping_add(ROOT_DIRECTORY)
-                .cast::<usize>()
-                .read_unaligned(),
-            attributes
-                .wrapping_add(OBJECT_NAME)
-                .cast::<*const u8>()
-                .read_unaligned(),
-            attributes
-                .wrapping_add(OBJECT_ATTRIBUTES)
-                .cast::<u32>()
-                .read_unaligned(),
-        )
+    let root = unsafe {
+        attributes
+            .wrapping_add(ROOT_DIRECTORY)
+            .cast::<usize>()
+            .read_unaligned()
+    };
+    // SAFETY: as above.
+    let name = unsafe {
+        attributes
+            .wrapping_add(OBJECT_NAME)
+            .cast::<*const u8>()
+            .read_unaligned()
+    };
+    // SAFETY: as above.
+    let flags = unsafe {
+        attributes
+            .wrapping_add(OBJECT_ATTRIBUTES)
+            .cast::<u32>()
+            .read_unaligned()
     };
     let units: &[u16] = match name.is_null() {
         true => &[],
         false => {
             // SAFETY: the caller's duty: a `UNICODE_STRING` is a byte length and a buffer.
-            let (length, buffer) = unsafe {
-                (
-                    name.cast::<u16>().read_unaligned() as usize / 2,
-                    name.wrapping_add(UNICODE_STRING_BUFFER)
-                        .cast::<*const u16>()
-                        .read_unaligned(),
-                )
+            let length = unsafe { name.cast::<u16>().read_unaligned() } as usize / 2;
+            // SAFETY: as above.
+            let buffer = unsafe {
+                name.wrapping_add(UNICODE_STRING_BUFFER)
+                    .cast::<*const u16>()
+                    .read_unaligned()
             };
             match buffer.is_null() || length == 0 {
                 true => &[],
@@ -81,20 +78,17 @@ unsafe fn object<'a>(attributes: *const u8) -> (&'a [u16], usize, bool) {
     (units, root, flags & OBJ_INHERIT != 0)
 }
 
-/// Writes `status` and `information` into the `IO_STATUS_BLOCK` at `block`.
-///
-/// # Safety
-/// `block` must be null or a writable `IO_STATUS_BLOCK`.
 unsafe fn report(block: *mut u8, status: u32, information: usize) -> u32 {
     if !block.is_null() {
         // SAFETY: the caller's duty: the status word, then the information word.
+        unsafe { block.cast::<usize>().write_unaligned(status as usize) };
+        // SAFETY: as above.
         unsafe {
-            block.cast::<usize>().write_unaligned(status as usize);
             block
                 .wrapping_add(POINTER)
                 .cast::<usize>()
-                .write_unaligned(information);
-        }
+                .write_unaligned(information)
+        };
     }
     status
 }
@@ -232,10 +226,6 @@ unsafe extern "efiapi" fn nt_create_named_pipe_file(
     unsafe { report(io_status, nt_status::SUCCESS, 0) }
 }
 
-/// The byte offset an I/O call names, `None` for the file's position.
-///
-/// # Safety
-/// `offset` must be null or a readable `LARGE_INTEGER`.
 unsafe fn offset(offset: *const i64) -> Option<u64> {
     if offset.is_null() {
         return None;
@@ -245,7 +235,6 @@ unsafe fn offset(offset: *const i64) -> Option<u64> {
     (value != USE_FILE_POSITION && value >= 0).then_some(value as u64)
 }
 
-/// Signals `event` and queues `routine(context, io_status, 0)` after an I/O call finished.
 fn after_io(event: usize, routine: usize, context: usize, io_status: *mut u8) {
     if event != 0 {
         sync::set_event_quietly(event, true);

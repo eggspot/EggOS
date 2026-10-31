@@ -348,8 +348,6 @@ pub fn block_linux(set: u64) -> Result<u64, Errno> {
     Ok(previous)
 }
 
-/// # Safety
-/// `set` must be null or readable and `old` null or writable.
 unsafe fn change_mask(how: c_int, set: *const u32, old: *mut u32) -> Result<(), c_int> {
     let new = if set.is_null() {
         None

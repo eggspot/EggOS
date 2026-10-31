@@ -1587,6 +1587,7 @@ impl FilesWindow {
         self.focus = Focus::Path;
         self.path_before = self.path_field.text;
         self.path_field.caret = self.path_field.text.len();
+        self.path_field.anchor = self.path_field.caret;
         let rect = self.path_field_rect();
         widget::keep_caret_visible(&mut self.path_field, rect);
         self.restart_caret();

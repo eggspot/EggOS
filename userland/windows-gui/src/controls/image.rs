@@ -60,7 +60,6 @@ pub fn grey(pixel: u32) -> u32 {
     (level << 16) | (level << 8) | level
 }
 
-/// Whether a mask bitmap's pixel is a 1 bit: anything but black.
 fn mask_bit(pixel: u32) -> bool {
     pixel & 0x00ff_ffff != 0
 }

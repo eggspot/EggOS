@@ -138,6 +138,7 @@ impl Installer {
         AppIcon::of(plan.name(), Some(plan.program().source))
     }
 
+    #[allow(clippy::result_large_err)]
     fn prompt_for(&mut self, path: &[u8]) {
         let name = self.name.as_ref().map(Name::as_bytes);
         let entry = self.entry.as_ref().map(Path::as_bytes);
@@ -373,7 +374,11 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
                 }
             }
         }
-        Command::Open { .. } | Command::List { .. } | Command::Help => {}
+        Command::Open { .. }
+        | Command::List { .. }
+        | Command::Show { .. }
+        | Command::Icon { .. }
+        | Command::Help => {}
     }
 }
 

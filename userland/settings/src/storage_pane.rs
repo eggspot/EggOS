@@ -116,7 +116,6 @@ struct Widgets {
     format_now: WidgetId,
 }
 
-/// The status line's report on the disk it was made for: a check's or a format's outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Report {
     device: &'static str,

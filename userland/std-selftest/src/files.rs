@@ -2,6 +2,7 @@
 //! directories, metadata, seeking and the working directory, against the initramfs the
 //! kernel mounts as its root, and the errors a read-only file system gives.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -70,18 +71,31 @@ fn directories_list_their_entries() -> bool {
         names.sort();
         Some(names)
     };
-    let all_of_type = |path: &str, directories: bool| {
+    let entries_typed = |path: &str, is_directory: fn(&OsStr) -> bool| {
         fs::read_dir(path).is_ok_and(|entries| {
             entries.flatten().all(|entry| {
                 entry
                     .file_type()
-                    .is_ok_and(|kind| kind.is_dir() == directories)
+                    .is_ok_and(|kind| kind.is_dir() == is_directory(&entry.file_name()))
             })
         })
     };
-    let types_known = all_of_type("/", true) && all_of_type("/etc", false);
+    let types_known = entries_typed("/", |_| true) && entries_typed("/etc", |name| name == "fonts");
     names("/") == Some(vec!["etc".into(), "usr".into()])
-        && names("/etc") == Some(vec!["hostname".into(), "motd".into()])
+        && names("/etc")
+            == Some(
+                [
+                    "fonts",
+                    "group",
+                    "hostname",
+                    "hosts",
+                    "motd",
+                    "passwd",
+                    "resolv.conf",
+                ]
+                .map(String::from)
+                .to_vec(),
+            )
         && names("/usr/share") == Some(vec!["eggos".into()])
         && types_known
         && raw_error(fs::read_dir("/etc/hostname")) == Some(ENOTDIR)

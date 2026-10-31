@@ -1257,7 +1257,6 @@ x86_64_user_test_end:
 /// Every vector the IDT can hold.
 const VECTORS: usize = 256;
 /// The vectors with a stub at `exception_stubs + vector * STUB_SIZE`: the exceptions 0-31 and
-/// the interrupts up to the power button's, after the last device line's.
 const CONTIGUOUS_STUBS: usize = POWER_BUTTON_VECTOR as usize + 1;
 const _: () = assert!(POWER_BUTTON_VECTOR as usize == LAST_DEVICE_VECTOR as usize + 1);
 const _: () = assert!(TIMER_VECTOR < WAKEUP_VECTOR && WAKEUP_VECTOR < CONSOLE_INPUT_VECTOR);
@@ -1523,9 +1522,7 @@ const CR4_DENIED_TO_PROGRAMS: u64 = CR4_FSGSBASE | CR4_OSXSAVE | CR4_PKE | CR4_C
 /// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
-/// `CR4.SMEP` (D201): ring 0 faults on fetching an instruction from a user page.
 const CR4_SMEP: u64 = 1 << 20;
-/// `CPUID.(EAX=7,ECX=0):EBX` bit 7: the CPU has SMEP.
 const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 /// `rflags` bit 1, always set.

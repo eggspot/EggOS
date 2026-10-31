@@ -349,11 +349,11 @@ const LINUX_SOCKETS_LINES: [&str; 10] = [
 ];
 
 const LINUX_MEMORY_LINES: [&str; 7] = [
+    "LINUX-MEMORY windows ENOMEM within a quarter of memory",
     "LINUX-MEMORY memfd ENOMEM for a mapping as large as memory",
     "LINUX-MEMORY memfd ENOMEM with the reserve still free",
     "LINUX-MEMORY anonymous killed by SIGKILL",
     "LINUX-MEMORY sockets ENOMEM within an eighth of memory",
-    "LINUX-MEMORY windows ENOMEM within a quarter of memory",
     "LINUX-MEMORY memory back",
     "LINUX-MEMORY status 0",
 ];
@@ -407,8 +407,7 @@ fn host_folder_output() -> [Vec<Line>; HOST_FOLDER_SESSION.len()] {
     let program = linux_program_output()[0].clone();
     [
         vec![
-            Line::Whole("Programs and Tools".into()),
-            Line::Whole("readme.txt".into()),
+            Line::Whole("Programs and Tools  readme.txt".into()),
             Line::Around("-rwxr-xr-x 1 0 0 38 ", " /media/host/readme.txt"),
         ],
         whole(&["EGGOS-HOST-FOLDER hello from the host", "38"]),
@@ -1284,9 +1283,6 @@ fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
     ]
 }
 
-/// What `tests/android-console` writes when the shell runs it as `name` with `a 'b c'` and
-/// `GREETING=hi`, after `setprop eggos.test.greeting hello`, then the shell's status line: its
-/// `loader` line says `static` or `linker64`.
 fn android_console_lines(name: &str, loader: &str) -> Vec<Line> {
     let mut lines = vec![Line::Whole(format!("ANDROID-CONSOLE {name} args a|b c"))];
     lines.extend(
@@ -1394,7 +1390,7 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
         vec![
             Line::Around(
                 "windows: ",
-                "windows-unsupported.exe: needs CreateProcessW from kernel32.dll, \
+                "windows-unsupported.exe: needs CreateMailslotW from kernel32.dll, \
                  which EggOS does not provide yet",
             ),
             Line::Whole("WINDOWS-CONSOLE status 126".into()),
@@ -1651,8 +1647,6 @@ const MOUSE_MOTION: (i32, i32) = (7, -5);
 const DEVICE_PAUSE: Duration = Duration::from_millis(100);
 
 const BOOT_INPUT_LINE: &str = "boot: input keyboard pointer";
-/// What the release kernel prints when every input device interrupts and no thread polls them
-/// (D184): `init::INPUT_ON_INTERRUPTS_LINE`.
 const INPUT_ON_INTERRUPTS_LINE: &str = "input: on interrupts";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1867,8 +1861,6 @@ const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
 const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
 
-/// What the kernel says as it starts init and lights the boot screen's third stage (D186):
-/// `init::BOOT_INIT_LINE`.
 const BOOT_INIT_LINE: &str = "boot: init";
 
 /// What the kernel says when it shows its display at 1280x800, the default mode.
@@ -4615,7 +4607,7 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, false, &ok).is_err());
         assert!(verdict("x86_64", Expect::BootToPrompt, true, &ok).is_err());
         for missing in [
-            "usr\r\n",
+            "  usr",
             "EGGOS-COREUTILS ls status 2\r\n",
             "eggos\r\n",
             POWER_DOWN_LINE,
@@ -4626,7 +4618,7 @@ mod tests {
                 "{missing}"
             );
         }
-        let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
+        let reordered = ok.replace("  bin  dev  ", "  dev  bin  ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
         let one_link = ok.replace("-rwxr-xr-x 40 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());

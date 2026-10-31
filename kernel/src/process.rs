@@ -297,7 +297,6 @@ struct Memory<P: Platform> {
     fork_marks: LeafSpinLock<ForkMarks>,
     has_fork_marks: AtomicBool,
     image: ImageLayout,
-    /// The clock ticks the threads using this memory have run (D198).
     cpu_ticks: Arc<AtomicU64>,
 }
 
@@ -674,9 +673,6 @@ impl ProcessId {
         self.0
     }
 
-    /// The next id: each from 1 up the first time round, then one no process, zombie, thread,
-    /// process group, session or the console holds ([`crate::linux::process_ids`]); `None`
-    /// when every one is held.
     fn allocate<P: Platform>() -> Option<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(1);
         match NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
@@ -842,10 +838,6 @@ impl<P: Platform> Process<P> {
         ))
     }
 
-    /// A new id for a child of this process, already in the process table with this process
-    /// as its parent, and the child's record, which takes it out of the table again if the
-    /// child is dropped before it ends. An id another process took between its allocation and
-    /// the table's lock is passed over (D183).
     fn add_child_to_table(&self) -> Result<(ProcessId, SharedPidRecord<P>), NewChildError> {
         for _ in 0..CHILD_ID_ATTEMPTS {
             let id = ProcessId::allocate::<P>().ok_or(NewChildError::OutOfIds)?;

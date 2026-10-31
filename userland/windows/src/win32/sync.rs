@@ -640,9 +640,6 @@ unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
 const MWMO_WAITALL: u32 = 1;
 const MWMO_ALERTABLE: u32 = 2;
 
-/// `MsgWaitForMultipleObjectsEx`: waits for the objects, a message in the thread's queue
-/// (`WAIT_OBJECT_0 + count`) or, when alertable, a queued call, looking every 10 ms while
-/// the queue is empty, as waits on processes do.
 unsafe extern "efiapi" fn msg_wait_for_multiple_objects_ex(
     count: u32,
     handles: *const usize,
@@ -732,9 +729,6 @@ pub unsafe fn with_ansi_name(name: *const u8, work: impl FnOnce(Option<&[u16]>) 
     }
 }
 
-/// A handle for a new object: `local` without a name; with one, for the named object of
-/// `object_kind`, made with `state` unless the name exists already, which leaves
-/// `ERROR_ALREADY_EXISTS` as the last error.
 fn new_named_object(name: Option<&[u16]>, object_kind: u32, state: State, local: Kind) -> usize {
     let Some(name) = name else {
         return new_object(local);
@@ -754,7 +748,6 @@ fn new_named_object(name: Option<&[u16]>, object_kind: u32, state: State, local:
     }
 }
 
-/// A handle for the existing named object `name` of `object_kind` (`OpenEventW` and the like).
 fn open_named_object(name: Option<&[u16]>, object_kind: u32) -> usize {
     let Some(name) = name else {
         return fail(error::INVALID_PARAMETER, 0);
@@ -1090,8 +1083,6 @@ fn signal_object(kind: &mut Kind, caller: u32) -> (Result<(), u32>, bool) {
     }
 }
 
-/// `SignalObjectAndWait`: sets the event, releases the mutex or adds one to the semaphore
-/// `signal`, then waits for `wait_for` as `WaitForSingleObjectEx` does.
 extern "efiapi" fn signal_object_and_wait(
     signal: usize,
     wait_for: usize,
@@ -1620,9 +1611,6 @@ unsafe extern "efiapi" fn duplicate_handle(
     TRUE
 }
 
-/// Another handle for what `source` names (D189): the same object; for a file or pipe a new
-/// descriptor, inherited by children when `inherit`; for the caller's own pseudo-handle a
-/// real handle for its process.
 fn duplicated(source: usize, inherit: bool) -> Result<usize, u32> {
     if source == super::CURRENT_PROCESS {
         return super::processes::own_process_handle().ok_or(error::NOT_ENOUGH_MEMORY);

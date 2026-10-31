@@ -331,6 +331,7 @@ mod program {
         unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), COPY_BUFFER) }
     }
 
+    #[allow(clippy::result_large_err)]
     fn install(
         path: &[u8],
         name: Option<&[u8]>,
@@ -502,7 +503,9 @@ mod program {
         let shown = installer::Name::new(name);
         // SAFETY: the program has one thread and calls this once, so no other reference to the
         // workspace exists while this one lives.
-        let work = unsafe { &mut *(&raw mut ICON_WORK) };
+        let Some(work) = (unsafe { (&raw mut ICON_WORK).as_mut() }) else {
+            return 1;
+        };
         let mut line = Line::new();
         match icon_export::export(&mut LinuxFiles::new(), name, size, output, work) {
             Ok(()) => {

@@ -34,7 +34,6 @@ pub const KINDS: [(&str, &str); 11] = [
     ("other", "Other"),
 ];
 
-/// The classes the default list shows: what a person recognises.
 const RECOGNISED: [&str; 8] = [
     "display", "input", "disk", "network", "console", "serial", "clock", "entropy",
 ];

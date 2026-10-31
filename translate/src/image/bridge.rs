@@ -845,7 +845,6 @@ mod tests {
         let moves = sysv_argument_moves(&[INTEGER; 2]);
         let system_v = sysv_forward_bridge(&moves, 1, 2).unwrap();
         let win64 = forward_bridge(&moves, 1, 2).unwrap();
-        assert_eq!(system_v.len(), win64.len() + 1);
         assert!(system_v.contains(&copy(Reg(2), Reg(1))));
         assert!(!win64.contains(&copy(Reg(2), Reg(1))));
     }

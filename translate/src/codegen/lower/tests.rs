@@ -419,7 +419,7 @@ fn rep_movsb_is_two_post_index_loops_chosen_by_the_direction_byte() {
         block.code,
         [
             0xB400_0181,
-            0x3940_48BA,
+            0x3940_4ABA,
             0x3700_00DA,
             0x3840_14D6,
             0x3800_14F6,

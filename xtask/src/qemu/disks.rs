@@ -117,6 +117,8 @@ fn damaged(arch: &str, path: &Path, image: Vec<u8>) -> Result<Vec<u8>, String> {
         .map_err(fail)?;
     volume.write(note, None, NOTE, NOW).map_err(fail)?;
     volume.commit().map_err(fail)?;
+    volume.set_modified(note, NOW + 1).map_err(fail)?;
+    volume.commit().map_err(fail)?;
     let mut image = volume.into_disk().image().to_vec();
     image[BLOCK_BITMAP * BLOCK_SIZE..(BLOCK_BITMAP + 1) * BLOCK_SIZE].fill(0);
     let mut disk = MemoryDisk::from_image(image.clone());

@@ -172,7 +172,7 @@ pub fn build_properties(arch: &str) -> &'static str {
 
 /// What an image with an Android program for `arch` gets: `/system/bin/sh`, another name
 /// for `eggsh` (at `shell`, an earlier member), and `/system/build.prop`
-/// ([`build_properties`]).
+/// ([`build_properties()`]).
 pub fn system_members<'a>(shell: &'a str, arch: &str) -> [(&'static str, Content<'a>); 2] {
     [
         (SYSTEM_SHELL_PATH, Content::HardLink(shell)),

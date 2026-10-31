@@ -791,8 +791,6 @@ fn cut(value: usize, size: usize) -> usize {
     }
 }
 
-/// A system control's procedure as the program sees it (D178): the program's own that
-/// subclassed it, else the layer's entry that runs the control's.
 fn control_procedure(window: &Window) -> Option<usize> {
     match window.procedure {
         Procedure::Control(..) => Some(match window.subclass {

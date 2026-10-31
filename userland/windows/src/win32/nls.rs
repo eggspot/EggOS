@@ -195,12 +195,12 @@ unsafe extern "efiapi" fn lc_map_string_w(
         }
         // SAFETY: with `LCMAP_SORTKEY`, `out` is `out_count` writable bytes, at least `needed`.
         let bytes = unsafe { core::slice::from_raw_parts_mut(out.cast::<u8>(), needed) };
-        for (key, unit) in bytes.chunks_exact_mut(3).zip(units) {
+        for (key, unit) in bytes.as_chunks_mut::<3>().0.iter_mut().zip(units) {
             let unit = match flags & NORM_IGNORECASE != 0 {
                 true => text::upper(*unit),
                 false => *unit,
             };
-            key.copy_from_slice(&locale::sort_key_bytes(unit));
+            *key = locale::sort_key_bytes(unit);
         }
         bytes[needed - 1] = 0;
         return needed as i32;
@@ -261,9 +261,6 @@ unsafe fn time_of(time: *const u8) -> Option<SystemTime> {
         .then_some(given)
 }
 
-/// Writes what `produce` produces, NUL-terminated, into the caller's `size` units at `buffer`
-/// as the `Get*Format` functions do: the units with the NUL, or the units needed when `size`
-/// is 0.
 unsafe fn deliver(buffer: *mut u16, size: i32, produce: impl Fn(&mut dyn FnMut(char))) -> i32 {
     if size < 0 || (size > 0 && buffer.is_null()) {
         return fail(error::INVALID_PARAMETER, 0);

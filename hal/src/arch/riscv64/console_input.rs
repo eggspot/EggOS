@@ -20,14 +20,10 @@ const MAPPED_CONTEXTS: usize = 32;
 const SIE_SEIE: u64 = 1 << 9;
 const NO_CONTEXT: usize = usize::MAX;
 
-/// Devices' sources wait for the console's input.
 const DEVICE_PRIORITY: u32 = 1;
 
-/// The boot hart's supervisor-mode context, once [`enable`] or [`route_device`] has routed a
-/// source there.
 static CONTEXT: AtomicUsize = AtomicUsize::new(NO_CONTEXT);
 
-/// The sources routed for devices, by line.
 static DEVICE_LINES: SourceLines = SourceLines::new();
 
 /// The PLIC pages the kernel maps: the source priorities and the enables up to the last mapped
@@ -60,9 +56,6 @@ fn plic(context: usize) -> Plic<Mmio> {
     Plic::new(sources, context_regs, context)
 }
 
-/// The PLIC as `context`, the calling hart's supervisor-mode context, sees it; the first call
-/// lets the context take every source with a priority and the hart take supervisor external
-/// interrupts.
 fn context_plic(context: Option<usize>) -> Result<Plic<Mmio>, &'static str> {
     let context = context.ok_or("the device tree names no PLIC context for the boot hart")?;
     if context >= MAPPED_CONTEXTS {

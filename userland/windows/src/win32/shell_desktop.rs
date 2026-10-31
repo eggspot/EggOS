@@ -20,7 +20,6 @@ unsafe fn read<T>(drop: *const u8, offset: usize) -> T {
     unsafe { drop.wrapping_add(offset).cast::<T>().read_unaligned() }
 }
 
-/// Calls `visit` with each name the drop holds, in UTF-16, until it says to stop.
 unsafe fn for_each_name(drop: *const u8, visit: &mut dyn FnMut(&[u16]) -> bool) {
     // SAFETY: the callers' contract: a `DROPFILES` block.
     let offset: u32 = unsafe { read(drop, FILES_OFFSET) };

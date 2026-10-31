@@ -1327,9 +1327,6 @@ impl Desktop {
         self.place_window(slot, at, damage);
     }
 
-    /// Moves window `slot` as a person does, by its title bar or the window menu's `Move`: it
-    /// may hang off the work area's right and bottom edges, keeping [`HANGING_TITLE_KEPT`]
-    /// pixels and the whole height of its title bar inside (docs/ux/desktop-v0.3-gui.md 3.5).
     fn drag_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
         let at = self.hanging_clamped(slot, x, y);
         self.place_window(slot, at, damage);

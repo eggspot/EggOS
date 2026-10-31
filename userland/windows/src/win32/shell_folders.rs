@@ -10,7 +10,7 @@ use super::{Bool, FALSE, heap};
 use crate::known_folders::{self, Folder, Place};
 use crate::library::Export;
 use crate::linux::{self, AT_FDCWD};
-use crate::text::{self, PATH_CAPACITY};
+use crate::text::PATH_CAPACITY;
 use core::ffi::c_void;
 
 pub(super) const S_OK: i32 = 0;
@@ -45,7 +45,6 @@ pub(super) fn home(out: &mut [u8; PATH_CAPACITY]) -> usize {
     }
 }
 
-/// The EggOS path of `folder` into `out`, NUL-terminated; its length with the NUL.
 fn folder_path(folder: Folder, out: &mut [u8; PATH_CAPACITY]) -> usize {
     let length = match folder.place() {
         Place::Absolute(path) => {
@@ -89,8 +88,6 @@ fn is_folder(path: &[u8]) -> bool {
         .is_ok_and(|words| linux::file_mode(&words) & linux::FILE_TYPE == linux::DIRECTORY)
 }
 
-/// The folder's path in Windows' form into `out`, made first when `create`, checked unless
-/// `verify` is false: its length (no NUL), or the `HRESULT` of the failure.
 fn windows_folder(
     folder: Folder,
     create: bool,

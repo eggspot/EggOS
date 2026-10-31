@@ -68,8 +68,6 @@ fn snapshot(list: &SpinLock<List>) -> ([Entry; MAX_HANDLERS], usize) {
     list.with(|list| (list.entries, list.count))
 }
 
-/// Calls each handler of `list` with `pointers` until one answers to continue execution,
-/// and says whether one did.
 fn call(list: &SpinLock<List>, pointers: &mut ExceptionPointers, context: *mut Context) -> bool {
     let (entries, count) = snapshot(list);
     for entry in &entries[..count] {

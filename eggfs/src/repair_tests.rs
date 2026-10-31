@@ -5,6 +5,7 @@ use crate::layout::{
     records_end, write_record,
 };
 use crate::memory::MemoryDisk;
+use crate::repair::retire_journal;
 use crate::{
     CheckError, CheckMode, DiskCheck, Error, FormatError, FormatOptions, Kind, MAX_LABEL, Outcome,
     Problem, Volume, check_disk, format, format_with, generation_of, inode_of,
@@ -94,7 +95,7 @@ fn sample() -> Sample {
         .into_iter()
         .map(|(name, node)| (name, inode_of(node)))
         .collect();
-    let image = volume.into_disk().image().to_vec();
+    let image = settled_image(volume);
     let geometry = Geometry::decode(&image[..BLOCK_SIZE]).unwrap();
     Sample {
         image,
@@ -102,6 +103,13 @@ fn sample() -> Sample {
         inodes,
         big: contents,
     }
+}
+
+fn settled_image(volume: Volume<MemoryDisk>) -> Vec<u8> {
+    let mut disk = volume.into_disk();
+    let geometry = Geometry::decode(&disk.image()[..BLOCK_SIZE]).unwrap();
+    retire_journal(&mut disk, &geometry).unwrap();
+    disk.image().to_vec()
 }
 
 fn has(check: &DiskCheck, problem: Problem) -> bool {
@@ -427,7 +435,7 @@ fn a_missing_directory_block_is_filled_and_the_names_it_held_are_recounted() {
     }
     volume.commit().unwrap();
     let many_inode = inode_of(many);
-    let mut image = volume.into_disk().image().to_vec();
+    let mut image = settled_image(volume);
     let geometry = Geometry::decode(&image[..BLOCK_SIZE]).unwrap();
     let range = inode_range(&geometry, many_inode);
     let mut inode = Inode::decode(many_inode, &image[range.clone()]).unwrap();

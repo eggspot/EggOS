@@ -20,7 +20,7 @@ const LARGE: usize = 1 << 20;
 const AF_UNIX: c_int = 1;
 const AF_INET6: c_int = 10;
 const SOCK_STREAM: c_int = 1;
-const SOCK_DGRAM: c_int = 2;
+const SOCK_SEQPACKET: c_int = 5;
 const SOL_SOCKET: c_int = 1;
 const SO_PEERCRED: c_int = 17;
 const SCM_RIGHTS: c_int = 1;
@@ -223,7 +223,7 @@ fn errors() -> Checked<()> {
     };
     let _ = std::fs::remove_file(CLOSED_PATH);
     let family = socket_error(AF_INET6, SOCK_STREAM);
-    let datagram = socket_error(AF_UNIX, SOCK_DGRAM);
+    let packets = socket_error(AF_UNIX, SOCK_SEQPACKET);
     let expected = [
         ENOENT,
         ECONNREFUSED,
@@ -232,7 +232,7 @@ fn errors() -> Checked<()> {
         EAFNOSUPPORT,
         ESOCKTNOSUPPORT,
     ];
-    let got = [missing, not_a_socket, closed, in_use, family, datagram];
+    let got = [missing, not_a_socket, closed, in_use, family, packets];
     if got != expected {
         return Err(format!("errors {got:?}, expected {expected:?}"));
     }

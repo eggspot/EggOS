@@ -305,10 +305,6 @@ fn expand_pattern(argument: &[u8], start: usize, visit: &mut dyn FnMut(Expanded<
     matched
 }
 
-/// Visits the program's arguments as the C runtime expands them: an argument after the
-/// program's name whose last component holds `*` or `?` is each name in its folder that the
-/// pattern matches (`.` and `..` never), behind the folder as written, or itself when none
-/// does; every argument is followed by [`Expanded::End`].
 fn expand_arguments(visit: &mut dyn FnMut(Expanded<'_>)) {
     for (position, argument) in program_arguments().enumerate() {
         let argument = argument.to_bytes();
@@ -326,9 +322,6 @@ fn expand_arguments(visit: &mut dyn FnMut(Expanded<'_>)) {
     }
 }
 
-/// The expanded arguments ([`expand_arguments`]) as a list of NUL-terminated strings in one
-/// heap block kept for the process's life, each argument's names sorted byte-wise; the list
-/// and its length, or `None` without memory.
 fn expanded_list() -> Option<(*mut *mut u8, usize)> {
     let mut bytes = 0;
     let mut count = 0;
@@ -368,12 +361,9 @@ fn expanded_list() -> Option<(*mut *mut u8, usize)> {
                 unsafe { core::slice::from_raw_parts_mut(list.wrapping_add(run), index - run) };
             names.sort_unstable_by(|a, b| {
                 // SAFETY: each entry is a NUL-terminated string in the block.
-                let (a, b) = unsafe {
-                    (
-                        CStr::from_ptr(a.cast_const().cast()),
-                        CStr::from_ptr(b.cast_const().cast()),
-                    )
-                };
+                let a = unsafe { CStr::from_ptr(a.cast_const().cast()) };
+                // SAFETY: as above.
+                let b = unsafe { CStr::from_ptr(b.cast_const().cast()) };
                 a.cmp(b)
             });
             run = index;
@@ -396,10 +386,11 @@ pub(super) extern "efiapi" fn configure_wide_argv(mode: i32) -> i32 {
     if mode == EXPANDED_ARGUMENTS {
         let (list, count) = match expanded_list() {
             Some((narrow, count)) => {
-                // SAFETY: `expanded_list` wrote `count` NUL-terminated strings kept for the
-                // process's life.
-                let strings = (0..count).map(|index| unsafe {
-                    CStr::from_ptr(narrow.wrapping_add(index).read().cast_const().cast())
+                let strings = (0..count).map(|index| {
+                    // SAFETY: `expanded_list` wrote `count` pointers.
+                    let string = unsafe { narrow.wrapping_add(index).read() };
+                    // SAFETY: each a NUL-terminated string kept for the process's life.
+                    unsafe { CStr::from_ptr(string.cast_const().cast()) }
                 });
                 (wide_list(strings, count), count)
             }
@@ -651,7 +642,7 @@ unsafe extern "efiapi" fn getenv(name: *const u8) -> *mut u8 {
     }
     for index in 0.. {
         // SAFETY: the environment list is NULL-terminated and lives for the program's life.
-        let entry = unsafe { list.add(index).read() };
+        let entry = unsafe { list.wrapping_add(index).read() };
         if entry.is_null() {
             break;
         }

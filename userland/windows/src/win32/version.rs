@@ -51,7 +51,6 @@ fn read_all(fd: usize) -> Result<FileBytes, u32> {
     Ok(file)
 }
 
-/// Runs `work` on the version block of the file named `name`.
 unsafe fn with_version_block<R>(name: *const u16, work: impl FnOnce(&[u8]) -> R) -> Result<R, u32> {
     let mut path = [0u8; PATH_CAPACITY];
     // SAFETY: the callers' contract: a NUL-terminated file name.

@@ -52,7 +52,6 @@ const HHT_TOLEFT: u32 = 0x800;
 const HDS_BUTTONS: u32 = 0x2;
 const FAILED: usize = usize::MAX;
 
-/// The first version of Win32's `HDITEMW`, every field this layer reads or writes.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct HeaderItem {
@@ -65,7 +64,6 @@ struct HeaderItem {
     lparam: usize,
 }
 
-/// Win32's `NMHEADERW`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct NmHeader {
@@ -348,25 +346,34 @@ fn get_item(window: usize, index: usize, lparam: usize) -> usize {
         if index >= columns.count() {
             return 0;
         }
-        // SAFETY: `target` is the program's `HDITEMW`, as read above; `pszText` holds
-        // `cchTextMax` writable units when `HDI_TEXT` asks for the text.
-        unsafe {
-            if item.mask & HDI_WIDTH != 0 {
-                (&raw mut (*target).width).write_unaligned(columns.width(index));
-            }
-            if item.mask & HDI_FORMAT != 0 {
-                (&raw mut (*target).format).write_unaligned(columns.format(index));
-            }
-            if item.mask & HDI_LPARAM != 0 {
-                (&raw mut (*target).lparam).write_unaligned(columns.lparam(index));
-            }
-            if item.mask & HDI_TEXT != 0 {
+        if item.mask & HDI_WIDTH != 0 {
+            // SAFETY: `target` is the program's `HDITEMW`, as read above.
+            let width = unsafe { &raw mut (*target).width };
+            // SAFETY: as above.
+            unsafe { width.write_unaligned(columns.width(index)) };
+        }
+        if item.mask & HDI_FORMAT != 0 {
+            // SAFETY: as above.
+            let format = unsafe { &raw mut (*target).format };
+            // SAFETY: as above.
+            unsafe { format.write_unaligned(columns.format(index)) };
+        }
+        if item.mask & HDI_LPARAM != 0 {
+            // SAFETY: as above.
+            let lparam = unsafe { &raw mut (*target).lparam };
+            // SAFETY: as above.
+            unsafe { lparam.write_unaligned(columns.lparam(index)) };
+        }
+        if item.mask & HDI_TEXT != 0 {
+            // SAFETY: `pszText` holds `cchTextMax` writable units when `HDI_TEXT` asks for the
+            // text.
+            unsafe {
                 window_text::copy_out(
                     columns.text(index),
                     item.text,
                     item.text_max.max(0) as usize,
-                );
-            }
+                )
+            };
         }
         1
     })
@@ -398,12 +405,13 @@ fn hit_test(window: usize, lparam: usize) -> usize {
     }
     let info = lparam as *mut HitTestInfo;
     // SAFETY: `HDM_HITTEST`'s `lParam` is the program's `HDHITTESTINFO`, its point set.
-    let (x, y) = unsafe {
-        (
-            (&raw const (*info).x).read_unaligned(),
-            (&raw const (*info).y).read_unaligned(),
-        )
-    };
+    let x_at = unsafe { &raw const (*info).x };
+    // SAFETY: as above.
+    let y_at = unsafe { &raw const (*info).y };
+    // SAFETY: as above.
+    let x = unsafe { x_at.read_unaligned() };
+    // SAFETY: as above.
+    let y = unsafe { y_at.read_unaligned() };
     let client = client_of(window);
     let (found, item) = match () {
         () if y < client.top => (HHT_ABOVE, -1),
@@ -416,10 +424,13 @@ fn hit_test(window: usize, lparam: usize) -> usize {
         },
     };
     // SAFETY: as above.
-    unsafe {
-        (&raw mut (*info).flags).write_unaligned(found);
-        (&raw mut (*info).item).write_unaligned(item);
-    }
+    let flags_at = unsafe { &raw mut (*info).flags };
+    // SAFETY: as above.
+    let item_at = unsafe { &raw mut (*info).item };
+    // SAFETY: as above.
+    unsafe { flags_at.write_unaligned(found) };
+    // SAFETY: as above.
+    unsafe { item_at.write_unaligned(item) };
     item as isize as usize
 }
 
@@ -429,26 +440,27 @@ fn layout(window: usize, lparam: usize) -> usize {
     }
     // SAFETY: `HDM_LAYOUT`'s `lParam` is the program's `HDLAYOUT`: a `RECT` to place the
     // header in, shrunk by it, and the `WINDOWPOS` to fill.
-    unsafe {
-        let request = (lparam as *const LayoutRequest).read_unaligned();
-        if request.rect == 0 || request.position == 0 {
-            return 0;
-        }
-        let rect = request.rect as *mut Win32Rect;
-        let mut room = rect.read_unaligned();
-        let position = WindowPosition {
-            window,
-            after: 0,
-            x: room.left,
-            y: room.top,
-            width: room.right - room.left,
-            height: HEADER_HEIGHT,
-            flags: 0,
-        };
-        (request.position as *mut WindowPosition).write_unaligned(position);
-        room.top += HEADER_HEIGHT;
-        rect.write_unaligned(room);
+    let request = unsafe { (lparam as *const LayoutRequest).read_unaligned() };
+    if request.rect == 0 || request.position == 0 {
+        return 0;
     }
+    let rect = request.rect as *mut Win32Rect;
+    // SAFETY: as above.
+    let mut room = unsafe { rect.read_unaligned() };
+    let position = WindowPosition {
+        window,
+        after: 0,
+        x: room.left,
+        y: room.top,
+        width: room.right - room.left,
+        height: HEADER_HEIGHT,
+        flags: 0,
+    };
+    // SAFETY: as above.
+    unsafe { (request.position as *mut WindowPosition).write_unaligned(position) };
+    room.top += HEADER_HEIGHT;
+    // SAFETY: as above.
+    unsafe { rect.write_unaligned(room) };
     1
 }
 

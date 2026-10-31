@@ -21,7 +21,6 @@ enum Encoding {
     Utf8 { marked: bool },
 }
 
-/// A file's text as UTF-16 units in a heap block, and how it was stored.
 struct Loaded {
     units: *mut u16,
     length: usize,
@@ -139,8 +138,8 @@ fn load(path: &[u8]) -> Result<Loaded, u32> {
     let out = unsafe { core::slice::from_raw_parts_mut(units, count) };
     match encoding {
         Encoding::Utf16 => {
-            for (unit, pair) in out.iter_mut().zip(body.chunks_exact(2)) {
-                *unit = u16::from_le_bytes([pair[0], pair[1]]);
+            for (unit, pair) in out.iter_mut().zip(body.as_chunks::<2>().0) {
+                *unit = u16::from_le_bytes(*pair);
             }
         }
         Encoding::Utf8 { .. } => {
@@ -174,8 +173,8 @@ fn save(path: &[u8], units: &[u16], encoding: Encoding) -> Result<(), u32> {
     let body = &mut bytes[mark.len()..];
     match encoding {
         Encoding::Utf16 => {
-            for (pair, unit) in body.chunks_exact_mut(2).zip(units) {
-                pair.copy_from_slice(&unit.to_le_bytes());
+            for (pair, unit) in body.as_chunks_mut::<2>().0.iter_mut().zip(units) {
+                *pair = unit.to_le_bytes();
             }
         }
         Encoding::Utf8 { .. } => {
@@ -213,9 +212,6 @@ fn apply(path: &[u8], section: &[u16], change: Change<'_>) -> Result<(), u32> {
     save(path, out, loaded.encoding)
 }
 
-/// Fills a caller's buffer with strings each ended by a NUL and the list by another, as the
-/// profile functions do: a list that does not fit is cut, ended by two NULs, and its length is
-/// the buffer's less two.
 struct ListWriter<'a> {
     out: &'a mut [u16],
     at: usize,

@@ -37,7 +37,6 @@ const NO_DEFAULT: u32 = u32::MAX;
 const SC_CLOSE: usize = 0xf060;
 const CLOSE_LABEL: &str = "&Close\tAlt+F4";
 
-/// Win32's `MENUITEMINFOW`.
 #[repr(C)]
 struct MenuItemInfo {
     size: u32,
@@ -54,10 +53,8 @@ struct MenuItemInfo {
     bitmap: usize,
 }
 
-/// The smallest `MENUITEMINFOW` programs pass, without `hbmpItem`.
 const SMALLEST_INFO: usize = core::mem::offset_of!(MenuItemInfo, bitmap);
 
-/// Win32's `MENUINFO`.
 #[repr(C)]
 struct MenuInfo {
     size: u32,
@@ -153,8 +150,6 @@ fn describe(item: &MenuItem, info: &mut MenuItemInfo) {
     }
 }
 
-/// The menu and position item `item` of `menu` names: a position of `menu` itself, else a
-/// command searched in `menu` and its drop-downs.
 fn locate(
     table: &MenuTable,
     menu: usize,

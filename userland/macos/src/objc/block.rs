@@ -11,7 +11,7 @@ use super::abi::{ClassObject, Id, Sel};
 use super::class::{self, BuiltinClass, IMMORTAL};
 use super::reference_count::{objc_release, objc_retain};
 use super::root::NSOBJECT;
-use super::{Runtime, autorelease, methods};
+use super::{Runtime, autorelease};
 use crate::libsystem::heap;
 use core::sync::atomic::{AtomicI32, Ordering};
 
@@ -181,39 +181,56 @@ fn byref_copy(variable: *const u8) -> *const u8 {
         }
         let copied = source_flags | BYREF_NEEDS_FREE | 4;
         // SAFETY: the new block holds `size` bytes; the header's words are written in place.
+        unsafe { copy.cast::<usize>().write(0) };
+        // SAFETY: as above.
         unsafe {
-            copy.cast::<usize>().write(0);
             copy.wrapping_add(BYREF_FORWARDING_OFFSET)
                 .cast::<*mut u8>()
-                .write(copy);
+                .write(copy)
+        };
+        // SAFETY: as above.
+        unsafe {
             copy.wrapping_add(BYREF_FLAGS_OFFSET)
                 .cast::<i32>()
-                .write(copied);
+                .write(copied)
+        };
+        // SAFETY: as above.
+        unsafe {
             copy.wrapping_add(BYREF_SIZE_OFFSET)
                 .cast::<u32>()
-                .write(size as u32);
+                .write(size as u32)
+        };
+        // SAFETY: the variable's forwarding word, which now names the copy.
+        unsafe {
             source
                 .wrapping_add(BYREF_FORWARDING_OFFSET)
                 .cast::<*mut u8>()
-                .write(copy);
-        }
+                .write(copy)
+        };
         if source_flags & BYREF_HAS_COPY_DISPOSE != 0 {
             let keep = word_at(source, BYREF_KEEP_OFFSET);
             let destroy = word_at(source, BYREF_DESTROY_OFFSET);
-            // SAFETY: a variable with the flag has its keep and destroy helpers (and with the
-            // layout flag its layout) after the header; the copy has room for them.
+            // SAFETY: a variable with the flag has its keep and destroy helpers after the
+            // header; the copy has room for them.
             unsafe {
                 copy.wrapping_add(BYREF_KEEP_OFFSET)
                     .cast::<usize>()
-                    .write(keep);
+                    .write(keep)
+            };
+            // SAFETY: as above.
+            unsafe {
                 copy.wrapping_add(BYREF_DESTROY_OFFSET)
                     .cast::<usize>()
-                    .write(destroy);
-                if source_flags & BYREF_LAYOUT_EXTENDED != 0 {
+                    .write(destroy)
+            };
+            if source_flags & BYREF_LAYOUT_EXTENDED != 0 {
+                // SAFETY: with the layout flag the variable's layout follows its helpers; the
+                // copy has room for it.
+                unsafe {
                     copy.wrapping_add(BYREF_LAYOUT_OFFSET)
                         .cast::<usize>()
-                        .write(word_at(source, BYREF_LAYOUT_OFFSET));
-                }
+                        .write(word_at(source, BYREF_LAYOUT_OFFSET))
+                };
             }
             // SAFETY: the compiler's keep helper copies the variable's value.
             let keep: extern "C" fn(*mut u8, *mut u8) =

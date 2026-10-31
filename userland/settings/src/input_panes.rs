@@ -139,7 +139,6 @@ fn slider(
     )
 }
 
-/// The scale the device's size allows: 2 needs both sides even.
 fn halvable(resolution: (u32, u32)) -> bool {
     resolution.0.is_multiple_of(2) && resolution.1.is_multiple_of(2)
 }

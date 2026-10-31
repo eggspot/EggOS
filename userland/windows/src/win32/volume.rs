@@ -40,8 +40,6 @@ fn file_system_name(kind: u64) -> &'static str {
     }
 }
 
-/// The `statfs` words of the volume holding `root` (a NUL-terminated UTF-16 path, the working
-/// folder's when null).
 unsafe fn volume_of(root: *const u16) -> Result<[u64; STATFS_WORDS], u32> {
     let mut path = [0u8; PATH_CAPACITY];
     let length = match root.is_null() {

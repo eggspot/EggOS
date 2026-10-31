@@ -103,15 +103,9 @@ impl Drop for Wide {
 /// UTF-8 text in a heap block, NUL-terminated, freed when dropped.
 pub struct Narrow {
     block: *mut u8,
-    length: usize,
 }
 
 impl Narrow {
-    pub fn bytes(&self) -> &[u8] {
-        // SAFETY: the block holds `length` written bytes and the NUL, alive until dropped.
-        unsafe { core::slice::from_raw_parts(self.block, self.length) }
-    }
-
     pub fn address(&self) -> usize {
         self.block as usize
     }
@@ -152,10 +146,7 @@ pub fn narrow(units: &[u16]) -> Option<Narrow> {
     let out = unsafe { core::slice::from_raw_parts_mut(block, length + 1) };
     let (written, _) = text::write_utf8(units, &mut out[..length]);
     out[written] = 0;
-    Some(Narrow {
-        block,
-        length: written,
-    })
+    Some(Narrow { block })
 }
 
 /// The bytes of the NUL-terminated string at `text`.
@@ -225,15 +216,12 @@ pub fn call_procedure(
                 return 0;
             }
             let length = call(room, block as usize).min(room);
-            // SAFETY: the procedure wrote at most `room` bytes into the block; the caller's
-            // buffer holds `wparam` writable units.
-            let copied = unsafe {
-                let bytes = core::slice::from_raw_parts(block, length);
-                let out = core::slice::from_raw_parts_mut(lparam as *mut u16, wparam);
-                let written = text::write_utf16(bytes, &mut out[..wparam - 1]);
-                out[written] = 0;
-                written
-            };
+            // SAFETY: the procedure wrote at most `room` bytes into the block.
+            let bytes = unsafe { core::slice::from_raw_parts(block, length) };
+            // SAFETY: the caller's buffer holds `wparam` writable units.
+            let out = unsafe { core::slice::from_raw_parts_mut(lparam as *mut u16, wparam) };
+            let copied = text::write_utf16(bytes, &mut out[..wparam - 1]);
+            out[copied] = 0;
             // SAFETY: the block this call allocated, used by nothing now.
             unsafe { heap::free(block) };
             copied
@@ -324,16 +312,14 @@ pub fn from_narrow(
         else {
             return NOT_FOUND;
         };
-        // SAFETY: `block` holds `copied` units the control wrote; the caller's buffer has room
-        // for the item's text and a NUL, as `CB_GETLBTEXTLEN` and `LB_GETTEXTLEN` measured it.
-        let written = unsafe {
-            let units = core::slice::from_raw_parts(block, copied);
-            let needed = text::utf8_length(units);
-            let out = core::slice::from_raw_parts_mut(lparam as *mut u8, needed + 1);
-            let (written, _) = text::write_utf8(units, &mut out[..needed]);
-            out[written] = 0;
-            written
-        };
+        // SAFETY: `block` holds `copied` units the control wrote.
+        let units = unsafe { core::slice::from_raw_parts(block, copied) };
+        let needed = text::utf8_length(units);
+        // SAFETY: the caller's buffer has room for the item's text and a NUL, as
+        // `CB_GETLBTEXTLEN` and `LB_GETTEXTLEN` measured it.
+        let out = unsafe { core::slice::from_raw_parts_mut(lparam as *mut u8, needed + 1) };
+        let (written, _) = text::write_utf8(units, &mut out[..needed]);
+        out[written] = 0;
         // SAFETY: the block `text_of` allocated, used by nothing now.
         unsafe { heap::free(block.cast()) };
         return written;
@@ -348,14 +334,12 @@ pub fn from_narrow(
             else {
                 return 0;
             };
-            // SAFETY: `block` holds `copied` units; the caller's buffer holds `wparam` bytes.
-            let written = unsafe {
-                let units = core::slice::from_raw_parts(block, copied);
-                let out = core::slice::from_raw_parts_mut(lparam as *mut u8, wparam);
-                let (written, _) = text::write_utf8(units, &mut out[..wparam - 1]);
-                out[written] = 0;
-                written
-            };
+            // SAFETY: `block` holds `copied` units.
+            let units = unsafe { core::slice::from_raw_parts(block, copied) };
+            // SAFETY: the caller's buffer holds `wparam` bytes.
+            let out = unsafe { core::slice::from_raw_parts_mut(lparam as *mut u8, wparam) };
+            let (written, _) = text::write_utf8(units, &mut out[..wparam - 1]);
+            out[written] = 0;
             // SAFETY: as above.
             unsafe { heap::free(block.cast()) };
             written
@@ -644,8 +628,10 @@ unsafe extern "efiapi" fn message_box_a(
     caption: *const u8,
     box_type: u32,
 ) -> i32 {
-    // SAFETY: `MessageBoxA`'s contract: NUL-terminated strings or null.
-    let (text, title) = unsafe { (widen_text(message_text), widen_text(caption)) };
+    // SAFETY: `MessageBoxA`'s contract: a NUL-terminated string or null.
+    let text = unsafe { widen_text(message_text) };
+    // SAFETY: as above.
+    let title = unsafe { widen_text(caption) };
     let (Ok(text), Ok(title)) = (text, title) else {
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };

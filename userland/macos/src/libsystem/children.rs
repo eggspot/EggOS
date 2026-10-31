@@ -81,7 +81,6 @@ fn search_path<'a>() -> &'a [u8] {
     }
 }
 
-/// Runs the program at the NUL-terminated `path`; returns only why it could not.
 fn execute(
     path: &[u8],
     arguments: *const *const c_char,
@@ -106,11 +105,6 @@ fn execute(
     .unwrap_or(Errno::EINVAL)
 }
 
-/// Runs `file` as `execvp` does: as it is if it names a directory, else from each directory of
-/// `search` in turn. Returns only why it could not.
-///
-/// # Safety
-/// `file` must be a NUL-terminated string.
 unsafe fn execute_searching(
     file: *const c_char,
     search: &[u8],
@@ -187,12 +181,6 @@ pub unsafe extern "C" fn execv_searching(
     errno_from(failure, -1)
 }
 
-/// Reads an `execl` list, `first` then the variadic arguments up to the null one, into `list`,
-/// and returns the arguments that follow it.
-///
-/// # Safety
-/// `arguments` must be the variadic arguments of an `execl` call, which end with a null
-/// pointer.
 unsafe fn read_list(
     first: *const c_char,
     arguments: RawVaList,
@@ -334,7 +322,6 @@ fn open_as(fd: c_int, path: Path, flags: u32, mode: u32) -> Result<(), Errno> {
     Ok(())
 }
 
-/// What a program started by `posix_spawn` runs: `file`, searched for with `search`.
 #[derive(Debug, Clone, Copy)]
 struct Program {
     file: *const c_char,
@@ -344,12 +331,6 @@ struct Program {
 }
 
 impl Program {
-    /// Takes the steps of `attributes` and `actions`, then becomes the program; returns only
-    /// why it could not.
-    ///
-    /// # Safety
-    /// `file` must be a NUL-terminated string, and `arguments` and `environment` null-ended
-    /// lists of them.
     unsafe fn become_it(&self, attributes: Attributes, actions: &[FileAction<Path>]) -> Errno {
         for step in spawn_actions::steps(attributes, actions) {
             if let Err(errno) = take(step) {
@@ -366,11 +347,6 @@ impl Program {
         }
     }
 
-    /// Starts the program in a new child, which takes the steps first; the child's pid, or
-    /// why it could not start (then no child is left).
-    ///
-    /// # Safety
-    /// As [`Program::become_it`].
     unsafe fn start(
         &self,
         attributes: Attributes,
@@ -447,7 +423,6 @@ fn wait_raw(
     }
 }
 
-/// Waits for the child `pid` to end and returns its Darwin wait status, or -1 with `errno`.
 fn wait_for(pid: c_int) -> c_int {
     let mut status = 0;
     loop {
@@ -505,8 +480,6 @@ pub unsafe extern "C" fn wait3(status: *mut c_int, options: c_int, usage: *mut c
     unsafe { wait4(-1, status, options, usage) }
 }
 
-/// # Safety
-/// `path` must be a NUL-terminated string.
 unsafe fn copy_path(path: *const c_char) -> Path {
     // SAFETY: the caller's promise.
     let bytes = unsafe { c_string_with_nul(path) };
@@ -524,14 +497,14 @@ fn release_path(action: &FileAction<Path>) {
     }
 }
 
-/// # Safety
-/// `actions` must be null or point to a `posix_spawn_file_actions_t`.
 unsafe fn actions_of<'a>(actions: *const *mut Actions) -> Option<&'a mut Actions> {
     if actions.is_null() {
         return None;
     }
-    // SAFETY: the caller's promise; `init` set the pointer to the layer's list, or it is null.
-    unsafe { actions.read().as_mut() }
+    // SAFETY: the caller's promise; `actions` is readable.
+    let list = unsafe { actions.read() };
+    // SAFETY: `init` set the pointer to the layer's list, or it is null.
+    unsafe { list.as_mut() }
 }
 
 /// # Safety
@@ -592,16 +565,16 @@ impl Actions {
             self.list = grown.cast();
             self.capacity = capacity;
         }
-        // SAFETY: the list has room for one more action.
-        unsafe { self.list.add(self.count).write(action) };
+        // SAFETY: the list holds `capacity` actions and `count` is below it, so the slot is in
+        // the list.
+        let slot = unsafe { self.list.add(self.count) };
+        // SAFETY: the list has room for one more action; the slot is unused.
+        unsafe { slot.write(action) };
         self.count += 1;
         0
     }
 }
 
-/// # Safety
-/// `actions` must point to a `posix_spawn_file_actions_t`; paths in `action` must be the
-/// layer's own copies.
 unsafe fn add(actions: *const *mut Actions, action: FileAction<Path>) -> c_int {
     // SAFETY: the caller's promise.
     match unsafe { actions_of(actions) } {
@@ -613,8 +586,6 @@ unsafe fn add(actions: *const *mut Actions, action: FileAction<Path>) -> c_int {
     }
 }
 
-/// # Safety
-/// `actions` must point to a `posix_spawn_file_actions_t`.
 unsafe fn add_descriptor_action(
     actions: *const *mut Actions,
     fds: &[c_int],
@@ -707,15 +678,14 @@ pub unsafe extern "C" fn file_actions_add_chdir(
     unsafe { add(actions, FileAction::ChangeDirectory { path }) }
 }
 
-/// # Safety
-/// `attributes` must be null or point to a `posix_spawnattr_t`.
 unsafe fn attributes_of<'a>(attributes: *const *mut Attributes) -> Option<&'a mut Attributes> {
     if attributes.is_null() {
         return None;
     }
-    // SAFETY: the caller's promise; `init` set the pointer to the layer's settings, or it is
-    // null.
-    unsafe { attributes.read().as_mut() }
+    // SAFETY: the caller's promise; `attributes` is readable.
+    let settings = unsafe { attributes.read() };
+    // SAFETY: `init` set the pointer to the layer's settings, or it is null.
+    unsafe { settings.as_mut() }
 }
 
 /// # Safety
@@ -745,8 +715,6 @@ pub unsafe extern "C" fn attributes_destroy(attributes: *mut *mut Attributes) ->
     0
 }
 
-/// # Safety
-/// `attributes` must point to a `posix_spawnattr_t`.
 unsafe fn change_attributes(
     attributes: *const *mut Attributes,
     change: impl FnOnce(&mut Attributes),
@@ -761,8 +729,6 @@ unsafe fn change_attributes(
     }
 }
 
-/// # Safety
-/// `attributes` must point to a `posix_spawnattr_t` and `out` be writable.
 unsafe fn read_attribute<T>(
     attributes: *const *mut Attributes,
     out: *mut T,
@@ -863,10 +829,6 @@ pub unsafe extern "C" fn attributes_get_default_signals(
     unsafe { read_attribute(attributes, set, |settings| settings.default_signals) }
 }
 
-/// `posix_spawn` and `posix_spawnp`: the child's pid into `pid`, and 0 or Darwin's `errno`.
-///
-/// # Safety
-/// The pointers must be as `posix_spawn` takes them.
 unsafe fn spawn(
     pid: *mut c_int,
     program: Program,
@@ -948,11 +910,6 @@ pub unsafe extern "C" fn posix_spawnp(
     unsafe { spawn(pid, program, actions, attributes) }
 }
 
-/// Starts EggOS's shell on `command` in a new child that takes `attributes` and `actions`
-/// first.
-///
-/// # Safety
-/// `command` must be a NUL-terminated string.
 unsafe fn start_shell(
     command: *const c_char,
     attributes: Attributes,

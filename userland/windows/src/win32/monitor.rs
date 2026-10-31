@@ -8,7 +8,6 @@ use super::{Bool, FALSE, TRUE, call_program, error, fail};
 use crate::library::Export;
 use eggos_windows_gui::surface::Rect;
 
-/// The one monitor's handle (`HMONITOR`).
 const PRIMARY: usize = 0x0001_0001;
 const MONITOR_DEFAULTTONULL: u32 = 0;
 const MONITORINFOF_PRIMARY: u32 = 0x1;
@@ -109,7 +108,7 @@ unsafe extern "efiapi" fn get_monitor_info_w(monitor: usize, out: *mut MonitorIn
             .enumerate()
         {
             // SAFETY: a `MONITORINFOEXW` has 32 units of device name after its `MONITORINFO`.
-            unsafe { name.add(index).write_unaligned(unit) };
+            unsafe { name.wrapping_add(index).write_unaligned(unit) };
         }
     }
     TRUE

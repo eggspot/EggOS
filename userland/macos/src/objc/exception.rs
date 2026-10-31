@@ -81,14 +81,14 @@ const fn vtable_pointer() -> *const usize {
 /// `@catch (id)`: any object.
 pub static OBJC_EHTYPE_ID: TypeInfo = TypeInfo {
     vtable: vtable_pointer(),
-    _name: b"id\0".as_ptr(),
+    _name: c"id".as_ptr().cast(),
     class: core::ptr::null(),
 };
 
 /// `@catch (NSException *)`.
 pub static OBJC_EHTYPE_NSEXCEPTION: TypeInfo = TypeInfo {
     vtable: vtable_pointer(),
-    _name: b"NSException\0".as_ptr(),
+    _name: c"NSException".as_ptr().cast(),
     class: &raw const crate::foundation::NSEXCEPTION,
 };
 
@@ -262,7 +262,9 @@ fn install(mut registers: Registers, pad: u64, raised: *mut Raised, selector: i6
 
 fn clean_up_to_handler(raised: *mut Raised, start: Registers) -> ! {
     // SAFETY: an exception record made by `new_raised`, alive until its catch ends.
-    let (object, handler) = unsafe { ((*raised).object, (*raised).handler_frame) };
+    let object = unsafe { (*raised).object };
+    // SAFETY: as above.
+    let handler = unsafe { (*raised).handler_frame };
     let mut registers = start;
     for _ in 0..MAX_FRAMES {
         let pc = frame::pc(&registers);
@@ -360,10 +362,9 @@ extern "C" fn rethrow(_: usize, registers: *const Registers) -> ! {
         crate::libsystem::abort()
     }
     // SAFETY: the record of the exception the innermost `@catch` is handling.
-    unsafe {
-        (*top).rethrown = true;
-        (*top).handler_frame = 0;
-    }
+    unsafe { (*top).rethrown = true };
+    // SAFETY: as above.
+    unsafe { (*top).handler_frame = 0 };
     // SAFETY: as in `throw_from`.
     let start = unsafe { *registers };
     raise(top, start)
@@ -375,11 +376,10 @@ extern "C" fn begin_catch(raised: *mut Raised) -> Id {
     }
     let top = caught();
     // SAFETY: a record a landing pad got from the unwinder.
-    unsafe {
-        (*raised).rethrown = false;
-        if top != raised {
-            (*raised).next = top;
-        }
+    unsafe { (*raised).rethrown = false };
+    if top != raised {
+        // SAFETY: as above.
+        unsafe { (*raised).next = top };
     }
     set_caught(raised);
     // SAFETY: as above.
@@ -392,7 +392,11 @@ extern "C" fn end_catch() {
         return;
     }
     // SAFETY: the record the innermost `@catch` began with.
-    let (next, rethrown, object) = unsafe { ((*top).next, (*top).rethrown, (*top).object) };
+    let next = unsafe { (*top).next };
+    // SAFETY: as above.
+    let rethrown = unsafe { (*top).rethrown };
+    // SAFETY: as above.
+    let object = unsafe { (*top).object };
     set_caught(next);
     if !rethrown {
         objc_autorelease(object);

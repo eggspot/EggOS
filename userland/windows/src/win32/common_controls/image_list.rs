@@ -22,7 +22,6 @@ const LARGEST_SIDE: i32 = 256;
 const SMALLEST_GROWTH: usize = 4;
 const LAST: i32 = -1;
 
-/// One image list: its images' size, how many it holds and has room for, and the block.
 #[derive(Debug, Clone, Copy)]
 struct ImageList {
     size: (i32, i32),
@@ -45,47 +44,38 @@ impl ImageList {
         (self.pixels_per_image() + self.mask_words()) * 4
     }
 
-    /// Image `index`'s pixels and mask.
     fn image(&self, index: usize) -> Option<(&[u32], &[u8])> {
         if index >= self.count || self.block == 0 {
             return None;
         }
         let start = self.block + index * self.stride();
         let pixels = self.pixels_per_image();
+        let mask_bytes = image::mask_bytes(self.size.0, self.size.1);
         // SAFETY: the block holds `capacity` images of `stride` bytes, `index` is below `count`
         // and `count <= capacity`; the table's lock is held while the borrow of `self` lasts.
-        unsafe {
-            Some((
-                core::slice::from_raw_parts(start as *const u32, pixels),
-                core::slice::from_raw_parts(
-                    (start + pixels * 4) as *const u8,
-                    image::mask_bytes(self.size.0, self.size.1),
-                ),
-            ))
-        }
+        let colours = unsafe { core::slice::from_raw_parts(start as *const u32, pixels) };
+        // SAFETY: as above, for the mask after the image's pixels.
+        let mask =
+            unsafe { core::slice::from_raw_parts((start + pixels * 4) as *const u8, mask_bytes) };
+        Some((colours, mask))
     }
 
-    /// Image `index`'s pixels and mask to write.
     fn image_mut(&mut self, index: usize) -> Option<(&mut [u32], &mut [u8])> {
         if index >= self.capacity || self.block == 0 {
             return None;
         }
         let start = self.block + index * self.stride();
         let pixels = self.pixels_per_image();
+        let mask_bytes = image::mask_bytes(self.size.0, self.size.1);
         // SAFETY: as `image`, for a slot below `capacity`; `&mut self` makes this the only
         // reference to the block.
-        unsafe {
-            Some((
-                core::slice::from_raw_parts_mut(start as *mut u32, pixels),
-                core::slice::from_raw_parts_mut(
-                    (start + pixels * 4) as *mut u8,
-                    image::mask_bytes(self.size.0, self.size.1),
-                ),
-            ))
-        }
+        let colours = unsafe { core::slice::from_raw_parts_mut(start as *mut u32, pixels) };
+        // SAFETY: as above, for the mask after the image's pixels, apart from them.
+        let mask =
+            unsafe { core::slice::from_raw_parts_mut((start + pixels * 4) as *mut u8, mask_bytes) };
+        Some((colours, mask))
     }
 
-    /// Makes room for `count` images, growing by the list's step; false without memory.
     fn reserve(&mut self, count: usize) -> bool {
         if count <= self.capacity {
             return true;
@@ -109,16 +99,16 @@ impl ImageList {
                     self.block as *const u8,
                     block,
                     self.capacity * self.stride(),
-                );
-                heap::free(self.block as *mut u8);
-            }
+                )
+            };
+            // SAFETY: the old block, the layer's, used by nothing once copied.
+            unsafe { heap::free(self.block as *mut u8) };
         }
         self.block = block as usize;
         self.capacity = capacity;
         true
     }
 
-    /// Image `index` cut from `source` at its `place`-th image's column.
     fn store(&mut self, index: usize, source: &Picture<'_>, masks: MaskSource<'_>, place: i32) {
         let size = self.size;
         if let Some((pixels, mask)) = self.image_mut(index) {
@@ -260,22 +250,18 @@ unsafe extern "efiapi" fn image_list_get_icon_size(
         return fail(error::INVALID_PARAMETER, FALSE);
     }
     // SAFETY: `ImageList_GetIconSize`'s contract: two writable `int`s, checked not null.
-    unsafe {
-        cx.write(width);
-        cy.write(height);
-    }
+    unsafe { cx.write(width) };
+    // SAFETY: as above.
+    unsafe { cy.write(height) };
     TRUE
 }
 
-/// Adds or replaces images of `list` from bitmap `bitmap` with `masks` made from `mask`: at
-/// `at` (one image) or appended (as many as the bitmap is wide); the first index, or an error.
 fn put(list: usize, at: Option<usize>, bitmap: usize, mask: Mask) -> Result<usize, u32> {
     with(|gui| put_locked(gui, list, at, bitmap, mask)).unwrap_or(Err(error::NOT_ENOUGH_MEMORY))
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Mask {
-    None,
     Bitmap(usize),
     Colour(u32),
 }
@@ -289,7 +275,7 @@ fn put_locked(
 ) -> Result<usize, u32> {
     let source = picture_of(gui, bitmap).ok_or(error::INVALID_HANDLE)?;
     let masks = match mask {
-        Mask::None | Mask::Bitmap(0) => MaskSource::None,
+        Mask::Bitmap(0) => MaskSource::None,
         Mask::Bitmap(handle) => {
             MaskSource::Bitmap(picture_of(gui, handle).ok_or(error::INVALID_HANDLE)?)
         }

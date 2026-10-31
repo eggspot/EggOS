@@ -150,7 +150,7 @@ pub fn with_state<T: Model, R>(
 
 /// Runs `work` on `window`'s entry and its model of type `T` while the caller holds the lock
 /// through `gui`.
-pub fn read_state<'g, T: Model, R>(
+pub fn read_state<'g, T: Model + 'g, R>(
     gui: &'g Gui,
     window: usize,
     work: impl FnOnce(&'g Window, &'g T) -> R,

@@ -60,7 +60,6 @@ const VK_CONTROL: usize = 0x11;
 const HELD: u8 = 0x80;
 const LPARAM_BYTES: usize = core::mem::size_of::<usize>();
 
-/// Win32's `TCITEMW`.
 #[repr(C)]
 struct TabItem {
     mask: u32,
@@ -72,7 +71,6 @@ struct TabItem {
     data: usize,
 }
 
-/// Win32's `TCHITTESTINFO`.
 #[repr(C)]
 struct HitTest {
     x: i32,
@@ -138,8 +136,6 @@ fn index_result(index: Option<usize>) -> usize {
     index.unwrap_or(NONE)
 }
 
-/// Selects tab `index` as the user does: `TCN_SELCHANGING`, which a nonzero answer refuses,
-/// the selection and its repaint, then `TCN_SELCHANGE`. Whether it changed.
 fn select_with_notifications(window: usize, index: usize) -> bool {
     let current = with_state::<TabState, _>(window, |_, state| {
         (index < state.tabs.count()).then_some(state.tabs.selected())

@@ -28,6 +28,8 @@ const WINDOW_CREATE: c_long = 0xc020_7701;
 const WINDOW_CREATE_SIZE: usize = 32;
 const LARGEST_WINDOW: u32 = 8192;
 const SLACK_KB: u64 = 4096;
+const MEMORY_BACK_POLLS: u32 = 200;
+const MEMORY_BACK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[cfg(target_arch = "x86_64")]
 const SYS_IOCTL: c_long = 16;
@@ -167,11 +169,12 @@ fn run_checks() -> Checked<()> {
     if before.reserve == 0 || before.total == 0 {
         return Err(format!("no reserve in /proc/meminfo: {before:?}"));
     }
+    window_buffers(before)?;
     memory_file_as_large_as_memory(before)?;
     memory_files_up_to_the_reserve()?;
     anonymous_memory()?;
+    memory_back(before)?;
     socket_buffers(before)?;
-    window_buffers(before)?;
     let after = memory_now()?;
     if after.free + SLACK_KB < before.free {
         return Err(format!(
@@ -181,6 +184,21 @@ fn run_checks() -> Checked<()> {
     }
     println!("{PREFIX} memory back");
     Ok(())
+}
+
+fn memory_back(before: Memory) -> Checked<()> {
+    let mut now = memory_now()?;
+    for _ in 0..MEMORY_BACK_POLLS {
+        if now.free + SLACK_KB >= before.free {
+            return Ok(());
+        }
+        std::thread::sleep(MEMORY_BACK_POLL);
+        now = memory_now()?;
+    }
+    Err(format!(
+        "memory did not come back after the killed program: {} KiB free before, {} after",
+        before.free, now.free
+    ))
 }
 
 fn memory_file_as_large_as_memory(memory: Memory) -> Checked<()> {

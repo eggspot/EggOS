@@ -36,9 +36,6 @@ pub(super) fn queue_call(routine: usize, arguments: [usize; 3]) -> bool {
     queue_call_for(thread_environment::thread_id(), routine, arguments)
 }
 
-/// Queues `routine(arguments)` for the next alertable wait of the thread whose id is
-/// `thread`, waking the waits so that one it is in already runs it; `false` when the queue is
-/// full.
 fn queue_call_for(thread: u32, routine: usize, arguments: [usize; 3]) -> bool {
     let call = QueuedCall {
         thread,
@@ -140,10 +137,6 @@ fn readable(fd: usize) -> bool {
     matches!(linux::wait_readable([fd as i32, -1], Some(0)), Ok(ready) if ready > 0)
 }
 
-/// Writes the status and count into the `OVERLAPPED` at `overlapped`.
-///
-/// # Safety
-/// `overlapped` must be a writable `OVERLAPPED`.
 unsafe fn record(overlapped: usize, status: u32, count: usize) {
     let overlapped = overlapped as *mut u8;
     // SAFETY: the caller's duty: `Internal` and `InternalHigh` are its first two words.
@@ -151,18 +144,17 @@ unsafe fn record(overlapped: usize, status: u32, count: usize) {
         overlapped
             .wrapping_add(INTERNAL)
             .cast::<usize>()
-            .write_unaligned(status as usize);
+            .write_unaligned(status as usize)
+    };
+    // SAFETY: as above.
+    unsafe {
         overlapped
             .wrapping_add(INTERNAL_HIGH)
             .cast::<usize>()
-            .write_unaligned(count);
-    }
+            .write_unaligned(count)
+    };
 }
 
-/// The event of the `OVERLAPPED` at `overlapped`, 0 for none.
-///
-/// # Safety
-/// `overlapped` must be a readable `OVERLAPPED`.
 unsafe fn event_of(overlapped: usize) -> usize {
     // SAFETY: the caller's duty: `hEvent` follows the offset words.
     unsafe {
@@ -173,10 +165,6 @@ unsafe fn event_of(overlapped: usize) -> usize {
     }
 }
 
-/// The file offset of the `OVERLAPPED` at `overlapped`.
-///
-/// # Safety
-/// `overlapped` must be a readable `OVERLAPPED`.
 unsafe fn offset_of(overlapped: usize) -> u64 {
     // SAFETY: the caller's duty: `Offset` and `OffsetHigh` follow the two status words.
     let [low, high] = unsafe {
@@ -194,8 +182,6 @@ fn set_event(event: usize, signaled: bool) {
     }
 }
 
-/// Reads now for `read`: the status and the count, with the end of the pipe as
-/// `STATUS_PIPE_BROKEN`.
 fn read_now(read: &PendingRead) -> (u32, usize) {
     // SAFETY: the program keeps the buffer of a read in progress writable until it finishes.
     let buffer = unsafe { core::slice::from_raw_parts_mut(read.buffer as *mut u8, read.length) };
@@ -217,11 +203,6 @@ fn finish_pending(read: &PendingRead) {
     set_event(read.event, true);
 }
 
-/// The status and count of reading up to `length` bytes into `buffer` from file `fd` at the
-/// offset the `OVERLAPPED` gives; the end of the file is `STATUS_END_OF_FILE`.
-///
-/// # Safety
-/// `buffer` must hold `length` writable bytes and `overlapped` be a readable `OVERLAPPED`.
 unsafe fn read_file_at(
     fd: usize,
     buffer: *mut u8,
@@ -229,12 +210,9 @@ unsafe fn read_file_at(
     overlapped: usize,
 ) -> (u32, usize) {
     // SAFETY: the caller's duty.
-    let (buffer, offset) = unsafe {
-        (
-            core::slice::from_raw_parts_mut(buffer, length),
-            offset_of(overlapped),
-        )
-    };
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buffer, length) };
+    // SAFETY: as above.
+    let offset = unsafe { offset_of(overlapped) };
     match linux::read_at(fd, buffer, offset) {
         Ok(0) if length != 0 => (nt_status::END_OF_FILE, 0),
         Ok(count) => (nt_status::SUCCESS, count),
@@ -242,12 +220,6 @@ unsafe fn read_file_at(
     }
 }
 
-/// Ends an overlapped call that finished at once with `status` and `count`: records both,
-/// signals the event when `signal`, and returns `TRUE` with the count, or `FALSE` with the
-/// status' error.
-///
-/// # Safety
-/// `overlapped` must be a writable `OVERLAPPED` and `counted` null or a writable `DWORD`.
 unsafe fn finished(
     overlapped: usize,
     status: u32,
@@ -339,11 +311,6 @@ pub(super) unsafe fn write_file(
     unsafe { finished(overlapped, status, count, written, true) }
 }
 
-/// Writes all of `length` bytes at `buffer` to `handle`'s descriptor, at the `OVERLAPPED`'s
-/// offset when it is a file; the status.
-///
-/// # Safety
-/// `buffer` must hold `length` readable bytes and `overlapped` be a readable `OVERLAPPED`.
 unsafe fn write_now(handle: usize, buffer: *const u8, length: usize, overlapped: usize) -> u32 {
     let Some(fd) = fd_of(handle) else {
         return nt_status::INVALID_HANDLE;
@@ -375,30 +342,31 @@ unsafe extern "efiapi" fn get_overlapped_result(
     if overlapped == 0 {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    if ANY_PENDING.load(Ordering::Acquire) {
-        if let Some(read) = PENDING.with(|reads| reads.take(overlapped)) {
-            if wait != FALSE || readable(read.fd) {
-                finish_pending(&read);
-                refresh_any_pending();
-            } else {
-                keep(read);
-                return fail(error::IO_INCOMPLETE, FALSE);
-            }
+    if ANY_PENDING.load(Ordering::Acquire)
+        && let Some(read) = PENDING.with(|reads| reads.take(overlapped))
+    {
+        if wait != FALSE || readable(read.fd) {
+            finish_pending(&read);
+            refresh_any_pending();
+        } else {
+            keep(read);
+            return fail(error::IO_INCOMPLETE, FALSE);
         }
     }
+    let operation = overlapped as *const u8;
     // SAFETY: `GetOverlappedResult`'s contract: the `OVERLAPPED` of an operation.
-    let (status, count) = unsafe {
-        let overlapped = overlapped as *const u8;
-        (
-            overlapped
-                .wrapping_add(INTERNAL)
-                .cast::<usize>()
-                .read_unaligned() as u32,
-            overlapped
-                .wrapping_add(INTERNAL_HIGH)
-                .cast::<usize>()
-                .read_unaligned(),
-        )
+    let status = unsafe {
+        operation
+            .wrapping_add(INTERNAL)
+            .cast::<usize>()
+            .read_unaligned()
+    } as u32;
+    // SAFETY: as above.
+    let count = unsafe {
+        operation
+            .wrapping_add(INTERNAL_HIGH)
+            .cast::<usize>()
+            .read_unaligned()
     };
     if !transferred.is_null() {
         // SAFETY: `GetOverlappedResult`'s contract: a writable `DWORD`.
@@ -432,8 +400,6 @@ pub(super) fn closing(fd: usize) {
     }
 }
 
-/// Queues `routine(error, count, overlapped)` for an `Ex` call that finished with `status` and
-/// `count`; `FALSE` with `ERROR_NOT_ENOUGH_MEMORY` when the queue is full.
 fn complete_later(routine: usize, status: u32, count: usize, overlapped: usize) -> Bool {
     // SAFETY: `ReadFileEx`' and `WriteFileEx`' contract: a writable `OVERLAPPED`.
     unsafe { record(overlapped, status, count) };

@@ -31,7 +31,7 @@ impl Scope {
         let entry = (table + 4 + u64::from(index) * SCOPE_SIZE) as *const u32;
         // SAFETY: the scope table the program's unwind data names holds `count` entries of
         // four image-relative addresses each, after the count.
-        let word = |offset: usize| unsafe { entry.add(offset).read_unaligned() };
+        let word = |offset: usize| unsafe { entry.wrapping_add(offset).read_unaligned() };
         Self {
             begin: word(0),
             end: word(1),
@@ -52,14 +52,14 @@ fn call(target: u64, first: u64, frame: u64, frame_pointer: u64) -> u64 {
     unsafe { frames::call_funclet(&mut bridge, target, first, frame, frame_pointer) }
 }
 
-/// Unwinds to the frame `frame` and continues at its `__except` block `ip`, which gets the
-/// exception code as its value.
 fn execute(record: *mut ExceptionRecord, frame: u64, ip: u64) -> ! {
     let Some(dispatch) = dispatch::current_dispatch() else {
         crate::fault_handler::end_with_exception(super::status::INVALID_UNWIND_TARGET, ip);
     };
-    // SAFETY: the dispatch's `CONTEXT` and record, in frames below this one.
-    let (start, code) = unsafe { (*dispatch.context, (*record).code) };
+    // SAFETY: the dispatch's `CONTEXT`, in a frame below this one.
+    let start = unsafe { *dispatch.context };
+    // SAFETY: the dispatch's record, in a frame below this one.
+    let code = unsafe { (*record).code };
     let target = UnwindTarget {
         frame,
         ip,
@@ -71,9 +71,6 @@ fn execute(record: *mut ExceptionRecord, frame: u64, ip: u64) -> ! {
     dispatch::resume(&reached)
 }
 
-/// # Safety
-/// Called as a language handler: a record, the frame's establisher, a `CONTEXT` and the
-/// dispatcher context of a frame whose handler data is a scope table.
 unsafe extern "efiapi" fn c_specific_handler(
     record: *mut ExceptionRecord,
     frame: u64,

@@ -37,7 +37,7 @@ unsafe extern "efiapi" fn get_keyboard_layout_name_w(out: *mut u16) -> Bool {
     }
     for (index, unit) in LAYOUT_NAME.encode_utf16().chain([0]).enumerate() {
         // SAFETY: `GetKeyboardLayoutNameW`'s contract: room for `KL_NAMELENGTH` (9) units.
-        unsafe { out.add(index).write(unit) };
+        unsafe { out.wrapping_add(index).write(unit) };
     }
     TRUE
 }
@@ -76,7 +76,7 @@ unsafe extern "efiapi" fn to_unicode_ex(
     unsafe { buffer.write(unit) };
     if capacity > 1 {
         // SAFETY: as above, a second unit.
-        unsafe { buffer.add(1).write(0) };
+        unsafe { buffer.wrapping_add(1).write(0) };
     }
     1
 }

@@ -18,7 +18,6 @@ use crate::library::Export;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_windows_gui::surface::Rect;
 
-/// GDI+'s `Status` values this layer returns.
 mod status {
     pub const OK: u32 = 0;
     pub const GENERIC_ERROR: u32 = 1;
@@ -43,8 +42,6 @@ const OPAQUE: u32 = 0xff00_0000;
 
 static STARTED: AtomicUsize = AtomicUsize::new(0);
 
-/// A bitmap: `width` by `height` pixels of `format`, row `y` at `pixels + y * stride`, in the
-/// layer's heap block `owned` or, when that is 0, in the program's memory.
 #[repr(C)]
 #[derive(Debug)]
 struct GpBitmap {
@@ -57,7 +54,6 @@ struct GpBitmap {
     owned: usize,
 }
 
-/// A graphics: the device context it draws on.
 #[repr(C)]
 #[derive(Debug)]
 struct GpGraphics {
@@ -93,7 +89,6 @@ fn status_of(code: u32) -> Status {
 }
 
 impl GpBitmap {
-    /// The straight-alpha `0xAARRGGBB` pixel at (`x`, `y`), which must be inside it.
     fn pixel(&self, x: u32, y: u32) -> u32 {
         let row = self.pixels as isize + y as isize * self.stride;
         let at = (row as *const u32).wrapping_add(x as usize);
@@ -109,10 +104,6 @@ impl GpBitmap {
     }
 }
 
-/// The bitmap `image` points to, if it is one of this layer's.
-///
-/// # Safety
-/// `image` must be null or a pointer GDI+ gave the program.
 unsafe fn bitmap<'a>(image: *const GpBitmap) -> Option<&'a GpBitmap> {
     // SAFETY: the caller's duty: null or one of this layer's blocks, whose magic says which.
     let image = unsafe { image.as_ref()? };
@@ -212,7 +203,7 @@ unsafe extern "efiapi" fn notification_hook(token: *mut usize) -> Status {
 extern "efiapi" fn notification_unhook(_token: usize) {}
 
 extern "efiapi" fn gdiplus_shutdown(_token: usize) {
-    let _ = STARTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+    let _ = STARTED.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
         count.checked_sub(1)
     });
 }
@@ -414,10 +405,6 @@ unsafe extern "efiapi" fn gdip_create_from_hdc(hdc: usize, out: *mut *mut GpGrap
     finish(Ok(block), out)
 }
 
-/// The graphics `graphics` points to, if it is one of this layer's.
-///
-/// # Safety
-/// `graphics` must be null or a pointer GDI+ gave the program.
 unsafe fn graphics_of<'a>(graphics: *const GpGraphics) -> Option<&'a GpGraphics> {
     // SAFETY: the caller's duty: null or one of this layer's blocks, whose magic says which.
     let graphics = unsafe { graphics.as_ref()? };

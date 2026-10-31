@@ -23,7 +23,6 @@ const FIRST_COMMON_ATOM: u16 = 0xc100;
 /// The name of the dialog class, the class of message boxes, pickers and template dialogs.
 pub const DIALOG_CLASS: &str = "#32770";
 
-/// `GetClassLongPtrW`'s indices below 0.
 mod index {
     pub const MENU_NAME: i32 = -8;
     pub const BACKGROUND: i32 = -10;
@@ -121,7 +120,6 @@ fn system_atom(kind: ControlKind) -> u16 {
     }
 }
 
-/// What a system class gives its windows, with its atom.
 fn system_class(kind: ControlKind) -> (u16, Class) {
     let style = match kind {
         ControlKind::Common(_) => CS_DBLCLKS | CS_GLOBALCLASS | CS_HREDRAW | CS_VREDRAW,
@@ -224,7 +222,6 @@ extern "efiapi" fn get_class_long_w(window: usize, index: i32) -> u32 {
     class_long(window, index, 4) as u32
 }
 
-/// Win32's `WNDCLASSEXW`, which `GetClassInfoExW` fills.
 #[repr(C)]
 struct ClassInfo {
     size: u32,
@@ -241,7 +238,7 @@ struct ClassInfo {
     small_icon: usize,
 }
 
-fn same_ascii(name: &[u16], wanted: &str) -> bool {
+fn same_ascii(name: &[u16], wanted: &'static str) -> bool {
     ClassLabel::System(wanted).matches(name)
 }
 

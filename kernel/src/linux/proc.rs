@@ -412,8 +412,6 @@ fn cmdline<P: Platform>() -> Option<Vec<u8>> {
     text.or_else(|| cmdline_text(b""))
 }
 
-/// `/proc/ps`: a line per process, `pid ppid pgid sid state cpu_ms name`, its CPU time in
-/// milliseconds counted at its threads' switches (D198, D200).
 fn ps<P: Platform>() -> Option<Vec<u8>> {
     let mut listed = Vec::new();
     {

@@ -15,9 +15,7 @@ pub enum BlockEnd {
     FallThrough(u64),
     /// The bytes at `address` are not a translatable instruction; reaching them traps.
     Refused {
-        /// Where.
         address: u64,
-        /// Why.
         error: DecodeErrorKind,
     },
 }

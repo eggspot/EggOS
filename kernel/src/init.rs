@@ -99,8 +99,6 @@ pub fn run<P: Platform, W: Write>(
     Ok(outcome)
 }
 
-/// The boot line that says how the input thread hears from the devices: QEMU checks look for
-/// [`INPUT_ON_INTERRUPTS_LINE`].
 fn input_line(watching: input::Watching) -> &'static str {
     match watching {
         input::Watching::Interrupts => INPUT_ON_INTERRUPTS_LINE,

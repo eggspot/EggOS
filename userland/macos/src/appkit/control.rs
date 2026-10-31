@@ -493,7 +493,7 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
         command,
         &before,
     ) {
-        FieldKey::Unused => {}
+        FieldKey::Unused | FieldKey::Copied | FieldKey::Cut | FieldKey::PasteWanted => {}
         FieldKey::Moved | FieldKey::Changed => {
             widget::keep_caret_visible(&mut field, control_rect(this));
             keep_field(this, &field);

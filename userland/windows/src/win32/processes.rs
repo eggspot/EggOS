@@ -303,7 +303,6 @@ extern "efiapi" fn virtual_free_ex(handle: usize, address: usize, size: usize, k
     }
 }
 
-/// A heap block of pointers to NUL-terminated strings, null-ended, the strings after them.
 struct StringTable {
     block: *mut u8,
     count: usize,
@@ -323,7 +322,6 @@ impl Drop for StringTable {
     }
 }
 
-/// The table of `strings`, each UTF-16 and ended by a NUL, as UTF-8 C strings.
 fn table_of_wide<'a>(strings: impl Iterator<Item = &'a [u16]> + Clone) -> Option<StringTable> {
     let count = strings.clone().count();
     let table = (count + 1) * POINTER;
@@ -379,8 +377,6 @@ fn table_of_bytes<'a>(strings: impl Iterator<Item = &'a [u8]> + Clone) -> Option
     Some(StringTable { block, count })
 }
 
-/// The arguments of the Windows command line `line`, split as `CommandLineToArgvW` does, each
-/// ended by a NUL, in one heap block of UTF-16 units; its length.
 fn split_arguments(line: &[u16]) -> Option<(*mut u16, usize)> {
     let mut units = 0;
     command_line::split(line, &mut |_| units += 1);
@@ -636,10 +632,6 @@ pub(super) fn launch(launch: &Launch<'_>) -> Result<(usize, u32), u32> {
     }
 }
 
-/// The descriptors of the standard handles a `STARTUPINFOW` gives, or the caller's own.
-///
-/// # Safety
-/// `startup` must be null or a readable `STARTUPINFOW`.
 unsafe fn standard_streams(startup: *const u8, inherit: bool) -> [usize; 3] {
     let mut streams = [0, 1, 2];
     if startup.is_null() || !inherit {
@@ -670,7 +662,6 @@ unsafe fn standard_streams(startup: *const u8, inherit: bool) -> [usize; 3] {
     streams
 }
 
-/// What `CreateProcessW` and `CreateProcessA` share once their strings are UTF-16.
 struct Creation<'a> {
     application: Option<&'a [u16]>,
     command_line: Option<&'a [u16]>,
@@ -682,12 +673,6 @@ struct Creation<'a> {
     information: *mut u8,
 }
 
-/// Starts the program `creation` describes and fills its `PROCESS_INFORMATION`.
-///
-/// # Safety
-/// `creation.startup` must be null or a readable `STARTUPINFO` (the W and A structures share
-/// one layout), `creation.environment` null or an environment block of the kind its flags
-/// say, and `creation.information` null or a writable `PROCESS_INFORMATION`.
 unsafe fn create_process(creation: &Creation<'_>) -> Bool {
     let information = creation.information;
     let nothing_to_run = creation.application.is_none() && creation.command_line.is_none();
@@ -779,17 +764,12 @@ unsafe extern "efiapi" fn create_process_w(
     unsafe { create_process(&creation) }
 }
 
-/// A UTF-16 copy of an ANSI (UTF-8) string, without its NUL, in a heap block of its own.
 struct WideCopy {
     units: *mut u16,
     length: usize,
 }
 
 impl WideCopy {
-    /// The copy of the NUL-terminated `text`, `None` for a null one.
-    ///
-    /// # Safety
-    /// `text` must be null or a NUL-terminated string.
     unsafe fn of(text: *const u8) -> Result<Option<Self>, u32> {
         if text.is_null() {
             return Ok(None);

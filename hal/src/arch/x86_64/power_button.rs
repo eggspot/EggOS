@@ -10,7 +10,6 @@ use eggos_drivers::interrupt::io_apic::LineSignal;
 
 const ACPI_ENABLE_POLLS: u32 = 1_000_000;
 
-/// The PM1a status port and enable port, packed, once the button is on; 0 before.
 static PORTS: AtomicU32 = AtomicU32::new(0);
 
 /// Switches the machine to ACPI mode if it is not, turns the power button's event on and routes

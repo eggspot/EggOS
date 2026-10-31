@@ -77,8 +77,6 @@ fn remove_tree(path: &[u8], depth: usize) -> Result<(), u32> {
         .map_err(error_for)
 }
 
-/// Removes everything in the folder at `path`, reading it again until a reading finds
-/// nothing, as removing entries while reading them may skip some.
 fn remove_children(path: &[u8], depth: usize) -> Result<(), u32> {
     for _ in 0..MAX_PASSES {
         let mut failure = None;
@@ -156,8 +154,6 @@ fn now() -> calendar::SystemTime {
     calendar::system_time(file_time).unwrap_or_default()
 }
 
-/// The Trash's folder `part` (`files` or `info`) under the home folder, made when missing,
-/// NUL-terminated into `out`; its length with the NUL.
 fn trash_folder(part: &[u8], out: &mut [u8; PATH_CAPACITY]) -> Result<usize, u32> {
     let mut length = home(out);
     for piece in [&b"/"[..], trash::UNDER_HOME, &b"/"[..], part] {
@@ -234,7 +230,6 @@ fn move_to_trash(path: &[u8]) -> Result<(), u32> {
     Err(error::ALREADY_EXISTS)
 }
 
-/// One operation of `SHFileOperationW` on one item.
 #[derive(Debug, Clone, Copy)]
 struct Operation {
     function: u32,
@@ -259,8 +254,6 @@ impl Operation {
     }
 }
 
-/// The path of the item named `name` in folder `directory` when `into_folder`, else
-/// `destination` itself.
 fn target_for(
     destination: &[u8],
     name: &[u8],

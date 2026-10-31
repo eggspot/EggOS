@@ -67,10 +67,7 @@ pub enum EmitError {
     /// A label was branched to but never bound.
     Unbound,
     /// A branch's target is beyond its encoding's reach.
-    OutOfRange {
-        /// The word index of the branch.
-        at: u32,
-    },
+    OutOfRange { at: u32 },
 }
 
 /// Finished code: the words, then the literal pool.

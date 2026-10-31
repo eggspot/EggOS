@@ -206,10 +206,6 @@ pub unsafe extern "C" fn strstr(text: *const c_char, needle: *const c_char) -> *
         })
 }
 
-/// The bytes of the NUL-terminated `set`, as 256 bits.
-///
-/// # Safety
-/// `set` must be a NUL-terminated string.
 unsafe fn byte_set(set: *const c_char) -> [u64; 4] {
     let mut bits = [0u64; 4];
     // SAFETY: the caller's promise.
@@ -255,7 +251,9 @@ pub unsafe extern "C" fn strpbrk(text: *const c_char, wanted: *const c_char) -> 
     // SAFETY: the caller's promise.
     let length = unsafe { strcspn(text, wanted) };
     // SAFETY: `length` is at most the string's length, so it names its NUL at most.
-    let byte = unsafe { text.add(length).cast::<u8>().read() };
+    let at = unsafe { text.add(length) };
+    // SAFETY: as above; `at` is a byte of the string or its NUL.
+    let byte = unsafe { at.cast::<u8>().read() };
     match byte {
         0 => core::ptr::null_mut(),
         _ => text.wrapping_add(length).cast_mut(),

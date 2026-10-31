@@ -258,7 +258,7 @@ unsafe extern "efiapi" fn wsa_startup(version: u16, data: *mut u8) -> i32 {
 }
 
 extern "efiapi" fn wsa_cleanup() -> i32 {
-    let ended = STARTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+    let ended = STARTED.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
         count.checked_sub(1)
     });
     match ended {

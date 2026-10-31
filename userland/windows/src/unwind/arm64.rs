@@ -216,8 +216,6 @@ fn apply(op: Op, registers: &mut Registers, memory: &impl Memory) -> Result<(), 
     Ok(())
 }
 
-/// The concrete save a `save_next` at `at` stands for: the pair after the one the first
-/// non-`save_next` code that follows saves, 16 bytes further, once per `save_next` between.
 fn resolve_save_next(codes: &[u8], mut at: usize) -> Result<Op, UnwindError> {
     let mut steps = 0u8;
     loop {
@@ -247,7 +245,6 @@ fn resolve_save_next(codes: &[u8], mut at: usize) -> Result<Op, UnwindError> {
     }
 }
 
-/// Undoes the codes from byte `start` on, after skipping `skip` of them, until `end`.
 fn undo_codes(
     codes: &[u8],
     start: usize,
@@ -275,8 +272,6 @@ fn undo_codes(
     Ok(())
 }
 
-/// How many codes there are from byte `start` up to `end`, without it (`include_end` false,
-/// the prolog's instructions) or with it (an epilog's, whose `end` stands for its `ret`).
 fn code_count(codes: &[u8], start: usize, include_end: bool) -> Result<usize, UnwindError> {
     let mut at = start;
     let mut count = 0;
@@ -344,8 +339,6 @@ fn record<'a>(image: &Image<'a>, rva: u64) -> Result<Record<'a>, UnwindError> {
     })
 }
 
-/// Undoes the rest of an epilog of `record`'s function if the program stopped in one, `offset`
-/// bytes into a function `length` bytes long.
 fn undo_epilog(
     image: &Image<'_>,
     record: &Record<'_>,
@@ -398,8 +391,6 @@ impl Packed {
         }
     }
 
-    /// The canonical prolog packed unwind data `word` describes, one op per instruction in
-    /// the order they run.
     fn expand(word: u32) -> Self {
         let mut packed = Self {
             ops: [Op::Nop; MAX_PACKED_OPS],

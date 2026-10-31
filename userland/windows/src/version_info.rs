@@ -106,7 +106,6 @@ pub fn version_resource(file: &[u8]) -> Option<&[u8]> {
     file.get(data..data.checked_add(data_size)?)
 }
 
-/// One node of a `VS_VERSIONINFO` block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Node {
     start: usize,

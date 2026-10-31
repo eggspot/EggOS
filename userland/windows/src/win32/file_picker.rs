@@ -838,9 +838,15 @@ unsafe fn widen_filter(filter: *const u8) -> Option<super::ansi::Wide> {
         return None;
     }
     let mut length = 0;
-    // SAFETY: `lpstrFilter` is pairs of NUL-terminated strings ended by an empty one, so every
-    // byte up to the two NULs in a row is readable.
-    while unsafe { (filter.add(length).read(), filter.add(length + 1).read()) } != (0, 0) {
+    loop {
+        // SAFETY: `lpstrFilter` is pairs of NUL-terminated strings ended by an empty one, so
+        // every byte up to the two NULs in a row is readable.
+        let first = unsafe { filter.wrapping_add(length).read() };
+        // SAFETY: as above.
+        let second = unsafe { filter.wrapping_add(length + 1).read() };
+        if (first, second) == (0, 0) {
+            break;
+        }
         length += 1;
     }
     // SAFETY: as above, `length + 2` bytes.
@@ -889,24 +895,24 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
         return FALSE;
     }
     let mut copy = core::mem::MaybeUninit::<OpenFileNameA>::zeroed();
-    // SAFETY: as `pick`: `size` readable bytes, the rest zeroed, all valid field values.
-    let local = unsafe {
+    // SAFETY: as `pick`: `size` readable bytes, the rest zeroed.
+    unsafe {
         core::ptr::copy_nonoverlapping(
             request.cast::<u8>(),
             copy.as_mut_ptr().cast::<u8>(),
             size as usize,
-        );
-        copy.assume_init()
-    };
-    // SAFETY: the request's strings are the caller's, as `OPENFILENAMEA` describes them.
-    let (filter, title, initial_dir, default_extension) = unsafe {
-        (
-            widen_filter(local.filter),
-            super::ansi::widen_text(local.title),
-            super::ansi::widen_text(local.initial_dir),
-            super::ansi::widen_text(local.default_extension),
         )
     };
+    // SAFETY: as above, all valid field values.
+    let local = unsafe { copy.assume_init() };
+    // SAFETY: the request's strings are the caller's, as `OPENFILENAMEA` describes them.
+    let filter = unsafe { widen_filter(local.filter) };
+    // SAFETY: as above.
+    let title = unsafe { super::ansi::widen_text(local.title) };
+    // SAFETY: as above.
+    let initial_dir = unsafe { super::ansi::widen_text(local.initial_dir) };
+    // SAFETY: as above.
+    let default_extension = unsafe { super::ansi::widen_text(local.default_extension) };
     let strings = (title, initial_dir, default_extension);
     let (Ok(title), Ok(initial_dir), Ok(default_extension)) = strings else {
         LAST_ERROR.store(CDERR_INITIALIZATION, Ordering::Relaxed);
@@ -923,14 +929,12 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
         LAST_ERROR.store(CDERR_INITIALIZATION, Ordering::Relaxed);
         return FALSE;
     }
-    // SAFETY: `lpstrFile` holds a NUL-terminated string within its `nMaxFile` bytes; the block
-    // holds `max_file` units.
-    unsafe {
-        let start = core::ffi::CStr::from_ptr(local.file.cast()).to_bytes();
-        let out = core::slice::from_raw_parts_mut(file.0, max_file);
-        let written = text::write_utf16(start, &mut out[..max_file - 1]);
-        out[written] = 0;
-    }
+    // SAFETY: `lpstrFile` holds a NUL-terminated string within its `nMaxFile` bytes.
+    let start = unsafe { core::ffi::CStr::from_ptr(local.file.cast()) }.to_bytes();
+    // SAFETY: the block holds `max_file` units.
+    let out = unsafe { core::slice::from_raw_parts_mut(file.0, max_file) };
+    let written = text::write_utf16(start, &mut out[..max_file - 1]);
+    out[written] = 0;
     let pointer = |wide: &Option<super::ansi::Wide>| {
         wide.as_ref()
             .map_or(core::ptr::null(), super::ansi::Wide::pointer)
@@ -970,12 +974,10 @@ unsafe fn pick_narrow(request: *mut OpenFileNameA, kind: PickerKind) -> Bool {
     // SAFETY: `lpstrFile` holds `nMaxFile` writable bytes.
     unsafe { narrow_into(path, local.file, max_file) };
     if !file_title.0.is_null() {
-        // SAFETY: the picker wrote a NUL-terminated name into the title block; `lpstrFileTitle`
-        // holds `nMaxFileTitle` writable bytes.
-        unsafe {
-            let name = super::file::wide_string(file_title.0);
-            narrow_into(name, local.file_title, local.max_file_title as usize);
-        }
+        // SAFETY: the picker wrote a NUL-terminated name into the title block.
+        let name = unsafe { super::file::wide_string(file_title.0) };
+        // SAFETY: `lpstrFileTitle` holds `nMaxFileTitle` writable bytes.
+        unsafe { narrow_into(name, local.file_title, local.max_file_title as usize) };
     }
     let bytes_before = |units: u16| {
         let units = usize::from(units).min(path.len());

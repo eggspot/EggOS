@@ -36,6 +36,7 @@ fn manifest() -> Vec<u8> {
 
 fn catalogue_with_the_app() -> Catalogue {
     let mut catalogue = Catalogue::new();
+    catalogue.set_task_manager_present(true);
     catalogue.add_installed(APP_NAME.as_bytes(), &manifest());
     catalogue
 }

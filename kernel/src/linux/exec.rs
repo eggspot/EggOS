@@ -671,9 +671,6 @@ fn random_bytes<P: Platform>() -> [u8; 16] {
 /// A program's stack at its entry, as Linux lays it out: from [`Self::start`], where the stack
 /// pointer points (16-byte aligned), `argc`; the `argv` pointers and a null one; the `envp`
 /// pointers and a null one; the auxiliary vector's (type, value) pairs ended by `AT_NULL`;
-/// then, higher up, the 16 `AT_RANDOM` bytes, the platform's name, the argument strings, the
-/// environment strings and the program's path, each NUL-terminated, and 8 zero bytes at the
-/// very top.
 #[derive(Debug)]
 struct InitialStack {
     /// The user address of the stack's lowest byte: the stack pointer.
@@ -687,8 +684,6 @@ struct InitialStack {
 impl InitialStack {
     /// The stack for a program whose stack ends at `top` (page-aligned). `auxiliary`'s
     /// `AT_RANDOM` and `AT_EXECFN` entries get their values here, since they point into the
-    /// stack, `AT_PLATFORM` follows them when there is a `platform` name, and `AT_NULL` ends
-    /// it.
     fn new(
         top: u64,
         path: &[u8],

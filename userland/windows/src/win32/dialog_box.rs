@@ -51,8 +51,6 @@ const ORDINAL_CLASSES: [(u16, &str); 6] = [
     (0x85, "COMBOBOX"),
 ];
 
-/// A template in the program's memory (its own or a resource of its image), read field by
-/// field as far as the template goes.
 struct ProgramTemplate(usize);
 
 impl TemplateBytes for ProgramTemplate {
@@ -181,8 +179,6 @@ fn create_controls(
     Ok(())
 }
 
-/// Creates the dialog of the template at `base` owned by `owner`, with dialog procedure
-/// `procedure` and `WM_INITDIALOG`'s `parameter`; 0, with the error set, when it cannot.
 fn create(base: usize, instance: usize, owner: usize, procedure: usize, parameter: usize) -> usize {
     let bytes = ProgramTemplate(base);
     let Some(dialog) = template::dialog(&bytes) else {

@@ -82,8 +82,6 @@ const RC_BITBLT: i32 = 0x1;
 const RC_BITMAP64: i32 = 0x8;
 const RC_DI_BITMAP: i32 = 0x80;
 
-/// A DIB section: its bitmap's pixels and, for a format other than top-down 32-bit, the
-/// program's bits and colour table beside them (heap blocks of the layer's).
 #[derive(Debug, Clone, Copy)]
 struct Section {
     handle: usize,
@@ -106,10 +104,6 @@ impl Section {
         self.bits != self.pixels
     }
 
-    /// Its pixels, the program's bits and the colour table.
-    ///
-    /// # Safety
-    /// The section must be mirrored and its blocks alive, with nothing else using them.
     unsafe fn parts<'a>(&self) -> (&'a mut [u32], &'a mut [u8], &'a [u8]) {
         let count = self.layout.width as usize * self.layout.height as usize;
         let palette: &[u8] = match self.palette {
@@ -127,10 +121,6 @@ impl Section {
         (pixels, bits, palette)
     }
 
-    /// Frees its blocks.
-    ///
-    /// # Safety
-    /// Nothing may use the section's blocks any more.
     unsafe fn free(&self) {
         let mut blocks = [self.pixels, 0, 0];
         if self.mirrored() {
@@ -517,8 +507,6 @@ fn whole_buffer(raster: &Raster) -> Rect {
         .offset(-raster.origin.0, -raster.origin.1)
 }
 
-/// What a raster operation's pattern is: one colour, or a pattern brush's tile from the
-/// context's brush origin.
 #[derive(Debug, Clone, Copy)]
 enum Fill {
     Solid(u32),
@@ -573,20 +561,17 @@ unsafe fn copy(
                 let read_at =
                     (source_row + row) as usize * from.width as usize + source_column + offset;
                 // SAFETY: the caller's duty: these `length` source pixels lie in `from`'s
-                // buffer; they are copied out before any pixel of this chunk is written.
-                unsafe {
-                    core::ptr::copy(
-                        (from.address as *const u32).add(read_at),
-                        chunk_buffer.as_mut_ptr(),
-                        length,
-                    )
-                };
+                // buffer.
+                let source_start = unsafe { (from.address as *const u32).add(read_at) };
+                // SAFETY: as above; they are copied out before any pixel of this chunk is
+                // written.
+                unsafe { core::ptr::copy(source_start, chunk_buffer.as_mut_ptr(), length) };
             }
             let write_at = target_row + destination_column + offset;
             // SAFETY: the caller's duty: these `length` destination pixels lie in `to`'s buffer.
-            let target = unsafe {
-                core::slice::from_raw_parts_mut((to.address as *mut u32).add(write_at), length)
-            };
+            let target_start = unsafe { (to.address as *mut u32).add(write_at) };
+            // SAFETY: as above.
+            let target = unsafe { core::slice::from_raw_parts_mut(target_start, length) };
             let pixels = target.iter_mut().zip(chunk_buffer.iter());
             match fill {
                 Fill::Solid(pattern) => {
@@ -1369,8 +1354,6 @@ fn describe(handle: usize) -> Result<Description, u32> {
     })
 }
 
-/// The bytes of `value`, one of this module's `#[repr(C)]` structures, all of whose bytes are
-/// fields.
 fn bytes_of<T>(value: &T) -> &[u8] {
     // SAFETY: `value` is a live `T` of `size_of::<T>()` bytes with no padding, read as bytes
     // for as long as it is borrowed.
@@ -1404,10 +1387,6 @@ unsafe extern "efiapi" fn get_object_w(handle: usize, size: i32, buffer: *mut u8
     count as i32
 }
 
-/// The `BITMAPINFO` at `info`: its layout and colour table.
-///
-/// # Safety
-/// `info` must be null or point to a readable `BITMAPINFO` that outlives the result's use.
 unsafe fn read_info<'a>(info: *const u8) -> Option<(Layout, &'a [u8])> {
     if info.is_null() {
         return None;

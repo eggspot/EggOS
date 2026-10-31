@@ -1256,7 +1256,7 @@ fn the_status_bar_shows_the_free_space_of_the_folder_s_file_system() {
         driver.window.status_bar().right() - STATUS_END_FROM_RIGHT
     );
     assert_eq!(free.y, driver.window.status_bar().y + STATUS_TEXT_TOP);
-    assert_eq!(free.width, eggos_toolkit::text::width("12.0 GB free"));
+    assert_eq!(free.width, eggos_toolkit::text::width("12 GB free"));
     driver.place(Place::HostShare);
     assert_eq!(driver.window.free_space(), FreeSpace::ReadOnly);
     driver.place(Place::System);
@@ -1313,7 +1313,7 @@ fn an_agent_reads_the_status_bar_s_texts() {
     assert_eq!(text(ITEMS_ELEMENT).map(|(role, _)| role), Some(Role::Text));
     assert_eq!(
         text(FREE_SPACE_ELEMENT),
-        Some((Role::Text, b"12.0 GB free".to_vec()))
+        Some((Role::Text, b"12 GB free".to_vec()))
     );
     let mut plain = disk();
     let window = super::FilesWindow::new(&mut plain, None, Architecture::X86_64, false, CLOCK);

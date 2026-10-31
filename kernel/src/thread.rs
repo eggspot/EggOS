@@ -189,14 +189,9 @@ struct Thread {
     user: bool,
     /// A user thread's FP/SIMD registers, once its program has used them ([`start_fp`], D54).
     fp: OnceCell<FpRegisters>,
-    /// The clock ticks it ran before it last started running (D198).
     ran: Cell<u64>,
-    /// The clock tick it last started running at.
     since: Cell<u64>,
-    /// Where a user thread's process adds the ticks its threads run ([`spawn_user`]).
     account: Option<Arc<AtomicU64>>,
-    /// The CPUs it may run on, a bit per CPU index ([`set_running_affinity`], D198); all at
-    /// first, and a new thread's are the spawning thread's.
     allowed: Cell<u64>,
 }
 
@@ -249,12 +244,10 @@ impl Thread {
         })
     }
 
-    /// Whether it may run on `cpu`.
     fn may_run_on(&self, cpu: &Cpu) -> bool {
         cpu.index() >= 64 || self.allowed.get() & 1 << cpu.index() != 0
     }
 
-    /// Adds the ticks from when it started running to `now` to its time and its process's.
     #[inline(always)]
     fn charge(&self, now: u64) {
         let spent = now.wrapping_sub(self.since.get());
@@ -324,8 +317,6 @@ impl ThreadBox {
         unsafe { self.0.as_ref() }
     }
 
-    /// Moves the thread to `cpu` (D44, D198): it runs there, and sleeps and is made ready there
-    /// from now on. The thread is ready, or is the running thread a switch is parking.
     fn move_to(&mut self, cpu: &'static Cpu) {
         // SAFETY: owned by `self`, borrowed uniquely. Either the thread is ready, just taken
         // from a ready list with the scheduler's lock held: it does not run, and the switch that
@@ -788,7 +779,6 @@ impl Schedulers {
         self.place_among(cpu::CPUS.all(), here)
     }
 
-    /// The first CPU in `allowed` (a bit per CPU index) whose scheduler has started.
     fn first_allowed(&mut self, allowed: u64) -> Option<&'static Cpu> {
         cpu::CPUS.all().iter().copied().find(|&cpu| {
             (cpu.index() >= 64 || allowed & 1 << cpu.index() != 0) && self.of(cpu).has_started()

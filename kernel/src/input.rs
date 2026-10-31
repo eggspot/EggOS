@@ -413,8 +413,6 @@ pub fn set_key_accessibility(sticky_keys: bool, slow_keys_ms: Option<u32>) -> bo
     true
 }
 
-/// Modifiers latched and locked by sticky keys (D205), and the key whose taps and use they
-/// follow.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Sticky {
     latched: u8,
@@ -433,8 +431,6 @@ impl Sticky {
         }
     }
 
-    /// The modifiers key `code`'s `change` carries, `held` the keyboard's own and `added` the
-    /// modifier bits the change itself pressed.
     fn apply(&mut self, code: u16, change: KeyChange, held: Modifiers, added: u8) -> Modifiers {
         let extra = self.latched | self.locked;
         let with_extra = Modifiers::from_bits(held.bits() | extra);
@@ -658,7 +654,6 @@ impl InputState {
         }
     }
 
-    /// Counts the key held under slow keys once it has been held long enough (D205).
     fn accept_slow_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
         let Some((code, at)) = self.slow else {
             return;
@@ -1236,7 +1231,6 @@ pub fn watching() -> Option<Watching> {
     })
 }
 
-/// When the held key repeats next, if one is held.
 fn next_repeat() -> Option<u64> {
     INPUT.lock().as_ref()?.state.next_repeat()
 }

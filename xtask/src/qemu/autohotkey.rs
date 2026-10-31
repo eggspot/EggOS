@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(tree.len(), 6);
         assert_eq!(tree_problem(&tree), None);
         assert_eq!(
-            tree_problem(&tree[..3]),
+            tree_problem(&tree[..4]),
             Some("no `Elderberries` list item")
         );
     }

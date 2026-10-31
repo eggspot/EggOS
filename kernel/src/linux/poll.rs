@@ -992,6 +992,11 @@ fn wait_for_entries<P: Platform>(
             .filter_map(|(_, file)| wake_list(file.kind())),
     );
     let by_input = watched.iter().any(|(_, file)| uses_input_key(file.kind()));
+    if by_input {
+        #[cfg(feature = "qemu-boot-clock")]
+        crate::boot_clock::report_first_wait::<P>();
+        crate::terminal::console_waited::<P>();
+    }
     let key = match by_input {
         true => console::INPUT_KEY,
         false => poll_key(process, thread),

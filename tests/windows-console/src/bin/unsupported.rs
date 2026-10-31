@@ -1,5 +1,5 @@
 //! A Windows console program that imports a function the Windows layer does not provide
-//! (`CreateProcessW`), so the layer must refuse it with a clear message and a non-zero status
+//! (`CreateMailslotW`), so the layer must refuse it with a clear message and a non-zero status
 //! before any of its code runs (D118).
 
 #![cfg_attr(all(windows, not(test)), no_std, no_main)]
@@ -11,18 +11,12 @@ mod program {
     #[link(name = "kernel32", kind = "raw-dylib")]
     unsafe extern "system" {
         fn ExitProcess(code: u32) -> !;
-        fn CreateProcessW(
-            application: *const u16,
-            command_line: *mut u16,
-            process_attributes: *mut c_void,
-            thread_attributes: *mut c_void,
-            inherit_handles: i32,
-            flags: u32,
-            environment: *mut c_void,
-            directory: *const u16,
-            startup: *mut c_void,
-            information: *mut c_void,
-        ) -> i32;
+        fn CreateMailslotW(
+            name: *const u16,
+            largest_message: u32,
+            read_timeout: u32,
+            security: *mut c_void,
+        ) -> *mut c_void;
     }
 
     #[panic_handler]
@@ -33,22 +27,8 @@ mod program {
 
     #[unsafe(no_mangle)]
     extern "system" fn mainCRTStartup() -> u32 {
-        let null = core::ptr::null_mut::<c_void>();
         // SAFETY: never reached: the layer refuses the program before its entry point runs.
-        unsafe {
-            CreateProcessW(
-                null.cast(),
-                null.cast(),
-                null,
-                null,
-                0,
-                0,
-                null,
-                null.cast(),
-                null,
-                null,
-            ) as u32
-        }
+        unsafe { CreateMailslotW(core::ptr::null(), 0, 0, core::ptr::null_mut()) as usize as u32 }
     }
 }
 

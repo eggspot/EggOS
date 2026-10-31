@@ -26,8 +26,11 @@ pub static mut STACK_GUARD: usize = 0;
 
 /// The program's argument count and vector, as `main` got them.
 pub fn arguments() -> (usize, *mut *mut c_char) {
-    // SAFETY: set once before the program runs and only read since; these read copies.
-    unsafe { (ARGUMENT_COUNT.max(0) as usize, ARGUMENTS) }
+    // SAFETY: set once before the program runs and only read since; this reads a copy.
+    let count = unsafe { ARGUMENT_COUNT };
+    // SAFETY: as above.
+    let vector = unsafe { ARGUMENTS };
+    (count.max(0) as usize, vector)
 }
 
 /// The program's name, the last part of `argv[0]`, NUL-terminated; null before it is set.

@@ -160,12 +160,12 @@ impl WindowServer {
         slow_keys_ms: u32,
     ) -> Result<(), Errno> {
         let mut bytes = [0u8; 12];
-        for (place, word) in bytes.chunks_exact_mut(4).zip([
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip([
             u32::from(sticky_keys),
             u32::from(slow_keys),
             slow_keys_ms,
         ]) {
-            place.copy_from_slice(&word.to_ne_bytes());
+            *place = word.to_ne_bytes();
         }
         self.ioctl(SET_KEY_ACCESSIBILITY, &mut bytes)
     }
@@ -238,8 +238,8 @@ impl WindowServer {
     /// delay in milliseconds and repeats a second, each a 32-bit word.
     pub fn set_input_preferences(&self, words: [u32; 5]) -> Result<(), Errno> {
         let mut bytes = [0u8; 20];
-        for (place, word) in bytes.chunks_exact_mut(4).zip(words) {
-            place.copy_from_slice(&word.to_ne_bytes());
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *place = word.to_ne_bytes();
         }
         self.ioctl(SET_INPUT_PREFERENCES, &mut bytes)
     }

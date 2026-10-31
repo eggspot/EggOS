@@ -1420,8 +1420,6 @@ fn shown_cells(units: &[u16], room: i32) -> usize {
     }
 }
 
-/// Draws `units` in a column at `left`, `width` wide, aligned by `alignment` (section 24's
-/// placement, `prefix` pixels kept free at a left-aligned cell's start), cell top `top`.
 #[allow(clippy::too_many_arguments)]
 fn draw_aligned(
     surface: &mut Surface<'_>,

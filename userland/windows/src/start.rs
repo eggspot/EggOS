@@ -10,7 +10,7 @@
 //! before relocation, and is mapped after its imports are bound; its own sections are not
 //! executable.
 
-use crate::fault::{self, Image};
+use crate::fault::Image;
 use crate::fault_handler;
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
@@ -325,8 +325,6 @@ fn share_user_data(startup: Startup) {
     let _ = unsafe { linux::protect(page, user_shared_data::SIZE, PROT_READ) };
 }
 
-/// Where the layer's own code lies, from its program headers, or nothing if they cannot be
-/// read.
 fn layer_code(startup: &Startup) -> (u64, u64) {
     let headers = startup.auxiliary_value(auxv::PHDR).unwrap_or(0);
     let count = startup.auxiliary_value(auxv::PHNUM).unwrap_or(0);

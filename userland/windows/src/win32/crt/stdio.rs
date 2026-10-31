@@ -1166,14 +1166,15 @@ const SECURE_SCANF: u64 = 0x1;
 
 fn write_integer(target: usize, value: u64, size: eggos_c_format::scan::Size) {
     use eggos_c_format::scan::Size;
-    // SAFETY: the program's argument for the conversion points at an integer of its size.
-    unsafe {
-        match size {
-            Size::Byte => (target as *mut u8).write_unaligned(value as u8),
-            Size::Short => (target as *mut u16).write_unaligned(value as u16),
-            Size::Int => (target as *mut u32).write_unaligned(value as u32),
-            Size::Wide => (target as *mut u64).write_unaligned(value),
-        }
+    match size {
+        // SAFETY: the program's argument for the conversion points at an integer of its size.
+        Size::Byte => unsafe { (target as *mut u8).write_unaligned(value as u8) },
+        // SAFETY: as above.
+        Size::Short => unsafe { (target as *mut u16).write_unaligned(value as u16) },
+        // SAFETY: as above.
+        Size::Int => unsafe { (target as *mut u32).write_unaligned(value as u32) },
+        // SAFETY: as above.
+        Size::Wide => unsafe { (target as *mut u64).write_unaligned(value) },
     }
 }
 
@@ -1218,10 +1219,9 @@ fn store_field(
                 }
             }
             // SAFETY: the argument for `%s` and `%[` points at room for the text and a NUL.
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len());
-                (target as *mut u8).add(bytes.len()).write(0);
-            }
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len()) };
+            // SAFETY: as above.
+            unsafe { (target as *mut u8).wrapping_add(bytes.len()).write(0) };
         }
     }
     true
@@ -1256,7 +1256,7 @@ unsafe extern "efiapi" fn stdio_common_vsscanf(
     let mut take = || {
         // SAFETY: the `va_list` is a pointer to 8-byte slots, one per argument the format
         // names; the scan reads only as many as its conversions take.
-        let value = unsafe { arguments.add(next).read_unaligned() };
+        let value = unsafe { arguments.wrapping_add(next).read_unaligned() };
         next += 1;
         value
     };

@@ -78,12 +78,7 @@ pub enum DecodeErrorKind {
     /// Not an instruction in 64-bit mode: the CPU raises the invalid-opcode exception.
     Invalid,
     /// A valid instruction the translator does not handle.
-    Unsupported {
-        /// Why.
-        refusal: Refusal,
-        /// Its length in bytes, so code discovery can step over it.
-        length: u8,
-    },
+    Unsupported { refusal: Refusal, length: u8 },
 }
 
 /// The bytes at `address` could not be decoded into a translatable instruction.

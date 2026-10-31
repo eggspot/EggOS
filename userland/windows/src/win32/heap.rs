@@ -376,7 +376,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"LocalSize" => global_size,
 ];
 
-#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
+#[cfg(target_env = "musl")]
 mod layer_allocator {
     use core::alloc::{GlobalAlloc, Layout};
 

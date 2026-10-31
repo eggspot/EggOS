@@ -296,7 +296,9 @@ unsafe extern "efiapi" fn intersect_rect(
         return FALSE;
     }
     // SAFETY: the caller passes two readable `RECT`s.
-    let (first, second) = unsafe { (rect_of(&*first), rect_of(&*second)) };
+    let first = rect_of(unsafe { &*first });
+    // SAFETY: as above.
+    let second = rect_of(unsafe { &*second });
     let both = emptied(first.intersection(&second));
     write_rect(out, both);
     Bool::from(!both.is_empty())
@@ -311,7 +313,9 @@ unsafe extern "efiapi" fn union_rect(
         return FALSE;
     }
     // SAFETY: the caller passes two readable `RECT`s.
-    let (first, second) = unsafe { (rect_of(&*first), rect_of(&*second)) };
+    let first = rect_of(unsafe { &*first });
+    // SAFETY: as above.
+    let second = rect_of(unsafe { &*second });
     let either = match (first.is_empty(), second.is_empty()) {
         (true, true) => Rect::default(),
         (true, false) => second,
@@ -332,7 +336,9 @@ unsafe extern "efiapi" fn equal_rect(first: *const Win32Rect, second: *const Win
         return FALSE;
     }
     // SAFETY: the caller passes two readable `RECT`s.
-    let (first, second) = unsafe { (rect_of(&*first), rect_of(&*second)) };
+    let first = rect_of(unsafe { &*first });
+    // SAFETY: as above.
+    let second = rect_of(unsafe { &*second });
     Bool::from(first == second)
 }
 

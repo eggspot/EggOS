@@ -18,6 +18,7 @@ pub mod page {
 pub mod access {
     pub const COPY: u32 = 0x01;
     pub const WRITE: u32 = 0x02;
+    #[cfg(test)]
     pub const READ: u32 = 0x04;
     pub const EXECUTE: u32 = 0x20;
 }

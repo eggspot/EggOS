@@ -83,7 +83,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 16] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 17] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -112,17 +112,31 @@ pub const TWIN_CALLS: [(&str, &str, &str); 16] = [
     ("logcat", r#"{"tag":"eggos-mcp-unset"}"#, ""),
     ("disk_list", "{}", ""),
     ("agent_show", "{}", r#""id":"local""#),
+    ("wm_desktop_list", "{}", r#""current":true"#),
 ];
 
-/// Every call of a reading tool whose result depends on the network the machine was started
-/// on: the tool, its arguments and texts one of which its result must hold, whether it
-/// succeeded or not (D158). `.invalid` names never exist (RFC 6761), so the lookup answers
-/// whether or not the host reaches the internet.
-pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 1] = [(
-    "net_lookup",
-    r#"{"host":"eggos-mcp.invalid"}"#,
-    &["Server:", "no DNS server"],
-)];
+/// Every call of a reading tool whose answer is checked whether it succeeded or not: the tool,
+/// its arguments and texts one of which its result must hold. The lookup's result depends on
+/// the network the machine was started on (D158); `.invalid` names never exist (RFC 6761), so
+/// it answers whether or not the host reaches the internet. The app tools ask about an app
+/// that is never installed, as no app is installed when they run.
+pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 3] = [
+    (
+        "net_lookup",
+        r#"{"host":"eggos-mcp.invalid"}"#,
+        &["Server:", "no DNS server"],
+    ),
+    (
+        "app_show",
+        r#"{"name":"eggos-mcp-absent"}"#,
+        &["eggos-mcp-absent is not installed"],
+    ),
+    (
+        "app_icon",
+        r#"{"name":"eggos-mcp-absent"}"#,
+        &["eggos-mcp-absent is not installed"],
+    ),
+];
 
 /// `fetch`'s arguments in both boots: a port on the host where nothing listens, so the
 /// download fails fast in a way that names the host (refused, or unreachable without a
@@ -133,7 +147,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 34] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 38] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
@@ -224,6 +238,10 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 34] = [
         "write",
     ),
     ("agent_list", "{}", "view"),
+    ("clipboard_get", "{}", "view"),
+    ("clipboard_set", r#"{"content":"x"}"#, "write"),
+    ("kill", r#"{"pid":1,"confirm":true}"#, "run"),
+    ("wm_desktop_new", "{}", "run"),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [

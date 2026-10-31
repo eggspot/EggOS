@@ -135,7 +135,6 @@ const LAST_PRINTABLE_CONTROL: u32 = 0x20;
 const DELETE_CHARACTER: u32 = 0x7f;
 const KEY_CHARACTERS: [u32; 4] = [b'+' as u32, b'-' as u32, b'*' as u32, b'=' as u32];
 
-/// Win32's `TVITEMW`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 struct TreeItem {
@@ -151,7 +150,6 @@ struct TreeItem {
     lparam: usize,
 }
 
-/// Win32's `TVINSERTSTRUCTW`, its item read as a `TVITEMW`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct InsertRequest {
@@ -160,7 +158,6 @@ struct InsertRequest {
     item: TreeItem,
 }
 
-/// Win32's `NMTREEVIEWW`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct NmTreeView {
@@ -172,7 +169,6 @@ struct NmTreeView {
     y: i32,
 }
 
-/// Win32's `NMTVKEYDOWN`, packed to one byte as commctrl.h declares it.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct NmTreeKeyDown {
@@ -181,7 +177,6 @@ struct NmTreeKeyDown {
     flags: u32,
 }
 
-/// Win32's `NMTVITEMCHANGE`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct NmTreeItemChange {
@@ -257,8 +252,6 @@ fn colour_parameter(value: usize) -> Option<u32> {
     }
 }
 
-/// Keeps the scroll within the items, and the selected item in view with `follow`, then
-/// repaints.
 fn refresh(window: usize, follow: bool) {
     with_state::<TreeState, _>(window, |entry, control| {
         let layout = layout_of(entry, &control.tree);
@@ -331,9 +324,6 @@ fn reveal(tree: &mut TreeView, index: usize) {
     }
 }
 
-/// Selects `target` (none when `None`) for `cause` (`TVC_*`): `TVN_SELCHANGINGW`, which the
-/// program may refuse, the change (its collapsed ancestors opened silently), then
-/// `TVN_SELCHANGEDW`; whether it changed.
 fn select(window: usize, target: Option<usize>, cause: u32) -> bool {
     let found = with_state::<TreeState, _>(window, |_, control| {
         let old = control.tree.selected();
@@ -367,9 +357,6 @@ fn select(window: usize, target: Option<usize>, cause: u32) -> bool {
     changed
 }
 
-/// Expands, collapses or toggles item `index` (`TVE_*`), with `TVN_ITEMEXPANDINGW` (which the
-/// program may refuse) and `TVN_ITEMEXPANDEDW` when `notify`; collapsing an ancestor of the
-/// selected item selects it. Whether the item can expand at all.
 fn expand(window: usize, index: usize, action: u32, notify: bool) -> bool {
     let found = with_state::<TreeState, _>(window, |_, control| {
         let tree = &control.tree;
@@ -449,8 +436,6 @@ fn expand(window: usize, index: usize, action: u32, notify: bool) -> bool {
     true
 }
 
-/// Deletes item `index` and its descendants, each announced with `TVN_DELETEITEMW` children
-/// first; the selection inside it moves to its parent first. Whether it existed.
 fn delete_item(window: usize, index: usize) -> bool {
     let found = with_state::<TreeState, _>(window, |_, control| {
         let tree = &control.tree;
@@ -929,29 +914,44 @@ fn get_item(window: usize, lparam: usize) -> usize {
         let Some(index) = tree.index_of(item.item) else {
             return 0;
         };
-        // SAFETY: `target` is the program's `TVITEMW`, as read above; `pszText` holds
-        // `cchTextMax` writable units when `TVIF_TEXT` asks for the label.
-        unsafe {
-            if item.mask & TVIF_TEXT != 0 {
-                window_text::copy_out(tree.text(index), item.text, item.text_max.max(0) as usize);
-            }
-            if item.mask & TVIF_IMAGE != 0 {
-                (&raw mut (*target).image).write_unaligned(tree.image(index));
-            }
-            if item.mask & TVIF_SELECTEDIMAGE != 0 {
-                (&raw mut (*target).selected_image).write_unaligned(tree.selected_image(index));
-            }
-            if item.mask & TVIF_STATE != 0 {
-                let bits = tree.state(index) & item.state_mask;
-                (&raw mut (*target).state).write_unaligned(bits);
-            }
-            if item.mask & TVIF_PARAM != 0 {
-                (&raw mut (*target).lparam).write_unaligned(tree.lparam(index));
-            }
-            if item.mask & TVIF_CHILDREN != 0 {
-                let children = i32::from(tree.declared_children(index));
-                (&raw mut (*target).children).write_unaligned(children);
-            }
+        if item.mask & TVIF_TEXT != 0 {
+            // SAFETY: `pszText` holds `cchTextMax` writable units when `TVIF_TEXT` asks for the
+            // label.
+            unsafe {
+                window_text::copy_out(tree.text(index), item.text, item.text_max.max(0) as usize)
+            };
+        }
+        if item.mask & TVIF_IMAGE != 0 {
+            // SAFETY: `target` is the program's `TVITEMW`, as read above.
+            let image = unsafe { &raw mut (*target).image };
+            // SAFETY: as above.
+            unsafe { image.write_unaligned(tree.image(index)) };
+        }
+        if item.mask & TVIF_SELECTEDIMAGE != 0 {
+            // SAFETY: as above.
+            let selected_image = unsafe { &raw mut (*target).selected_image };
+            // SAFETY: as above.
+            unsafe { selected_image.write_unaligned(tree.selected_image(index)) };
+        }
+        if item.mask & TVIF_STATE != 0 {
+            let bits = tree.state(index) & item.state_mask;
+            // SAFETY: as above.
+            let state = unsafe { &raw mut (*target).state };
+            // SAFETY: as above.
+            unsafe { state.write_unaligned(bits) };
+        }
+        if item.mask & TVIF_PARAM != 0 {
+            // SAFETY: as above.
+            let lparam = unsafe { &raw mut (*target).lparam };
+            // SAFETY: as above.
+            unsafe { lparam.write_unaligned(tree.lparam(index)) };
+        }
+        if item.mask & TVIF_CHILDREN != 0 {
+            let children = i32::from(tree.declared_children(index));
+            // SAFETY: as above.
+            let children_at = unsafe { &raw mut (*target).children };
+            // SAFETY: as above.
+            unsafe { children_at.write_unaligned(children) };
         }
         1
     })
@@ -1138,12 +1138,13 @@ fn hit_test(window: usize, lparam: usize) -> usize {
     }
     let info = lparam as *mut HitTestInfo;
     // SAFETY: `TVM_HITTEST`'s `lParam` is the program's `TVHITTESTINFO`, its point set.
-    let (x, y) = unsafe {
-        (
-            (&raw const (*info).x).read_unaligned(),
-            (&raw const (*info).y).read_unaligned(),
-        )
-    };
+    let x_at = unsafe { &raw const (*info).x };
+    // SAFETY: as above.
+    let y_at = unsafe { &raw const (*info).y };
+    // SAFETY: as above.
+    let x = unsafe { x_at.read_unaligned() };
+    // SAFETY: as above.
+    let y = unsafe { y_at.read_unaligned() };
     let answer = with_state::<TreeState, _>(window, |entry, control| {
         let tree = &control.tree;
         let client = entry.client();
@@ -1175,10 +1176,13 @@ fn hit_test(window: usize, lparam: usize) -> usize {
     });
     let (found, item) = answer.unwrap_or((TVHT_NOWHERE, 0));
     // SAFETY: as above.
-    unsafe {
-        (&raw mut (*info).flags).write_unaligned(found);
-        (&raw mut (*info).item).write_unaligned(item);
-    }
+    let flags_at = unsafe { &raw mut (*info).flags };
+    // SAFETY: as above.
+    let item_at = unsafe { &raw mut (*info).item };
+    // SAFETY: as above.
+    unsafe { flags_at.write_unaligned(found) };
+    // SAFETY: as above.
+    unsafe { item_at.write_unaligned(item) };
     item
 }
 

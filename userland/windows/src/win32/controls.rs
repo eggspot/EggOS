@@ -79,8 +79,6 @@ mod static_image {
     pub const IMAGE_CURSOR: usize = 2;
 }
 
-/// The image of a `STATIC` with `SS_BITMAP` or `SS_ICON`: the handle the program gave and the
-/// bitmaps drawn, the icon's colour and mask bitmaps for an icon.
 #[derive(Debug, Clone, Copy, Default)]
 struct StaticPicture {
     image: usize,

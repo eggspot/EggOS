@@ -414,8 +414,10 @@ fn move_at(from: &[u8], to: &[u8], flags: u32) -> Bool {
 unsafe extern "efiapi" fn move_file_ex_w(from: *const u16, to: *const u16, flags: u32) -> Bool {
     let (mut old, mut new) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
     // SAFETY: `MoveFileExW`'s contract: two NUL-terminated names.
-    let lengths = unsafe { (eggos_path(from, &mut old), eggos_path(to, &mut new)) };
-    let (Some(old_length), Some(new_length)) = lengths else {
+    let old_length = unsafe { eggos_path(from, &mut old) };
+    // SAFETY: as above.
+    let new_length = unsafe { eggos_path(to, &mut new) };
+    let (Some(old_length), Some(new_length)) = (old_length, new_length) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
     move_at(&old[..old_length], &new[..new_length], flags)
@@ -424,8 +426,10 @@ unsafe extern "efiapi" fn move_file_ex_w(from: *const u16, to: *const u16, flags
 unsafe extern "efiapi" fn move_file_ex_a(from: *const u8, to: *const u8, flags: u32) -> Bool {
     let (mut old, mut new) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
     // SAFETY: `MoveFileExA`'s contract: two NUL-terminated names.
-    let lengths = unsafe { (narrow_path(from, &mut old), narrow_path(to, &mut new)) };
-    let (Some(old_length), Some(new_length)) = lengths else {
+    let old_length = unsafe { narrow_path(from, &mut old) };
+    // SAFETY: as above.
+    let new_length = unsafe { narrow_path(to, &mut new) };
+    let (Some(old_length), Some(new_length)) = (old_length, new_length) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
     move_at(&old[..old_length], &new[..new_length], flags)

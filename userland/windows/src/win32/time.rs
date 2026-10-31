@@ -163,15 +163,20 @@ fn transition_date(rule: &MonthRule) -> [u8; 16] {
         0,
     ];
     let mut bytes = [0u8; 16];
-    for (place, field) in bytes.chunks_exact_mut(2).zip(fields) {
-        place.copy_from_slice(&field.to_le_bytes());
+    for (place, field) in bytes.as_chunks_mut::<2>().0.iter_mut().zip(fields) {
+        *place = field.to_le_bytes();
     }
     bytes
 }
 
 fn put_name(bytes: &mut [u8], name: &str) {
-    for (place, unit) in bytes.chunks_exact_mut(2).zip(name.encode_utf16().take(31)) {
-        place.copy_from_slice(&unit.to_le_bytes());
+    for (place, unit) in bytes
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(name.encode_utf16().take(31))
+    {
+        *place = unit.to_le_bytes();
     }
 }
 

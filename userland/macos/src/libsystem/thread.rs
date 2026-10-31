@@ -97,6 +97,7 @@ static BURIED: super::Exclusive<[usize; BURIED_THREADS]> =
 
 /// The calling thread's `pthread_key_t` values, where translated x86_64 code finds its GS
 /// base: Darwin keeps a thread's specific data at `gs:[8 * key]`.
+#[cfg(all(target_env = "musl", target_arch = "aarch64"))]
 pub fn specific_values() -> usize {
     // SAFETY: every thread's control block lives as long as the thread.
     unsafe { (&raw const (*current()).values) as usize }

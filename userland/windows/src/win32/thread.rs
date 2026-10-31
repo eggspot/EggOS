@@ -262,15 +262,16 @@ unsafe extern "efiapi" fn set_thread_stack_guarantee(size: *mut u32) -> Bool {
     let field = (thread_environment::current() + thread_environment::teb::GUARANTEED_STACK_BYTES)
         as *mut u32;
     // SAFETY: the field is inside the calling thread's TEB, 4-byte aligned, and only this
-    // thread writes it; `SetThreadStackGuarantee`'s contract: a readable and writable size.
-    unsafe {
-        let previous = field.read();
-        let requested = size.read();
-        if requested > previous {
-            field.write(requested);
-        }
-        size.write(previous);
+    // thread writes it.
+    let previous = unsafe { field.read() };
+    // SAFETY: `SetThreadStackGuarantee`'s contract: a readable and writable size.
+    let requested = unsafe { size.read() };
+    if requested > previous {
+        // SAFETY: as the read of the field above.
+        unsafe { field.write(requested) };
     }
+    // SAFETY: as the read of the size above.
+    unsafe { size.write(previous) };
     TRUE
 }
 

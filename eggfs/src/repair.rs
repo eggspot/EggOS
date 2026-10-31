@@ -529,7 +529,7 @@ fn open<D: Disk>(
     }
 }
 
-fn retire_journal<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<u64, DiskError> {
+pub(crate) fn retire_journal<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<u64, DiskError> {
     let journal = u64::from(geometry.journal);
     let mut block = zeroed_block();
     disk.read(journal, &mut block[..])?;

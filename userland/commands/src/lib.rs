@@ -1,6 +1,7 @@
 //! The Egg command model's registry for EggOS (D160, D163, docs/ux/command-model.md): one
 //! [`CommandDefinition`] per CLI command, every command EggOS ships, and one
-//! [`ToolDefinition`] per MCP tool, in two `'static` tables, [`COMMANDS`] and [`TOOLS`].
+//! [`ToolDefinition`](tools::ToolDefinition) per MCP tool, in two `'static` tables,
+//! [`COMMANDS`] and [`TOOLS`].
 //! The core utilities, `app`, `settings` and the MCP server read their options, `help`, JSON
 //! forms, error codes, examples and tool schemas from here, so
 //! the help, the tools and the docs cannot drift apart (D22's CLI and MCP front-ends; each

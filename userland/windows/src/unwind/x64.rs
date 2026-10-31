@@ -149,9 +149,6 @@ fn read(memory: &impl Memory, address: u64) -> Result<u64, UnwindError> {
     memory.u64_at(address).ok_or(UnwindError::UnreadableStack)
 }
 
-/// The establisher frame of a function whose unwind record is `info`, for a program stopped
-/// `offset` bytes into it: the frame register less its offset once the prolog has set it,
-/// otherwise `rsp`.
 fn establisher(
     image: &Image<'_>,
     info: &Info,
@@ -314,9 +311,6 @@ enum EpilogStep {
     Pop(usize),
 }
 
-/// Whether the program stopped in one of `function`'s epilogs, and if so carries out the
-/// rest of it on `registers`: the stack adjustment, the `pop`s and the `ret` (or the jump out
-/// of the function that ends a tail call).
 fn in_epilog(
     image: &Image<'_>,
     function: Function,

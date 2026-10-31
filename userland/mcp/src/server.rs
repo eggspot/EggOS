@@ -3529,9 +3529,6 @@ fn write_server_meta(out: &mut JsonWriter<'_>) {
     out.end_object();
 }
 
-/// Marks the answer written from `start` as a stateless (2026-07-28) result: `resultType`, the
-/// server in `_meta`, and for lists and reads `ttlMs` 0 and `cacheScope` `private`, since what
-/// an agent sees depends on its grants. Errors and nothing written are left as they are.
 fn mark_stateless_result(out: &mut JsonWriter<'_>, start: usize, cacheable: bool) {
     let written = out.as_bytes().get(start..).unwrap_or_default();
     let is_error = written

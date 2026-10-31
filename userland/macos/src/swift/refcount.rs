@@ -13,7 +13,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 pub const INITIAL: u64 = 0b11;
 /// The count of an object that is never freed.
 pub const IMMORTAL: u64 = u64::MAX;
-/// One strong reference beyond the first.
 const STRONG_ONE: u64 = 1 << 33;
 const STRONG_MASK: u64 = ((1 << 30) - 1) << 33;
 /// Set once the object's deinitialization starts.

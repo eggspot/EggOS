@@ -67,7 +67,6 @@ fn unnamed_page_file(size: u64, protection: Protection) -> Result<Section, u32> 
     })
 }
 
-/// The section a named mapping's slot describes, opened through its file in `/dev/shm`.
 fn named_section(found: named::Named) -> Result<Section, u32> {
     if found.state.file_backed != 0 {
         return Err(error::NOT_SUPPORTED);

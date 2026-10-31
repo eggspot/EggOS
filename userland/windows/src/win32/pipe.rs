@@ -114,11 +114,6 @@ pub(super) fn is_pipe(fd: usize) -> bool {
     linux::fstat(fd).is_ok_and(|words| linux::file_mode(&words) & linux::FILE_TYPE == linux::FIFO)
 }
 
-/// The bytes `fd` keeps after reading up to `wanted` of the `waiting` ones, copied into
-/// `buffer`: how many were copied and how many wait in all.
-///
-/// # Safety
-/// `buffer` must hold `wanted` writable bytes.
 unsafe fn peek(
     fd: usize,
     buffer: *mut u8,
@@ -184,7 +179,6 @@ unsafe extern "efiapi" fn peek_named_pipe(
     TRUE
 }
 
-/// The descriptor `handle` names and its Linux descriptor flags.
 fn descriptor_of(handle: usize) -> Result<(usize, usize), u32> {
     let fd = fd_of(handle).ok_or(error::INVALID_HANDLE)?;
     let flags = linux::control(fd, linux::F_GETFD, 0).map_err(error_for)?;
