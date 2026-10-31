@@ -15,7 +15,7 @@ use super::settings::{Boot, Screen};
 use super::win32_app::{changed, crop, picture, press, tap, type_line, whole, window_area};
 use super::*;
 use crate::cocoa_app::{APP, ARCHIVE, BUILD, VERSION};
-use eggos_drivers::desktop::Profile;
+use eggos_drivers::desktop::{CONTENT_CORNER_INSETS, Profile};
 use eggos_macos_gui::about::{self, ICON_PIXELS, Panel, VERSION_BYTES};
 use eggos_macos_gui::colour::rgb;
 use eggos_toolkit::canvas::Canvas;
@@ -134,6 +134,29 @@ fn render_board(player: Cell, food: Cell) -> Vec<u32> {
 fn screen_pixel(picture: &Picture, x: u32, y: u32) -> Option<u32> {
     (x < picture.width && y < picture.height)
         .then(|| picture.pixels[(y * picture.width + x) as usize] & 0x00ff_ffff)
+}
+
+fn in_window_corner(column: u32, row: u32) -> bool {
+    let from_bottom = BOARD - 1 - row;
+    let inset = CONTENT_CORNER_INSETS
+        .get(from_bottom as usize)
+        .copied()
+        .unwrap_or(0);
+    column < inset || column >= BOARD - inset
+}
+
+fn board_shows(picture: &Picture, board: Rect, player: Cell, food: Cell) -> bool {
+    let shown = masked(crop(picture, board));
+    let wanted = render_board(player, food);
+    shown.len() == wanted.len()
+        && shown
+            .iter()
+            .zip(&wanted)
+            .enumerate()
+            .all(|(at, (shown, wanted))| {
+                let (column, row) = (at as u32 % BOARD, at as u32 / BOARD);
+                shown == wanted || in_window_corner(column, row)
+            })
 }
 
 fn masked(pixels: Vec<u32>) -> Vec<u32> {
@@ -384,7 +407,7 @@ impl Session<'_, '_> {
         std::thread::sleep(SETTLE);
         let shown = self.shot(suffix)?;
         let area = board_rect(self.origin);
-        if masked(crop(&shown, area)) != render_board(self.player, self.food) {
+        if !board_shows(&shown, area, self.player, self.food) {
             let read = read_board(&shown, self.origin);
             return Err(self.fail(format!(
                 "{what}: the board is not the one with the player at {:?} and the food at {:?} \
@@ -653,7 +676,7 @@ pub fn check(
     screen.park_pointer()?;
     std::thread::sleep(POINTER_PAUSE);
     let closed = picture(&mut screen, arch, "-cocoa-app-about-closed")?;
-    if masked(crop(&closed, board)) != render_board(player, food) {
+    if !board_shows(&closed, board, player, food) {
         return Err(boot.fail(format!(
             "{}: the board is not as it was after the About panel closed",
             arch.name
@@ -724,6 +747,40 @@ mod tests {
             masked(crop(&picture, board_rect((40, 60)))),
             render_board((3, 4), (10, 17))
         );
+        assert!(board_shows(
+            &picture,
+            board_rect((40, 60)),
+            (3, 4),
+            (10, 17)
+        ));
+        assert!(!board_shows(
+            &picture,
+            board_rect((40, 60)),
+            (3, 5),
+            (10, 17)
+        ));
+        let bottom = 60 + BOARD - 1;
+        for (x, y) in [
+            (40, bottom),
+            (42, bottom),
+            (40, bottom - 2),
+            (40 + BOARD - 1, bottom),
+        ] {
+            picture.pixels[(y * 700 + x) as usize] = 0x0012_3456;
+        }
+        assert!(board_shows(
+            &picture,
+            board_rect((40, 60)),
+            (3, 4),
+            (10, 17)
+        ));
+        picture.pixels[(bottom * 700 + 43) as usize] = 0x0012_3456;
+        assert!(!board_shows(
+            &picture,
+            board_rect((40, 60)),
+            (3, 4),
+            (10, 17)
+        ));
     }
 
     #[test]

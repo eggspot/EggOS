@@ -66,6 +66,10 @@ pub use launcher::{
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
 pub use pointer::{CURSOR_SIDE, write_cursor_image};
+
+/// How far a window's content is cut in from each side on its last rows, bottom row first:
+/// the pixels its rounded corners take (a maximised window has square corners).
+pub const CONTENT_CORNER_INSETS: [u32; 5] = paint::INSET_INSIDE_R6;
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
