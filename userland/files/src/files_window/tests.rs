@@ -208,6 +208,34 @@ fn the_work_disk_is_a_place_after_the_share_only_while_attached() {
 }
 
 #[test]
+fn every_element_has_its_own_id_with_all_ten_places_and_an_agent_can_go_to_the_trash() {
+    use eggos_toolkit::elements::{Action, MAX_TREE_BYTES, Outcome, TreeWriter, elements};
+    let mut files = disk();
+    files
+        .file("/work/Cargo.toml", b"[package]\n", 5)
+        .device("/work", 4);
+    let mut window = window(&mut files);
+    assert_eq!(window.places().len(), MAX_PLACES);
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut tree = TreeWriter::new(&mut bytes);
+    window.describe(&mut tree);
+    let mut ids: Vec<u32> = elements(tree.bytes())
+        .map(|element| element.unwrap().id)
+        .collect();
+    let count = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), count);
+    let trash = FIRST_PLACE_ELEMENT + (MAX_PLACES - 1) as u32;
+    assert_ne!(trash, PATH_ELEMENT);
+    assert_eq!(
+        window.act(&mut files, trash, Action::Invoke, ""),
+        Outcome::Done
+    );
+    assert_eq!(*window.location(), Location::Trash);
+}
+
+#[test]
 fn the_work_disk_has_no_trash_so_delete_asks_first() {
     let mut files = disk();
     files.file("/work/build.log", b"ok", 1).device("/work", 4);

@@ -4,7 +4,7 @@
 //! folder, a file, a link to either or a broken link. Invoking an entry
 //! opens it as a double-click does, selecting it selects it, and invoking a place goes there.
 
-use super::{FilesWindow, Focus};
+use super::{FilesWindow, Focus, MAX_PLACES};
 use crate::kind::Link;
 use crate::listing::{free_space_text, items_text};
 use crate::names;
@@ -24,10 +24,15 @@ pub const ENTRIES_ELEMENT: u32 = 30;
 pub const ITEMS_ELEMENT: u32 = 40;
 /// The status bar's free space (`12.3 GB free`, `Read-only`), while it is drawn (D171).
 pub const FREE_SPACE_ELEMENT: u32 = 41;
-/// Place `i` is element `FIRST_PLACE_ELEMENT + i`.
-pub const FIRST_PLACE_ELEMENT: u32 = 11;
+/// Place `i` is element `FIRST_PLACE_ELEMENT + i`, below [`FIRST_ENTRY_ELEMENT`] and above every
+/// fixed element.
+pub const FIRST_PLACE_ELEMENT: u32 = 100;
 /// Entry `i` is element `FIRST_ENTRY_ELEMENT + i`.
 pub const FIRST_ENTRY_ELEMENT: u32 = 1000;
+
+const PLACE_ELEMENTS_END: u32 = FIRST_PLACE_ELEMENT + MAX_PLACES as u32;
+const _: () = assert!(FREE_SPACE_ELEMENT < FIRST_PLACE_ELEMENT);
+const _: () = assert!(PLACE_ELEMENTS_END <= FIRST_ENTRY_ELEMENT);
 
 fn bounds(rect: Rect) -> Bounds {
     Bounds::new(rect.x, rect.y, rect.width, rect.height)
@@ -150,7 +155,7 @@ impl FilesWindow {
         let place = element
             .checked_sub(FIRST_PLACE_ELEMENT)
             .map(|index| index as usize)
-            .filter(|&index| element < PATH_ELEMENT && index < self.places().len());
+            .filter(|&index| element < PLACE_ELEMENTS_END && index < self.places().len());
         let entry = element
             .checked_sub(FIRST_ENTRY_ELEMENT)
             .map(|index| index as usize)
