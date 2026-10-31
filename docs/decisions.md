@@ -10732,7 +10732,9 @@ the license, by an explicit instruction recorded here.
   act`; the layer's `dispatch` ignores `Query` records until then, so Mac apps answer pixels
   only after 500 ms); a Windows list box's items as list items (`LB_SETCURSEL` for `select`)
   and a check box's checked state; `focus` and `set-text` on windows of a thread other than
-  the one reading the records.
+  the one reading the records; dialogs of dialogs (`CREATE` refuses a dialog whose parent is a
+  dialog today; once allowed, `open_dialog` must follow the chain to the topmost one; review
+  round 1).
 
 ## D163 The Egg command model, slice 2: every command in the registry with examples run as tests, JSON from the commands that return records or an object, coded errors from `settings`, and the MCP tools `settings_list`, `settings_get` and `settings_set` (the owner's approved design of 2026-10-28, slice 2; extends D22, D132, D136, D137, D157, D160) — Decided by the build loop (the settings tools' grant and confirmation decided by research)
 - **Why.** After slice 1 only the commands agents use were in the registry: `help` knew 28 of
@@ -15721,7 +15723,10 @@ the license, by an explicit instruction recorded here.
     whole in the call (`LabelText`), so a question the user answers later formats with it.
 - **Choices made without research (slice 40c).**
   - `disk_format` needs the `write` grant, as `disk_repair` does: both write to a disk, and
-    the confirmation guards the erase.
+    the confirmation guards the erase. `disk_repair` asks no confirmation and is not marked
+    destructive although it can drop entries, bad links and a cross-linked subtree: it only
+    removes what the checker proved broken (data no read could reach whole), through the
+    journal, as `fsck -y` does on Linux at boot; review round 1 kept this and noted it here.
   - A mounted disk's label is shown as unknown (`EggFS`, `label: null`): the kernel does not
     report it yet.
   - `disk check` ends with status 0 when it found problems, so an agent's call is not an error;
@@ -15777,7 +15782,9 @@ the license, by an explicit instruction recorded here.
   and each row's value (`eggfs "Photos" 1.0 GB not-mounted rw`), which need a list name and
   item values in the toolkit; the one-column layout under 448 px and touch-sized rows (D23);
   a mounted disk's label in `/proc/driver/disks`; a progress bar and a cancel for long checks;
-  hot-plug.
+  hot-plug; marking exactly which findings a repair that stopped on an error (`repair-failed`)
+  did fix (all stay `repairable` now) and reporting findings as not fixed when the check after
+  a repair still fails (`repair-incomplete`; review round 1).
 
 ## D193 Agents get grants of their own: per-agent grants in a store only the user changes, read again before every call, with time limits, ask-each-time and the agent in the audit log (batch part 41, slice 41a; roadmap item 28's "Next" and M10; D21's per-agent revocable grants; extends D136, D137) — Decided by the build loop (the store's place, a corrupt store and the local agent's ceiling decided by research)
 
