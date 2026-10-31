@@ -16300,3 +16300,33 @@ the license, by an explicit instruction recorded here.
   blend of the four telling pixels.
 - Not yet: title-bar icons and 16-pixel icons in Files (Claude Fable's design first), the macOS
   layer's `NSBundle` reading a binary `Info.plist`, `app_icon`'s `size`, native 2x icons.
+
+## D197 One clipboard every app shares: the window server's text, `clip get|set`, `clipboard_get` and `clipboard_set`, the Text Editor and Windows programs on it (batch part 45; v0.3.0 items 37, 42 and 46's clipboard; extends D127, D135, D149, D174) — Decided by the build loop
+
+- The window server keeps one UTF-8 text for all its clients (`kernel/src/clipboard.rs`):
+  `SET_CLIPBOARD` (0x4010_7720: a buffer and its length, at most 1 MiB, refused with `EINVAL`
+  when not UTF-8) replaces it whole and counts a serial up; `GET_CLIPBOARD` (0xc020_7721: a
+  buffer, its length and an offset) copies from the offset on as much as fits and writes the
+  text's whole length and the serial back, so a reader can fetch it in pieces, and a zero-length
+  read is a cheap "has it changed". The text lives on the heap behind an `Arc` only while
+  something is copied, is swapped under a leaf lock and copied to user memory outside it.
+- `clip get` writes the text as it is; `clip set <words>...` copies the words joined by spaces,
+  and `clip set` alone standard input (at most 32 KiB, the utility's stack buffer). MCP:
+  `clipboard_get` (view grant: what was copied may be private) and `clipboard_set` (write grant,
+  `content` on the twin's standard input).
+- The Text Editor keeps its own buffer as the paste source and syncs it: after Copy or Cut it
+  gives the text to the server; before each key press or click it checks the serial and, when
+  another app copied since, takes that text (refused when it is not UTF-8 or longer than a
+  document). The Windows layer's `CF_UNICODETEXT` is the shared text: `CloseClipboard` after a
+  change converts it to UTF-8 and gives it to the server; `OpenClipboard` takes a newer copy as
+  a fresh `CF_UNICODETEXT` block in place of the program's entries.
+- Choices made without research: text only, one item, no history; any window-server client
+  reads it (as on Windows and X11; macOS's paste prompts are for later); a copy of more than
+  1 MiB stays inside its app.
+- Check. Host tests: a copy replaces the text and counts the serial; `clip` with words, with
+  standard input, past its limit, not UTF-8 and misused; the editor taking the shared text,
+  refusing what is not UTF-8 or too long, and giving what it copied.
+- Not yet: the terminal's selection and copy (Claude Fable's design first), Files putting the
+  paths it copies as text, AppKit's `NSPasteboard`, Wayland's `wl_data_device` and the primary
+  selection bridged to it, `CF_TEXT` and other formats, a QEMU check that copies from the Text
+  Editor into a Windows edit.
