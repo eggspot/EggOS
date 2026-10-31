@@ -1110,6 +1110,37 @@ fn posix_spawn_takes_its_attributes_then_its_file_actions_in_order() {
 }
 
 #[test]
+fn posix_spawn_moves_its_failure_report_above_every_descriptor_an_action_names() {
+    use crate::spawn_actions::{FileAction, report_moves_to_at_least};
+    let close_above_two: Vec<FileAction<&str>> =
+        (3..64).map(|fd| FileAction::Close { fd }).collect();
+    assert_eq!(report_moves_to_at_least(6, &close_above_two), Some(64));
+    let log = [FileAction::<&str>::Duplicate { from: 9, to: 6 }];
+    assert_eq!(report_moves_to_at_least(6, &log), Some(10));
+    let read_from = [
+        FileAction::<&str>::Duplicate { from: 6, to: 1 },
+        FileAction::Open {
+            fd: 20,
+            path: "out",
+            flags: 0,
+            mode: 0,
+        },
+    ];
+    assert_eq!(report_moves_to_at_least(6, &read_from), Some(21));
+    let kept = [FileAction::<&str>::Inherit { fd: 6 }];
+    assert_eq!(report_moves_to_at_least(6, &kept), Some(7));
+    let elsewhere = [
+        FileAction::<&str>::Close { fd: 5 },
+        FileAction::Duplicate { from: 7, to: 1 },
+        FileAction::ChangeDirectory { path: "/tmp" },
+        FileAction::ChangeDirectoryTo { fd: 8 },
+    ];
+    assert_eq!(report_moves_to_at_least(6, &elsewhere), None);
+    let none: [FileAction<&str>; 0] = [];
+    assert_eq!(report_moves_to_at_least(6, &none), None);
+}
+
+#[test]
 fn posix_spawn_refuses_only_a_suspended_start_and_checks_descriptors() {
     use crate::spawn_actions::{self, Attributes, OPEN_MAX, flag};
     let with = |flags| Attributes {

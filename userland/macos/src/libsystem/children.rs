@@ -5,7 +5,7 @@
 //! A new child reports a failure to start the program through a close-on-exec pipe, so
 //! `posix_spawn` returns the reason and no child is left behind.
 
-use super::file::{duplicate_to, keep_across_exec, open_pipe};
+use super::file::{duplicate_at_least, duplicate_to, keep_across_exec, open_pipe};
 use super::variadic::{RawVaList, VaList, variadic};
 use super::{Exclusive, c_string, c_string_with_nul, errno_from, heap, process, set_errno};
 use super::{signal, stdio, thread};
@@ -331,7 +331,23 @@ struct Program {
 }
 
 impl Program {
-    unsafe fn become_it(&self, attributes: Attributes, actions: &[FileAction<Path>]) -> Errno {
+    unsafe fn become_it(
+        &self,
+        attributes: Attributes,
+        actions: &[FileAction<Path>],
+        report: Option<&mut c_int>,
+    ) -> Errno {
+        if let Some(report) = report
+            && let Some(lowest) = spawn_actions::report_moves_to_at_least(*report, actions)
+        {
+            match duplicate_at_least(*report, lowest) {
+                Ok(moved) => {
+                    let _ = linux::close(*report as usize);
+                    *report = moved as c_int;
+                }
+                Err(errno) => return errno,
+            }
+        }
         for step in spawn_actions::steps(attributes, actions) {
             if let Err(errno) = take(step) {
                 return errno;
@@ -354,7 +370,7 @@ impl Program {
     ) -> Result<c_int, Errno> {
         let mut report = [0; 2];
         open_pipe(&mut report, linux::O_CLOEXEC)?;
-        let [report_read, report_write] = report;
+        let [report_read, mut report_write] = report;
         let saved_mask = match signal::block_all() {
             Ok(mask) => mask,
             Err(errno) => {
@@ -368,7 +384,7 @@ impl Program {
             signal::reset_caught();
             let failure = match signal::swap_linux_mask(saved_mask) {
                 // SAFETY: the caller's promise.
-                Ok(_) => unsafe { self.become_it(attributes, actions) },
+                Ok(_) => unsafe { self.become_it(attributes, actions, Some(&mut report_write)) },
                 Err(errno) => errno,
             };
             let _ = linux::write_all(report_write as usize, &failure.0.to_le_bytes());
@@ -852,7 +868,7 @@ unsafe fn spawn(
     };
     if settings.replaces_caller() {
         // SAFETY: the caller's promise.
-        let failure = unsafe { program.become_it(settings, list) };
+        let failure = unsafe { program.become_it(settings, list, None) };
         return darwin::darwin_errno(failure.0);
     }
     // SAFETY: the caller's promise.

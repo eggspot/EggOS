@@ -81,6 +81,18 @@ pub fn duplicate_to(fd: c_int, to: c_int) -> Result<usize, eggos_runtime::errno:
     unsafe { linux::syscall(linux::number::DUP3, [fd as usize, to as usize, 0, 0, 0, 0]) }
 }
 
+/// Copies `fd` to the lowest free descriptor not below `lowest`, close-on-exec: Linux's
+/// `fcntl(F_DUPFD_CLOEXEC)`.
+pub fn duplicate_at_least(fd: c_int, lowest: c_int) -> Result<usize, eggos_runtime::errno::Errno> {
+    // SAFETY: `fcntl`'s `F_DUPFD_CLOEXEC` touches no memory.
+    unsafe {
+        linux::syscall(
+            linux::number::FCNTL,
+            [fd as usize, LINUX_F_DUPFD_CLOEXEC, lowest as usize, 0, 0, 0],
+        )
+    }
+}
+
 /// Opens a pipe with `flags` (Linux's), writing its read and write ends into `ends`.
 pub fn open_pipe(
     ends: &mut [c_int; 2],

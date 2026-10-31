@@ -92,6 +92,17 @@ pub enum FileAction<P> {
 }
 
 impl<P: Copy> FileAction<P> {
+    fn named_descriptors(&self) -> [Option<i32>; 2] {
+        match *self {
+            Self::Open { fd, .. }
+            | Self::Close { fd }
+            | Self::Inherit { fd }
+            | Self::ChangeDirectoryTo { fd } => [Some(fd), None],
+            Self::Duplicate { from, to } => [Some(from), Some(to)],
+            Self::ChangeDirectory { .. } => [None, None],
+        }
+    }
+
     fn step(&self) -> Step<P> {
         match *self {
             Self::Open {
@@ -156,6 +167,22 @@ pub fn steps<P: Copy>(
         .into_iter()
         .flatten()
         .chain(actions.iter().map(FileAction::step))
+}
+
+/// Where a child's failure report pipe `report` must move before the file actions run, so no
+/// action closes, replaces or reads it: `None` when no action names `report`, else the lowest
+/// descriptor above every one an action names.
+pub fn report_moves_to_at_least<P: Copy>(report: i32, actions: &[FileAction<P>]) -> Option<i32> {
+    let named = || {
+        actions
+            .iter()
+            .flat_map(FileAction::named_descriptors)
+            .flatten()
+    };
+    if !named().any(|fd| fd == report) {
+        return None;
+    }
+    named().max().map(|highest| highest.saturating_add(1))
 }
 
 /// Whether `fd` is a descriptor a file action may name.

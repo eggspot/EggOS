@@ -244,6 +244,15 @@ static void spawned(void) {
     posix_spawnattr_destroy(&attributes);
     printf("MACOS-PROCESS spawnp missing %s suspended %s\n", missing == ENOENT ? "ENOENT" : "other",
            suspended == ENOTSUP ? "ENOTSUP" : "other");
+
+    posix_spawn_file_actions_init(&actions);
+    for (int fd = 3; fd < 64; fd++) {
+        posix_spawn_file_actions_addclose(&actions, fd);
+    }
+    int closed_missing = posix_spawn(&child, "/no/such/program", &actions, NULL, nothing, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    printf("MACOS-PROCESS spawn closing all missing %s\n",
+           closed_missing == ENOENT ? "ENOENT" : "other");
 }
 
 static void shell(void) {

@@ -1037,7 +1037,7 @@ const LEGACY_PROGRAM_LINES: [&str; 14] = [
     "MACOS-CONSOLE status 0",
 ];
 
-const PROCESS_PROGRAM_LINES: [&str; 21] = [
+const PROCESS_PROGRAM_LINES: [&str; 22] = [
     "MACOS-PROCESS main",
     "MACOS-PROCESS siginfo 30 user self default-before 1",
     "MACOS-PROCESS signal 31 count 1",
@@ -1055,6 +1055,7 @@ const PROCESS_PROGRAM_LINES: [&str; 21] = [
     "MACOS-PROCESS count-child read input",
     "MACOS-PROCESS spawn open 0 status 0",
     "MACOS-PROCESS spawnp missing ENOENT suspended ENOTSUP",
+    "MACOS-PROCESS spawn closing all missing ENOENT",
     "MACOS-PROCESS popen 'popen works' status 0",
     "MACOS-PROCESS system 4 available 1",
     "MACOS-PROCESS done",
