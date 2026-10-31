@@ -281,7 +281,10 @@ pub fn copy_libraries(
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
-        if path.is_file() && name.is_some_and(|name| name.contains(".so")) {
+        if path.is_file()
+            && name.is_some_and(|name| name.contains(".so"))
+            && is_elf_file(&path)?
+        {
             waiting.push(path);
         }
     }
@@ -323,6 +326,18 @@ pub fn copy_libraries(
     }
     copied.sort();
     Ok(copied)
+}
+
+/// Whether the file at `path` is an ELF image rather than, say, a linker script, as the
+/// toolchain's `libLLVM-<major>-rust-<version>.so` is (`INPUT(...)`, read only by linkers).
+pub fn is_elf_file(path: &Path) -> Result<bool, String> {
+    let mut magic = [0u8; 4];
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    match std::io::Read::read_exact(&mut file, &mut magic) {
+        Ok(()) => Ok(&magic == b"\x7fELF"),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
 }
 
 fn needed_libraries(image: &[u8]) -> Result<Vec<String>, String> {
@@ -487,6 +502,28 @@ mod tests {
         let toolchain =
             std::fs::read_to_string(crate::workspace_root().join("rust-toolchain.toml")).unwrap();
         assert!(toolchain.contains(&format!("channel = \"{RUST_VERSION}\"")));
+    }
+
+    #[test]
+    fn the_toolchain_linker_script_beside_its_libraries_is_not_read_as_a_library() {
+        let work = std::env::temp_dir().join(format!("eggos-linker-script-{}", std::process::id()));
+        let libraries = work.join("rustc").join("lib");
+        let programs = work.join("rustc").join("bin");
+        std::fs::create_dir_all(&libraries).unwrap();
+        std::fs::create_dir_all(&programs).unwrap();
+        std::fs::write(programs.join("rustc"), library_needing(&["libLLVM.so.23.1"])).unwrap();
+        std::fs::write(libraries.join("libLLVM.so.23.1"), library_needing(&[])).unwrap();
+        std::fs::write(
+            libraries.join("libLLVM-23-rust-1.99.1-stable.so"),
+            b"INPUT(libLLVM.so.23.1)\n",
+        )
+        .unwrap();
+        std::fs::write(libraries.join("empty.so"), b"").unwrap();
+        assert!(is_elf_file(&libraries.join("libLLVM.so.23.1")).unwrap());
+        assert!(!is_elf_file(&libraries.join("libLLVM-23-rust-1.99.1-stable.so")).unwrap());
+        assert!(!is_elf_file(&libraries.join("empty.so")).unwrap());
+        assert_eq!(copy_libraries(&work, &[], &[]), Ok(Vec::new()));
+        std::fs::remove_dir_all(&work).unwrap();
     }
 
     #[test]
