@@ -84,12 +84,12 @@ pub const MAX_LINK_TARGET_BYTES: usize = eggos_commands::tools::MAX_LINK_TARGET_
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
-/// Why a call's arguments are refused.
 /// The signals MCP's `kill` sends, `TERM` its default (D200).
 pub const SIGNAL_NAMES: [&str; 9] = [
     "TERM", "KILL", "INT", "HUP", "QUIT", "STOP", "CONT", "USR1", "USR2",
 ];
 
+/// Why a call's arguments are refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentProblem {
     /// `arguments` is not an object.
@@ -809,14 +809,23 @@ pub fn check(
             .words
             .get_mut(MAX_SETTING_KEY_BYTES..)
             .ok_or(ArgumentProblem::BadSettingValue)?;
-        checked.setting_value = Some(short_text(
+        let length = short_text(
             get("value"),
             "value",
             room,
             MAX_SETTING_VALUE_BYTES,
             |byte| !byte.is_ascii_control(),
             ArgumentProblem::BadSettingValue,
-        )?);
+        )?;
+        let value = decoded
+            .words
+            .get(MAX_SETTING_KEY_BYTES..MAX_SETTING_KEY_BYTES + length)
+            .and_then(|value| core::str::from_utf8(value).ok())
+            .ok_or(ArgumentProblem::BadSettingValue)?;
+        if value.chars().any(char::is_control) {
+            return Err(ArgumentProblem::BadSettingValue);
+        }
+        checked.setting_value = Some(length);
     }
     if tool.kind == Kind::Ln {
         checked.symbolic = match get("symbolic") {
@@ -1986,6 +1995,20 @@ mod tests {
         }
         let long = format!(r#"{{"after":"{}"}}"#, "a".repeat(MAX_CURSOR_BYTES + 1));
         assert_eq!(checked("ls", &long).0, Err(ArgumentProblem::BadCursor));
+    }
+
+    #[test]
+    fn a_setting_value_with_any_control_character_is_refused() {
+        for value in [r"lin\u0085ux", r"lin\u009bux", r"lin\u0007ux"] {
+            let arguments = format!(r#"{{"key":"shell.profile","value":"{value}"}}"#);
+            assert_eq!(
+                checked("settings_set", &arguments).0.err(),
+                Some(ArgumentProblem::BadSettingValue),
+                "{value}"
+            );
+        }
+        let (result, _) = checked("settings_set", r#"{"key":"shell.profile","value":"lïnux"}"#);
+        assert!(result.is_ok());
     }
 
     #[test]
