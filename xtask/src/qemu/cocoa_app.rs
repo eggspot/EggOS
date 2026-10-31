@@ -582,10 +582,10 @@ pub fn check(
     };
     type_line(&mut boot, &install_line())?;
     boot.wait_for_prompts(2)?;
-    type_line(&mut boot, &open_line())?;
-    boot.wait_for_prompts(3)?;
     std::thread::sleep(ECHO_PAUSE);
     let before = picture(&mut screen, arch, "-cocoa-app-desktop")?;
+    type_line(&mut boot, &open_line())?;
+    boot.wait_for_prompts(3)?;
     let area = wait_for_window(&mut boot, &mut screen, &before)?;
     std::thread::sleep(SETTLE);
     screen.park_pointer()?;

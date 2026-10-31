@@ -458,10 +458,10 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     };
     type_line(&mut boot, &install_line())?;
     wait_for_line(&mut boot, &format!("{STATUS_PREFIX}install 0"))?;
-    type_line(&mut boot, &open_line())?;
-    wait_for_line(&mut boot, &format!("{STATUS_PREFIX}open 0"))?;
     std::thread::sleep(ECHO_PAUSE);
     let before = picture(&mut screen, arch, "-autohotkey-desktop")?;
+    type_line(&mut boot, &open_line())?;
+    wait_for_line(&mut boot, &format!("{STATUS_PREFIX}open 0"))?;
     let area = wait_for_window(&mut boot, &mut screen, &before)?;
     std::thread::sleep(SETTLE);
     screen.park_pointer()?;

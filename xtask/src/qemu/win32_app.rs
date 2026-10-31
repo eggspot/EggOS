@@ -115,6 +115,27 @@ pub(super) fn crop(picture: &Picture, area: Rect) -> Vec<u32> {
     pixels
 }
 
+fn longest_run(lines: &[usize]) -> Option<(usize, usize)> {
+    let mut longest: Option<(usize, usize)> = None;
+    let mut start = 0;
+    for index in 0..lines.len() {
+        let ends = index + 1 == lines.len() || lines[index + 1] != lines[index] + 1;
+        if !ends {
+            continue;
+        }
+        let run = (lines[start], lines[index]);
+        if longest.is_none_or(|(first, last)| run.1 - run.0 > last - first) {
+            longest = Some(run);
+        }
+        start = index + 1;
+    }
+    longest
+}
+
+/// Where a window appeared between `before` and `after`: the tallest band of consecutive rows
+/// that changed across a window's width, then the widest band of consecutive columns that
+/// changed in at least half of those rows, so changes beside the window (a window that lost the
+/// focus redrawing its title bar and border, the dock gaining the app's button) are left out.
 pub(super) fn window_area(before: &Picture, after: &Picture) -> Option<Rect> {
     if (before.width, before.height) != (after.width, after.height) {
         return None;
@@ -124,13 +145,13 @@ pub(super) fn window_area(before: &Picture, after: &Picture) -> Option<Rect> {
     let rows: Vec<usize> = (0..after.height as usize)
         .filter(|&y| (0..width).filter(|&x| differs(x, y)).count() >= WINDOW_ROW_PIXELS)
         .collect();
-    let (&top, &bottom) = (rows.first()?, rows.last()?);
+    let (top, bottom) = longest_run(&rows)?;
     let columns: Vec<usize> = (0..width)
         .filter(|&x| {
             (top..=bottom).filter(|&y| differs(x, y)).count() >= (bottom - top).div_ceil(2)
         })
         .collect();
-    let (&left, &right) = (columns.first()?, columns.last()?);
+    let (left, right) = longest_run(&columns)?;
     let area = Rect::new(
         left as u32,
         top as u32,
@@ -479,10 +500,10 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     };
     type_line(&mut boot, &install_line())?;
     boot.wait_for_prompts(2)?;
-    type_line(&mut boot, &open_line())?;
-    boot.wait_for_prompts(3)?;
     std::thread::sleep(ECHO_PAUSE);
     let before = picture(&mut screen, arch, "-win32-app-desktop")?;
+    type_line(&mut boot, &open_line())?;
+    boot.wait_for_prompts(3)?;
     let area = wait_for_window(&mut boot, &mut screen, &before)?;
     std::thread::sleep(SETTLE);
     screen.park_pointer()?;
@@ -591,6 +612,21 @@ mod tests {
             Some(Rect::new(300, 100, 265, 317))
         );
         assert_eq!(window_area(&blank, &blank), None);
+        let mut with_bands = shown.clone();
+        for y in (60..90).chain(540..580) {
+            for x in 100..700 {
+                with_bands.pixels[y * 800 + x] = 0x0010_2030;
+            }
+        }
+        for y in 60..580 {
+            for x in [100, 699] {
+                with_bands.pixels[y * 800 + x] = 0x0010_2030;
+            }
+        }
+        assert_eq!(
+            window_area(&blank, &with_bands),
+            Some(Rect::new(300, 100, 265, 317))
+        );
         assert!(open_line().contains("app open pegs;"));
         assert!(install_line().contains("/media/host/pegs.exe"));
     }
