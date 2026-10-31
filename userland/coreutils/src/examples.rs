@@ -11,7 +11,12 @@ fn machine() -> Fake {
         .with_directory("/home/root", 0)
         .with_file("/home/root/notes.txt", 0o644, b"eggs\nmilk\nbread\n", 0)
         .with_directory("/proc", 0)
-        .with_file("/proc/ps", 0o444, b"1 0 1 1 R init\n7 1 7 1 R eggsh\n", 0)
+        .with_file(
+            "/proc/ps",
+            0o444,
+            b"1 0 1 1 R 120 init\n7 1 7 1 R 35 eggsh\n",
+            0,
+        )
         .with_file(
             "/proc/meminfo",
             0o444,

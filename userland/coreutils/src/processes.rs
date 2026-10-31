@@ -14,7 +14,11 @@ const MEMORY: &CStr = c"/proc/meminfo";
 
 const UPTIME: &CStr = c"/proc/uptime";
 
-const NAME_COLUMN: usize = 5;
+const NAME_COLUMN: usize = 6;
+
+const SESSION_COLUMN: usize = 3;
+
+const CPU_COLUMN: usize = 5;
 
 const PROCESS_RECORD_BYTES: usize = 1024;
 
@@ -113,10 +117,10 @@ pub fn ps<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
 
 fn write_process_text<S: System>(output: &mut Output<S>, line: &[u8]) {
     for (index, field) in fields(line).enumerate() {
-        if index == 3 {
+        if index == SESSION_COLUMN || index == CPU_COLUMN {
             continue;
         }
-        if index < NAME_COLUMN - 1 {
+        if index < SESSION_COLUMN {
             for _ in field.len()..5 {
                 output.write(b" ");
             }
@@ -141,6 +145,11 @@ fn write_process<S: System>(output: &mut Output<S>, line: &[u8]) {
     }
     out.key("state");
     out.string_lossy(parts.next().unwrap_or_default());
+    out.key("cpu_ms");
+    match parts.next().and_then(parse_count) {
+        Some(number) => out.u64(number),
+        None => out.null(),
+    }
     out.key("name");
     out.begin_string();
     for (index, part) in parts.enumerate() {
@@ -306,7 +315,7 @@ mod tests {
     fn proc() -> Fake {
         Fake::default()
             .with_directory("/proc", 0)
-            .with_file("/proc/ps", 0o444, b"1 0 1 1 R init\n7 1 7 1 R eggsh\n12 7 12 1 Z sleep\n", 0)
+            .with_file("/proc/ps", 0o444, b"1 0 1 1 R 120 init\n7 1 7 1 R 35 eggsh\n12 7 12 1 Z 0 sleep\n", 0)
             .with_file(
                 "/proc/meminfo",
                 0o444,
@@ -349,7 +358,7 @@ mod tests {
             output.lines().next(),
             Some(
                 "{\"pid\":1,\"parent_pid\":0,\"group_id\":1,\"session_id\":1,\
-                 \"state\":\"R\",\"name\":\"init\"}"
+                 \"state\":\"R\",\"cpu_ms\":120,\"name\":\"init\"}"
             )
         );
         assert_eq!(output.lines().count(), 3);

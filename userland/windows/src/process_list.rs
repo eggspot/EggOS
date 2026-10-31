@@ -1,5 +1,5 @@
 //! The processes `/proc/ps` lists (D168), for the Toolhelp snapshots (D178): one line per
-//! process, `id parent group session state name`, the name cut to 15 bytes as Linux's `comm`;
+//! process, `id parent group session state cpu_ms name` (the CPU time since D200), the name cut to 15 bytes as Linux's `comm`;
 //! the whole name is then the program's file name in its command line.
 
 /// What a line of `/proc/ps` says of a process.
@@ -21,7 +21,7 @@ fn number(word: &[u8]) -> Option<u32> {
 pub fn parse_line(line: &[u8]) -> Option<Listed<'_>> {
     let mut rest = line;
     let mut fields = [0u32; 2];
-    for index in 0..5 {
+    for index in 0..6 {
         let space = rest.iter().position(|byte| *byte == b' ')?;
         let word = &rest[..space];
         if index < 2 {
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn lines_give_ids_and_names() {
         assert_eq!(
-            parse_line(b"42 1 42 1 R AutoHotkey64.ex"),
+            parse_line(b"42 1 42 1 R 17 AutoHotkey64.ex"),
             Some(Listed {
                 id: 42,
                 parent: 1,
@@ -65,10 +65,10 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_line(b"7 0 7 7 Z my tool").map(|listed| listed.name),
+            parse_line(b"7 0 7 7 Z 0 my tool").map(|listed| listed.name),
             Some(&b"my tool"[..])
         );
-        assert_eq!(parse_line(b"x 1 1 1 R a"), None);
+        assert_eq!(parse_line(b"x 1 1 1 R 0 a"), None);
         assert_eq!(parse_line(b"1 1"), None);
     }
 

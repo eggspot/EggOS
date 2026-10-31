@@ -121,6 +121,7 @@ pub const PS_FIELDS: [Field; 6] = [
     field("group_id", FieldType::Integer),
     field("session_id", FieldType::Integer),
     field("state", FieldType::Text),
+    field("cpu_ms", FieldType::Integer),
     field("name", FieldType::Text),
 ];
 

@@ -412,19 +412,31 @@ fn cmdline<P: Platform>() -> Option<Vec<u8>> {
     text.or_else(|| cmdline_text(b""))
 }
 
-fn ps() -> Option<Vec<u8>> {
+/// `/proc/ps`: a line per process, `pid ppid pgid sid state cpu_ms name`, its CPU time in
+/// milliseconds counted at its threads' switches (D198, D200).
+fn ps<P: Platform>() -> Option<Vec<u8>> {
+    let mut listed = Vec::new();
+    {
+        let table = TABLE.lock();
+        listed.try_reserve(table.list().count()).ok()?;
+        listed.extend(table.list());
+    }
     let mut text = Text(Vec::new());
-    let table = TABLE.lock();
-    text.0.try_reserve(table.list().count() * 48).ok()?;
-    for process in table.list() {
+    text.0.try_reserve(listed.len() * 56).ok()?;
+    let frequency = P::clock_frequency().max(1);
+    for process in &listed {
         let state = if process.ended { 'Z' } else { 'R' };
+        let cpu_ms = running_process::<P>(process.id)
+            .map_or(0, |running| running.cpu_ticks(false))
+            .saturating_mul(1000)
+            / frequency;
         write!(
             text,
-            "{} {} {} {} {state} ",
+            "{} {} {} {} {state} {cpu_ms} ",
             process.id, process.parent, process.group, process.session
         )
         .ok()?;
-        text.0.extend_from_slice(name_of(&process));
+        text.0.extend_from_slice(name_of(process));
         text.0.push(b'\n');
     }
     Some(text.0)
@@ -873,7 +885,7 @@ impl<P: Platform> FileSystem for Proc<P> {
                 meminfo(memory::total_frames(), free, reserve)
             }
             UPTIME => uptime(P::clock_ticks(), P::clock_frequency()),
-            PS => ps(),
+            PS => ps::<P>(),
             CMDLINE => cmdline::<P>(),
             NET_UNIX => super::unix_socket::proc_net_unix(),
             NET_INTERFACES => crate::net::interfaces_text::<P>(),
