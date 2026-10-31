@@ -1823,19 +1823,32 @@ fn an_activation_token_from_the_focused_client_raises_a_window_once() {
 fn tokens_are_single_use_and_expire() {
     use crate::activation::{Activation, TOKEN_LIFETIME_MS, token_text, token_value};
     let mut tokens = Activation::default();
-    let value = tokens.issue(1000, true);
+    let value = tokens.issue(1000, true, 0x1234);
     assert_eq!(token_value(&token_text(value)), Some(value));
     assert_eq!(token_value(b"eggway-0123"), None);
     assert_eq!(token_value(b"other-0123456789abcdef"), None);
     assert!(tokens.redeem(value, 1000 + TOKEN_LIFETIME_MS));
     assert!(!tokens.redeem(value, 1001));
-    let late = tokens.issue(2000, true);
+    let late = tokens.issue(2000, true, 0x5678);
     assert!(!tokens.redeem(late, 2001 + TOKEN_LIFETIME_MS));
-    let first = tokens.issue(3000, true);
+    let first = tokens.issue(3000, true, 0x9abc);
     for at in 0..crate::activation::MAX_TOKENS as u64 {
-        tokens.issue(4000 + at, true);
+        tokens.issue(4000 + at, true, at);
     }
     assert!(!tokens.redeem(first, 5000), "the oldest token made room");
+}
+
+#[test]
+fn a_token_cannot_be_predicted_from_the_count_and_the_clock() {
+    use crate::activation::Activation;
+    let mut one = Activation::default();
+    let mut other = Activation::default();
+    let seen = one.issue(1000, false, 0x1111);
+    let guessed = other.issue(1000, false, 0x1111);
+    assert_eq!(seen, guessed);
+    let next = one.issue(1001, true, 0x2222);
+    let predicted = other.issue(1001, true, 0x1111);
+    assert_ne!(next, predicted);
 }
 
 #[test]

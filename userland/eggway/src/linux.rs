@@ -865,6 +865,15 @@ impl System for Linux {
         size
     }
 
+    fn random(&mut self) -> u64 {
+        let mut value = 0u64;
+        let _ = call(
+            number::GETRANDOM,
+            [(&raw mut value) as usize, size_of::<u64>(), 0, 0, 0, 0],
+        );
+        value
+    }
+
     fn read_events(&mut self, device: Fd, records: &mut [u8]) -> Result<usize, Errno> {
         match call(
             number::READ,

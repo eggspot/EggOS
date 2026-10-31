@@ -72,9 +72,10 @@ pub fn token_value(text: &[u8]) -> Option<u64> {
 
 impl Activation {
     /// Gives a new token at `now_ms`, remembering whether its client had the keyboard focus.
-    pub fn issue(&mut self, now_ms: u64, from_focused: bool) -> u64 {
+    /// `random` (from the kernel's random source) makes it unpredictable to other clients.
+    pub fn issue(&mut self, now_ms: u64, from_focused: bool, random: u64) -> u64 {
         self.count = self.count.wrapping_add(1);
-        let value = mixed(self.count ^ now_ms.rotate_left(32));
+        let value = mixed(random ^ self.count ^ now_ms.rotate_left(32));
         let issued = Issued {
             value,
             issued_ms: now_ms,
@@ -175,7 +176,9 @@ pub(crate) fn token_request<S: System>(
         COMMITTED,
     );
     let focused = shared.keyboard_client == Some(client.index);
-    let value = shared.activation.issue(system.now_ms(), focused);
+    let value = shared
+        .activation
+        .issue(system.now_ms(), focused, system.random());
     client.post(
         message.object,
         message.version,

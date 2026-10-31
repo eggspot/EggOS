@@ -497,6 +497,10 @@ impl System for Fake {
         self.work_area
     }
 
+    fn random(&mut self) -> u64 {
+        self.now.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
     fn read_events(&mut self, device: Fd, records: &mut [u8]) -> Result<usize, Errno> {
         let queue = self.records.entry(device).or_default();
         let mut length = 0;

@@ -154,4 +154,6 @@ pub trait System {
     fn work_area(&mut self) -> (u32, u32);
     /// Reads event records from `device` without waiting; how many bytes.
     fn read_events(&mut self, device: Fd, records: &mut [u8]) -> Result<usize, Errno>;
+    /// Eight bytes from the kernel's random source (0 when it cannot give them).
+    fn random(&mut self) -> u64;
 }
