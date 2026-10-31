@@ -931,6 +931,17 @@ fn the_keyboard_layout_requests_have_their_numbers_and_arguments() {
 }
 
 #[test]
+fn the_requests_other_programs_hard_code_keep_their_numbers() {
+    assert_eq!(request::LIST_WINDOW, 0xc060_770b);
+    assert_eq!(request::MANAGE_WINDOW, 0x4010_770c);
+    assert_eq!(request::SET_CLIPBOARD, 0x4010_7720);
+    assert_eq!(request::GET_CLIPBOARD, 0xc020_7721);
+    assert_eq!(request::LIST_DESKTOPS, 0x8010_7722);
+    assert_eq!(request::DESKTOP_ACTION, 0xc010_7723);
+    assert_eq!(request::SET_KEY_ACCESSIBILITY, 0x400c_7724);
+}
+
+#[test]
 fn the_input_preferences_request_carries_five_words() {
     assert_eq!(request::SET_INPUT_PREFERENCES, 0x4014_771f);
     let mut bytes = [0u8; 20];
