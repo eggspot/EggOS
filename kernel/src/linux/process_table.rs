@@ -502,10 +502,11 @@ impl Table {
             return ended;
         }
         self.forget_stop(index);
-        let around = match self.stopped {
+        let mut around = match self.stopped {
             0 => Vec::new(),
             _ => self.groups_around(index),
         };
+        around.retain(|&group| !self.is_orphaned(group));
         self.entries[index].exit = Some(exit);
         self.entries[index].uid = uid;
         self.entries[index].running = None;
@@ -1602,6 +1603,22 @@ mod tests {
         quiet.set_group(170, 171, 0).unwrap();
         quiet.set_running(171, running());
         assert!(quiet.end(170, EXITED, 0).hung_up.is_empty());
+    }
+
+    #[test]
+    fn the_end_of_a_process_leaves_a_group_that_was_orphaned_already_stopped() {
+        let mut table = table_with(&[(200, None), (201, Some(200)), (202, Some(201))]);
+        table.set_group(200, 201, 0).unwrap();
+        table.set_group(201, 202, 201).unwrap();
+        table.set_running(201, running());
+        table.set_running(202, running());
+        assert!(table.end(200, EXITED, 0).hung_up.is_empty());
+        assert!(table.is_in_orphaned_group(202));
+        assert!(matches!(table.stop(202, 19, 0), Stopping::Stopped(_)));
+        assert!(
+            table.end(201, EXITED, 0).hung_up.is_empty(),
+            "the group was orphaned before 201 ended"
+        );
     }
 
     #[test]
