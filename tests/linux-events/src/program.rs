@@ -33,7 +33,6 @@ const CLOCK_MONOTONIC: c_int = 1;
 const SIG_BLOCK: c_long = 0;
 const SIGUSR1: c_int = 10;
 const SIGSEGV: c_int = 11;
-const SIG_DFL: usize = 0;
 const EAGAIN: i32 = 11;
 const SIGNALFD_RECORD: usize = 128;
 const FD_SET_WORDS: usize = 16;
@@ -108,7 +107,6 @@ unsafe extern "C" {
     fn madvise(address: *mut c_void, length: usize, advice: c_int) -> c_int;
     fn msync(address: *mut c_void, length: usize, flags: c_int) -> c_int;
     fn fork() -> c_int;
-    fn signal(signal: c_int, handler: usize) -> usize;
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     fn _exit(status: c_int) -> !;
 }
@@ -608,11 +606,7 @@ fn fork_advice() -> Checked<()> {
     let kept_from_children = map_anonymous(MAP_PRIVATE)?;
     poke(kept_from_children, 7);
     advise(kept_from_children, MADV_DONTFORK)?;
-    let touched = in_child(|| {
-        // SAFETY: `signal` takes a number and no pointers; the default action needs none.
-        unsafe { signal(SIGSEGV, SIG_DFL) };
-        c_int::from(peek(kept_from_children)) + 100
-    })?;
+    let touched = in_child(|| c_int::from(peek(kept_from_children)) + 100)?;
     let wiped = map_anonymous(MAP_PRIVATE)?;
     poke(wiped, 7);
     advise(wiped, MADV_WIPEONFORK)?;
