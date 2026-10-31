@@ -335,7 +335,7 @@ fn paint_control(window: usize) {
                     pressed: model.pressed,
                     focused,
                     default: is_default_button(gui, window, model.kind),
-                    enabled: entry.enabled,
+                    enabled: entry.enabled(),
                 };
                 button::paint(surface, rect, text, look, palette);
             }
@@ -344,7 +344,7 @@ fn paint_control(window: usize) {
                 let model = unsafe { &*(address as *const Edit) };
                 let look = EditLook {
                     focused,
-                    enabled: entry.enabled,
+                    enabled: entry.enabled(),
                 };
                 edit::paint(surface, rect, model, look, palette);
             }
@@ -353,7 +353,7 @@ fn paint_control(window: usize) {
                 let model = unsafe { &*(address as *const ListBox) };
                 let look = ListLook {
                     focused,
-                    enabled: entry.enabled,
+                    enabled: entry.enabled(),
                 };
                 list_box::paint(surface, rect, model, look, palette);
             }
@@ -365,7 +365,7 @@ fn paint_control(window: usize) {
             ControlKind::Static => {
                 let look = LabelLook {
                     style: entry.style,
-                    enabled: entry.enabled,
+                    enabled: entry.enabled(),
                 };
                 label::paint(surface, rect, text, look, palette);
             }
@@ -716,7 +716,7 @@ fn get_text(window: usize, kind: ControlKind, capacity: usize, buffer: usize) ->
 }
 
 fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
-    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled));
+    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
     if enabled != Some(true) {
         return;
     }

@@ -84,7 +84,7 @@ unsafe extern "efiapi" fn translate_accelerator_w(
     }
     let found = try_with(|gui| {
         let target = gui.window(window)?;
-        let (enabled, menu) = (target.enabled, target.menu);
+        let (enabled, menu) = (target.enabled(), target.menu);
         let state = gui.keyboard_state();
         let held = Held {
             shift: state[0x10] & 0x80 != 0,

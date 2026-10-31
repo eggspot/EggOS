@@ -353,7 +353,7 @@ fn paint_box(window: usize) {
         let combo = unsafe { &*(address as *const ComboBox) };
         let look = ComboLook {
             focused: has_focus(gui, window),
-            enabled: entry.enabled,
+            enabled: entry.enabled(),
         };
         model::paint_closed(
             surface,
@@ -371,7 +371,7 @@ fn is_open(window: usize) -> bool {
 }
 
 fn left_button_down(window: usize) {
-    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled));
+    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
     if enabled != Some(true) {
         return;
     }

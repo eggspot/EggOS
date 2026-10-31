@@ -25,7 +25,6 @@ const CW_USE_DEFAULT: i32 = i32::MIN;
 const WS_POPUP: u32 = 0x8000_0000;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_DISABLED: u32 = 0x0800_0000;
 const WS_MAXIMIZE: u32 = 0x0100_0000;
 const WS_THICK_FRAME: u32 = 0x0004_0000;
 const WS_EX_TOOL_WINDOW: u32 = 0x0000_0080;
@@ -369,7 +368,6 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     window.extra_length = class_of.window_extra as usize;
     window.background = class_of.background;
     window.class_style = class_of.style;
-    window.enabled = style & WS_DISABLED == 0;
     window.thread = thread_environment::thread_id();
     window.creation_sequence = next_sequence();
     let Some(Some(handle)) = with(|gui| gui.windows.insert(window)) else {
@@ -596,7 +594,6 @@ fn create_program_child(
     window.background = class_of.background;
     window.class_style = class_of.style;
     window.shown = request.style & WS_VISIBLE != 0;
-    window.enabled = request.style & WS_DISABLED == 0;
     insert_child(window, request.text)
 }
 
@@ -621,7 +618,6 @@ pub fn create_child(
     window.style = style;
     window.id = id;
     window.shown = style & WS_VISIBLE != 0;
-    window.enabled = style & WS_DISABLED == 0;
     match insert_child(window, text) {
         Ok(handle) => {
             if kind == ControlKind::Edit {
@@ -842,9 +838,14 @@ fn set_window_long(handle: usize, index: i32, size: usize, value: usize) -> usiz
             };
             return Ok(cut(procedure, size));
         }
-        window
+        let was_enabled = window.enabled();
+        let previous = window
             .set_long(index, size, value)
-            .ok_or(error::INVALID_INDEX)
+            .ok_or(error::INVALID_INDEX)?;
+        if window.enabled() != was_enabled {
+            windows::invalidate_tree(&mut gui.windows, handle, None, true);
+        }
+        Ok(previous)
     });
     match previous {
         Ok(previous) => {

@@ -680,7 +680,7 @@ fn route_input(
     time: u32,
 ) -> Option<Message> {
     let top = gui.windows.get(root)?;
-    if !top.enabled || top.modal_disabled {
+    if !top.enabled() || top.modal_disabled {
         return None;
     }
     let message = |window: usize, lparam: usize, point: (i32, i32)| {

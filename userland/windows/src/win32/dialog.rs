@@ -149,8 +149,8 @@ pub fn enable(window: usize, enabled: bool) -> Result<bool, u32> {
     let mut lost_focus = 0;
     let (was_disabled, changed) = try_with(|gui| {
         let entry = gui.window_mut(window)?;
-        let was_disabled = !entry.enabled;
-        entry.enabled = enabled;
+        let was_disabled = !entry.enabled();
+        entry.set_enabled(enabled);
         if was_disabled == enabled {
             windows::invalidate_tree(&mut gui.windows, window, None, true);
         }
@@ -192,7 +192,7 @@ extern "efiapi" fn enable_window(window: usize, enabled: Bool) -> Bool {
 }
 
 extern "efiapi" fn is_window_enabled(window: usize) -> Bool {
-    match try_with(|gui| gui.window(window).map(|window| window.enabled)) {
+    match try_with(|gui| gui.window(window).map(|window| window.enabled())) {
         Ok(enabled) => Bool::from(enabled),
         Err(code) => fail(code, FALSE),
     }

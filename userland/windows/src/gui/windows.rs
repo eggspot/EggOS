@@ -14,6 +14,8 @@ pub const MAX_DEPTH: usize = 8;
 /// The most extra bytes a window's class may ask for (`cbWndExtra`).
 pub const MAX_EXTRA: usize = 256;
 const HANDLE_BASE: usize = 0x1_0000;
+/// The style bit of a window that takes no input (`WS_DISABLED`): its enabled state.
+pub const WS_DISABLED: u32 = 0x0800_0000;
 
 /// `GetWindowLongPtrW`'s indices below 0.
 pub mod index {
@@ -94,7 +96,6 @@ pub struct Window {
     pub menu_height: i32,
     pub focus: usize,
     pub capture: usize,
-    pub enabled: bool,
     pub modal_disabled: bool,
     pub text: usize,
     pub creation_sequence: u32,
@@ -164,7 +165,6 @@ impl Window {
             menu_height: 0,
             focus: 0,
             capture: 0,
-            enabled: true,
             modal_disabled: false,
             text: 0,
             creation_sequence: 0,
@@ -204,6 +204,19 @@ impl Window {
 
     pub fn is_child(&self) -> bool {
         self.parent != 0
+    }
+
+    /// Whether it takes input: `WS_DISABLED` is clear in its style, however that was set.
+    pub fn enabled(&self) -> bool {
+        self.style & WS_DISABLED == 0
+    }
+
+    /// Clears `WS_DISABLED` in its style when `enabled`, sets it otherwise.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        match enabled {
+            true => self.style &= !WS_DISABLED,
+            false => self.style |= WS_DISABLED,
+        }
     }
 
     /// The buffer of a top-level window.
@@ -354,7 +367,7 @@ pub fn enabled_in_tree(table: &WindowTable, handle: usize) -> bool {
     ancestry(table, handle).is_some_and(|(chain, length)| {
         chain[..length]
             .iter()
-            .all(|&at| table.get(at).is_some_and(|window| window.enabled))
+            .all(|&at| table.get(at).is_some_and(|window| window.enabled()))
     })
 }
 
@@ -615,7 +628,7 @@ pub fn next_tab_stop(
     let (handles, count) = tree(table, root);
     let stops = |handle: &&usize| {
         table.get(**handle).is_some_and(|window| {
-            window.is_child() && window.shown && window.enabled && window.style & WS_TABSTOP != 0
+            window.is_child() && window.shown && window.enabled() && window.style & WS_TABSTOP != 0
         })
     };
     let order = &handles[1..count];
@@ -869,7 +882,7 @@ mod tests {
         let mut stop = |enabled: bool| {
             let mut window = child(root, Rect::sized(0, 0, 10, 10));
             window.style = 0x0001_0000;
-            window.enabled = enabled;
+            window.set_enabled(enabled);
             table.insert(window).unwrap()
         };
         let first = stop(true);
@@ -893,6 +906,30 @@ mod tests {
         assert_eq!(window.set_long(index::PROCEDURE, 8, 5), None);
         assert_eq!(window.long(index::PARENT, 8), Some(0x1_0040));
         assert_eq!(window.set_long(index::PARENT, 8, 5), None);
+    }
+
+    #[test]
+    fn the_disabled_style_bit_is_the_enabled_state_both_ways() {
+        let mut window = window();
+        window.style = 0x1000_0000;
+        assert!(window.enabled());
+        assert_eq!(
+            window.set_long(index::STYLE, 4, (0x1000_0000 | WS_DISABLED) as usize),
+            Some(0x1000_0000)
+        );
+        assert!(!window.enabled());
+        assert_eq!(
+            window.set_long(index::STYLE, 8, 0x1000_0000),
+            Some((0x1000_0000 | WS_DISABLED) as usize)
+        );
+        assert!(window.enabled());
+        window.set_enabled(false);
+        assert_eq!(
+            window.long(index::STYLE, 4),
+            Some((0x1000_0000 | WS_DISABLED) as usize)
+        );
+        window.set_enabled(true);
+        assert_eq!(window.long(index::STYLE, 4), Some(0x1000_0000));
     }
 
     #[test]
@@ -948,9 +985,9 @@ mod tests {
         let (kids, count) = children(&table, root);
         assert_eq!(&kids[..count], &[second, third]);
         assert!(enabled_in_tree(&table, third));
-        table.get_mut(root).unwrap().enabled = false;
+        table.get_mut(root).unwrap().set_enabled(false);
         assert!(!enabled_in_tree(&table, third));
-        table.get_mut(root).unwrap().enabled = true;
+        table.get_mut(root).unwrap().set_enabled(true);
         assert_eq!(child_at(&table, root, 5, 5).0, third);
         assert_eq!(needing_paint(&table, root, 0), None);
         table.get_mut(third).unwrap().invalidate(None, true);

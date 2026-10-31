@@ -236,7 +236,7 @@ pub fn input(
         return None;
     }
     let menu_height = window.menu_height;
-    if !window.enabled || window.modal_disabled {
+    if !window.enabled() || window.modal_disabled {
         return close(gui, root).map(|commit| Effect {
             commit: Some(commit),
             command: None,

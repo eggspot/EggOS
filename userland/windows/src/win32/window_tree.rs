@@ -87,7 +87,7 @@ extern "efiapi" fn get_window(window: usize, command: u32) -> usize {
                         && gui
                             .windows
                             .get(top)
-                            .is_some_and(|entry| entry.shown && entry.enabled)
+                            .is_some_and(|entry| entry.shown && entry.enabled())
                 });
                 Ok(found.unwrap_or(window))
             });
