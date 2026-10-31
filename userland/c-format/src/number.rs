@@ -166,7 +166,7 @@ pub fn parse_float(text: &[u8]) -> (f64, usize) {
     }
     let mut mantissa = 0u64;
     let mut kept = 0u32;
-    let mut exponent = 0i32;
+    let mut exponent = 0i64;
     let mut digits = 0usize;
     let mut seen_point = false;
     while let Some(&byte) = text.get(index) {
@@ -202,19 +202,27 @@ pub fn parse_float(text: &[u8]) -> (f64, usize) {
             at += 1;
         }
         let start = at;
-        let mut written = 0i32;
+        let mut written = 0i64;
         while let Some(&byte) = text.get(at).filter(|byte| byte.is_ascii_digit()) {
-            written = (written * 10 + i32::from(byte - b'0')).min(LARGEST_EXPONENT * 10);
+            written = written
+                .saturating_mul(10)
+                .saturating_add(i64::from(byte - b'0'));
             at += 1;
         }
         if at > start {
-            exponent += if negative_exponent { -written } else { written };
+            exponent = match negative_exponent {
+                true => exponent.saturating_sub(written),
+                false => exponent.saturating_add(written),
+            };
             index = at;
         }
     }
     let value = match mantissa {
         0 => 0.0,
-        mantissa => scale(mantissa as f64, exponent),
+        mantissa => scale(
+            mantissa as f64,
+            exponent.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        ),
     };
     (signed(value), index)
 }
@@ -239,6 +247,20 @@ mod tests {
         assert!(parse_float(b"nan").0.is_nan());
         assert_eq!(parse_float(b"0.000001"), (0.000001, 8));
         assert_eq!(parse_float(b"12345678901234567890123").1, 23);
+    }
+
+    #[test]
+    fn a_written_exponent_is_added_to_the_digits_before_it_is_clamped() {
+        let mut long = b"1".to_vec();
+        long.extend(core::iter::repeat_n(b'0', 5000));
+        long.extend_from_slice(b"e-5000");
+        assert_eq!(parse_float(&long), (1.0, long.len()));
+        let mut small = b"0.".to_vec();
+        small.extend(core::iter::repeat_n(b'0', 4999));
+        small.extend_from_slice(b"1e5000");
+        assert_eq!(parse_float(&small), (1.0, small.len()));
+        assert_eq!(parse_float(b"1e99999999999999999999999").0, f64::INFINITY);
+        assert_eq!(parse_float(b"1e-99999999999999999999999").0, 0.0);
     }
 
     fn parsed(text: &str, base: u32) -> Integer {
