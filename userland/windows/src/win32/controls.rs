@@ -404,6 +404,35 @@ fn paint_picture(
     surface.set_clip(saved);
 }
 
+fn give_picture_state(window: usize) -> bool {
+    const PLAIN_STATIC: Procedure = Procedure::Control(ControlKind::Static, 0);
+    let plain = |gui: &mut Gui| {
+        gui.windows
+            .get(window)
+            .is_some_and(|entry| entry.procedure == PLAIN_STATIC)
+    };
+    if with(plain) != Some(true) {
+        return true;
+    }
+    let Some(address) = allocate(StaticPicture::default()) else {
+        return false;
+    };
+    let placed = with(|gui| {
+        if !plain(gui) {
+            return false;
+        }
+        let Some(entry) = gui.windows.get_mut(window) else {
+            return false;
+        };
+        entry.procedure = Procedure::Control(ControlKind::Static, address);
+        true
+    });
+    if placed != Some(true) {
+        free_state(address);
+    }
+    true
+}
+
 fn picture_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     let (setting, kind, handle) = match number {
         static_image::STM_SETICON => (true, static_image::IMAGE_ICON, wparam),
@@ -429,6 +458,9 @@ fn picture_message(window: usize, number: u32, wparam: usize, lparam: usize) -> 
             _ => 0,
         })
         .unwrap_or(0);
+    }
+    if !give_picture_state(window) {
+        return 0;
     }
     let (colour, mask) = match kind {
         static_image::IMAGE_BITMAP => (handle, 0),
