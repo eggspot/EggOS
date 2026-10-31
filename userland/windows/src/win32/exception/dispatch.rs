@@ -430,7 +430,8 @@ pub(super) unsafe extern "efiapi" fn virtual_unwind(
     copy.set_pc(pc);
     let mut registers = copy.registers();
     let kinds = HandlerKinds::from_flags(kind);
-    match unwinder::virtual_unwind(&image, function, kinds, &mut registers, &ThreadMemory) {
+    let memory = ThreadMemory::from_stack_pointer(copy.sp());
+    match unwinder::virtual_unwind(&image, function, kinds, &mut registers, &memory) {
         Ok(unwound) => {
             context.set_registers(&registers);
             if !handler_data.is_null() {

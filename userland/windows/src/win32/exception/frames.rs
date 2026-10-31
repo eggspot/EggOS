@@ -9,7 +9,7 @@
 use super::super::thread_environment::{self, teb};
 use super::context::{Context, unwinder};
 use super::{CatchState, Frame};
-use crate::unwind::{HandlerKinds, Image, Memory};
+use crate::unwind::{HandlerKinds, Image, Memory, StackRange};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static IMAGE_BASE: AtomicU64 = AtomicU64::new(0);
@@ -38,7 +38,9 @@ pub fn image() -> Image<'static> {
     let bytes = match size {
         0 => &[][..],
         // SAFETY: `set_image` named the program's mapped image, which stays mapped for the
-        // process's life; only its unwind data, code and constant data are read through it.
+        // process's life. The layer reads only the bytes the program's exception directory and
+        // unwind data name; a table that names a section the program mapped without read access
+        // faults as the program's own read of it would, and ends the process.
         _ => unsafe { core::slice::from_raw_parts(base as *const u8, size as usize) },
     };
     Image { base, bytes }
@@ -62,17 +64,33 @@ pub fn lookup(pc: u64) -> Option<unwinder::Function> {
     unwinder::lookup(&image, start, size, rva)
 }
 
-/// Reads the thread's memory for the unwinder: any 8-byte-aligned word, as the program's own
-/// frames hold it.
-pub struct ThreadMemory;
+/// Reads the thread's stack for the unwinder: only the aligned words of the stack range a walk
+/// may use, as Windows bounds a walk by the TEB's `StackLimit` and `StackBase`.
+pub struct ThreadMemory {
+    range: StackRange,
+}
+
+impl ThreadMemory {
+    /// This thread's stack, for a walk that starts at stack pointer `sp`.
+    pub fn from_stack_pointer(sp: u64) -> Self {
+        // SAFETY: the slots are this thread's TEB words, which the layer filled when the thread
+        // started.
+        let base = unsafe { slot(teb::STACK_BASE).read() };
+        // SAFETY: as above.
+        let limit = unsafe { slot(teb::STACK_LIMIT).read() };
+        Self {
+            range: StackRange::new(limit, base, sp),
+        }
+    }
+}
 
 impl Memory for ThreadMemory {
     fn u64_at(&self, address: u64) -> Option<u64> {
-        if address == 0 || !address.is_multiple_of(8) {
+        if !self.range.holds_word(address) {
             return None;
         }
-        // SAFETY: the unwinder reads the stack slots the program's unwind data names, which
-        // lie in the thread's mapped stack.
+        // SAFETY: the word lies between the stack pointer the thread ran with and the base of
+        // the stack its TEB records, the part of the thread's stack that is in use and mapped.
         Some(unsafe { (address as *const u64).read_volatile() })
     }
 }
@@ -291,6 +309,7 @@ pub struct Walk {
     unwound: bool,
     kinds: HandlerKinds,
     steps: usize,
+    memory: ThreadMemory,
 }
 
 impl Walk {
@@ -303,6 +322,7 @@ impl Walk {
             unwound,
             kinds,
             steps: 0,
+            memory: ThreadMemory::from_stack_pointer(context.sp()),
         }
     }
 
@@ -313,6 +333,9 @@ impl Walk {
         }
         let pc = self.context.pc();
         let sp = self.context.sp();
+        if !self.memory.range.holds(sp) {
+            return Event::End;
+        }
         if self.unwound
             && let Some(bridge) =
                 bridges().find(|bridge| bridge.return_address == pc && bridge.stack == sp)
@@ -342,13 +365,13 @@ impl Walk {
                     function,
                     self.kinds,
                     &mut registers,
-                    &ThreadMemory,
+                    &self.memory,
                 ) {
                     Ok(unwound) => unwound,
                     Err(_) => return Event::End,
                 }
             }
-            None => match leaf(&mut registers) {
+            None => match leaf(&mut registers, &self.memory) {
                 Some(establisher) => crate::unwind::Unwound {
                     handler: None,
                     handler_data: 0,
@@ -359,7 +382,12 @@ impl Walk {
         };
         let mut caller = before;
         caller.set_registers(&registers);
-        if caller.pc() == 0 {
+        if caller.pc() == 0
+            || !self
+                .memory
+                .range
+                .allows_step(sp, caller.sp(), unwound.establisher)
+        {
             return Event::End;
         }
         let frame = Frame {
@@ -378,15 +406,15 @@ impl Walk {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn leaf(registers: &mut unwinder::Registers) -> Option<u64> {
+fn leaf(registers: &mut unwinder::Registers, memory: &ThreadMemory) -> Option<u64> {
     let rsp = registers.rsp();
-    registers.rip = ThreadMemory.u64_at(rsp)?;
+    registers.rip = memory.u64_at(rsp)?;
     registers.general[unwinder::register::RSP] = rsp + 8;
     Some(rsp)
 }
 
 #[cfg(target_arch = "aarch64")]
-fn leaf(registers: &mut unwinder::Registers) -> Option<u64> {
+fn leaf(registers: &mut unwinder::Registers, _memory: &ThreadMemory) -> Option<u64> {
     registers.pc = registers.x[30];
     Some(registers.sp)
 }
