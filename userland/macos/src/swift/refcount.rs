@@ -11,6 +11,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// A new object's count: one strong reference, one unowned.
 pub const INITIAL: u64 = 0b11;
+/// A stack-promoted object's count: one strong reference and two unowned, so its last release
+/// deinitializes it but never frees it, as Swift's own runtime counts such objects.
+pub const STACK_INITIAL: u64 = 0b101;
 /// The count of an object that is never freed.
 pub const IMMORTAL: u64 = u64::MAX;
 const STRONG_ONE: u64 = 1 << 33;
@@ -18,6 +21,8 @@ const STRONG_MASK: u64 = ((1 << 30) - 1) << 33;
 /// Set once the object's deinitialization starts.
 pub const DEINITING: u64 = 1 << 32;
 const IMMORTAL_BITS: u64 = 0xffff_ffff;
+const UNOWNED_ONE: u64 = 1 << 1;
+const UNOWNED_MASK: u64 = ((1 << 30) - 1) << 1;
 /// Set once a weak reference names the object.
 pub const WEAKLY_REFERENCED: u64 = 1 << 31;
 
@@ -69,6 +74,12 @@ pub fn release(word: &AtomicU64, count: u32) -> bool {
 
 /// Whether only one strong reference holds the object (never for an immortal one, so the
 /// shared empty storages are copied before they are written).
+/// Whether deallocating the object whose count is `bits` frees its memory: only when its one
+/// unowned reference is the strong references' own (not a stack object, not an immortal one).
+pub fn frees_on_dealloc(bits: u64) -> bool {
+    bits & UNOWNED_MASK == UNOWNED_ONE
+}
+
 pub fn is_unique(bits: u64) -> bool {
     !is_immortal(bits) && bits & (STRONG_MASK | DEINITING) == 0
 }
@@ -138,6 +149,19 @@ mod tests {
         assert!(release(&word, 1));
         assert_eq!(word.load(Ordering::Relaxed), INITIAL | DEINITING);
         assert!(!release(&word, 1));
+    }
+
+    #[test]
+    fn a_stack_object_deinitializes_but_is_never_freed() {
+        let word = AtomicU64::new(STACK_INITIAL);
+        assert!(is_unique(word.load(Ordering::Relaxed)));
+        assert!(release(&word, 1));
+        assert!(!frees_on_dealloc(word.load(Ordering::Relaxed)));
+        let heap = AtomicU64::new(INITIAL);
+        mark_weakly_referenced(&heap);
+        assert!(release(&heap, 1));
+        assert!(frees_on_dealloc(heap.load(Ordering::Relaxed)));
+        assert!(!frees_on_dealloc(IMMORTAL));
     }
 
     #[test]

@@ -110,7 +110,9 @@ pub fn mark_weakly_referenced(object: *mut u8) {
 }
 
 extern "C" fn swift_dealloc_object(object: *mut u8, _: usize, _: usize) {
-    heap::release(object);
+    if refcount::frees_on_dealloc(header(object).refcount.load(Ordering::Acquire)) {
+        heap::release(object);
+    }
 }
 
 extern "C" fn swift_is_uniquely_referenced_non_null_native(object: *mut u8) -> bool {
@@ -124,7 +126,7 @@ extern "C" fn swift_is_uniquely_referenced_native(object: *mut u8) -> bool {
 extern "C" fn swift_init_stack_object(metadata: Metadata, object: *mut u8) -> *mut u8 {
     let stacked = HeapObject {
         metadata: AtomicUsize::new(metadata),
-        refcount: AtomicU64::new(refcount::INITIAL),
+        refcount: AtomicU64::new(refcount::STACK_INITIAL),
     };
     // SAFETY: the compiler hands over stack room for the object, at least its header.
     unsafe { object.cast::<HeapObject>().write(stacked) };

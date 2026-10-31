@@ -252,7 +252,10 @@ extern "C" fn allocate_uninitialized_buffer(minimum_capacity: isize, element: Me
     let table = witnesses(element);
     let stride = table.stride.max(1);
     let header = align_up(ARRAY_HEADER, table.alignment_mask());
-    let size = header + stride * minimum_capacity as usize;
+    let size = stride
+        .checked_mul(minimum_capacity as usize)
+        .and_then(|elements| elements.checked_add(header))
+        .unwrap_or_else(|| super::fatal_error(&[b"array capacity overflowed"]));
     let object = heap_object::swift_alloc_object(class, size, table.alignment_mask().max(7));
     let room = (heap::size_of(object) - header) / stride;
     let verbatim = usize::from(metadata::is_class_type(element));

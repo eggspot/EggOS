@@ -120,7 +120,7 @@ extern "C" fn get_witness_table(
         return found;
     }
     let made = instantiate(&parsed, generic, conforming, arguments);
-    TABLES.with(|tables| {
+    let kept = TABLES.with(|tables| {
         if let Some(found) = find(tables, conformance, conforming) {
             return found;
         }
@@ -133,7 +133,11 @@ extern "C" fn get_witness_table(
             out_of_memory();
         }
         made
-    })
+    });
+    if kept != made && generic.instantiator.is_none() {
+        heap::release((made - generic.private_words * 8) as *mut u8);
+    }
+    kept
 }
 
 fn byte(address: usize) -> u8 {
