@@ -1050,7 +1050,14 @@ pub fn set_up() {
     EMPTY_DICTIONARY_DESCRIPTOR.fill(b"__EmptyDictionarySingleton\0");
 }
 
+fn full_metadata<T>(metadata: &'static T) -> Metadata {
+    metadata as *const T as usize
+}
+
 /// The address of the metadata or value witness table export `name`, if it is one of these.
+/// `Any`, `AnyObject` and `()` are exported as their full metadata, their value witness table
+/// pointer first, since compilers add the address point to those symbols themselves; the
+/// standard library's other types are exported at their address points.
 pub fn resolve(name: &[u8]) -> Option<u64> {
     let address = match name {
         b"_$sBi8_WV" => &raw const INT8_WITNESSES as usize,
@@ -1064,11 +1071,11 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_$sBOWV" => &raw const UNKNOWN_OBJECT_WITNESSES as usize,
         b"_$sBbWV" => &raw const BRIDGE_OBJECT_WITNESSES as usize,
         b"_$sytWV" => &raw const EMPTY_WITNESSES as usize,
-        b"_$sypN" => address_of(&ANY),
-        b"_$syXlN" => address_of(&ANY_OBJECT),
+        b"_$sypN" => full_metadata(&ANY),
+        b"_$syXlN" => full_metadata(&ANY_OBJECT),
         b"_$s12CoreGraphics7CGFloatVN" => address_of(&CGFLOAT),
         b"_$s12CoreGraphics7CGFloatVMn" => CGFLOAT_DESCRIPTOR.address(),
-        b"_$sytN" => address_of(&EMPTY_TUPLE),
+        b"_$sytN" => full_metadata(&EMPTY_TUPLE),
         b"_$sSiN" => address_of(&INT),
         b"_$ss4Int8VN" => address_of(&INT8),
         b"_$ss5Int16VN" => address_of(&INT16),
