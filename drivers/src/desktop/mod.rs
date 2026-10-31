@@ -14,6 +14,7 @@
 //! when the kernel hands the desktop a new catalogue ([`Desktop::set_catalogue`]) or a client
 //! sets a menu ([`Desktop::set_menu`]).
 
+mod desktops;
 mod agent;
 pub mod boot_screen;
 mod catalogue;
@@ -323,6 +324,8 @@ pub struct Desktop {
     clock_length: u8,
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
+    desktops: u8,
+    current_desktop: u8,
 }
 
 impl Desktop {
@@ -410,6 +413,8 @@ impl Desktop {
             clock_length: 0,
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
+            desktops: 1,
+            current_desktop: 0,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -688,6 +693,9 @@ impl Desktop {
         };
         window.shown
             && !window.minimised
+            && (window.role != Role::Normal
+                || window.parent.is_some()
+                || window.desktop == self.current_desktop)
             && window
                 .parent
                 .is_none_or(|parent| self.is_visible(usize::from(parent)))
@@ -881,6 +889,7 @@ impl Desktop {
         );
         window.parent = parent;
         window.flags = window_flags;
+        window.desktop = self.current_desktop;
         self.dialogs += usize::from(parent.is_some());
         self.windows[slot] = Some(window);
         self.created[self.created_length] = slot as u8;

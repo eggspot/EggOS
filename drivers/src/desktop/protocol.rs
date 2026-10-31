@@ -78,6 +78,8 @@ pub mod size {
     pub const SET_INPUT_PREFERENCES: usize = 20;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
+    pub const LIST_DESKTOPS: usize = 16;
+    pub const DESKTOP_ACTION: usize = 16;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -120,6 +122,8 @@ pub mod request {
     pub const SET_INPUT_PREFERENCES: u32 = encode(WRITE, 31, size::SET_INPUT_PREFERENCES);
     pub const SET_CLIPBOARD: u32 = encode(WRITE, 32, size::SET_CLIPBOARD);
     pub const GET_CLIPBOARD: u32 = encode(READ | WRITE, 33, size::GET_CLIPBOARD);
+    pub const LIST_DESKTOPS: u32 = encode(READ, 34, size::LIST_DESKTOPS);
+    pub const DESKTOP_ACTION: u32 = encode(READ | WRITE, 35, size::DESKTOP_ACTION);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -480,6 +484,15 @@ pub enum Request {
         repeat_delay_ms: u32,
         repeat_rate: u32,
     },
+    /// Writes the desktops' count, the shown one and their windows ([`list_desktops_reply`],
+    /// D204).
+    ListDesktops,
+    /// Does a [`desktop_action`] with desktop `desktop` (from 1) and window `window` (D204).
+    DesktopAction {
+        action: u32,
+        desktop: u32,
+        window: u32,
+    },
     /// Makes the `length` bytes of UTF-8 text at `buffer` the clipboard's (D197).
     SetClipboard {
         buffer: u64,
@@ -554,6 +567,8 @@ impl Request {
             request::SET_INPUT_PREFERENCES => size::SET_INPUT_PREFERENCES,
             request::SET_CLIPBOARD => size::SET_CLIPBOARD,
             request::GET_CLIPBOARD => size::GET_CLIPBOARD,
+            request::LIST_DESKTOPS => size::LIST_DESKTOPS,
+            request::DESKTOP_ACTION => size::DESKTOP_ACTION,
             _ => return None,
         })
     }
@@ -723,6 +738,12 @@ impl Request {
                 buffer: double_word(bytes, 0),
                 length: double_word(bytes, 8),
             },
+            request::LIST_DESKTOPS => Self::ListDesktops,
+            request::DESKTOP_ACTION => Self::DesktopAction {
+                action: at(0),
+                desktop: at(4),
+                window: at(8),
+            },
             request::GET_CLIPBOARD => Self::GetClipboard {
                 buffer: double_word(bytes, 0),
                 length: double_word(bytes, 8),
@@ -770,6 +791,24 @@ pub mod placement_reply {
     pub const Y: usize = 8;
     pub const WIDTH: usize = 12;
     pub const HEIGHT: usize = 16;
+}
+
+/// What `ListDesktops` writes back (D204): the desktops' count at byte 0, the shown one's
+/// number (from 1) at byte 1, and each desktop's normal windows from byte 2.
+pub mod list_desktops_reply {
+    pub const COUNT: usize = 0;
+    pub const CURRENT: usize = 1;
+    pub const WINDOWS: usize = 2;
+}
+
+/// `DesktopAction`'s actions (D204), and where it writes what it reports back.
+pub mod desktop_action {
+    pub const SWITCH: u32 = 0;
+    pub const NEW: u32 = 1;
+    pub const CLOSE: u32 = 2;
+    pub const MOVE: u32 = 3;
+    /// The new desktop's number for `NEW`, the windows moved for `CLOSE`.
+    pub const REPORT: usize = 12;
 }
 
 /// Where `GetClipboard` writes the text's whole length and the clipboard's serial back into

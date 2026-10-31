@@ -1,4 +1,6 @@
-use super::protocol::{DiscardEvents, EventRecord, WindowAction, flags};
+use super::protocol::{
+    DiscardEvents, EventRecord, WindowAction, WindowError, desktop_action, flags,
+};
 use super::tests::{BlankTerminal, at};
 use super::*;
 use crate::input::keymap::Modifiers;
@@ -1256,5 +1258,90 @@ fn ctrl_shift_esc_and_cmd_option_esc_open_the_task_manager_in_every_profile() {
     assert_eq!(
         shortcut(key::ESC, Modifiers::ALT, Profile::Windows, false),
         Some(Shortcut::Cycle { back: false })
+    );
+}
+
+#[test]
+fn a_window_on_another_desktop_is_hidden_until_its_desktop_shows() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let first = shown(&mut desktop, 300, 200);
+    let mut damage = Damage::new();
+    assert_eq!(desktop.desktops().0, 1);
+    assert_eq!(desktop.new_desktop(&mut damage, &mut DiscardEvents), Ok(1));
+    assert!(!desktop.is_shown(first));
+    let second = shown(&mut desktop, 300, 200);
+    assert_eq!(desktop.desktops(), (2, 1, [1, 1, 0, 0, 0, 0, 0, 0]));
+    assert_eq!(
+        desktop.desktop_action(
+            desktop_action::SWITCH,
+            1,
+            0,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Ok(0)
+    );
+    assert!(desktop.is_shown(first));
+    assert!(!desktop.is_shown(second));
+    assert_eq!(
+        desktop.desktop_action(
+            desktop_action::MOVE,
+            1,
+            u32::from(second),
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Ok(0)
+    );
+    assert!(desktop.is_shown(second));
+    assert_eq!(
+        desktop.desktop_action(desktop_action::CLOSE, 2, 0, &mut damage, &mut DiscardEvents),
+        Ok(0)
+    );
+    assert_eq!(desktop.desktops().0, 1);
+    assert_eq!(
+        desktop.desktop_action(desktop_action::CLOSE, 1, 0, &mut damage, &mut DiscardEvents),
+        Err(WindowError::Busy)
+    );
+    assert_eq!(
+        desktop.desktop_action(
+            desktop_action::SWITCH,
+            5,
+            0,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Err(WindowError::Invalid)
+    );
+}
+
+#[test]
+fn focusing_a_window_on_another_desktop_shows_its_desktop() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let first = shown(&mut desktop, 300, 200);
+    let mut damage = Damage::new();
+    desktop
+        .new_desktop(&mut damage, &mut DiscardEvents)
+        .unwrap();
+    desktop
+        .manage(
+            u32::from(first),
+            WindowAction::Focus.value(),
+            0,
+            0,
+            &mut damage,
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    assert_eq!(desktop.desktops().1, 0);
+    assert_eq!(desktop.focused_window(), Some(first));
+    assert_eq!(
+        shortcut(
+            key::RIGHT,
+            Modifiers::CTRL.with(Modifiers::SUPER),
+            Profile::Windows,
+            false
+        ),
+        Some(Shortcut::SwitchDesktop { next: true })
     );
 }

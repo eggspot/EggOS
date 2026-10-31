@@ -109,6 +109,8 @@ pub(super) struct Window {
     pub not_responding: bool,
     pub focus_serial: u32,
     pub hidden_by_show_desktop: bool,
+    /// The virtual desktop a normal window is on, from 0 (D204).
+    pub desktop: u8,
 }
 
 impl Window {
@@ -142,6 +144,7 @@ impl Window {
             not_responding: false,
             focus_serial: 0,
             hidden_by_show_desktop: false,
+            desktop: 0,
         }
     }
 

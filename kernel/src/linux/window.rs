@@ -27,10 +27,10 @@ use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
     MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
-    create_reply, element_action, get_clipboard_reply, get_menu_reply, get_tree_reply,
-    input_outcome, keyboard_flags, keyboard_layout_reply, list_reply, placement_reply,
-    put_double_word, put_word, query_kind, read_query_reply, request, send_input_reply,
-    set_size_reply, size, tree_answer,
+    create_reply, desktop_action, element_action, get_clipboard_reply, get_menu_reply,
+    get_tree_reply, input_outcome, keyboard_flags, keyboard_layout_reply, list_desktops_reply,
+    list_reply, placement_reply, put_double_word, put_word, query_kind, read_query_reply, request,
+    send_input_reply, set_size_reply, size, tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -96,7 +96,10 @@ pub fn ioctl<P: Platform>(
     let client = connection.client().id();
     let manages = matches!(
         request,
-        Request::ListWindow { .. } | Request::ManageWindow { .. } | Request::GetMenu { .. }
+        Request::ListWindow { .. }
+            | Request::ManageWindow { .. }
+            | Request::GetMenu { .. }
+            | Request::DesktopAction { .. }
     );
     if manages && !is_privileged(process) {
         return Err(Errno::EPERM);
@@ -274,6 +277,30 @@ pub fn ioctl<P: Platform>(
         } => on_windows::<P, _>(|desktop, _, damage, events| {
             desktop.manage(window, action, a, b, damage, events)
         })?,
+        Request::ListDesktops => {
+            let (count, current, windows) =
+                on_windows::<P, _>(|desktop, _, _, _| Ok(desktop.desktops()))?;
+            bytes[list_desktops_reply::COUNT] = count;
+            bytes[list_desktops_reply::CURRENT] = current + 1;
+            bytes[list_desktops_reply::WINDOWS..list_desktops_reply::WINDOWS + windows.len()]
+                .copy_from_slice(&windows);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::DesktopAction {
+            action,
+            desktop,
+            window,
+        } => {
+            let report = on_windows::<P, _>(|windows, _, damage, events| {
+                windows.desktop_action(action, desktop, window, damage, events)
+            })?;
+            put_word(bytes, desktop_action::REPORT, report);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
         Request::GetProfile => {
             put_word(bytes, 0, desktop_profile().number());
             process

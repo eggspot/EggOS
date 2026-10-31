@@ -630,6 +630,12 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) {
+        let window = self.window_at(slot);
+        let normal = self.window_at(window.parent.map_or(slot, usize::from));
+        if normal.role == Role::Normal && normal.desktop != self.current_desktop {
+            let desktop = normal.desktop;
+            self.switch_desktop(desktop, damage, events);
+        }
         if self.window_at(slot).minimised {
             self.restore(slot, damage, events);
             return;
@@ -728,6 +734,30 @@ impl Desktop {
             Shortcut::Launcher => self.toggle_launcher(damage, events),
             Shortcut::TaskManager => {
                 return self.launch(super::catalogue::AppId::TaskManager, damage, events);
+            }
+            Shortcut::SwitchDesktop { next } => {
+                let wanted = match next {
+                    true => self.current_desktop.checked_add(1),
+                    false => self.current_desktop.checked_sub(1),
+                };
+                if let Some(wanted) = wanted {
+                    let _ = self.switch_desktop(wanted, damage, events);
+                }
+            }
+            Shortcut::NewDesktop => {
+                let _ = self.new_desktop(damage, events);
+            }
+            Shortcut::CloseDesktop => {
+                let _ = self.close_desktop(self.current_desktop, damage, events);
+            }
+            Shortcut::MoveToDesktop { next } => {
+                let wanted = match next {
+                    true => self.current_desktop.checked_add(1),
+                    false => self.current_desktop.checked_sub(1),
+                };
+                if let (Some(slot), Some(wanted)) = (normal, wanted) {
+                    let _ = self.move_to_desktop(slot, wanted, true, damage, events);
+                }
             }
         }
         super::Action::None
