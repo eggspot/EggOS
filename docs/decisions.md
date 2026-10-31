@@ -16397,3 +16397,34 @@ the license, by an explicit instruction recorded here.
 - Not yet: tooltips, menus and context menus in the toolkit, tables with resizable columns,
   multi-line text with wrapping, horizontal scrolling, drag and drop, the light theme (the
   later slices of docs/ux/toolkit-v0.4.md section 9).
+
+## D200 The Task Manager and `kill`: see every process and its share of the CPUs, and stop one (batch part 48; roadmap item 22; extends D133, D135, D198) — Decided by the build loop (the design is Claude Fable's, docs/ux/task-manager-v0.3.md)
+
+- `kill [-s <signal> | -<signal>] [--] <pid>...` and `kill -l [<number>]` in coreutils, POSIX's:
+  a signal by name (`SIG` optional, any case) or number, `TERM` by default; errors name the
+  pid (`no_such_process`, a new error code, and `permission_denied`); MCP's `kill` (`pid`,
+  `signal`, `confirm`; the run grant; it always asks first) runs `kill -s <signal> -- <pid>`.
+- `/proc/ps` gives each process's CPU time in milliseconds before its name (D198's account),
+  and `ps --json` its `cpu_ms`; the Windows layer's process list and `ps`'s text columns skip
+  it.
+- The Task Manager, `/bin/task-manager [--apps]`, a name of the Settings program: every process
+  as a row, named by its newest window's app name (the title after its last ` - `) or its own
+  name, with its id, state (`Running`, `Stopped`, `Ended`) and share of all CPUs over the last
+  2 s refresh; a filter on the names and the id, `Apps only`, sorting by id, CPU or name; the
+  CPUs, the uptime and the memory used with a bar. `End task` on a process with a window asks
+  its windows to close first (the button then reads `Force end`); otherwise, or then, a panel
+  asks `End <name>?`, `End` sends `SIGTERM` (with `SIGCONT` to a stopped one), and if the
+  process is still listed 3 s later, `SIGKILL`; init and the Task Manager itself cannot be
+  ended. The shell lists it among the built-ins when the build has it, with a bar-chart icon
+  and Activity Monitor's, System Monitor's and Force Quit's words, and opens or focuses it on
+  Ctrl+Shift+Esc or Cmd+Option+Esc in every profile.
+- Built differently from the design: rows sort by id where the design sorts by memory (the
+  kernel does not count a process's memory yet; its column shows `-`); the layout is the
+  default size's (resizing keeps it); Cmd+Option+Esc opens the window without `Apps only`.
+- Check. Host tests: `kill`'s names, numbers, defaults, failures and `-l`; `ps --json`'s
+  `cpu_ms`; the Task Manager's rows, CPU shares, summary lines, filter, `Apps only`, `End task`
+  asking first, the panel, `SIGTERM` then `SIGKILL` and the lines after, init and itself; the
+  shortcuts in every profile; the catalogue's entry.
+- Not yet: memory per process, idle time in `/proc/uptime` and the busy share, `T` in
+  `/proc/ps`, `not_responding` in the window list, the CPU column in `ps`'s text, the layout
+  following the window's size, `--apps` from the shortcut.
