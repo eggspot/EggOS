@@ -821,6 +821,44 @@ pub const APP_SHOW: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("the launcher, and /Applications in Files"),
 };
 
+/// `app icon` (D196).
+pub const APP_ICON: CommandDefinition = CommandDefinition {
+    words: &["app", "icon"],
+    summary: "Saves an app's own icon as a PNG.",
+    description: "Writes the icon the desktop shows for an installed app as a PNG with \
+                  transparency, 48 or 32 pixels square (48 by default), to the file given after \
+                  the name or with -o. Fails for an app drawn with the generic letter tile: a \
+                  built-in, or one whose files carry no icon.",
+    options: &[
+        valued(
+            None,
+            Some("size"),
+            "48|32",
+            ValueType::Integer {
+                minimum: 32,
+                maximum: 48,
+            },
+            "The image's width and height: 48 or 32.",
+        ),
+        valued(
+            Some(b'o'),
+            None,
+            "file.png",
+            ValueType::Path,
+            "Where to write the PNG, instead of a second operand.",
+        ),
+    ],
+    operands: &[
+        operand("name", ValueType::Text, Count::One),
+        operand("file.png", ValueType::Path, Count::ZeroOrOne),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 2), exits(&NO_SUCH_APP, 1), exits(&FAILED, 1)],
+    examples: &[],
+    surface: Surface::NoGui("people see the icon itself in the dock, the launcher and the taskbar"),
+};
+
 /// `app open`.
 pub const APP_OPEN: CommandDefinition = CommandDefinition {
     words: &["app", "open"],
@@ -2833,7 +2871,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 80] = [
+pub const COMMANDS: [CommandDefinition; 81] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -2842,6 +2880,7 @@ pub const COMMANDS: [CommandDefinition; 80] = [
     AGENT_REVOKE,
     AGENT_SHOW,
     AGENTLOG,
+    APP_ICON,
     APP_INSTALL,
     APP_LIST,
     APP_OPEN,

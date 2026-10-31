@@ -15,6 +15,7 @@ pub mod command;
 pub mod dialog;
 pub mod files;
 pub mod icon;
+pub mod icon_export;
 #[allow(clippy::result_large_err)]
 pub mod installer;
 #[cfg(target_env = "musl")]

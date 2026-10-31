@@ -733,6 +733,25 @@ const APP_SHOW_ARGUMENTS: [Argument; 1] = [required(described(
     "The app's name, as app_list shows it.",
 ))];
 
+/// `app_icon` (D196).
+pub const APP_ICON: ToolDefinition = ToolDefinition {
+    name: "app_icon",
+    title: "See an app's icon",
+    description: "Returns an installed app's own icon, the one the desktop shows for it, as a \
+                  48x48 PNG image with transparency, as `app icon` writes it. Fails for an app \
+                  drawn with the generic letter tile (a built-in, or an app whose files carry \
+                  no icon) and for a name app_list does not show.",
+    command: &["app", "icon"],
+    fixed: &["-o", CAPTURE_PATH],
+    arguments: &APP_SHOW_ARGUMENTS,
+    max_effect: Effect::Read,
+    grant: None,
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Image,
+};
+
 /// `clock_get`.
 pub const CLOCK_GET: ToolDefinition = reading(
     "clock_get",
@@ -1743,7 +1762,7 @@ pub const AGENT_SHOW: ToolDefinition = reading(
 
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's and D193's.
-pub const TOOLS: [ToolDefinition; 52] = [
+pub const TOOLS: [ToolDefinition; 53] = [
     LS,
     CAT,
     PS,
@@ -1796,6 +1815,7 @@ pub const TOOLS: [ToolDefinition; 52] = [
     DISK_FORMAT,
     AGENT_LIST,
     AGENT_SHOW,
+    APP_ICON,
 ];
 
 impl ToolDefinition {

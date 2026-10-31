@@ -9,6 +9,8 @@
 //! says what it would remove (D164). `app show [--json] <name>` gives one app's fields and, for
 //! a program translated at install, its translation: sizes, refused count and the first
 //! refused sites (D191); `app install` translates such a program right after copying it.
+//! `app icon [--size 48|32] [-o <file.png>] <name> [<file.png>]` writes the app's own icon as a
+//! PNG (D196).
 //! Text, the same with or without a display; `--window` shows the installer's dialogs instead.
 //! `--` ends the options, so the next word is the operand even if it starts with `-`.
 
@@ -45,6 +47,11 @@ pub enum Command<'a> {
         name: &'a [u8],
         json: bool,
     },
+    Icon {
+        name: &'a [u8],
+        output: &'a [u8],
+        size: Option<&'a [u8]>,
+    },
     Help,
 }
 
@@ -55,7 +62,8 @@ pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] \
                          app uninstall [--window] [--dry-run] [--] <name>\n       \
                          app open [--] <name>\n       \
                          app list [--json] [--limit <count>] [--after <cursor>]\n       \
-                         app show [--json] [--] <name>\n";
+                         app show [--json] [--] <name>\n       \
+                         app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]\n";
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
@@ -84,12 +92,17 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut limit = None;
     let mut after = None;
     let mut operand = None;
+    let mut second = None;
+    let mut size = None;
+    let mut output = None;
+    let icon = verb == b"icon";
     let mut rest = rest.iter();
     let mut options_end = false;
     let removing = verb == b"uninstall" || verb == b"remove";
     while let Some(&argument) = rest.next() {
         match argument {
             _ if options_end && operand.is_none() => operand = Some(argument),
+            _ if options_end && icon && second.is_none() => second = Some(argument),
             _ if options_end => return None,
             b"--" => options_end = true,
             b"--window" => window = true,
@@ -107,8 +120,11 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             b"--entry" if verb == b"install" => entry = Some(*rest.next()?),
             b"--arguments" if verb == b"install" => words = Some(*rest.next()?),
             b"--environment" if verb == b"install" => environment = Some(*rest.next()?),
+            b"--size" if icon => size = Some(*rest.next()?),
+            b"-o" if icon => output = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
             _ if operand.is_none() => operand = Some(argument),
+            _ if icon && second.is_none() => second = Some(argument),
             _ => return None,
         }
     }
@@ -131,6 +147,11 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
         b"show" if !window => Some(Command::Show {
             name: operand?,
             json,
+        }),
+        b"icon" if !window => Some(Command::Icon {
+            name: operand?,
+            output: output.xor(second)?,
+            size,
         }),
         b"--help" | b"help" if operand.is_none() => Some(Command::Help),
         _ => None,
@@ -269,6 +290,7 @@ mod program {
     use super::*;
     use crate::architecture::Architecture;
     use crate::files::Path;
+    use crate::icon_export::{self, ExportError, IconSize};
     use crate::installer::{self, APPLICATIONS};
     use crate::linux::{self, LinuxFiles, STANDARD_ERROR, STANDARD_OUTPUT, write_all};
     use crate::messages::{self, Line};
@@ -276,6 +298,7 @@ mod program {
     use core::fmt::Write;
     use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
     use eggos_commands::{ErrorDefinition, errors};
+    use eggos_png::EncoderWorkspace;
     use eggos_runtime::startup::Startup;
 
     const COPY_BUFFER: usize = 64 * 1024;
@@ -463,6 +486,51 @@ mod program {
             None => say(STANDARD_OUTPUT, "translation:\t-"),
         }
         0
+    }
+
+    static mut ICON_WORK: EncoderWorkspace = EncoderWorkspace::new();
+
+    fn icon(name: &[u8], output: &[u8], size: Option<&[u8]>) -> i32 {
+        let size = match size.map(IconSize::named) {
+            None => IconSize::Large,
+            Some(Some(size)) => size,
+            Some(None) => {
+                complain("invalid size: 48 or 32");
+                return USAGE_ERROR;
+            }
+        };
+        let shown = installer::Name::new(name);
+        // SAFETY: the program has one thread and calls this once, so no other reference to the
+        // workspace exists while this one lives.
+        let work = unsafe { &mut *(&raw mut ICON_WORK) };
+        let mut line = Line::new();
+        match icon_export::export(&mut LinuxFiles::new(), name, size, output, work) {
+            Ok(()) => {
+                let _ = line.write_str("Wrote ");
+                line.push_bytes(output);
+                let _ = line.write_str(".");
+                say(STANDARD_OUTPUT, line.as_str());
+                0
+            }
+            Err(ExportError::NotInstalled) => {
+                let _ = write!(line, "{} is not installed", shown.as_str());
+                report(false, &errors::NO_SUCH_APP, line.as_str());
+                FAILED
+            }
+            Err(ExportError::NoIcon) => {
+                let _ = write!(line, "{} has no icon", shown.as_str());
+                complain(line.as_str());
+                FAILED
+            }
+            Err(ExportError::Write(error)) => {
+                let _ = line.write_str("could not write ");
+                line.push_bytes(output);
+                let _ = line.write_str(": ");
+                line.push_bytes(error.message());
+                complain(line.as_str());
+                FAILED
+            }
+        }
     }
 
     fn uninstall(name: &[u8]) -> i32 {
@@ -739,6 +807,7 @@ mod program {
             Some(Command::Open { name }) => open(name),
             Some(Command::List { json, limit, after }) => list(json, limit, after),
             Some(Command::Show { name, json }) => show(name, json),
+            Some(Command::Icon { name, output, size }) => icon(name, output, size),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());
                 USAGE_ERROR
@@ -753,6 +822,38 @@ pub use program::run;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_icon_takes_its_file_as_a_second_operand_or_after_o() {
+        assert_eq!(
+            parse(&[b"icon", b"Paint", b"paint.png"]),
+            Some(Command::Icon {
+                name: b"Paint",
+                output: b"paint.png",
+                size: None
+            })
+        );
+        assert_eq!(
+            parse(&[
+                b"icon",
+                b"--size",
+                b"32",
+                b"-o",
+                b"/run/icon.png",
+                b"--",
+                b"-Paint"
+            ]),
+            Some(Command::Icon {
+                name: b"-Paint",
+                output: b"/run/icon.png",
+                size: Some(b"32")
+            })
+        );
+        assert_eq!(parse(&[b"icon", b"Paint"]), None);
+        assert_eq!(parse(&[b"icon", b"-o", b"a.png", b"Paint", b"b.png"]), None);
+        assert_eq!(parse(&[b"show", b"Paint", b"b.png"]), None);
+        assert_eq!(parse(&[b"icon", b"--window", b"Paint", b"a.png"]), None);
+    }
 
     #[test]
     fn the_built_in_apps_open_by_their_exact_names() {

@@ -2090,7 +2090,7 @@ impl Server {
             },
             no_symlinks: matches!(tool.twin.operand, Operand::Path(_)),
         };
-        if tool.kind == Kind::WmCapture {
+        if matches!(tool.kind, Kind::WmCapture | Kind::AppIcon) {
             system.remove_capture(CAPTURE_PATH);
             if let Err(error) = system.create_capture(CAPTURE_PATH) {
                 let mut message = [0u8; 160];
@@ -2109,6 +2109,11 @@ impl Server {
         let outcome = system.run_twin(&invocation, buffers.stdout, buffers.stderr);
         if outcome.stop_failed.is_some() {
             system.report(b"eggmcpd: a command could not be stopped");
+        }
+        if tool.kind == Kind::AppIcon && outcome.ended == Ended::Exited(0) && !outcome.stdout_cut {
+            self.answer_icon(id, prepared, system, buffers, out);
+            system.remove_capture(CAPTURE_PATH);
+            return;
         }
         if tool.twin.operand == Operand::Window {
             self.finish_window_call(id, prepared, system, buffers, &outcome, out);
@@ -2342,6 +2347,113 @@ impl Server {
             text_prefix(&detail, length),
         );
     }
+
+    fn answer_icon(
+        &mut self,
+        id: &[u8],
+        prepared: &Prepared<'_>,
+        system: &mut impl System,
+        buffers: &mut RunBuffers<'_>,
+        out: &mut JsonWriter<'_>,
+    ) {
+        let problem = match system.open_capture(CAPTURE_PATH) {
+            Ok(file) if file.size > MAX_IMAGE_BYTES as u64 || file.size == 0 => {
+                system.close_capture(file);
+                Err("The icon could not be written: app icon wrote no PNG.")
+            }
+            Ok(file) => Ok(file),
+            Err(_) => Err("The icon could not be written: its PNG could not be read."),
+        };
+        let file = match problem {
+            Ok(file) => file,
+            Err(message) => {
+                self.record_outcome(system, buffers, prepared, Outcome::Error, message);
+                refused(out, id, &errors::CAPTURE_FAILED, message);
+                return;
+            }
+        };
+        let chunk = buffers
+            .stdout
+            .get_mut(..CAPTURE_PIECE_BYTES)
+            .unwrap_or_default();
+        let complete = write_icon(out, id, &file, system, chunk);
+        system.close_capture(file);
+        let (outcome, detail) = match complete {
+            true => (Outcome::Ok, "the icon as a PNG"),
+            false => (
+                Outcome::Error,
+                "the PNG could not be read whole or did not fit the answer",
+            ),
+        };
+        self.record_outcome(system, buffers, prepared, outcome, detail);
+    }
+}
+
+fn write_png_item(
+    out: &mut JsonWriter<'_>,
+    file: &CaptureFile,
+    system: &mut impl System,
+    chunk: &mut [u8],
+) -> u64 {
+    out.begin_object();
+    out.key("type");
+    out.string("image");
+    out.key("mimeType");
+    out.string("image/png");
+    out.key("data");
+    out.begin_string();
+    let mut carry = Base64Carry::default();
+    let mut read = 0u64;
+    while read < file.size {
+        match system.read_capture(file, chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => {
+                out.base64_piece(&mut carry, chunk.get(..count).unwrap_or_default());
+                read += count as u64;
+            }
+        }
+    }
+    out.base64_end(carry);
+    out.end_string();
+    out.end_object();
+    read
+}
+
+fn write_icon(
+    out: &mut JsonWriter<'_>,
+    id: &[u8],
+    file: &CaptureFile,
+    system: &mut impl System,
+    chunk: &mut [u8],
+) -> bool {
+    let mut complete = false;
+    rpc::write_result(out, id, |out| {
+        let start = out.mark();
+        out.begin_object();
+        out.key("content");
+        out.begin_array();
+        let read = write_png_item(out, file, system, chunk);
+        out.end_array();
+        out.key("isError");
+        out.bool(false);
+        out.end_object();
+        complete = read == file.size && !out.overflowed();
+        if !complete {
+            out.rewind(start);
+            out.begin_object();
+            out.key("content");
+            out.begin_array();
+            text_item(
+                out,
+                "The icon could not be read whole or did not fit the answer.",
+            );
+            out.end_array();
+            out.key("isError");
+            out.bool(true);
+            out.end_object();
+        }
+    });
+    complete
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2439,27 +2551,7 @@ fn write_capture(
         out.key("content");
         out.begin_array();
         capture_text(out, window, report);
-        out.begin_object();
-        out.key("type");
-        out.string("image");
-        out.key("mimeType");
-        out.string("image/png");
-        out.key("data");
-        out.begin_string();
-        let mut carry = Base64Carry::default();
-        let mut read = 0u64;
-        while read < file.size {
-            match system.read_capture(file, chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => {
-                    out.base64_piece(&mut carry, chunk.get(..count).unwrap_or_default());
-                    read += count as u64;
-                }
-            }
-        }
-        out.base64_end(carry);
-        out.end_string();
-        out.end_object();
+        let read = write_png_item(out, file, system, chunk);
         out.end_array();
         out.key("structuredContent");
         out.begin_object();

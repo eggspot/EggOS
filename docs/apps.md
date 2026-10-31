@@ -42,6 +42,7 @@ app uninstall [--window] [--dry-run] [--] <name>   (app remove is the same)
 app open [--] <name>
 app list [--json] [--limit <count>] [--after <cursor>]
 app show [--json] [--] <name>
+app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]
 ```
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
@@ -184,6 +185,12 @@ is built on a Mac (Apple's linker builds it).
   `null` for no architecture or icon; D160, docs/ux/command-model.md). `--limit` and `--after`
   page them (D164): the next apps by name after the cursor, at most 100, each page in
   `/Applications`' order, then `more: --after <cursor>` on standard error when more follow.
+- **`app icon <name> <file.png>`** (D196) writes the app's own icon, the one the dock, the
+  launcher and the taskbar draw, as a PNG with transparency: 48 pixels square, or 32 with
+  `--size 32`; the file may be given with `-o` instead. It prints `Wrote <file>.`, and fails
+  with `app: <name> has no icon` for an app drawn as the generic tile (a built-in, or one whose
+  files carried no icon) and `app: <name> is not installed`. The MCP tool `app_icon` returns
+  the 48-pixel PNG as an image.
 - **`app show <name>`** prints one installed app's fields, a line each (`name:`, `source:`,
   `architecture:`, `program:`, `icon:`), then its translation (D191): for an x64 Windows or
   x86_64 macOS program installed on aarch64, `translation:` with the bytes of code translated,

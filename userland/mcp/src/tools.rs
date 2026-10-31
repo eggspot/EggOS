@@ -137,6 +137,8 @@ pub enum Kind {
     Logcat,
     /// `app_show`: one app and its translation kept at install (D191).
     AppShow,
+    /// `app_icon`: an app's own icon as a PNG (D196).
+    AppIcon,
     /// `disk_list`: the disks (D192).
     DiskList,
     /// `disk_check`: checks an unmounted disk (D192).
@@ -354,7 +356,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 52] = [
+pub const TOOLS: [Tool; 53] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -608,6 +610,11 @@ pub const TOOLS: [Tool; 52] = [
         &registry::AGENT_SHOW,
         Kind::AgentShow,
         twin("/bin/agent", &["show", "--json"], Operand::CallingAgent),
+    ),
+    tool(
+        &registry::APP_ICON,
+        Kind::AppIcon,
+        twin("/bin/app", &["icon", "-o", CAPTURE_PATH], Operand::Name),
     ),
 ];
 

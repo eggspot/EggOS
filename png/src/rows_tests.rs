@@ -254,6 +254,21 @@ fn what_the_encoder_writes_decodes_row_by_row() {
 }
 
 #[test]
+fn an_rgba_image_keeps_its_alpha_row_by_row() {
+    let pixels: Vec<u32> = (0..24u32 * 5)
+        .map(|index| index.wrapping_mul(0x0901_0307))
+        .collect();
+    let mut work = Box::new(EncoderWorkspace::new());
+    let mut encoder = Encoder::new_rgba(24, 5, &mut work, Bytes(Vec::new())).unwrap();
+    for row in pixels.chunks(24) {
+        encoder.write_row(row).unwrap();
+    }
+    let png = encoder.finish().unwrap().0;
+    assert_eq!(png[25], 6);
+    assert_eq!(pixels_of(&png).concat(), pixels);
+}
+
+#[test]
 fn what_cannot_be_decoded_says_why() {
     let raw = [0, 1, 2, 3];
     let good = build(&plain(1, 1, 8, 2), &[&stored(&raw)]);
