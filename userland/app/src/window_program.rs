@@ -117,6 +117,16 @@ fn programs_in(
     (names, count, more)
 }
 
+fn with_own_icon(files: &mut impl crate::files::Files, name: &[u8], icon: AppIcon) -> AppIcon {
+    match crate::icon_export::large_image(files, name) {
+        Some(pixels) => {
+            dialog::keep_own_icon(&pixels);
+            icon.with_own_icon()
+        }
+        None => icon,
+    }
+}
+
 impl Installer {
     fn show(&mut self, dialog: Dialog, stage: Stage) {
         self.dialog = dialog;
@@ -217,7 +227,12 @@ impl Installer {
             }
             Progress::Installed => {
                 linux::apps_changed();
-                let dialog = Dialog::installed(Self::icon_of(&plan), plan.name());
+                let icon = with_own_icon(
+                    &mut self.files,
+                    plan.name().as_bytes(),
+                    Self::icon_of(&plan),
+                );
+                let dialog = Dialog::installed(icon, plan.name());
                 self.show(dialog, Stage::Installed(plan));
             }
             Progress::Failed(problem) => {
@@ -339,7 +354,11 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
             let source = installer::read_manifest(&mut installer.files, name, &mut file)
                 .and_then(|length| manifest::parse(&file[..length], name))
                 .map(|app| app.source);
-            let icon = AppIcon::of(shown.as_str(), source);
+            let icon = with_own_icon(
+                &mut installer.files,
+                name,
+                AppIcon::of(shown.as_str(), source),
+            );
             match source {
                 Some(_) => {
                     let dialog = Dialog::confirm_uninstall(icon, shown.as_str());

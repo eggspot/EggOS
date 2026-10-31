@@ -9,7 +9,9 @@ use crate::files::Files;
 use crate::installer::{self, Plan, Refused};
 use crate::messages::{self, Line};
 use core::fmt::Write;
+use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_app_manifest::Source;
+use eggos_app_manifest::icon::{LARGE, LARGE_PIXELS};
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
 use eggos_toolkit::colour;
 use eggos_toolkit::geometry::Rect;
@@ -129,11 +131,35 @@ pub enum Request {
     Choose(usize),
 }
 
-/// The tile the window shows: the app's letter and its system's badge.
+/// The tile the window shows: the app's letter and its system's badge, or the app's own icon
+/// ([`keep_own_icon`], D196).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppIcon {
     pub letter: u8,
     pub source: Option<Source>,
+    pub own: bool,
+}
+
+static OWN_ICON: [AtomicU32; LARGE_PIXELS] = [const { AtomicU32::new(0) }; LARGE_PIXELS];
+const OWN_ICON_FLAG: u32 = 1 << 16;
+
+/// Keeps `pixels`, an app's own 48-pixel image (premultiplied), for the next [`AppIcon`] made
+/// with [`AppIcon::with_own_icon`].
+pub fn keep_own_icon(pixels: &[u32; LARGE_PIXELS]) {
+    for (slot, &pixel) in OWN_ICON.iter().zip(pixels) {
+        slot.store(pixel, Ordering::Relaxed);
+    }
+}
+
+/// `source`, premultiplied, over the opaque `background`: each channel
+/// `s + (d * (255 - a) + 127) / 255` (docs/ux/app-icons-v0.3.md section 3).
+pub fn blend(source: u32, background: u32) -> u32 {
+    let alpha = source >> 24;
+    let channel = |shift: u32| {
+        let over = (background >> shift & 0xff) * (255 - alpha);
+        ((source >> shift & 0xff) + (over + 127) / 255).min(255)
+    };
+    channel(16) << 16 | channel(8) << 8 | channel(0)
 }
 
 impl AppIcon {
@@ -144,10 +170,22 @@ impl AppIcon {
             Some(&first) if first.is_ascii_alphanumeric() => first.to_ascii_uppercase(),
             _ => b'?',
         };
-        Self { letter, source }
+        Self {
+            letter,
+            source,
+            own: false,
+        }
+    }
+
+    /// The same app drawn with the image [`keep_own_icon`] kept.
+    pub fn with_own_icon(self) -> Self {
+        Self { own: true, ..self }
     }
 
     fn data(self) -> u32 {
+        if self.own {
+            return OWN_ICON_FLAG;
+        }
         let source = match self.source {
             None => 0,
             Some(Source::Windows) => 1,
@@ -168,6 +206,14 @@ fn badge(source: u32) -> Option<(u32, &'static str, u32)> {
 }
 
 fn paint_icon(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
+    if data & OWN_ICON_FLAG != 0 {
+        for (index, slot) in OWN_ICON.iter().enumerate() {
+            let (x, y) = ((index % LARGE) as i32, (index / LARGE) as i32);
+            let pixel = blend(slot.load(Ordering::Relaxed), colour::WINDOW_BACKGROUND);
+            canvas.pixel(rect.x + x, rect.y + y, pixel);
+        }
+        return;
+    }
     canvas.rounded(rect, &INSET_R6, colour::ICON_TILE);
     canvas.outline(rect, &INSET_R6, 1, colour::ICON_TILE_BORDER);
     let letter = [(data & 0xff) as u8];
@@ -595,6 +641,14 @@ mod tests {
             0,
         );
         dialog.respond(response)
+    }
+
+    #[test]
+    fn an_own_icon_blends_its_premultiplied_pixels_over_the_background() {
+        assert_eq!(blend(0x8000_8000, 0x00ff_00ff), 0x007f_807f);
+        assert_eq!(blend(0xffff_0000, 0x00ff_00ff), 0x00ff_0000);
+        assert_eq!(blend(0, 0x00ff_00ff), 0x00ff_00ff);
+        assert_eq!(blend(0xffff_ffff, 0x0012_3456), 0x00ff_ffff);
     }
 
     #[test]

@@ -72,6 +72,24 @@ impl<F: Files> PngSink for FileSink<'_, F> {
     }
 }
 
+/// App `name`'s own 48-pixel image, premultiplied and sanitised as the shell draws it; `None`
+/// for an app drawn as the generic tile or not installed.
+pub fn large_image(files: &mut impl Files, name: &[u8]) -> Option<[u32; LARGE_PIXELS]> {
+    let mut manifest = [0u8; eggos_app_manifest::LARGEST + 1];
+    let length = installer::read_manifest(files, name, &mut manifest)?;
+    let app = eggos_app_manifest::parse(&manifest[..length], name)?;
+    let path = Path::from(APPLICATIONS)?
+        .join(app.name.as_bytes())?
+        .join(app.icon?.as_bytes())?;
+    let mut bytes = [0u8; file::FILE_BYTES + 1];
+    let read = crate::icon::read_start(files, path.as_bytes(), &mut bytes);
+    let mut pixels = [0u32; LARGE_PIXELS];
+    for (place, pixel) in pixels.iter_mut().zip(file::pixels(&bytes[..read])?) {
+        *place = pixel;
+    }
+    Some(pixels)
+}
+
 /// Writes app `name`'s icon at `size` as a PNG to `output`, encoding in `work`.
 pub fn export(
     files: &mut impl Files,
@@ -210,6 +228,14 @@ mod tests {
         .unwrap();
         let rows = png_at(&files, "/home/small.png");
         assert_eq!((rows.len(), rows[31][31]), (32, 0xff00_00ff));
+    }
+
+    #[test]
+    fn the_large_image_is_kept_premultiplied_for_the_dialogs() {
+        let mut files = installed(Some(&icon_file()));
+        let pixels = large_image(&mut files, b"Paint").unwrap();
+        assert_eq!(&pixels[..3], [0xffff_0000, 0x8000_8000, 0]);
+        assert_eq!(large_image(&mut installed(None), b"Paint"), None);
     }
 
     #[test]
