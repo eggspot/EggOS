@@ -106,6 +106,13 @@ struct Row {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Asked {
+    pid: u32,
+    shown: Text<64>,
+    raw: Text<32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ending {
     pid: u32,
     name: Text<64>,
@@ -143,6 +150,7 @@ pub struct TaskManager {
     rows: Vec<Row>,
     selected: Option<u32>,
     asked: Vec<u32>,
+    confirming: Option<Asked>,
     ending: Option<Ending>,
     status: Option<Text<64>>,
 }
@@ -361,6 +369,7 @@ impl TaskManager {
             rows: Vec::new(),
             selected: None,
             asked: Vec::new(),
+            confirming: None,
             ending: None,
             status: None,
         }
@@ -702,6 +711,11 @@ impl TaskManager {
             self.show_selection();
             return Some(Request::CloseWindowsOf(row.pid));
         }
+        self.confirming = Some(Asked {
+            pid: row.pid,
+            shown: row.shown,
+            raw: row.raw,
+        });
         let mut question = Text::<64>::new();
         let _ = write!(question, "End {}?", row.shown.as_str());
         self.tree.set_text(self.widgets.question, question.as_str());
@@ -712,13 +726,30 @@ impl TaskManager {
     }
 
     fn close_panel(&mut self) {
+        self.confirming = None;
         self.tree.set_shown(self.widgets.panel, false);
         self.tree.set_focus(Some(self.widgets.list), 0);
     }
 
     fn confirmed(&mut self, now_ms: u64) -> Option<Request> {
+        let asked = self.confirming.take();
         self.close_panel();
-        let row = self.selected_row()?;
+        let asked = asked?;
+        let still_listed = self
+            .rows
+            .iter()
+            .find(|row| row.pid == asked.pid && row.raw == asked.raw)
+            .copied();
+        let row = match still_listed {
+            Some(row) if row.pid != INIT && row.pid != self.own_pid && row.state != b'Z' => row,
+            _ => {
+                let mut line = Text::<64>::new();
+                let _ = write!(line, "{} has already ended.", asked.shown.as_str());
+                self.status = Some(line);
+                self.show_selection();
+                return None;
+            }
+        };
         self.ending = Some(Ending {
             pid: row.pid,
             name: row.shown,
@@ -991,6 +1022,43 @@ mod tests {
             manager.lines()[0],
             "Text Editor did not stop; EggOS forced it to end."
         );
+    }
+
+    fn open_end_panel_on_the_editor() -> TaskManager {
+        let mut manager = TaskManager::new(50, false);
+        manager.refreshed(snapshot(1000, 100));
+        let list = manager.widgets.list;
+        manager.respond(Response::Chosen(list, 2), 1000);
+        let end = manager.widgets.end;
+        manager.respond(Response::Activated(end), 1000);
+        assert_eq!(manager.respond(Response::Activated(end), 1000), None);
+        manager
+    }
+
+    #[test]
+    fn end_signals_only_the_process_the_person_confirmed() {
+        let mut manager = open_end_panel_on_the_editor();
+        let mut gone = snapshot(3000, 200);
+        if let Some(processes) = gone.processes.as_mut() {
+            processes.retain(|process| process.pid != 42);
+        }
+        manager.refreshed(gone);
+        let confirm = manager.widgets.confirm;
+        assert_eq!(manager.respond(Response::Activated(confirm), 3500), None);
+        assert_eq!(manager.lines()[0], "Text Editor has already ended.");
+        let mut manager = open_end_panel_on_the_editor();
+        let mut reused = snapshot(3000, 200);
+        if let Some(processes) = reused.processes.as_mut() {
+            processes.retain(|process| process.pid != 42);
+            processes.push(process(42, 7, b'R', 0, "fetch"));
+        }
+        manager.refreshed(reused);
+        assert_eq!(manager.respond(Response::Activated(confirm), 3500), None);
+        assert_eq!(manager.lines()[0], "Text Editor has already ended.");
+        let cancel = manager.widgets.cancel;
+        let mut manager = open_end_panel_on_the_editor();
+        manager.respond(Response::Activated(cancel), 1200);
+        assert_eq!(manager.respond(Response::Activated(confirm), 1300), None);
     }
 
     #[test]

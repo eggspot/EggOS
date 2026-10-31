@@ -16544,7 +16544,10 @@ the license, by an explicit instruction recorded here.
   shortcuts in every profile; the catalogue's entry.
 - Not yet: memory per process, idle time in `/proc/uptime` and the busy share, `T` in
   `/proc/ps`, `not_responding` in the window list, the CPU column in `ps`'s text, the layout
-  following the window's size, `--apps` from the shortcut.
+  following the window's size, `--apps` from the shortcut; a process's start time in
+  `/proc/ps`, so the End panel tells a reused id from the process it asked about (it keeps the
+  id and name it asked about and refuses when either changed or the process is gone; review
+  round 1).
 
 ## D201 Programs can't find or reach the kernel, first slice: random PIE bases and stacks, and SMEP (batch part 54; D49, D45 and the paging and user-mode follow-ups) — Decided by the build loop
 
