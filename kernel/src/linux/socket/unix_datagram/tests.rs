@@ -300,3 +300,45 @@ fn a_bound_socket_receives_from_any_sender_with_its_address() {
         Errno::EPROTOTYPE.result()
     );
 }
+
+struct Counting(core::sync::atomic::AtomicU32);
+
+impl poll::Watcher for Counting {
+    fn woken(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_sender_waiting_for_room_is_woken_when_its_receiver_drains_or_closes() {
+    let _serial = unix_socket::tests_lock();
+    let (sender, receiver) = pair();
+    let counting = Arc::new(Counting(core::sync::atomic::AtomicU32::new(0)));
+    let watcher: Arc<dyn poll::Watcher> = counting.clone();
+    sender.wake_list().watch(&watcher).unwrap();
+    let fill = |receiver: &Arc<UnixSocket>, count: usize| {
+        let receiving = receiver.datagrams().unwrap();
+        for _ in 0..count {
+            let datagram = Datagram {
+                sender: Address::Unnamed,
+                bytes: vec![1],
+            };
+            let pushed = receiving.push(Arc::as_ptr(&sender), datagram, receive_limit(receiver));
+            assert!(pushed.is_ok());
+        }
+    };
+    fill(&receiver, MAX_QUEUED);
+    assert_eq!(sender.events(event::OUT), 0);
+    let woken = counting.0.load(Ordering::Relaxed);
+    let taken = receiver.datagrams().unwrap().take(false).unwrap();
+    assert!(taken.is_some());
+    assert!(counting.0.load(Ordering::Relaxed) > woken);
+    assert_eq!(sender.events(event::OUT), event::OUT);
+    fill(&receiver, 1);
+    assert_eq!(sender.events(event::OUT), 0);
+    let woken = counting.0.load(Ordering::Relaxed);
+    drop(receiver);
+    assert!(counting.0.load(Ordering::Relaxed) > woken);
+    assert_eq!(sender.events(event::OUT), event::OUT);
+    drop(sender.wake_list().unwatch(&watcher));
+}

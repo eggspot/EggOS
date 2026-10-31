@@ -1037,7 +1037,7 @@ impl UnixSocket {
     /// open socket is writable and hung up, as on Linux.
     pub fn events(&self, requested: u16) -> u16 {
         if let Some(datagrams) = &self.datagrams {
-            return datagrams.events(requested);
+            return datagrams.events(requested, &self.wake_list);
         }
         match &*self.state.lock() {
             SocketState::Open { .. } | SocketState::Connecting { .. } => {

@@ -14171,8 +14171,8 @@ the license, by an explicit instruction recorded here.
   `AF_UNIX` datagram sockets (`SOCK_DGRAM`, `kernel/src/linux/socket/unix_datagram.rs`): an
   open `UnixSocket` with a datagram side (`Datagrams`: a queue of whole datagrams with their
   sender's address, the peer it is connected to, what was shut down), so `bind` (paths and
-  abstract names, the stream sockets' registry), `getsockname`, `setsockopt`, `fstat`,
-  passing with `SCM_RIGHTS` and `/proc/net/unix` (type 2) are shared. `socket`,
+  abstract names, the stream sockets' registry), `getsockname`, `setsockopt`, `fstat` and
+  `/proc/net/unix` (type 2) are shared. `socket`,
   `socketpair`, `connect` (`AF_UNSPEC` disconnects), `sendto`, `sendmsg`, `recvfrom`,
   `recvmsg`, `read`/`readv`, `write`/`writev`, `getpeername`, `shutdown`, `poll`/`epoll`
   and `ioctl(FIONREAD)` (the next datagram's length) answer as Linux does: a datagram is
@@ -14180,7 +14180,10 @@ the license, by an explicit instruction recorded here.
   another takes datagrams from that one only (`EPERM`), a sender waits while the receiver
   holds 256 datagrams or its receive buffer's bytes (`EAGAIN` when non-blocking), a
   datagram longer than the send buffer is `EMSGSIZE`, an unconnected send `ENOTCONN`, a
-  peer gone `ECONNREFUSED`, and a stream socket's address is `EPROTOTYPE` (both ways; the
+  peer gone `ECONNREFUSED` (a waiting sender holds its receiver only weakly, so the
+  receiver's close frees its queue and ends the wait with it), `poll` and `epoll` see a
+  sender writable again when its full receiver takes a datagram, shuts reading or closes (the
+  receiver wakes the senders that found it full), and a stream socket's address is `EPROTOTYPE` (both ways; the
   new `Errno::EPROTOTYPE`). The kernel is Android's `logd`: devfs has the folder `socket`
   with `logdw` (a socket node, mode 0222), and a datagram sent there goes to
   `kernel/src/linux/android_log.rs`, which keeps it as an entry of the sending process in
@@ -14298,7 +14301,9 @@ the license, by an explicit instruction recorded here.
   (bionic's long values) and property contexts; `logcat`'s `-b` (buffers), `-f`, `-t`,
   `-g` and the other formats, the binary log buffers, `logdr` and the `logd` control
   socket, per-app log access (`READ_LOGS`), `SCM_RIGHTS` and `SCM_CREDENTIALS` on datagram
-  sockets, `SOCK_SEQPACKET`; `liblog.so` (and with it `__android_log_print`) and the
+  sockets, `SOCK_SEQPACKET`; properties set after a program first touched a page of the
+  property area (each process copies a page when it first faults it in, so it sees no later
+  `setprop` and `__system_property_wait` cannot work: shared frames that `set` updates); `liblog.so` (and with it `__android_log_print`) and the
   other platform libraries (`libutils`, `libbinder_ndk`, ...), from a system image read the
   same way; `/apex/com.android.runtime` and `/linkerconfig` as Android lays them out, linker
   namespaces beyond one open default; Android programs on riscv64 (the vector extension in

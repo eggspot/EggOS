@@ -21,7 +21,7 @@ use super::{
 use crate::linux::android_log;
 use crate::linux::descriptors::{FileKind, OpenFile};
 use crate::linux::files::{starting_points, walk_error};
-use crate::linux::poll::{self, event};
+use crate::linux::poll::{self, WakeList, event};
 use crate::linux::signals;
 use crate::linux::terminal::Waited;
 use crate::linux::thread::LinuxThread;
@@ -77,6 +77,7 @@ struct State {
     peer: Option<Peer>,
     read_shut: bool,
     write_shut: bool,
+    waiting_writers: Vec<Weak<WakeList>>,
 }
 
 enum Refused {
@@ -139,6 +140,34 @@ impl Datagrams {
     fn room_in(state: &State, size: usize, limit: usize) -> bool {
         state.queue.is_empty()
             || state.queue.len() < MAX_QUEUED && state.queued_bytes + size <= limit
+    }
+
+    fn has_room_or_wake_later(&self, size: usize, limit: usize, writer: &Arc<WakeList>) -> bool {
+        let mut state = self.state.lock();
+        if Self::room_in(&state, size, limit) {
+            return true;
+        }
+        let known = state
+            .waiting_writers
+            .iter()
+            .any(|waiting| core::ptr::eq(waiting.as_ptr(), Arc::as_ptr(writer)));
+        if !known {
+            state
+                .waiting_writers
+                .retain(|waiting| waiting.strong_count() > 0);
+            if state.waiting_writers.try_reserve(1).is_ok() {
+                state.waiting_writers.push(Arc::downgrade(writer));
+            }
+        }
+        false
+    }
+
+    fn wake_waiting_writers(writers: Vec<Weak<WakeList>>) {
+        for writer in writers {
+            if let Some(list) = writer.upgrade() {
+                list.wake();
+            }
+        }
     }
 
     fn connect(&self, peer: Option<Peer>) {
@@ -205,9 +234,13 @@ impl Datagrams {
         let mut state = self.state.lock();
         if !peek {
             let datagram = state.queue.pop_front();
+            let mut writers = Vec::new();
             if let Some(datagram) = &datagram {
                 state.queued_bytes -= datagram.bytes.len();
+                writers = core::mem::take(&mut state.waiting_writers);
             }
+            drop(state);
+            Self::wake_waiting_writers(writers);
             return Ok(datagram);
         }
         let Some(front) = state.queue.front() else {
@@ -225,14 +258,23 @@ impl Datagrams {
     }
 
     fn shutdown(&self, read: bool, write: bool) {
-        let mut state = self.state.lock();
-        state.read_shut |= read;
-        state.write_shut |= write;
+        let writers = {
+            let mut state = self.state.lock();
+            state.read_shut |= read;
+            state.write_shut |= write;
+            match read {
+                true => core::mem::take(&mut state.waiting_writers),
+                false => Vec::new(),
+            }
+        };
+        Self::wake_waiting_writers(writers);
     }
 
     /// The `poll` events among `requested`: readable while a datagram waits or reading is shut,
     /// writable unless writing is shut or its peer's queue is full, hung up once both are shut.
-    pub fn events(&self, requested: u16) -> u16 {
+    /// While the peer's queue is full, `writer`, the socket's own wake list, is woken when the
+    /// peer takes a datagram, shuts reading or closes.
+    pub fn events(&self, requested: u16, writer: &Arc<WakeList>) -> u16 {
         let (readable, read_shut, write_shut, peer) = {
             let state = self.state.lock();
             (
@@ -242,13 +284,15 @@ impl Datagrams {
                 state.peer.as_ref().map(|peer| peer.target.clone()),
             )
         };
+        let wants_to_write = requested & (event::OUT | event::WRNORM) != 0;
         let writable = !write_shut
             && match peer {
-                Some(Target::Socket(peer)) => peer.upgrade().is_none_or(|peer| {
-                    peer.datagrams()
-                        .is_none_or(|datagrams| datagrams.has_room(1, receive_limit(&peer)))
+                Some(Target::Socket(peer)) if wants_to_write => peer.upgrade().is_none_or(|peer| {
+                    peer.datagrams().is_none_or(|datagrams| {
+                        datagrams.has_room_or_wake_later(1, receive_limit(&peer), writer)
+                    })
                 }),
-                Some(Target::Log) | None => true,
+                Some(Target::Socket(_)) | Some(Target::Log) | None => true,
             };
         let mut events = 0;
         if readable || read_shut {
@@ -261,6 +305,13 @@ impl Datagrams {
             events |= event::HUP;
         }
         events
+    }
+}
+
+impl Drop for Datagrams {
+    fn drop(&mut self) {
+        let writers = core::mem::take(&mut self.state.get_mut().waiting_writers);
+        Self::wake_waiting_writers(writers);
     }
 }
 
@@ -565,7 +616,7 @@ fn send_datagram<P: Platform>(
                 sender: send.socket.local_address(),
                 bytes,
             };
-            match deliver(process, thread, context, &send, &target, datagram)? {
+            match deliver(process, thread, context, &send, target, datagram)? {
                 Some(result) => result.map(|()| sent),
                 None => return ControlFlow::Continue(()),
             }
@@ -579,24 +630,37 @@ fn deliver<P: Platform>(
     thread: &mut LinuxThread,
     context: &mut UserContext,
     send: &Send,
-    target: &Arc<UnixSocket>,
+    target: Arc<UnixSocket>,
     mut datagram: Datagram,
 ) -> ControlFlow<(), Option<Result<(), Errno>>> {
-    let Some(receiving) = target.datagrams() else {
+    if !target.is_datagram() {
         return ControlFlow::Continue(Some(Err(Errno::EPROTOTYPE)));
-    };
+    }
     let timeout = send.socket.options().send_timeout.load(Ordering::Relaxed);
     let interrupted = interrupted(context, timeout);
     let deadline = deadline::<P>(timeout);
     let nonblocking = send.file.is_nonblocking() || send.flags & message::DONTWAIT != 0;
-    let limit = receive_limit(target);
+    let limit = receive_limit(&target);
     let sender = Arc::as_ptr(&send.socket);
+    let receiver = Arc::downgrade(&target);
+    let receiver_wake_list = Arc::clone(target.wake_list());
+    drop(target);
     loop {
-        match receiving.push(sender, datagram, limit) {
-            Ok(()) => {
+        let pushed = {
+            let Some(target) = receiver.upgrade() else {
+                return ControlFlow::Continue(Some(Err(Errno::ECONNREFUSED)));
+            };
+            let Some(receiving) = target.datagrams() else {
+                return ControlFlow::Continue(Some(Err(Errno::EPROTOTYPE)));
+            };
+            let pushed = receiving.push(sender, datagram, limit);
+            if pushed.is_ok() {
                 target.changed();
-                return ControlFlow::Continue(Some(Ok(())));
             }
+            pushed
+        };
+        match pushed {
+            Ok(()) => return ControlFlow::Continue(Some(Ok(()))),
             Err(Refused::Failed(error)) => return ControlFlow::Continue(Some(Err(error))),
             Err(Refused::Full(back)) => datagram = back,
         }
@@ -604,9 +668,13 @@ fn deliver<P: Platform>(
             return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
         }
         let size = datagram.bytes.len();
-        let lists = [target.wake_list()];
+        let lists = [&receiver_wake_list];
         match poll::wait_for(process, thread, &lists, deadline, || {
-            receiving.has_room(size, limit)
+            receiver.upgrade().is_none_or(|target| {
+                target
+                    .datagrams()
+                    .is_none_or(|receiving| receiving.has_room(size, limit))
+            })
         })? {
             Waited::Ready => {}
             Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
@@ -828,6 +896,8 @@ fn recvmsg<P: Platform>(
                 .write_user_memory(header.name, &bytes[..copied])
                 .map_err(|_| Errno::EFAULT)?;
             written[8..12].copy_from_slice(&(full as u32).to_ne_bytes());
+        } else {
+            written[8..12].copy_from_slice(&0u32.to_ne_bytes());
         }
         let message_flags = match received.copied < received.length {
             true => MSG_TRUNC,
