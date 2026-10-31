@@ -125,7 +125,8 @@ pub struct Unpacked {
     pub symbolic_links: u64,
     /// Names made as hard links to a file already written.
     pub hard_links: u64,
-    /// Symbolic links the host refused to make, left out.
+    /// Symbolic links the host refused to make or whose target leads outside, and names
+    /// Windows reserves, left out.
     pub skipped: u64,
 }
 
@@ -520,11 +521,27 @@ fn write_file(
         .create_new(true)
         .open(path)
         .map_err(|e| format!("{shown}: {e}"))?;
+    let filled = fill_file(volume, node, &mut file, &attributes, buffer, &shown);
+    if filled.is_err() {
+        drop(file);
+        let _ = remove_written_file(path);
+    }
+    filled
+}
+
+fn fill_file(
+    volume: &mut Volume<FileDisk>,
+    node: u64,
+    file: &mut File,
+    attributes: &eggos_eggfs::Attributes,
+    buffer: &mut [u8],
+    shown: &str,
+) -> Result<u64, String> {
     let mut offset = 0u64;
     loop {
         let read = volume
             .read(node, offset, buffer)
-            .map_err(|error| eggfs_error(&shown, error))?;
+            .map_err(|error| eggfs_error(shown, error))?;
         if read == 0 {
             break;
         }
@@ -535,7 +552,7 @@ fn write_file(
     let modified = UNIX_EPOCH + Duration::from_secs(attributes.modified);
     file.set_modified(modified)
         .map_err(|e| format!("{shown}: {e}"))?;
-    set_permissions(&file, attributes.permissions).map_err(|e| format!("{shown}: {e}"))?;
+    set_permissions(file, attributes.permissions).map_err(|e| format!("{shown}: {e}"))?;
     Ok(offset)
 }
 
@@ -661,8 +678,11 @@ fn make_host_link(
 /// must not exist or be empty, and says what it wrote. The image's journal is replayed first,
 /// so a QEMU that was killed still gives back everything EggOS committed, and the whole file
 /// system is checked before anything is written. A file with several names is written once
-/// and its other names made as hard links; a symbolic link the host refuses to make is
-/// printed as a warning and left out.
+/// and its other names made as hard links; symbolic links are made last, once every folder and
+/// file exists, and one the host refuses to make, or whose target leads outside `out`, is
+/// printed as a warning and left out. Nothing is written over: a name the host folds onto one
+/// already made (by case or Unicode form) stops the unpack, and a failed unpack removes
+/// everything it made.
 pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
     if out.exists() && !(out.is_dir() && is_empty_folder(out)?) {
         return Err(format!(
@@ -686,10 +706,67 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
             String::from_utf8_lossy(eggos_eggfs::WORK_DISK_MARKER)
         )
     })?;
+    let made_out = !out.exists();
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut created = Vec::new();
+    unpack_into(&mut volume, top, out, &mut created).map_err(|error| {
+        remove_created(&created);
+        if made_out {
+            let _ = std::fs::remove_dir(out);
+        }
+        format!("{error}; what was unpacked so far was removed")
+    })
+}
+
+enum Created {
+    Folder(PathBuf),
+    File(PathBuf),
+    Link(PathBuf),
+}
+
+fn remove_created(created: &[Created]) {
+    for made in created.iter().rev() {
+        let _ = match made {
+            Created::Folder(path) => std::fs::remove_dir(path),
+            Created::Link(path) => {
+                std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path))
+            }
+            Created::File(path) => remove_written_file(path),
+        };
+    }
+}
+
+fn remove_written_file(path: &Path) -> std::io::Result<()> {
+    if std::fs::remove_file(path).is_ok() {
+        return Ok(());
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return std::fs::remove_file(path);
+    }
+    let mut permissions = metadata.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions)?;
+    std::fs::remove_file(path)
+}
+
+struct PendingLink {
+    path: PathBuf,
+    directory: u64,
+    node: u64,
+}
+
+fn unpack_into(
+    volume: &mut Volume<FileDisk>,
+    top: u64,
+    out: &Path,
+    created: &mut Vec<Created>,
+) -> Result<Unpacked, String> {
     let mut unpacked = Unpacked::default();
     let mut buffer = vec![0u8; COPY_CHUNK_BYTES];
     let mut first_names: HashMap<u64, PathBuf> = HashMap::new();
+    let mut links = Vec::new();
     let mut pending = vec![(out.to_path_buf(), top)];
     while let Some((folder, directory)) = pending.pop() {
         let mut position = 0;
@@ -698,10 +775,20 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
             .map_err(|error| eggfs_error(&folder.display().to_string(), error))?
         {
             position += 1;
-            let path = folder.join(host_name(entry.name(), &folder)?);
+            let name = host_name(entry.name(), &folder)?;
+            let path = folder.join(&name);
+            if cfg!(windows) && reserved_on_windows(&name) {
+                eprintln!(
+                    "xtask: {}: Windows reserves this name: left out of the unpacked folder",
+                    path.display()
+                );
+                unpacked.skipped += 1;
+                continue;
+            }
             match eggos_eggfs::kind_of(entry.node) {
                 Kind::Directory => {
                     std::fs::create_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                    created.push(Created::Folder(path.clone()));
                     unpacked.folders += 1;
                     pending.push((path, entry.node));
                 }
@@ -709,10 +796,12 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
                     if let Some(first) = first_names.get(&entry.node) {
                         std::fs::hard_link(first, &path)
                             .map_err(|e| format!("{}: {e}", path.display()))?;
+                        created.push(Created::Link(path));
                         unpacked.hard_links += 1;
                         continue;
                     }
-                    unpacked.bytes += write_file(&mut volume, entry.node, &path, &mut buffer)?;
+                    unpacked.bytes += write_file(volume, entry.node, &path, &mut buffer)?;
+                    created.push(Created::File(path.clone()));
                     unpacked.files += 1;
                     let links = volume
                         .attributes(entry.node)
@@ -722,29 +811,59 @@ pub fn unpack(image: &Path, out: &Path) -> Result<Unpacked, String> {
                         first_names.insert(entry.node, path);
                     }
                 }
-                Kind::SymbolicLink => {
-                    let target = volume
-                        .link_target(entry.node)
-                        .map_err(|error| eggfs_error(&path.display().to_string(), error))?;
-                    let made = match link_stays_inside(&mut volume, top, directory, &target) {
-                        true => make_host_link(&mut volume, directory, &target, &path)?,
-                        false => Some("its target leads outside the unpacked folder".to_owned()),
-                    };
-                    match made {
-                        None => unpacked.symbolic_links += 1,
-                        Some(reason) => {
-                            eprintln!(
-                                "xtask: {}: {reason}: left out of the unpacked folder",
-                                path.display()
-                            );
-                            unpacked.skipped += 1;
-                        }
-                    }
-                }
+                Kind::SymbolicLink => links.push(PendingLink {
+                    path,
+                    directory,
+                    node: entry.node,
+                }),
+            }
+        }
+    }
+    for link in links {
+        let path = &link.path;
+        let target = volume
+            .link_target(link.node)
+            .map_err(|error| eggfs_error(&path.display().to_string(), error))?;
+        let made = match link_stays_inside(volume, top, link.directory, &target) {
+            true => make_host_link(volume, link.directory, &target, path)?,
+            false => Some("its target leads outside the unpacked folder".to_owned()),
+        };
+        match made {
+            None => {
+                created.push(Created::Link(path.clone()));
+                unpacked.symbolic_links += 1;
+            }
+            Some(reason) => {
+                eprintln!(
+                    "xtask: {}: {reason}: left out of the unpacked folder",
+                    path.display()
+                );
+                unpacked.skipped += 1;
             }
         }
     }
     Ok(unpacked)
+}
+
+fn reserved_on_windows(name: &str) -> bool {
+    const DEVICES: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    const NUMBERED: [&str; 2] = ["COM", "LPT"];
+    const NUMBERS: [&str; 13] = [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "\u{b9}", "\u{b2}", "\u{b3}",
+    ];
+    let refused_character =
+        |character: char| u32::from(character) < 0x20 || "<>:\"|?*\\".contains(character);
+    if name.ends_with(['.', ' ']) || name.chars().any(refused_character) {
+        return true;
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let is = |reserved: &str| stem.eq_ignore_ascii_case(reserved);
+    DEVICES.iter().any(|device| is(device))
+        || NUMBERED.iter().any(|prefix| {
+            NUMBERS
+                .iter()
+                .any(|number| is(&format!("{prefix}{number}")))
+        })
 }
 
 /// The folder `run --work <folder>` unpacks into when no `--work-out` names one: a new
@@ -995,6 +1114,105 @@ mod tests {
         assert_eq!(mode & 0o7777, 0o755);
         assert_eq!(std::fs::read(&outside).unwrap(), b"mine\n");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_never_climbs_out_through_a_name_the_host_folds_onto_another() {
+        let root = scratch("folded");
+        let folder = root.join("repo");
+        write(&folder.join("keep.txt"), b"keep\n");
+        let image = root.join("work.img");
+        pack_with_room(&folder, &image, TEST_ROOM).unwrap();
+        let (mut volume, _) = Volume::mount(FileDisk::open(&image).unwrap()).unwrap();
+        let top = eggos_eggfs::work_folder(&mut volume).unwrap();
+        volume.create(top, b"t", Kind::Directory, 0o755, 5).unwrap();
+        let mut c = top;
+        for name in [&b"a"[..], b"b", b"c"] {
+            c = volume.create(c, name, Kind::Directory, 0o755, 5).unwrap();
+        }
+        volume.symlink(c, b"S", b"../../..", 5).unwrap();
+        volume
+            .symlink(c, b"L", b"s/t/../../../../../outside.txt", 5)
+            .unwrap();
+        let s = volume.create(c, b"s", Kind::Directory, 0o755, 5).unwrap();
+        volume.create(s, b"t", Kind::Directory, 0o755, 5).unwrap();
+        volume.commit().unwrap();
+        drop(volume);
+        std::fs::create_dir(root.join("Fold")).unwrap();
+        let folds_case = root.join("fold").exists();
+        let out = root.join("out");
+        let unpacked = unpack(&image, &out);
+        if folds_case {
+            let error = unpacked.unwrap_err();
+            assert!(error.contains("removed"), "{error}");
+            assert!(!out.exists(), "everything unpacked is removed");
+        } else {
+            assert_eq!(unpacked.unwrap().symbolic_links, 2);
+            assert_eq!(
+                std::fs::read_link(out.join("a/b/c/L")).unwrap(),
+                Path::new("s/t/../../../../../outside.txt")
+            );
+            assert!(out.join("a/b/c/s/t").is_dir());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_unpack_removes_what_it_made() {
+        let root = scratch("undone");
+        let folder = root.join("repo");
+        write(&folder.join("keep.txt"), b"keep\n");
+        write(&folder.join("sub/inner.txt"), b"inner\n");
+        let image = root.join("work.img");
+        pack_with_room(&folder, &image, TEST_ROOM).unwrap();
+        let (mut volume, _) = Volume::mount(FileDisk::open(&image).unwrap()).unwrap();
+        let top = eggos_eggfs::work_folder(&mut volume).unwrap();
+        let late = volume
+            .create(top, b"late", Kind::Directory, 0o755, 5)
+            .unwrap();
+        volume
+            .create(late, b"\xff", Kind::Regular, 0o644, 5)
+            .unwrap();
+        volume.symlink(top, b"link", b"keep.txt", 5).unwrap();
+        volume.commit().unwrap();
+        drop(volume);
+        let out = root.join("out");
+        let error = unpack(&image, &out).unwrap_err();
+        assert!(error.contains("not valid Unicode"), "{error}");
+        assert!(!out.exists());
+        std::fs::create_dir(&out).unwrap();
+        assert!(unpack(&image, &out).is_err());
+        assert!(
+            is_empty_folder(&out).unwrap(),
+            "a folder that was there stays, empty"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn names_windows_reserves_are_recognised() {
+        for name in [
+            "CON",
+            "con.txt",
+            "Nul",
+            "aux.tar.gz",
+            "COM1",
+            "lpt9.log",
+            "COM\u{b9}",
+            "CONIN$",
+            "a.",
+            "b ",
+            "ab:x",
+            "q?",
+            "tab\t",
+            "CON .txt",
+        ] {
+            assert!(reserved_on_windows(name), "{name}");
+        }
+        for name in ["CONSOLE", "com10", "main.rs", ".hidden", "a.b", "lpt"] {
+            assert!(!reserved_on_windows(name), "{name}");
+        }
     }
 
     #[cfg(unix)]

@@ -11565,7 +11565,16 @@ the license, by an explicit instruction recorded here.
   `create_new` (an entry already there, a link the host folded onto the name included, stops
   the unpack instead of being written through), their mode and time set through the open
   handle, and the setuid, setgid and sticky bits are dropped (`0o777`), as `tar` does for a
-  user who is not root.
+  user who is not root. Since round 2's review the image walk is also what the host walks:
+  every folder, file and hard link is made first and symbolic links only after them, each
+  with an exclusive create, so a name the host folds onto an earlier one (by case, as on
+  macOS and Windows, or by Unicode form, as on APFS and HFS+) is refused by the host itself
+  before any link exists, and a name in a link's target that the image has is the very entry
+  the host resolves (the host decides what it folds, so no folding table can disagree with
+  it). Any refusal undoes the unpack: what it made is removed, name by name, newest first,
+  and a folder it made for the output too. On Windows hosts a name Windows reserves (`CON`,
+  `NUL`, `COM1`, `aux.txt`, a trailing dot or space, `:` or another character Windows does
+  not allow) is left out with a warning.
 - **Checks.** Host tests: the VFS walk without links; tmpfs links, hard links counted, names
   moved, a held file kept until its last release, a held file replaced by rename, `chmod`;
   EggFS's adapter end to end (links, `EPERM`, permissions, a held file freed at the commit
