@@ -16489,3 +16489,29 @@ the license, by an explicit instruction recorded here.
 - Not yet: idle memory and boot time to the GUI in the release notes, each optional
   component's size and memory once the component manager exists (part 69), download and
   install time (D69).
+
+## D204 Virtual desktops, first slice: the window server's desktops, their keys in every profile, `wm desktop` and two MCP tools (batch part 49; UX README; extends D133, D160) — Decided by the build loop (the design is Claude Fable's, docs/ux/desktops-overview-screenshots-v0.3.md)
+
+- The window server keeps 1 to 8 desktops and the shown one; each normal window is on one (a
+  byte in its record), dialogs follow their parent, and panels and popups show on every
+  desktop. "Shown" means on the shown desktop and not minimised, so drawing, hit testing,
+  focus and Show desktop work per desktop. A new window opens on the shown desktop; focusing a
+  window on another (`wm focus`, the dock, the launcher, the switcher) shows its desktop
+  first. Switching damages the screen once and focuses the shown desktop's top window.
+  Closing a desktop moves its windows to the one before it; the last cannot be closed.
+- Keys: Ctrl+Super+Left and Right switch, Ctrl+Super+D makes one, Ctrl+Super+F4 closes the
+  shown one, Ctrl+Super+Shift+Left and Right move the focused window and follow it, in every
+  profile; Ctrl+Left and Right in the macOS profile; Super+PageUp and PageDown (with Shift to
+  move the window) in the Linux profile.
+- `LIST_DESKTOPS` (0x8010_7722) and `DESKTOP_ACTION` (0xc010_7723: switch, new, close, move; a
+  manager's request) carry them to `wm desktop list [--json] | switch <n> | new | close <n> |
+  move <window> <n>`, and MCP has `wm_desktop_list` and `wm_desktop_new`.
+- Check. Host tests: a window hidden on another desktop and shown on its own, the counts,
+  moving, closing, the last desktop refused, a bad number; focusing a window on another
+  desktop shows it; the keys; `wm desktop`'s usage errors.
+- Not yet: the overview (Super+Tab, F3, Activities) with its thumbnails and desktops strip,
+  the taskbar's `Task view` item, the dock's and switcher's marks for other desktops, the
+  `Desktop 2 of 3` notice, the Linux profile's dynamic trailing desktop, Alt+` and Cmd+`
+  cycling an app's windows, `wm list`'s `DESKTOP` column, MCP's `wm_desktop_switch`,
+  `wm_desktop_close` and `wm_desktop_move`, screenshots (`screenshot`, the region picker, the
+  keys, `screen_capture`, `CAPTURE_SCREEN`, `SHOW_NOTICE`).
