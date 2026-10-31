@@ -13482,7 +13482,13 @@ the license, by an explicit instruction recorded here.
   round, and `break`, `continue` and `return` travel back up as a pending `Control`.
   Reserved words are recognized only as a command's first word, unquoted
   (`syntax::keyword`). A complete command may be 16 KiB (D107's 4 KiB line grew: a whole
-  function or loop of a script must fit).
+  function or loop of a script must fit). Every walk keeps fixed buffers on the 8 MiB stack, so
+  nesting is bounded, as bash and dash report deep nesting instead of crashing: compound
+  commands, `eval` and command substitutions together nest 200 deep at most (`MAX_NESTING`;
+  enough for 64 function calls of up to three compound levels each), `${...}` words 64 deep
+  (`MAX_EXPANSION_DEPTH`), both refused as `syntax error: nested too deeply`; pathname expansion
+  walks the plain parts of a pattern in a loop and nests only at parts with `*`, `?` or `[`,
+  32 at most (`pattern nested too deeply`) (review round 1).
 - **Words (`syntax.rs`).** The lexer now takes the parameters mutably, so an expansion can
   assign (`${NAME:=word}`), fail (`${NAME:?word}`, `SyntaxError::Failed`) and run a command
   substitution, whose output is fed straight into the word being made, trailing newlines held
@@ -13564,7 +13570,9 @@ the license, by an explicit instruction recorded here.
   function definition's line; a `case` pattern without its `(` inside `$(...)`; `<<<`;
   descriptors past 2; `^C` interrupting `read` and `wait`; a cache of where compound commands
   end, so loops do not read a nested one's text twice a round; the pipe fast path for small
-  here-documents; running the last stage of a pipeline in the shell (bash's `lastpipe`).
+  here-documents; running the last stage of a pipeline in the shell (bash's `lastpipe`); a
+  QEMU check that `^Z` during `$(...)` at the interactive prompt stops nothing (the substitution's
+  copy keeps `SIGTSTP`, `SIGTTIN` and `SIGTTOU` ignored, as it has no job control; review round 1).
 
 ## D183 A clean shutdown through init: `poweroff`, `reboot`, `halt` and the desktop's power menu ask init, which sends every other program `SIGTERM`, then `SIGKILL`, before `sync` and `reboot(2)`; `kill(-1)`; process ids reused; `ls` in columns on a terminal (batch part 31; v0.3.0 items 8 and 10's follow-ups; D106's and D108's "Not yet"; extends D105, D106, D108, D137, D181) — Decided by the build loop (the signals that ask init, the waits and process id reuse decided by research)
 
@@ -13673,7 +13681,9 @@ the license, by an explicit instruction recorded here.
   of 2^31, never given back); `pidfd_open` and `CLONE_PIDFD`; `/proc/<pid>` descriptors
   pinned to their process (one opened before its process ended shows the id's next process);
   `/proc/sys/kernel/pid_max`; `ls -x`, `-w`, `COLUMNS`, wide characters as two columns and
-  control characters shown as `?`; a reply to the agent whose `run` powered off.
+  control characters shown as `?`; a reply to the agent whose `run` powered off; `ls`'s column
+  fit starting from a row count the total width allows (it tries each count from the fewest,
+  quadratic for a huge directory on a narrow terminal; review round 1).
 
 ## D184 Drivers run on interrupts, first slice: device lines through GIC SPIs, PLIC sources and MSI-X, a handler per line that wakes its driver's thread, virtio-input with no polling thread; users list the machine's devices with `device list` and the MCP tool `device_list` from `/proc/driver/devices` (batch part 32; issue #97's slice 3; v0.3.0 items 12 and 33's follow-ups; M5, M8; extends D37, D98, D110, D111, D113, D136, D160, D163) — Decided by the build loop (the command's name, the tool's grant and the file's place decided by research; the About pane's list designed by Claude Fable, `docs/ux/devices-v0.3.md`)
 

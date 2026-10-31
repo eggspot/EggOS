@@ -7,11 +7,11 @@
 //! pipeline run in a forked copy of the shell.
 
 use super::{
-    Errno, Forked, Group, LINE_CAPACITY, MAX_CALL_DEPTH, NULL_DEVICE, Pipeline, Ran, Read, Shell,
-    Streams, System,
+    Errno, Forked, Group, LINE_CAPACITY, MAX_CALL_DEPTH, MAX_NESTING, NULL_DEVICE, Pipeline, Ran,
+    Read, Shell, Streams, System,
 };
 use crate::functions::FUNCTIONS_CAPACITY;
-use crate::glob::{self, Directories, MAX_MATCHES, Matches, Unreadable};
+use crate::glob::{self, Directories, MAX_MATCHES, Matches, Unexpanded, Unreadable};
 use crate::path::{Kind, PATH_CAPACITY};
 use crate::pattern;
 use crate::status::Change;
@@ -615,15 +615,21 @@ impl<S: System> Shell<'_, S> {
             return Ok(());
         };
         let mut found = Matches::default();
-        if glob::expand(
+        let expanded = glob::expand(
             pattern,
             &mut SystemDirectories(&mut self.system),
             &mut found,
-        )
-        .is_err()
-        {
-            self.error(&[words.get(index), b": too many file names"]);
-            return Err(SyntaxError::Failed);
+        );
+        match expanded {
+            Ok(()) => {}
+            Err(Unexpanded::TooMany) => {
+                self.error(&[words.get(index), b": too many file names"]);
+                return Err(SyntaxError::Failed);
+            }
+            Err(Unexpanded::TooDeep) => {
+                self.error(&[words.get(index), b": pattern nested too deeply"]);
+                return Err(SyntaxError::Failed);
+            }
         }
         if found.is_empty() {
             return Ok(());
@@ -707,7 +713,31 @@ impl<S: System> Shell<'_, S> {
         Ok((end + parsed.consumed, parsed.terminator))
     }
 
+    pub(super) fn nested<T>(
+        &mut self,
+        inner: impl FnOnce(&mut Self) -> Result<T, SyntaxError>,
+    ) -> Result<T, SyntaxError> {
+        if self.nesting == MAX_NESTING {
+            return Err(SyntaxError::TooDeep);
+        }
+        self.nesting += 1;
+        let result = inner(self);
+        self.nesting -= 1;
+        result
+    }
+
     fn compound_body(
+        &mut self,
+        source: Source<'_>,
+        at: usize,
+        kind: Compound,
+        pass: Pass,
+        words: &mut Words,
+    ) -> Result<usize, SyntaxError> {
+        self.nested(|shell| shell.walk_compound_body(source, at, kind, pass, words))
+    }
+
+    fn walk_compound_body(
         &mut self,
         source: Source<'_>,
         at: usize,
@@ -1359,18 +1389,32 @@ impl<S: System> Shell<'_, S> {
     }
 
     fn run_substituted(&mut self, command: &[u8], backquoted: bool) {
+        let ran = self.nested(|shell| {
+            match backquoted {
+                true => shell.run_backquoted(command),
+                false => shell.run_in_own_words(command),
+            }
+            Ok(())
+        });
+        if let Err(error) = ran {
+            self.syntax_error(error);
+        }
+    }
+
+    #[inline(never)]
+    fn run_backquoted(&mut self, command: &[u8]) {
         let mut text = [0u8; LINE_CAPACITY];
-        let command = match backquoted {
-            true => match unescape_backquoted(command, &mut text) {
-                Some(command) => command,
-                None => {
-                    self.error(&[b"command substitution too long"]);
-                    self.status = 1;
-                    return;
-                }
-            },
-            false => command,
-        };
+        match unescape_backquoted(command, &mut text) {
+            Some(command) => self.run_in_own_words(command),
+            None => {
+                self.error(&[b"command substitution too long"]);
+                self.status = 1;
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn run_in_own_words(&mut self, command: &[u8]) {
         let mut words = Words::default();
         self.run_buffer(command, true, &mut words);
     }

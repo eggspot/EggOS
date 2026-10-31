@@ -375,6 +375,17 @@ impl<S: System> Shell<'_, S> {
 
     /// `eval words`: runs the words, joined by spaces, as commands.
     pub(super) fn eval(&mut self, words: &mut Words) -> i32 {
+        let ran = self.nested(|shell| {
+            shell.eval_joined(words);
+            Ok(())
+        });
+        if let Err(error) = ran {
+            self.syntax_error(error);
+        }
+        self.status
+    }
+
+    fn eval_joined(&mut self, words: &mut Words) {
         let mut text = [0u8; LINE_CAPACITY];
         let mut length = 0;
         for index in 1..words.command_length() {
@@ -382,7 +393,8 @@ impl<S: System> Shell<'_, S> {
             let separator = usize::from(index > 1);
             if length + separator + word.len() > LINE_CAPACITY {
                 self.error(&[b"eval: too long"]);
-                return 1;
+                self.status = 1;
+                return;
             }
             if index > 1 {
                 text[length] = b' ';
@@ -393,7 +405,6 @@ impl<S: System> Shell<'_, S> {
         }
         self.status = 0;
         self.run_buffer(&text[..length], true, words);
-        self.status
     }
 
     /// `read [-r] [name ...]`: reads a line from standard input and splits it at the

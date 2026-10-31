@@ -18,6 +18,10 @@ const NAMES_CAPACITY: usize = MATCHES_CAPACITY;
 
 const MAX_NAMES: usize = MAX_MATCHES;
 
+/// The most nested parts of one pattern that hold `*`, `?` or `[` (`*/*/*` has three); plain
+/// parts between them are not counted.
+pub const MAX_PATTERN_DEPTH: usize = 32;
+
 /// The directories pathname expansion reads.
 pub trait Directories {
     /// Calls `each` with the name of every entry of the directory at `path` (with its NUL),
@@ -38,6 +42,21 @@ pub struct Unreadable;
 /// The paths do not fit [`MATCHES_CAPACITY`] or [`MAX_MATCHES`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooMany;
+
+/// Why a pattern was refused instead of expanded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unexpanded {
+    /// The paths do not fit [`MATCHES_CAPACITY`] or [`MAX_MATCHES`].
+    TooMany,
+    /// More than [`MAX_PATTERN_DEPTH`] nested parts of the pattern hold `*`, `?` or `[`.
+    TooDeep,
+}
+
+impl From<TooMany> for Unexpanded {
+    fn from(_: TooMany) -> Self {
+        Self::TooMany
+    }
+}
 
 /// The paths a pattern matched.
 #[derive(Debug)]
@@ -124,7 +143,7 @@ pub fn expand(
     pattern: &[u8],
     directories: &mut impl Directories,
     found: &mut Matches,
-) -> Result<(), TooMany> {
+) -> Result<(), Unexpanded> {
     let mut path = Path {
         bytes: [0; PATH_CAPACITY],
         length: 0,
@@ -136,7 +155,7 @@ pub fn expand(
         }
         _ => pattern,
     };
-    walk(rest, &mut path, directories, found)?;
+    walk(rest, &mut path, directories, found, 0)?;
     found.sort();
     Ok(())
 }
@@ -146,31 +165,69 @@ fn without_leading_slashes(bytes: &[u8]) -> &[u8] {
     &bytes[start..]
 }
 
-fn walk(
-    pattern: &[u8],
-    path: &mut Path,
-    directories: &mut impl Directories,
-    found: &mut Matches,
-) -> Result<(), TooMany> {
-    let (part, rest, slash) = match pattern.iter().position(|&byte| byte == b'/') {
+fn first_part(pattern: &[u8]) -> (&[u8], &[u8], bool) {
+    match pattern.iter().position(|&byte| byte == b'/') {
         Some(at) => (
             &pattern[..at],
             without_leading_slashes(&pattern[at..]),
             true,
         ),
         None => (pattern, &pattern[pattern.len()..], false),
-    };
+    }
+}
+
+fn walk(
+    pattern: &[u8],
+    path: &mut Path,
+    directories: &mut impl Directories,
+    found: &mut Matches,
+    depth: usize,
+) -> Result<(), Unexpanded> {
     let start = path.length;
-    if !has_special(part) {
-        let mut plain = [0u8; PATH_CAPACITY];
-        let Some(plain) = unescape(part, &mut plain) else {
+    let result = walk_plain_parts(pattern, path, directories, found, depth);
+    path.length = start;
+    result
+}
+
+fn walk_plain_parts(
+    mut pattern: &[u8],
+    path: &mut Path,
+    directories: &mut impl Directories,
+    found: &mut Matches,
+    depth: usize,
+) -> Result<(), Unexpanded> {
+    let mut unescaped = [0u8; PATH_CAPACITY];
+    loop {
+        let (part, rest, slash) = first_part(pattern);
+        if has_special(part) {
+            return match_part(part, rest, slash, path, directories, found, depth);
+        }
+        let Some(plain) = unescape(part, &mut unescaped) else {
             return Ok(());
         };
         path.push(plain)?;
-        let result = finish_part(rest, slash, path, directories, found);
-        path.length = start;
-        return result;
+        if rest.is_empty() {
+            return add_if_found(slash, path, directories, found);
+        }
+        path.push(b"/")?;
+        pattern = rest;
     }
+}
+
+#[inline(never)]
+fn match_part(
+    part: &[u8],
+    rest: &[u8],
+    slash: bool,
+    path: &mut Path,
+    directories: &mut impl Directories,
+    found: &mut Matches,
+    depth: usize,
+) -> Result<(), Unexpanded> {
+    if depth == MAX_PATTERN_DEPTH {
+        return Err(Unexpanded::TooDeep);
+    }
+    let start = path.length;
     let mut names = [0u8; NAMES_CAPACITY];
     let mut spans = [(0u16, 0u16); MAX_NAMES];
     let mut count = 0;
@@ -202,28 +259,29 @@ fn walk(
         return Ok(());
     }
     if overflow {
-        return Err(TooMany);
+        return Err(Unexpanded::TooMany);
     }
     for &(name_start, name_end) in &spans[..count] {
         path.push(&names[usize::from(name_start)..usize::from(name_end)])?;
-        let result = finish_part(rest, slash, path, directories, found);
+        let result = match rest.is_empty() {
+            true => add_if_found(slash, path, directories, found),
+            false => path
+                .push(b"/")
+                .map_err(Unexpanded::from)
+                .and_then(|()| walk(rest, path, directories, found, depth + 1)),
+        };
         path.length = start;
         result?;
     }
     Ok(())
 }
 
-fn finish_part(
-    rest: &[u8],
+fn add_if_found(
     slash: bool,
     path: &mut Path,
     directories: &mut impl Directories,
     found: &mut Matches,
-) -> Result<(), TooMany> {
-    if !rest.is_empty() {
-        path.push(b"/")?;
-        return walk(rest, path, directories, found);
-    }
+) -> Result<(), Unexpanded> {
     if slash {
         path.push(b"/")?;
     }
@@ -336,6 +394,56 @@ mod tests {
             .collect();
         let mut matches = Matches::default();
         let result = expand(b"f*", &mut Tree(names), &mut matches);
-        assert_eq!(result, Err(TooMany));
+        assert_eq!(result, Err(Unexpanded::TooMany));
+    }
+
+    #[test]
+    fn a_long_plain_path_is_walked_without_nesting() {
+        let missing = format!("{}*", "a/".repeat(2000));
+        let mut matches = Matches::default();
+        assert_eq!(
+            expand(missing.as_bytes(), &mut tree(), &mut matches),
+            Ok(())
+        );
+        assert!(matches.is_empty());
+        let mut directory = String::from("d");
+        let mut levels = vec!["d"];
+        for _ in 0..1000 {
+            directory.push_str("/d");
+            levels.push(Box::leak(directory.clone().into_boxed_str()));
+        }
+        let file = format!("{directory}/file");
+        levels.push(Box::leak(file.clone().into_boxed_str()));
+        let pattern = format!("{directory}/f*");
+        let mut matches = Matches::default();
+        assert_eq!(
+            expand(pattern.as_bytes(), &mut Tree(levels), &mut matches),
+            Ok(())
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches.get(0), file.as_bytes());
+    }
+
+    #[test]
+    fn patterns_nested_too_deeply_are_refused() {
+        let mut directory = String::from("d");
+        let mut levels = vec!["d"];
+        for _ in 0..MAX_PATTERN_DEPTH + 1 {
+            directory.push_str("/d");
+            levels.push(Box::leak(directory.clone().into_boxed_str()));
+        }
+        let within = vec!["*"; MAX_PATTERN_DEPTH].join("/");
+        let mut matches = Matches::default();
+        assert_eq!(
+            expand(within.as_bytes(), &mut Tree(levels.clone()), &mut matches),
+            Ok(())
+        );
+        assert_eq!(matches.len(), 1);
+        let deeper = vec!["*"; MAX_PATTERN_DEPTH + 1].join("/");
+        let mut matches = Matches::default();
+        assert_eq!(
+            expand(deeper.as_bytes(), &mut Tree(levels), &mut matches),
+            Err(Unexpanded::TooDeep)
+        );
     }
 }

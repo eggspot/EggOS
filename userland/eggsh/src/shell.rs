@@ -39,6 +39,10 @@ pub const MAX_SOURCE_DEPTH: u8 = 16;
 /// How deeply functions may call functions (D182).
 pub const MAX_CALL_DEPTH: u8 = 64;
 
+/// How deeply compound commands, `eval` and command substitutions may nest, together: deeper
+/// text is refused as nested too deeply instead of running out of stack (D182).
+pub const MAX_NESTING: u16 = 200;
+
 /// `$?` after `^C` at the prompt, as if the line had been interrupted by `SIGINT`.
 pub const INTERRUPTED: i32 = 128 + status::SIGINT as i32;
 
@@ -451,6 +455,7 @@ pub struct Shell<'a, S> {
     control: Option<Control>,
     depth: u8,
     calls: u8,
+    nesting: u16,
     loops: u32,
     conditions: u32,
     errexit: bool,
@@ -498,6 +503,7 @@ impl<'a, S: System> Shell<'a, S> {
             control: None,
             depth: 0,
             calls: 0,
+            nesting: 0,
             loops: 0,
             conditions: 0,
             errexit: false,
@@ -1070,6 +1076,7 @@ impl<'a, S: System> Shell<'a, S> {
             SyntaxError::BadName => self.error(&[b"syntax error: `for` needs a variable's name"]),
             SyntaxError::BadSubstitution => self.error(&[b"bad substitution"]),
             SyntaxError::TooLong => self.error(&[b"command too long"]),
+            SyntaxError::TooDeep => self.error(&[b"syntax error: nested too deeply"]),
             SyntaxError::Failed => {}
         }
         self.status = status;

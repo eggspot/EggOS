@@ -295,3 +295,90 @@ fn grammar_errors_are_reported() {
         assert!(shell.system.ran.is_empty(), "{script}");
     }
 }
+
+fn on_a_large_stack(interactive: bool, script: String) -> (String, String, i32) {
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut shell = shell(interactive);
+            shell.run_text(script.as_bytes());
+            (output(&shell), errors(&shell), shell.exit_status())
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+const TOO_DEEP: &str = "eggsh: syntax error: nested too deeply\n";
+
+#[test]
+fn eval_that_runs_itself_stops_at_the_nesting_limit() {
+    let script = String::from("x='eval \"$x\"'; eval \"$x\"; echo after $?");
+    let (written, said, status) = on_a_large_stack(false, script.clone());
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    let (written, said, _) = on_a_large_stack(true, script);
+    assert_eq!((written.as_str(), said.as_str()), ("after 2\n", TOO_DEEP));
+}
+
+#[test]
+fn compound_commands_nested_past_the_limit_are_refused_before_running() {
+    let nested = |depth: usize| {
+        format!(
+            "{}echo deep; {}echo after",
+            "for i in 1; do ".repeat(depth),
+            "done; ".repeat(depth)
+        )
+    };
+    let within = usize::from(MAX_NESTING);
+    let (written, said, status) = on_a_large_stack(false, nested(within));
+    assert_eq!(
+        (written.as_str(), said.as_str(), status),
+        ("deep\nafter\n", "", 0)
+    );
+    let (written, said, status) = on_a_large_stack(false, nested(600));
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    let (written, said, status) = on_a_large_stack(false, "(".repeat(100_000));
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+    let braces = format!("{}echo in{}", "{ ".repeat(300), "; }".repeat(300));
+    let (written, said, _) = on_a_large_stack(false, braces);
+    assert_eq!((written.as_str(), said.as_str()), ("", TOO_DEEP));
+}
+
+#[test]
+fn nested_defaults_stop_at_the_expansion_limit() {
+    let nested = |depth: usize| format!("echo {}x{}", "${a:-".repeat(depth), "}".repeat(depth));
+    let within = usize::from(crate::syntax::MAX_EXPANSION_DEPTH);
+    let (written, said, status) = on_a_large_stack(false, nested(within));
+    assert_eq!((written.as_str(), said.as_str(), status), ("x\n", "", 0));
+    let (written, said, status) = on_a_large_stack(false, nested(2000));
+    assert_eq!((written.as_str(), said.as_str(), status), ("", TOO_DEEP, 2));
+}
+
+#[test]
+fn a_command_substitution_past_the_nesting_limit_is_refused_in_the_copy() {
+    let mut child = shell_for_child();
+    child.nesting = MAX_NESTING;
+    child.run_text(b"echo $(echo inner)");
+    assert_eq!(errors(&child), TOO_DEEP);
+    assert_eq!(child.system.ended_subshells, [2]);
+    assert_eq!(child.nesting, MAX_NESTING);
+}
+
+#[test]
+fn a_long_plain_path_before_a_pattern_stays_as_it_is() {
+    let word = format!("{}*", "a/".repeat(900));
+    let shell = run(&format!("echo {word}"));
+    assert_eq!(output(&shell), format!("{word}\n"));
+    assert_eq!(errors(&shell), "");
+}
+
+#[test]
+fn unquoted_star_makes_each_parameter_its_own_field_before_splitting() {
+    let shell = run(
+        "IFS=; set -- 'a b' c; for w in $*; do echo \"[$w]\"; done\n\
+         unset IFS; set -- 'x y' z; for w in $*; do echo \"<$w>\"; done\n\
+         IFS=:; set -- p q; echo \"$*\"",
+    );
+    assert_eq!(output(&shell), "[a b]\n[c]\n<x>\n<y>\n<z>\np:q\n");
+    assert_eq!(errors(&shell), "");
+}

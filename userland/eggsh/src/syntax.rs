@@ -36,6 +36,9 @@ pub const DELIMITER_CAPACITY: usize = 128;
 
 const IFS_CAPACITY: usize = 16;
 
+/// How deeply `${...}` words may nest in one another, as in `${a:-${b:-c}}` (D182).
+pub const MAX_EXPANSION_DEPTH: u8 = 64;
+
 const QUOTED_MARKS: usize = WORDS_CAPACITY / 64;
 
 const PATTERN_SPECIAL: &[u8] = b"*?[]\\-!^";
@@ -86,6 +89,9 @@ pub enum SyntaxError {
     BadSubstitution,
     /// More than [`WORDS_CAPACITY`] bytes or [`MAX_WORDS`] words, or another limit.
     TooLong,
+    /// Compound commands, `eval`, command substitutions or `${...}` nested deeper than the
+    /// shell allows (D182).
+    TooDeep,
     /// The text ended for good where this reserved word or operator was needed (D182).
     Missing(&'static str),
     /// This reserved word, operator or word was needed where something else came (D182).
@@ -1029,6 +1035,7 @@ struct Scanner<'i, 'w> {
     split: Split,
     vanish: bool,
     newlines: usize,
+    expansion_depth: u8,
 }
 
 impl Scanner<'_, '_> {
@@ -1341,6 +1348,7 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
                 split: Split::AfterBlank { ended: false },
                 vanish: false,
                 newlines: 0,
+                expansion_depth: 0,
             },
         }
     }
@@ -1572,7 +1580,7 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
     fn positional_all(&mut self, each: bool, quoted: bool) -> Result<(), SyntaxError> {
         self.scan.tokens = true;
         let count = self.parameters.positional_count();
-        let joined = !each || self.scan.assignment || !self.scan.splitting;
+        let joined = (quoted && !each) || self.scan.assignment || !self.scan.splitting;
         if quoted && each && !joined {
             if count == 0 {
                 self.scan.vanish = true;
@@ -1746,27 +1754,7 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
             Operator::Remove { side, longest } => {
                 let (mark, in_word) = (self.scan.words.length, self.scan.in_word);
                 self.expand_range(word_start, word_end, false, false)?;
-                let mut buffer = [0u8; PATTERN_CAPACITY];
-                let words = &self.scan.words;
-                let pattern = words.escaped(mark, words.length, &mut buffer);
-                self.scan.words.length = mark;
-                self.scan.in_word = in_word;
-                let pattern = pattern.ok_or(SyntaxError::TooLong)?;
-                let mut digits = [0; 20];
-                let value = match self.parameters.value(name) {
-                    Value::Text(text) => text,
-                    Value::Number(number) => decimal(number, &mut digits),
-                    Value::Unset => b"",
-                };
-                let kept = crate::pattern::remove(value, pattern, side, longest);
-                self.scan.expansion_start();
-                if quoted {
-                    self.scan.in_word = true;
-                }
-                for &byte in kept {
-                    self.scan.expanded(byte, quoted)?;
-                }
-                Ok(())
+                self.remove_matched(name, mark, in_word, side, longest, quoted)
             }
             _ => {
                 let value = self.parameters.value(name);
@@ -1775,7 +1763,56 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
         }
     }
 
+    #[inline(never)]
+    fn remove_matched(
+        &mut self,
+        name: &[u8],
+        mark: usize,
+        in_word: bool,
+        side: Side,
+        longest: bool,
+        quoted: bool,
+    ) -> Result<(), SyntaxError> {
+        let mut buffer = [0u8; PATTERN_CAPACITY];
+        let words = &self.scan.words;
+        let pattern = words.escaped(mark, words.length, &mut buffer);
+        self.scan.words.length = mark;
+        self.scan.in_word = in_word;
+        let pattern = pattern.ok_or(SyntaxError::TooLong)?;
+        let mut digits = [0; 20];
+        let value = match self.parameters.value(name) {
+            Value::Text(text) => text,
+            Value::Number(number) => decimal(number, &mut digits),
+            Value::Unset => b"",
+        };
+        let kept = crate::pattern::remove(value, pattern, side, longest);
+        self.scan.expansion_start();
+        if quoted {
+            self.scan.in_word = true;
+        }
+        for &byte in kept {
+            self.scan.expanded(byte, quoted)?;
+        }
+        Ok(())
+    }
+
     fn expand_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        quoted: bool,
+        splitting: bool,
+    ) -> Result<(), SyntaxError> {
+        if self.scan.expansion_depth == MAX_EXPANSION_DEPTH {
+            return Err(SyntaxError::TooDeep);
+        }
+        self.scan.expansion_depth += 1;
+        let result = self.expand_range_at_depth(start, end, quoted, splitting);
+        self.scan.expansion_depth -= 1;
+        result
+    }
+
+    fn expand_range_at_depth(
         &mut self,
         start: usize,
         end: usize,
