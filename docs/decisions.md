@@ -16272,3 +16272,31 @@ the license, by an explicit instruction recorded here.
   MCP when it is focused again, a scale change without a reboot, fractional scales, a font drawn at 2x rather than
   doubled, pointer acceleration, sub-step moves carried at speeds under 5, per-device
   preferences, a QEMU screendump at 2x.
+
+## D196 Apps' own icons, the rest of item 45: `app icon` and `app_icon`, binary property lists, and the installer's dialogs with the app's icon (batch part 44; extends D148, D134) — Decided by the build loop (the look is Claude Fable's, docs/ux/app-icons-v0.3.md)
+
+- `app icon [--size 48|32] [-o <file.png>] [--] <name> [<file.png>]` writes the shell-ready
+  `app.icon`'s 48- or 32-pixel image as an 8-bit RGBA PNG, un-premultiplied
+  (`(c * 255 + a / 2) / a`, 0 where `a` is 0), with the encoder `wm capture` uses, which gains
+  `Encoder::new_rgba` (colour type 6, straight-alpha `0xAARRGGBB` rows). It prints `Wrote
+  <file>.`; `app: <name> has no icon` (status 1) for a built-in or an app drawn as the generic
+  tile; `app: <name> is not installed`. Nothing but the shell-ready file is read. The MCP tool
+  `app_icon` (`name`; no grant, as `wm_capture`'s pixels of the desktop are what a person sees
+  anyway) runs `app icon -o /run/eggmcpd-capture.png` and answers the PNG as an image.
+- Binary property lists: a bundle's `Contents/Info.plist` that starts with `bplist00` is read
+  for `CFBundleIconFile` and `CFBundleExecutable` (the top dictionary's ASCII or UTF-16
+  strings, every offset checked), so bundles built by Xcode, whose `Info.plist` is often
+  binary, get their icon and their program.
+- The installer's `Installed` screen and the uninstall confirmation draw the app's own icon,
+  blended over the window's background as the shell blends it; the prompt and the progress
+  screen keep the generic tile, as the icon is made from what was installed.
+- Choices made without research: `app_icon` has no `size` argument yet (always 48: the size an
+  agent needs to recognise the app); the dialog keeps the image in a static of 2 304 words
+  (9 KiB in `.bss`, paid by the installer's process only).
+- Check. Host tests: un-premultiplying; the 48 and 32 images written as PNGs and decoded back;
+  an app without an icon, with a file of the wrong length, a built-in and an unknown name;
+  `app icon`'s operands and options; an RGBA image through the encoder and the row decoder;
+  a binary plist's ASCII and UTF-16 strings, every truncation of one, a table past its end; the
+  blend of the four telling pixels.
+- Not yet: title-bar icons and 16-pixel icons in Files (Claude Fable's design first), the macOS
+  layer's `NSBundle` reading a binary `Info.plist`, `app_icon`'s `size`, native 2x icons.
