@@ -228,7 +228,7 @@ pub fn clock_gettime<P: Platform>(
     Ok(0)
 }
 
-/// The CPU time clocks (D201): `CLOCK_PROCESS_CPUTIME_ID`, the nanoseconds the calling
+/// The CPU time clocks (D198): `CLOCK_PROCESS_CPUTIME_ID`, the nanoseconds the calling
 /// process's threads have run, and `CLOCK_THREAD_CPUTIME_ID`, the calling thread's; `None` for
 /// another clock.
 fn cpu_clock<P: Platform>(process: &Process<P>, clock_id: u64) -> Option<u64> {
@@ -246,7 +246,7 @@ const RUSAGE_THREAD: i64 = 1;
 const RUSAGE_SIZE: usize = 144;
 const USER_HZ: u64 = 100;
 
-/// `getrusage(who, usage)` (D201): the calling process's (`RUSAGE_SELF`) or thread's
+/// `getrusage(who, usage)` (D198): the calling process's (`RUSAGE_SELF`) or thread's
 /// (`RUSAGE_THREAD`) CPU time as user time in the `struct rusage` at `usage`, every other field
 /// 0; `RUSAGE_CHILDREN` reads all 0, as the time of waited-for children is not kept yet.
 /// `EINVAL` for another `who`, `EFAULT` for `usage` not the program's writable memory.
@@ -264,7 +264,7 @@ pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Res
     Ok(0)
 }
 
-/// `times(buf)` (D201): writes the calling process's CPU time as user time in the `struct tms`
+/// `times(buf)` (D198): writes the calling process's CPU time as user time in the `struct tms`
 /// at `buf` (unless null), in `USER_HZ` (100) ticks, its system time and its children's 0;
 /// returns the ticks since boot.
 pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> {

@@ -217,6 +217,7 @@ pub mod number {
         pub const SCHED_GETPARAM: u64 = 143;
         pub const SCHED_GETSCHEDULER: u64 = 145;
         pub const SCHED_GETAFFINITY: u64 = 204;
+        pub const SCHED_SETAFFINITY: u64 = 203;
         pub const GETRUSAGE: u64 = 98;
         pub const TIMES: u64 = 100;
         pub const DUP3: u64 = 292;
@@ -384,6 +385,7 @@ pub mod number {
         pub const GETCPU: u64 = 168;
         pub const SCHED_GETSCHEDULER: u64 = 120;
         pub const SCHED_GETPARAM: u64 = 121;
+        pub const SCHED_SETAFFINITY: u64 = 122;
         pub const SCHED_GETAFFINITY: u64 = 123;
         pub const TIMES: u64 = 153;
         pub const GETRUSAGE: u64 = 165;
@@ -536,6 +538,7 @@ pub mod number {
             SCHED_GETSCHEDULER,
             SCHED_GETPARAM,
             SCHED_GETAFFINITY,
+            SCHED_SETAFFINITY,
             GETRUSAGE,
             TIMES,
             #[cfg(target_arch = "x86_64")]
@@ -1316,6 +1319,9 @@ fn out_of_line_result<P: Platform>(
         number::GET_ROBUST_LIST => identity::get_robust_list(process, thread, first, second, third),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
         number::GETCPU => identity::getcpu(process, first, second),
+        number::SCHED_SETAFFINITY => {
+            identity::sched_setaffinity(process, thread, first, second, third)
+        }
         number::SCHED_GETAFFINITY => {
             identity::sched_getaffinity(process, thread, first, second, third)
         }

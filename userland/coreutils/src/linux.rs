@@ -194,6 +194,7 @@ fn status_at(directory: usize, path: &CStr, flags: usize) -> Result<Status, Errn
 struct Linux {
     no_symlinks: bool,
     time_zone: Option<([u8; TIME_ZONE_BYTES], usize)>,
+    environment: *const *const core::ffi::c_char,
 }
 
 const TIME_ZONE_BYTES: usize = 64;
@@ -573,6 +574,37 @@ impl System for Linux {
         })
     }
 
+    fn set_affinity(&mut self, mask: u64) -> Result<(), Errno> {
+        let words = [mask];
+        call(
+            number::SCHED_SETAFFINITY,
+            [0, 8, words.as_ptr() as usize, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    fn execute(&mut self, program: &CStr, arguments: &[&CStr]) -> Errno {
+        let mut pointers =
+            [core::ptr::null::<core::ffi::c_char>(); crate::utilities::MAX_ARGUMENTS + 1];
+        for (slot, argument) in pointers.iter_mut().zip(arguments) {
+            *slot = argument.as_ptr();
+        }
+        match call(
+            number::EXECVE,
+            [
+                program.as_ptr() as usize,
+                pointers.as_ptr() as usize,
+                self.environment as usize,
+                0,
+                0,
+                0,
+            ],
+        ) {
+            Ok(_) => Errno::EIO,
+            Err(errno) => errno,
+        }
+    }
+
     fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno> {
         let mut request = [0u8; 16];
         request[..8].copy_from_slice(&(text.as_ptr() as u64).to_ne_bytes());
@@ -894,6 +926,7 @@ pub fn run(startup: &Startup) -> i32 {
     let system = Linux {
         no_symlinks: refuses_symbolic_links(startup.environment()),
         time_zone: time_zone_of(startup.environment()),
+        environment: startup.environment_block(),
     };
     utilities::run(system, &arguments[..count])
 }

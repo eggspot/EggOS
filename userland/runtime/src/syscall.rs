@@ -57,6 +57,7 @@ pub mod number {
     pub const RENAMEAT2: usize = 316;
     pub const SYNC: usize = 162;
     pub const SCHED_GETAFFINITY: usize = 204;
+    pub const SCHED_SETAFFINITY: usize = 203;
     pub const FSYNC: usize = 74;
     pub const KILL: usize = 62;
     pub const SOCKET: usize = 41;
@@ -139,6 +140,7 @@ pub mod number {
     pub const UTIMENSAT: usize = 88;
     pub const RENAMEAT2: usize = 276;
     pub const SYNC: usize = 81;
+    pub const SCHED_SETAFFINITY: usize = 122;
     pub const SCHED_GETAFFINITY: usize = 123;
     pub const FSYNC: usize = 82;
     pub const KILL: usize = 129;

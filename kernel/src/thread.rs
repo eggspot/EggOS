@@ -189,12 +189,15 @@ struct Thread {
     user: bool,
     /// A user thread's FP/SIMD registers, once its program has used them ([`start_fp`], D54).
     fp: OnceCell<FpRegisters>,
-    /// The clock ticks it ran before it last started running (D201).
+    /// The clock ticks it ran before it last started running (D198).
     ran: Cell<u64>,
     /// The clock tick it last started running at.
     since: Cell<u64>,
     /// Where a user thread's process adds the ticks its threads run ([`spawn_user`]).
     account: Option<Arc<AtomicU64>>,
+    /// The CPUs it may run on, a bit per CPU index ([`set_running_affinity`], D198); all at
+    /// first, and a new thread's are the spawning thread's.
+    allowed: Cell<u64>,
 }
 
 /// A thread's FP/SIMD registers (D54): where they are saved, and the CPU that last loaded them.
@@ -242,7 +245,13 @@ impl Thread {
             ran: Cell::new(0),
             since: Cell::new(0),
             account,
+            allowed: Cell::new(u64::MAX),
         })
+    }
+
+    /// Whether it may run on `cpu`.
+    fn may_run_on(&self, cpu: &Cpu) -> bool {
+        cpu.index() >= 64 || self.allowed.get() & 1 << cpu.index() != 0
     }
 
     /// Adds the ticks from when it started running to `now` to its time and its process's.
@@ -315,13 +324,15 @@ impl ThreadBox {
         unsafe { self.0.as_ref() }
     }
 
-    /// Moves the thread, which is ready, to `cpu` (D44): it runs there, and sleeps and is made
-    /// ready there from now on.
+    /// Moves the thread to `cpu` (D44, D198): it runs there, and sleeps and is made ready there
+    /// from now on. The thread is ready, or is the running thread a switch is parking.
     fn move_to(&mut self, cpu: &'static Cpu) {
-        // SAFETY: owned by `self`, borrowed uniquely. The thread is ready, just taken from a
-        // ready list with the scheduler's lock held: it does not run, and the switch that saved
-        // it finished before the lock was handed on (see `switch_to`), so nothing else reaches
-        // it while this reference lives.
+        // SAFETY: owned by `self`, borrowed uniquely. Either the thread is ready, just taken
+        // from a ready list with the scheduler's lock held: it does not run, and the switch that
+        // saved it finished before the lock was handed on (see `switch_to`); or it is the
+        // running thread being parked by a switch, which holds the lock until after it has
+        // saved the thread: running scheduler code, it reads no field meanwhile. Either way
+        // nothing else reaches it while this reference lives.
         unsafe { self.0.as_mut().cpu = cpu };
     }
 
@@ -777,6 +788,13 @@ impl Schedulers {
         self.place_among(cpu::CPUS.all(), here)
     }
 
+    /// The first CPU in `allowed` (a bit per CPU index) whose scheduler has started.
+    fn first_allowed(&mut self, allowed: u64) -> Option<&'static Cpu> {
+        cpu::CPUS.all().iter().copied().find(|&cpu| {
+            (cpu.index() >= 64 || allowed & 1 << cpu.index() != 0) && self.of(cpu).has_started()
+        })
+    }
+
     /// [`Self::place`] among `cpus`; `here` if there is no other.
     fn place_among(&mut self, cpus: &[&'static Cpu], here: &'static Cpu) -> &'static Cpu {
         if cpus.len() <= 1 {
@@ -820,7 +838,7 @@ impl Schedulers {
             let movable = scheduler
                 .ready
                 .front()
-                .is_some_and(|thread| thread.id != ThreadId::BOOT);
+                .is_some_and(|thread| thread.id != ThreadId::BOOT && thread.may_run_on(here));
             if busy && movable {
                 let mut thread = scheduler.ready.pop_front().expect("a thread is ready");
                 thread.move_to(here);
@@ -1340,8 +1358,18 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
         return Err(error);
     }
     let here = cpu::current::<P>();
-    let cpu = schedulers.place(here);
+    let inherited = schedulers
+        .of(here)
+        .current
+        .as_ref()
+        .map_or(u64::MAX, |spawning| spawning.get().allowed.get());
+    let placed = schedulers.place(here);
+    let cpu = match inherited {
+        u64::MAX => placed,
+        _ => schedulers.first_allowed(inherited).unwrap_or(placed),
+    };
     let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user, account);
+    thread.get().allowed.set(inherited);
     let handle = JoinHandle {
         id: thread.get().id,
         joined: thread.get().joined.clone(),
@@ -1452,7 +1480,51 @@ pub(crate) fn with_running_fp<P: Platform, R>(f: impl FnOnce(&mut FpState) -> R)
     Some(result)
 }
 
-/// The clock ticks the running thread has run, this turn included (D201).
+/// The CPUs the running thread may run on, a bit per CPU index (D198).
+pub fn running_affinity<P: Platform>() -> u64 {
+    let mut schedulers = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    schedulers
+        .of(here)
+        .current
+        .as_ref()
+        .map_or(u64::MAX, |thread| thread.get().allowed.get())
+}
+
+/// Lets the running thread run only on the CPUs whose bit is set in `allowed` (D198), and
+/// moves it to the first of them that runs threads when it is not on one; its later threads
+/// inherit the set. `false`, changing nothing, when none of them runs threads.
+pub fn set_running_affinity<P: Platform>(allowed: u64) -> bool {
+    let mut schedulers = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    let Some(target) = schedulers.first_allowed(allowed) else {
+        return cpu::CPUS.all().is_empty() && allowed & 1 != 0;
+    };
+    let scheduler = schedulers.of(here);
+    let Some(running) = scheduler.current.as_ref() else {
+        return false;
+    };
+    running.get().allowed.set(allowed);
+    if running.get().may_run_on(here) {
+        return true;
+    }
+    let next = match scheduler.ready.pop_front() {
+        Some(next) => next,
+        None => scheduler
+            .idle
+            .take()
+            .expect("a thread runs, so the idle thread does not"),
+    };
+    switch_to::<P>(schedulers, here, next, |schedulers, _, mut previous| {
+        previous.move_to(target);
+        if let Some(cpu) = make_ready::<P>(schedulers, previous) {
+            cpu::wake::<P>(cpu);
+        }
+    });
+    true
+}
+
+/// The clock ticks the running thread has run, this turn included (D198).
 pub fn running_thread_ticks<P: Platform>() -> u64 {
     let mut schedulers = SCHEDULER.lock();
     let here = cpu::current::<P>();

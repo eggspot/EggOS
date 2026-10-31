@@ -111,8 +111,8 @@ pub fn getcpu<P: Platform>(process: &Process<P>, cpu: u64, node: u64) -> Result<
     Ok(0)
 }
 
-/// `sched_getaffinity(pid, size, mask)`: writes the CPUs the thread may run on, every online
-/// CPU since none can be excluded yet, to `mask`, a bit per CPU in 64-bit words, and returns
+/// `sched_getaffinity(pid, size, mask)`: writes the CPUs the thread may run on, the online
+/// ones its affinity allows ([`sched_setaffinity`], D198), to `mask`, a bit per CPU in 64-bit words, and returns
 /// the bytes written: the kernel's mask, a bit for each of the machine's CPUs rounded up to a
 /// word, as Linux's raw call does (C libraries count the bits; Rust's
 /// `std::thread::available_parallelism` sizes thread pools by them). `pid` 0, the caller's
@@ -140,11 +140,45 @@ pub fn sched_getaffinity<P: Platform>(
         let address = mask
             .checked_add((word * AFFINITY_WORD_BYTES) as u64)
             .ok_or(Errno::EFAULT)?;
+        let allowed = match word {
+            0 => crate::thread::running_affinity::<P>(),
+            _ => u64::MAX,
+        };
         process
-            .write_user_memory(address, &online_cpus(cpus, word).to_ne_bytes())
+            .write_user_memory(address, &(online_cpus(cpus, word) & allowed).to_ne_bytes())
             .map_err(|_| Errno::EFAULT)?;
     }
     Ok(bytes)
+}
+
+/// `sched_setaffinity(pid, size, mask)` (D198): lets the calling thread run only on the online
+/// CPUs set in the `size` bytes at `mask` (CPUs past the first 64 are always allowed), moving
+/// it to one of them at once; its later threads inherit the set. `pid` names the caller as for
+/// [`sched_getaffinity`] (another id is `ESRCH`); `EINVAL` when no online CPU is set, `EFAULT`
+/// when `mask` is not the program's memory.
+pub fn sched_setaffinity<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+    size: u64,
+    mask: u64,
+) -> Result<u64, Errno> {
+    let pid = pid as u32;
+    if pid != 0 && pid != thread.id() && pid != process.id().get() {
+        return Err(Errno::ESRCH);
+    }
+    let mut first = [0u8; AFFINITY_WORD_BYTES];
+    let length = usize::try_from(size)
+        .unwrap_or(usize::MAX)
+        .min(AFFINITY_WORD_BYTES);
+    process
+        .read_user_memory(mask, &mut first[..length])
+        .map_err(|_| Errno::EFAULT)?;
+    let wanted = u64::from_ne_bytes(first) & online_cpus(cpu::CPUS.all(), 0);
+    if wanted == 0 || !crate::thread::set_running_affinity::<P>(wanted) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(0)
 }
 
 /// `sched_getscheduler(pid)`: `SCHED_OTHER` (0), the only scheduling policy threads have

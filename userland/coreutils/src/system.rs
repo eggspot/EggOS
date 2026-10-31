@@ -243,6 +243,8 @@ pub trait System {
         tree: &mut [u8],
     ) -> Result<WindowTree, Errno>;
     fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno>;
+    fn set_affinity(&mut self, mask: u64) -> Result<(), Errno>;
+    fn execute(&mut self, program: &CStr, arguments: &[&CStr]) -> Errno;
     fn clipboard(
         &mut self,
         descriptor: usize,
@@ -421,6 +423,14 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn set_clipboard(&mut self, descriptor: usize, text: &[u8]) -> Result<(), Errno> {
         (**self).set_clipboard(descriptor, text)
+    }
+
+    fn set_affinity(&mut self, mask: u64) -> Result<(), Errno> {
+        (**self).set_affinity(mask)
+    }
+
+    fn execute(&mut self, program: &CStr, arguments: &[&CStr]) -> Errno {
+        (**self).execute(program, arguments)
     }
 
     fn clipboard(

@@ -265,7 +265,7 @@ struct Memory<P: Platform> {
     fork_marks: LeafSpinLock<ForkMarks>,
     has_fork_marks: AtomicBool,
     image: ImageLayout,
-    /// The clock ticks the threads using this memory have run (D201).
+    /// The clock ticks the threads using this memory have run (D198).
     cpu_ticks: Arc<AtomicU64>,
 }
 
@@ -2341,7 +2341,7 @@ impl<P: Platform> Process<P> {
     }
 
     /// The clock ticks its threads have run, the calling thread's running turn included when
-    /// it is one of them (D201).
+    /// it is one of them (D198).
     pub fn cpu_ticks(&self, caller_is_its_thread: bool) -> u64 {
         let running = match caller_is_its_thread {
             true => thread::running_turn_ticks::<P>(),

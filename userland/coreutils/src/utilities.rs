@@ -25,6 +25,7 @@ use crate::processes::{free, ps, uptime};
 use crate::properties::{getprop, setprop};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
+use crate::taskset::taskset;
 use crate::tee::tee;
 use crate::trash::trash;
 use crate::uname::uname;
@@ -76,6 +77,7 @@ pub enum Utility {
     Sleep,
     Sync,
     Tail,
+    Taskset,
     Tee,
     Touch,
     Trash,
@@ -87,7 +89,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 45] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -124,6 +126,7 @@ impl Utility {
         Self::Sleep,
         Self::Sync,
         Self::Tail,
+        Self::Taskset,
         Self::Tee,
         Self::Touch,
         Self::Trash,
@@ -172,6 +175,7 @@ impl Utility {
             Self::Sleep => b"sleep",
             Self::Sync => b"sync",
             Self::Tail => b"tail",
+            Self::Taskset => b"taskset",
             Self::Tee => b"tee",
             Self::Touch => b"touch",
             Self::Trash => b"trash",
@@ -225,6 +229,7 @@ impl Utility {
             Self::Sleep => sleep(output, arguments),
             Self::Sync => sync(output, arguments),
             Self::Tail => tail(output, arguments),
+            Self::Taskset => taskset(output, arguments),
             Self::Tee => tee(output, arguments),
             Self::Touch => touch(output, arguments),
             Self::Trash => trash(output, arguments),

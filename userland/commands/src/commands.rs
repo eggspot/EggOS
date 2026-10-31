@@ -1283,6 +1283,35 @@ pub const CLIP_SET: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Edit > Copy, Ctrl+C or Cmd+C in any app"),
 };
 
+/// `taskset` (D198).
+pub const TASKSET: CommandDefinition = CommandDefinition {
+    words: &["taskset"],
+    summary: "Runs a command on chosen CPUs.",
+    description: "Runs the command, found in /bin unless its name holds a /, letting it and its \
+                  threads run only on the CPUs a hexadecimal mask (bit n for CPU n) or, with \
+                  -c, a list such as 0,2-3 names. Only the first 64 CPUs can be chosen.",
+    options: &[OptionDefinition {
+        short: Some(b'c'),
+        long: Some("cpu-list"),
+        value: None,
+        repeatable: false,
+        default: None,
+        help: "Take the CPUs as a list such as 0,2-3 instead of a mask.",
+    }],
+    operands: &[
+        operand("cpus", ValueType::Text, Count::One),
+        operand("command", ValueType::Text, Count::OneOrMore),
+    ],
+    outputs: Outputs {
+        text: Output::Content,
+        json: Output::None,
+    },
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 2), exits(&FAILED, 1)],
+    examples: &[],
+    surface: Surface::NoGui("the task manager will show each program's CPUs"),
+};
+
 /// `trash`.
 pub const TRASH: CommandDefinition = CommandDefinition {
     words: &["trash"],
@@ -2914,7 +2943,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub const COMMANDS: [CommandDefinition; 83] = [
+pub const COMMANDS: [CommandDefinition; 84] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -2973,6 +3002,7 @@ pub const COMMANDS: [CommandDefinition; 83] = [
     SLEEP,
     SYNC,
     TAIL,
+    TASKSET,
     TEE,
     TERMINAL,
     TOUCH,
