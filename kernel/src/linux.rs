@@ -4271,6 +4271,8 @@ mod tests {
                 Some(Attributes::USER_READ_WRITE),
             )
             .unwrap();
+        let sigusr1 = 10;
+        set_handler(&process, sigusr1, 0, 0);
         let entry = super::trampoline::address(&process).unwrap();
         assert_eq!(entry, stack_gap_bottom + FRAME_SIZE + 4);
         assert_eq!(super::trampoline::address(&process), Some(entry));

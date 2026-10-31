@@ -252,7 +252,8 @@ fn pairing_without_a_display_anyone_sees_points_to_the_serial_console() {
         .with_file("/proc/cmdline", 0o444, line, 0)
         .with_file("/dev/window", 0o666, b"", 0)
         .with_link("/proc/self/fd/1", "/dev/pts/0");
-    let headless = started_with("view").with_link("/proc/self/fd/1", "pipe:[7]");
+    let mut headless = started_with("view").with_link("/proc/self/fd/1", "pipe:[7]");
+    headless.window_server = false;
     for mut fake in [offscreen, headless] {
         assert_eq!(run(&mut fake, &[c"pair", c"phone"]), 1);
         assert!(
