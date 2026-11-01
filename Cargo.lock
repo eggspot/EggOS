@@ -177,6 +177,7 @@ dependencies = [
  "eggos-eggfs",
  "eggos-element-tree",
  "eggos-hal",
+ "eggos-image",
  "eggos-net",
  "eggos-settings-file",
  "eggos-toolkit",

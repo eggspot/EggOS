@@ -53,12 +53,24 @@ pub const MARKER: &str = "EGGOS-BENCH:";
 pub const ITERATIONS: u64 = 10_000;
 const WARMUP_ITERATIONS: u64 = 100;
 
+/// Benchmarks whose one iteration is a whole job (a photo decoded), with the iterations each is
+/// timed over after a single untimed one: under `-icount` a few give the same exact count.
+const LONG_BENCHMARKS: [(&str, u64); 1] = [("image_decode_jpeg_640x480", 20)];
+
+/// The untimed and the timed iterations of benchmark `name`.
+fn iterations_of(name: &str) -> (u64, u64) {
+    match LONG_BENCHMARKS.iter().find(|(long, _)| *long == name) {
+        Some(&(_, iterations)) => (1, iterations),
+        None => (WARMUP_ITERATIONS, ITERATIONS),
+    }
+}
+
 /// A benchmark: a name and a body that runs the measured operation `n` times, with the
 /// kernel's memory ([`Memory`]) for those that need its page tables.
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 64] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 65] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -125,6 +137,9 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 64] {
         }),
         ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
         ("translate_block_16", |_, n| translate_block_16(n)),
+        ("image_decode_jpeg_640x480", |_, n| {
+            image_decode_jpeg_640x480(n)
+        }),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -179,13 +194,14 @@ pub fn run<P: Platform, W: Write>(
 ) -> core::fmt::Result {
     let frequency = P::clock_frequency();
     for (name, body) in benchmarks {
-        body(memory, WARMUP_ITERATIONS);
+        let (warmup, iterations) = iterations_of(name);
+        body(memory, warmup);
         let start = P::clock_ticks();
-        body(memory, ITERATIONS);
+        body(memory, iterations);
         let ticks = P::clock_ticks().wrapping_sub(start);
         writeln!(
             console,
-            "{MARKER} {name} iterations={ITERATIONS} ticks={ticks} frequency={frequency}"
+            "{MARKER} {name} iterations={iterations} ticks={ticks} frequency={frequency}"
         )?;
     }
     report_idle_wakeups::<P, W>(console)
@@ -1165,6 +1181,20 @@ fn translate_block_16(n: u64) {
         );
         let _ = black_box(translate_block(&block, mode, Flags::ALL));
     }
+}
+
+const PHOTO_640X480: &[u8] = include_bytes!("../../image/testdata/photo-640x480.jpg");
+
+fn image_decode_jpeg_640x480(n: u64) {
+    let limits = eggos_image::Limits::DEFAULT;
+    let mut decoded = None;
+    for _ in 0..n {
+        decoded = Some(black_box(eggos_image::decode(black_box(PHOTO_640X480), &limits)));
+    }
+    assert!(
+        decoded.is_none_or(|image| image.is_ok()),
+        "image benchmark: the photo does not decode"
+    );
 }
 
 fn window_commit_line(n: u64) {
@@ -2247,7 +2277,8 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), benchmarks.len());
         for (line, (name, _)) in lines.iter().zip(benchmarks) {
-            let prefix = format!("{MARKER} {name} iterations={ITERATIONS} ticks=");
+            let iterations = iterations_of(name).1;
+            let prefix = format!("{MARKER} {name} iterations={iterations} ticks=");
             assert!(line.starts_with(&prefix), "{line}");
             assert!(line.ends_with(" frequency=1000000000"), "{line}");
         }

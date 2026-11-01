@@ -19,9 +19,11 @@ eggos-wayland = { path = "../wayland" }
 eggos-translate = { path = "../translate" }
 eggos-element-tree = { path = "../userland/element-tree" }
 eggos-toolkit = { path = "../userland/toolkit", optional = true }
+eggos-image = { path = "../image", optional = true }
 
 [dev-dependencies]
 eggos-toolkit = { path = "../userland/toolkit" }
+eggos-image = { path = "../image" }
 
 [lints]
 workspace = true
@@ -38,5 +40,5 @@ virtio-net = ["virtio"]
 rtc = []
 qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "virtio-net", "rtc"]
 qemu-test-fatal-exception = ["qemu-test"]
-qemu-bench = ["qemu-test", "dep:eggos-toolkit"]
+qemu-bench = ["qemu-test", "dep:eggos-toolkit", "dep:eggos-image"]
 qemu-boot-clock = []
