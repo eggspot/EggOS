@@ -16,24 +16,41 @@
 use super::super::heap;
 use super::super::thread_environment::{self, teb};
 use super::context::{Context, capturing_entry};
-use super::dispatch::{self, NO_STATE, Origin, UnwindTarget};
+use super::dispatch::{self, Origin, UnwindTarget};
 use super::frames::{self, Bridge};
 use super::{CatchState, DispatcherContext, ExceptionRecord, FrameData, disposition, flag, status};
 use crate::cxx_data::{
-    self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler, ThrowInfo,
-    TryBlock, flags as cxx_flags,
+    self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler,
+    flags as cxx_flags,
+};
+use crate::cxx_walk::{
+    self, Caught, Displacement, FrameRole, ObjectMemory, RunningCatch, Thrown,
+    OUTSIDE_EVERY_STATE,
 };
 use crate::library::Export;
 use crate::unwind::Image;
 
-const MAGIC_LAST: u64 = 0x1993_0522;
-const MAX_UNWIND_STEPS: usize = 1 << 16;
 const TERMINATE_STATUS: u32 = 3;
 
 fn is_cxx(record: &ExceptionRecord) -> bool {
-    record.code == CXX_EXCEPTION
-        && record.parameter_count >= 3
-        && (CXX_MAGIC..=MAGIC_LAST).contains(&record.parameters[0])
+    cxx_walk::is_cxx_exception(record.code, record.parameters())
+}
+
+/// The program's memory, read where its own code would read it: an object's virtual base
+/// table and virtual function table, and what they point at.
+pub(super) struct ProgramMemory;
+
+impl ObjectMemory for ProgramMemory {
+    fn u64_at(&self, address: u64) -> u64 {
+        // SAFETY: the address comes from an object of the program and the tables MSVC laid out
+        // for its type; a wrong one faults as the program's own read would.
+        unsafe { (address as *const u64).read_unaligned() }
+    }
+
+    fn i32_at(&self, address: u64) -> i32 {
+        // SAFETY: as in `u64_at`.
+        unsafe { (address as *const i32).read_unaligned() }
+    }
 }
 
 fn terminate_with(reason: &[u8]) -> ! {
@@ -96,8 +113,11 @@ fn destroy_object(record: &ExceptionRecord) {
 pub fn leave_catch(catch: &CatchState, record: *mut ExceptionRecord) {
     // SAFETY: the unwind's record.
     let leaving = unsafe { &*record };
-    let rethrown = is_cxx(leaving) && leaving.parameters[1] == catch.record.parameters[1];
-    if !rethrown {
+    if cxx_walk::leaving_destroys_caught(
+        catch.record.parameters[1],
+        is_cxx(leaving),
+        leaving.parameters[1],
+    ) {
         destroy_object(&catch.record);
     }
 }
@@ -124,24 +144,13 @@ extern "C" fn throw(object: u64, info: u64, _: u64, _: u64, context: *mut Contex
 }
 
 fn function_data(data: FrameData) -> Option<FunctionData<'static>> {
-    let image = frames::image();
-    match data.compressed {
-        true => FunctionData::compressed(image, data.rva, data.function_begin),
-        false => FunctionData::fixed(image, data.rva),
-    }
+    data.read(frames::image())
 }
 
 fn unwind_states(function: &FunctionData<'_>, frame: u64, frame_pointer: u64, from: i32, to: i32) {
-    let mut state = from;
-    for _ in 0..MAX_UNWIND_STEPS {
-        if state == to || state < 0 {
-            break;
-        }
-        let Some(entry) = function.unwind_entry(state) else {
-            break;
-        };
+    for action in cxx_walk::unwind_actions(*function, from, to) {
         let mut bridge = Bridge::new(None, None);
-        match entry.action {
+        match action {
             Action::Nothing => {}
             Action::Funclet(address) => {
                 // SAFETY: an unwind funclet of the frame's function, which is still on the
@@ -164,25 +173,11 @@ fn unwind_states(function: &FunctionData<'_>, frame: u64, frame_pointer: u64, fr
                 unsafe { frames::call_program(&mut bridge, function, [this, 0, 0, 0]) };
             }
         }
-        state = entry.to_state;
     }
 }
 
 fn adjust(object: u64, catchable: &CatchableType) -> u64 {
-    let mut result = object.wrapping_add(catchable.member_displacement as i64 as u64);
-    if catchable.virtual_base_pointer >= 0 {
-        let base_pointer = object.wrapping_add(catchable.virtual_base_pointer as u64);
-        // SAFETY: an object with a virtual base holds its virtual base table's address at
-        // `virtual_base_pointer`, and the table the base's offset at the displacement.
-        let table = unsafe { (base_pointer as *const u64).read_unaligned() };
-        let entry = table.wrapping_add(catchable.virtual_base_displacement as i64 as u64);
-        // SAFETY: as above.
-        let offset = unsafe { (entry as *const i32).read_unaligned() };
-        result = result
-            .wrapping_add(offset as i64 as u64)
-            .wrapping_add(catchable.virtual_base_pointer as u64);
-    }
-    result
+    Displacement::of(catchable).apply(object, &ProgramMemory)
 }
 
 fn build_catch_object(
@@ -239,10 +234,13 @@ fn catch(
     function: &FunctionData<'_>,
     data: FrameData,
     frame: u64,
-    block: &TryBlock,
-    handler: &Handler,
-    thrown: Option<CatchableType>,
+    caught: Caught,
 ) -> ! {
+    let Caught {
+        block,
+        handler,
+        catchable: thrown,
+    } = caught;
     let Some(dispatch) = dispatch::current_dispatch() else {
         terminate_with(b"a C++ exception was caught outside a dispatch");
     };
@@ -262,11 +260,11 @@ fn catch(
         && handler.catch_object != 0
     {
         let slot = frame.wrapping_add(handler.catch_object);
-        build_catch_object(&image, slot, record.parameters[1], handler, &catchable);
+        build_catch_object(&image, slot, record.parameters[1], &handler, &catchable);
     }
     let enclosing_state = function
         .unwind_entry(block.low)
-        .map_or(-1, |entry| entry.to_state);
+        .map_or(OUTSIDE_EVERY_STATE, |entry| entry.to_state);
     let state = CatchState {
         record: *record,
         exception_context: dispatch.context,
@@ -290,11 +288,7 @@ fn catch(
     // unwind left in the try block's state.
     let returned =
         unsafe { frames::call_funclet(&mut bridge, handler.funclet, frame, frame, frame_pointer) };
-    let index = returned as usize;
-    let continuation = match index < handler.continuation_count {
-        true => handler.continuations[index],
-        false => returned,
-    };
+    let continuation = cxx_walk::continuation(&handler, returned);
     if let Some(caught) = bridge.catch.as_ref() {
         destroy_object(&caught.record);
     }
@@ -312,52 +306,18 @@ fn search(
 ) {
     // SAFETY: the dispatch's record.
     let exception = unsafe { &*record };
-    let cxx = is_cxx(exception);
-    if !cxx && function.synchronous_only() {
-        return;
-    }
     let image = frames::image();
-    let info: Option<ThrowInfo> = match cxx {
+    let thrown = match is_cxx(exception) {
         true => match cxx_data::throw_info(&image, exception.parameters[2]) {
-            Some(info) => Some(info),
+            Some(info) => Thrown::Cxx(info),
             None => return,
         },
-        false => None,
+        false => Thrown::Structured,
     };
-    for index in 0..function.try_count() {
-        let Some(block) = function.try_block(index) else {
-            break;
-        };
-        if state < block.low || state > block.high {
-            continue;
-        }
-        for handler_index in 0..block.handler_count {
-            let Some(handler) = function.handler(&block, handler_index, data.function_begin) else {
-                break;
-            };
-            let Some(info) = info else {
-                if handler.type_descriptor == 0 {
-                    catch(record, function, data, frame, &block, &handler, None);
-                }
-                continue;
-            };
-            for type_index in 0..info.catchable_count {
-                let Some(catchable) = cxx_data::catchable_type(&image, &info, type_index) else {
-                    break;
-                };
-                if cxx_data::handler_catches(&image, &handler, &catchable, info.attributes) {
-                    catch(
-                        record,
-                        function,
-                        data,
-                        frame,
-                        &block,
-                        &handler,
-                        Some(catchable),
-                    );
-                }
-            }
-        }
+    if let Some(caught) =
+        cxx_walk::find_handler(&image, function, data.function_begin, state, thrown)
+    {
+        catch(record, function, data, frame, caught);
     }
 }
 
@@ -388,52 +348,59 @@ unsafe fn frame_handler(
     // SAFETY: the dispatcher context's `CONTEXT` holds the frame's registers.
     let own_context = unsafe { &*dispatcher.context_record };
     let own_state = own_function.state_at(pc, function_begin);
-    let (frame, frame_pointer, state, data) =
-        match running_catch(|catch| catch.funclet == begin_address) {
-            Some(catch) if frames::funclet_stands_in(&catch, true) => {
-                let state = match own_state {
-                    -1 => catch.enclosing_state,
-                    state => state,
-                };
-                let frame_pointer = frames::frame_pointer(&catch.parent_context);
-                (catch.parent_frame, frame_pointer, state, catch.data)
+    let funclet_catch = running_catch(|catch| catch.funclet == begin_address);
+    let catch_of_frame = match funclet_catch {
+        Some(_) => None,
+        None => running_catch(|catch| catch.parent_frame == establisher),
+    };
+    let role = cxx_walk::frame_role(
+        own,
+        own_state,
+        own_function.is_catch_funclet(),
+        establisher,
+        funclet_catch.as_ref().map(running),
+        catch_of_frame.as_ref().map(running),
+    );
+    let catch_frame_pointer =
+        || funclet_catch.map_or(0, |catch| frames::frame_pointer(&catch.parent_context));
+    let (frame, frame_pointer, state, data) = match role {
+        FrameRole::Function {
+            frame,
+            state,
+            data,
+            in_catch_function: true,
+        } => (frame, catch_frame_pointer(), state, data),
+        FrameRole::Function {
+            frame, state, data, ..
+        } => (frame, frames::frame_pointer(own_context), state, data),
+        FrameRole::FuncletLocals { frame, from } => {
+            if unwinding {
+                unwind_states(
+                    &own_function,
+                    frame,
+                    catch_frame_pointer(),
+                    from,
+                    OUTSIDE_EVERY_STATE,
+                );
             }
-            Some(catch) => {
-                if unwinding {
-                    let frame_pointer = frames::frame_pointer(&catch.parent_context);
-                    unwind_states(
-                        &own_function,
-                        catch.parent_frame,
-                        frame_pointer,
-                        own_state,
-                        -1,
-                    );
-                }
-                return disposition::CONTINUE_SEARCH;
-            }
-            None if own_function.is_catch_funclet() => return disposition::CONTINUE_SEARCH,
-            None => {
-                let state = match running_catch(|catch| catch.parent_frame == establisher) {
-                    Some(catch) => catch.enclosing_state,
-                    None => own_state,
-                };
-                (establisher, frames::frame_pointer(own_context), state, own)
-            }
-        };
+            return disposition::CONTINUE_SEARCH;
+        }
+        FrameRole::Nothing => return disposition::CONTINUE_SEARCH,
+    };
     let Some(function) = function_data(data) else {
         return disposition::CONTINUE_SEARCH;
     };
     if unwinding {
         // SAFETY: the handler's contract.
         let long_jump = unsafe { (*record).code } == status::LONGJMP;
-        let to = match dispatch::unwind_target() {
-            Some(target) if target.frame == frame && target.state != NO_STATE => target.state,
-            Some(target) if target.frame == frame && long_jump => function.state_at(
-                target.ip.wrapping_sub(image.base).wrapping_sub(1),
-                data.function_begin,
-            ),
-            _ => -1,
-        };
+        let to = cxx_walk::state_to_unwind_to(
+            &function,
+            data.function_begin,
+            image.base,
+            frame,
+            dispatch::unwind_target(),
+            long_jump,
+        );
         unwind_states(&function, frame, frame_pointer, state, to);
         return disposition::CONTINUE_SEARCH;
     }
@@ -443,6 +410,14 @@ unsafe fn frame_handler(
         terminate_with(b"an exception left a noexcept function");
     }
     disposition::CONTINUE_SEARCH
+}
+
+fn running(catch: &CatchState) -> RunningCatch {
+    RunningCatch {
+        parent_frame: catch.parent_frame,
+        enclosing_state: catch.enclosing_state,
+        data: catch.data,
+    }
 }
 
 unsafe extern "efiapi" fn frame_handler_3(

@@ -13,6 +13,7 @@
 use super::super::thread_environment::{self, teb};
 use super::context::{Context, unwinder};
 use super::{CatchState, Frame};
+use crate::cxx_walk::funclet_stands_in;
 use crate::unwind::{HandlerKinds, Image, Memory, StackRange};
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -355,14 +356,6 @@ pub enum Event {
     End,
 }
 
-/// Whether the handler of a running catch block's funclet stands in for the catch's function:
-/// a `__CxxFrameHandler3` funclet's handler data is its function's, so it searches and unwinds
-/// the function's states itself; a `__CxxFrameHandler4` funclet's data, if it has a handler at
-/// all, covers only its own locals.
-pub fn funclet_stands_in(catch: &CatchState, funclet_has_handler: bool) -> bool {
-    funclet_has_handler && !catch.data.compressed
-}
-
 /// A walk up the program's frames from a `CONTEXT`.
 pub struct Walk {
     pub context: Context,
@@ -472,7 +465,7 @@ impl Walk {
     }
 
     fn leave_catch(&mut self, catch: &'static CatchState) -> Event {
-        let function_skipped = funclet_stands_in(catch, self.last_frame_had_handler);
+        let function_skipped = funclet_stands_in(catch.data, self.last_frame_had_handler);
         let resume = match function_skipped {
             true => caller_of(&catch.parent_context, true),
             false => Some(catch.parent_context),

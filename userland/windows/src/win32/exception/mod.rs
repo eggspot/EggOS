@@ -17,6 +17,7 @@ mod frames;
 mod signal;
 mod vectored;
 
+pub use crate::cxx_walk::FrameData;
 use crate::library::Export;
 use context::unwinder;
 
@@ -84,6 +85,12 @@ impl ExceptionRecord {
             parameter_count: count as u32,
             parameters: all,
         }
+    }
+
+    /// The parameters the record holds.
+    pub fn parameters(&self) -> &[u64] {
+        let count = (self.parameter_count as usize).min(MAX_PARAMETERS);
+        &self.parameters[..count]
     }
 }
 
@@ -163,15 +170,6 @@ pub struct Frame {
     pub handler_data: u64,
     pub establisher: u64,
     pub unwound: bool,
-}
-
-/// Which C++ data a function uses: `__CxxFrameHandler4`'s compressed data or
-/// `__CxxFrameHandler3`'s, where, and where the function starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameData {
-    pub compressed: bool,
-    pub rva: u64,
-    pub function_begin: u32,
 }
 
 /// A catch block the layer is running: the exception it handles, the frame of the function

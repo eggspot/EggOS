@@ -15,7 +15,8 @@
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
-//! read by `cxx_data.rs`; `user_shared_data.rs` lays out the page Windows shares with every
+//! read by `cxx_data.rs` and the catch walk's decisions made by `cxx_walk.rs` (D229);
+//! `user_shared_data.rs` lays out the page Windows shares with every
 //! process.
 
 #![cfg_attr(eggos_user, no_std, no_main)]
@@ -34,6 +35,8 @@ mod command_line;
 mod counted_print;
 #[cfg(any(test, runs_windows_programs))]
 mod cxx_data;
+#[cfg(any(test, runs_windows_programs))]
+mod cxx_walk;
 #[cfg(any(test, runs_windows_programs))]
 mod error_messages;
 #[cfg(any(test, runs_windows_programs))]

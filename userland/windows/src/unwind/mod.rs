@@ -118,6 +118,18 @@ impl HandlerKinds {
     }
 }
 
+/// No state to unwind a C++ frame to: the frame is left, so every state is undone.
+pub const NO_STATE: i32 = i32::MIN;
+
+/// Where an unwind goes: the target frame's establisher, the address it resumes at, and for a
+/// C++ frame the state its catch needs it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnwindTarget {
+    pub frame: u64,
+    pub ip: u64,
+    pub state: i32,
+}
+
 /// What one step found besides the caller's registers: the frame's language handler (its
 /// address) and the address of its data, when the step asked for that kind and the program
 /// was in the function's body, and the frame's establisher, which identifies the frame.

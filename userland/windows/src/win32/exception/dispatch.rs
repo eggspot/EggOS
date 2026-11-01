@@ -19,13 +19,12 @@ use super::{
 };
 use crate::fault;
 use crate::unwind::HandlerKinds;
+pub use crate::unwind::{NO_STATE, UnwindTarget};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 static UNHANDLED_EXCEPTION_FILTER: AtomicUsize = AtomicUsize::new(0);
 const STACK_GAP: u64 = 128;
 const SIGINFO_SIZE: usize = 128;
-/// No state to unwind a C++ frame to: the frame is left, so every state is undone.
-pub const NO_STATE: i32 = i32::MIN;
 
 /// A dispatch in progress on this thread: its `CONTEXT`, and whether the `CONTEXT`'s `pc` is a
 /// return address (a raised exception) rather than a faulting instruction.
@@ -33,15 +32,6 @@ pub struct Dispatch {
     previous: *mut Dispatch,
     pub context: *mut Context,
     pub start_unwound: bool,
-}
-
-/// Where an unwind goes: the target frame's establisher, the address it resumes at, and for a
-/// C++ frame the state its catch needs it in.
-#[derive(Debug, Clone, Copy)]
-pub struct UnwindTarget {
-    pub frame: u64,
-    pub ip: u64,
-    pub state: i32,
 }
 
 /// Where an exception came from: the program raised it, or the CPU did with this signal.
