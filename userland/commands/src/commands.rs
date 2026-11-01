@@ -3089,12 +3089,13 @@ pub const IP: CommandDefinition = CommandDefinition {
     description: "Shows each adapter with its link and IPv4 addresses (address, the default), \
                   links only (link), the routes (route) or the neighbours' hardware addresses \
                   (neigh), all or one adapter's (show dev <name>); -j writes the network's \
-                  state and adapters as one JSON object. Its own parser also takes -json, \
-                  -stats and -4.",
+                  state and adapters as one JSON object. It also takes iproute2's -json, -stats \
+                  and -statistics, as --json and -s.",
     options: &[
         flag(b's', "Add traffic counters."),
         named_flag(b'j', "json", "Write one JSON object."),
         flag(b'4', "IPv4 only (always so)."),
+        named_flag(b'h', "help", "Print the usage."),
     ],
     operands: &[
         operand(
@@ -3215,9 +3216,27 @@ pub const NSLOOKUP: CommandDefinition = CommandDefinition {
     words: &["nslookup"],
     summary: "Looks up a host name's addresses.",
     description: "Asks the network's DNS servers, or the server named, for the name's IPv4 \
-                  addresses and prints them, with the canonical name of an alias. Its own \
-                  parser takes -port=<port> and -timeout=<seconds>, as other nslookups do.",
-    options: &[],
+                  addresses and prints them, with the canonical name of an alias. It also \
+                  takes -port=<port> and -timeout=<seconds>, as other nslookups do.",
+    options: &[
+        valued(
+            None,
+            Some("port"),
+            "port",
+            ValueType::Integer {
+                minimum: 1,
+                maximum: 65535,
+            },
+            "Ask the server on this port (53); also -port=<port>.",
+        ),
+        valued(
+            None,
+            Some("timeout"),
+            "seconds",
+            ValueType::Text,
+            "Wait this long for each answer (2 s, decimals allowed); also -timeout=<seconds>.",
+        ),
+    ],
     operands: &[
         operand("name", ValueType::Text, Count::One),
         operand("server", ValueType::Text, Count::ZeroOrOne),

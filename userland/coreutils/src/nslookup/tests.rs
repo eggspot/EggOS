@@ -80,3 +80,46 @@ fn a_missing_name_a_silent_server_and_bad_operands_fail() {
     assert_eq!(status, 1);
     assert!(errors.contains("not supported yet"), "{errors}");
 }
+
+#[test]
+fn options_come_from_the_registry_with_bind_s_words() {
+    let five_three_five_three = "Server:\t\t10.0.2.2\nAddress:\t10.0.2.2#5353\n\n";
+    for arguments in [
+        &[c"--port=5353", c"eggos.test", c"10.0.2.2"][..],
+        &[c"eggos.test", c"--port", c"5353", c"10.0.2.2"][..],
+        &[c"eggos.test", c"10.0.2.2", c"-port=5353", c"-timeout=0.5"][..],
+    ] {
+        let (status, out, _) = run(network(), arguments);
+        assert_eq!(status, 0, "{arguments:?}");
+        assert!(out.starts_with(five_three_five_three), "{out}");
+    }
+    let usage =
+        "nslookup: usage: nslookup [-port=<port>] [-timeout=<seconds>] <name> [<server>]\n";
+    for (arguments, expected) in [
+        (&[c"-port=x", c"eggos.test"][..], "nslookup: invalid port 'x'\n"),
+        (
+            &[c"--timeout=0", c"eggos.test"][..],
+            "nslookup: invalid timeout '0'\n",
+        ),
+        (
+            &[c"--port", c"eggos.test"][..],
+            "nslookup: invalid port 'eggos.test'\n",
+        ),
+        (
+            &[c"--timeout"][..],
+            "nslookup: option '--timeout' requires an argument\n",
+        ),
+        (&[c"-x", c"eggos.test"][..], "nslookup: invalid option -- 'x'\n"),
+        (&[c"a.test", c"10.0.2.2", c"b"][..], usage),
+    ] {
+        let (status, out, errors) = run(network(), arguments);
+        assert_eq!((status, out.as_str()), (1, ""), "{arguments:?}");
+        assert_eq!(errors, expected, "{arguments:?}");
+    }
+    let (status, out, errors) = run(network(), &[c"--", c"-port=53"]);
+    assert_eq!((status, errors.as_str()), (1, ""));
+    assert!(
+        out.ends_with("** server can't find -port=53: NXDOMAIN\n"),
+        "{out}"
+    );
+}

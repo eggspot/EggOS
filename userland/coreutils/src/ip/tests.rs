@@ -129,3 +129,35 @@ fn unknown_objects_devices_and_options_are_refused() {
     let (status, _, errors) = run("", &[]);
     assert_eq!((status, errors.as_str()), (0, ""));
 }
+
+#[test]
+fn options_come_from_the_registry_with_iproute2_s_words() {
+    let both = format!("{LOOPBACK}{CONNECTED}");
+    let json = run(&both, &[c"-j", c"addr"]).1;
+    assert_eq!(run(&both, &[c"-json", c"addr"]).1, json);
+    assert_eq!(run(&both, &[c"addr", c"--json"]).1, json);
+    let counted = run(&both, &[c"-s", c"link"]).1;
+    assert_eq!(run(&both, &[c"-statistics", c"link"]).1, counted);
+    assert_eq!(run(&both, &[c"-4s", c"link"]).1, counted);
+    assert_eq!(run(&both, &[c"link", c"-stats"]).1, counted);
+    let usage = "usage: ip [-s] [-j] [address | link | route | neigh] [show [dev <name>]]\n";
+    assert_eq!(run(&both, &[c"-h"]), (0, usage.to_owned(), String::new()));
+    assert_eq!(run(&both, &[c"--help"]).1, usage);
+    assert_eq!(run(&both, &[c"help"]).1, usage);
+    let (status, _, errors) = run(&both, &[c"--bogus"]);
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "ip: unrecognized option '--bogus'\n")
+    );
+    let (status, _, errors) = run(&both, &[c"-x"]);
+    assert_eq!((status, errors.as_str()), (1, "ip: invalid option -- 'x'\n"));
+    for extra in [&[c"addr", c"show", c"dev"][..], &[c"addr", c"flush"][..]] {
+        let (status, _, errors) = run(&both, extra);
+        assert_eq!((status, errors), (1, format!("ip: {usage}")), "{extra:?}");
+    }
+    let (status, _, errors) = run(&both, &[c"--", c"-s"]);
+    assert_eq!(
+        (status, errors.as_str()),
+        (1, "ip: object \"-s\" is unknown, try \"ip help\"\n")
+    );
+}

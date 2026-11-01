@@ -1,7 +1,10 @@
 use crate::network::{Interfaces, NEIGHBOURS, Shown, interfaces, read_interfaces, read_text};
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
+use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_net::dhcp::INFINITE_LEASE_S;
 use eggos_net::status::{Dhcp, InterfaceStatus, NO_ADAPTER_WORD, parse_neighbour};
 
@@ -25,38 +28,72 @@ fn object(word: &[u8]) -> Option<Object> {
     }
 }
 
+fn iproute2_word(argument: &CStr) -> &CStr {
+    match argument.to_bytes() {
+        b"-json" => c"--json",
+        b"-stats" | b"-statistics" => c"-s",
+        _ => argument,
+    }
+}
+
 pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    let mut words = [c""; MAX_ARGUMENTS];
+    if arguments.len() > words.len() {
+        return usage(output);
+    }
+    for (word, &argument) in words.iter_mut().zip(arguments) {
+        *word = iproute2_word(argument);
+    }
     let mut statistics = false;
-    let mut json = false;
+    let mut help = false;
+    let parsed = parse_defined(
+        output,
+        &words[..arguments.len()],
+        &commands::IP,
+        |output, given| {
+            match given.option.short {
+                Some(b's') => statistics = true,
+                Some(b'j') => output.use_json(),
+                Some(b'h') => help = true,
+                _ => {}
+            }
+            Ok(())
+        },
+    );
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    if help {
+        output.write(USAGE);
+        output.write(b"\n");
+        return 0;
+    }
+    let json = output.is_json();
     let mut chosen = None;
     let mut device: Option<&[u8]> = None;
-    let mut words = arguments.iter().map(|argument| argument.to_bytes());
+    let mut words = operands.all().iter().map(|operand| operand.to_bytes());
     while let Some(word) = words.next() {
         match word {
-            b"-s" | b"-stats" | b"-statistics" => statistics = true,
-            b"-j" | b"-json" | b"--json" => {
-                json = true;
-                output.use_json();
-            }
-            b"-4" => {}
             b"show" | b"list" | b"ls" if chosen.is_some() => {}
             b"dev" if chosen.is_some() => match words.next() {
                 Some(name) => device = Some(name),
                 None => return usage(output),
             },
-            b"help" | b"-h" | b"--help" => {
+            b"help" => {
                 output.write(USAGE);
                 output.write(b"\n");
                 return 0;
             }
-            word if chosen.is_none() && !word.starts_with(b"-") => match object(word) {
+            word if chosen.is_none() => match object(word) {
                 Some(found) => chosen = Some(found),
                 None => {
-                    output.error(&[b"object \"", word, b"\" is unknown, try \"ip help\""]);
+                    output.coded(
+                        &errors::USAGE,
+                        &[b"object \"", word, b"\" is unknown, try \"ip help\""],
+                    );
                     return FAILURE;
                 }
             },
-            word if word.starts_with(b"-") => return output.invalid_option(word),
             _ => return usage(output),
         }
     }
@@ -98,7 +135,7 @@ pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
 }
 
 fn usage<S: System>(output: &mut Output<S>) -> i32 {
-    output.error(&[USAGE]);
+    output.coded(&errors::USAGE, &[USAGE]);
     FAILURE
 }
 
