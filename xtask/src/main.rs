@@ -2670,6 +2670,19 @@ mod tests {
             ])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {
+            if let Some(file) = tool.needs {
+                assert_eq!(file, format!("/{WINDOWS_LAYER_PATH}"), "{}", tool.name);
+                assert!(
+                    matches!(
+                        tool.twin.program,
+                        eggos_mcp::tools::Program::Fixed(twin)
+                            if twin == format!("/{WINDOWS_COMMAND_PATH}")
+                    ),
+                    "{}'s twin is the Windows layer's command, there exactly where the layer is",
+                    tool.name,
+                );
+                continue;
+            }
             match tool.twin.program {
                 eggos_mcp::tools::Program::Fixed(twin) => assert!(
                     programs.iter().any(|program| program == twin),
