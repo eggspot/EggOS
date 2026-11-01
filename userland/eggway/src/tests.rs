@@ -1996,7 +1996,7 @@ fn the_focused_client_may_set_a_selection_with_its_latest_pointer_enter_serial()
 }
 
 #[test]
-fn a_source_is_set_once_and_a_selection_offer_has_no_finish() {
+fn the_selection_s_own_source_set_again_is_offered_again_with_its_new_types() {
     let mut session = Session::new();
     let window = session.shown();
     session.data_device();
@@ -2009,6 +2009,54 @@ fn a_source_is_set_once_and_a_selection_offer_has_no_finish() {
         &[Value::Object(SOURCE), Value::Uint(serial)],
     );
     session.pump();
+    let offers = session.of(DATA_DEVICE, data_device::SELECTION.opcode).len();
+    session.send(SOURCE, 0, &[Value::String(b"SAVE_TARGETS")]);
+    session.send(
+        DATA_DEVICE,
+        1,
+        &[Value::Object(SOURCE), Value::Uint(serial)],
+    );
+    session.pump();
+    assert_eq!(session.error(), None);
+    assert!(session.alive());
+    assert!(session.of(SOURCE, data_source::CANCELLED.opcode).is_empty());
+    assert_eq!(
+        session.of(DATA_DEVICE, data_device::SELECTION.opcode).len(),
+        offers + 1
+    );
+    let offer = session
+        .of(DATA_DEVICE, data_device::SELECTION.opcode)
+        .last()
+        .map(|event| event.word(0))
+        .expect("offered again");
+    let types: Vec<String> = session
+        .of(offer, data_offer::OFFER.opcode)
+        .into_iter()
+        .map(text_of)
+        .collect();
+    assert_eq!(types, ["text/plain", "SAVE_TARGETS"]);
+    session.end();
+}
+
+#[test]
+fn a_source_is_used_once_and_a_selection_offer_has_no_finish() {
+    let mut session = Session::new();
+    let window = session.shown();
+    session.data_device();
+    session.source(SOURCE, &[b"text/plain"]);
+    session.focus(None, window);
+    session.send(
+        DATA_DEVICE,
+        0,
+        &[
+            Value::Object(SOURCE),
+            Value::Object(SURFACE),
+            Value::Object(0),
+            Value::Uint(1),
+        ],
+    );
+    session.pump();
+    let serial = session.input_serial();
     session.send(
         DATA_DEVICE,
         1,

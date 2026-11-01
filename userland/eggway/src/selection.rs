@@ -373,8 +373,10 @@ pub(crate) fn source_request(client: &mut ClientSlot, shared: &mut Shared, messa
 
 /// A device's requests: `set_selection` makes a source (or none) the selection, from the
 /// client with the keyboard focus only and with the serial of an input event it was sent since
-/// the focus came (else it is ignored, as the Wayland protocol allows); a drag's source is
-/// cancelled at once, as drag and drop is not served yet.
+/// the focus came (else it is ignored, as the Wayland protocol allows); setting the source that
+/// is the selection already offers it again with the MIME types it has now, as GTK 3 does after
+/// adding `SAVE_TARGETS` (another used source is `used_source`); a drag's source is cancelled
+/// at once, as drag and drop is not served yet.
 pub(crate) fn device_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
@@ -403,6 +405,15 @@ pub(crate) fn device_request<S: System>(
         return;
     }
     let source = message.uint(0);
+    if source != 0
+        && shared
+            .selections
+            .of(kind)
+            .is_some_and(|selection| selection.owner == client.index && selection.source == source)
+    {
+        offer_again(client, shared, source, kind);
+        return;
+    }
     let chosen = match source {
         0 => None,
         id => {
@@ -435,6 +446,23 @@ pub(crate) fn device_request<S: System>(
             },
         );
     }
+    shared.selections.announce_change(kind);
+}
+
+fn offer_again(client: &mut ClientSlot, shared: &mut Shared, source: u32, kind: Kind) {
+    let Some(index) = object_index(client, source, kind.source_interface()) else {
+        return;
+    };
+    let Some(Some(found)) = client.sources.get(usize::from(index)).copied() else {
+        return;
+    };
+    let generation = shared.selections.next_generation();
+    *shared.selections.slot(kind) = Some(Selection {
+        owner: client.index,
+        source,
+        mime_types: found.mime_types,
+        generation,
+    });
     shared.selections.announce_change(kind);
 }
 
