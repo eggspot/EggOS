@@ -11,8 +11,11 @@
 extern crate alloc;
 
 pub mod keys;
+pub mod options;
+pub mod paste;
 #[cfg(eggos_user)]
 pub mod program;
+pub mod selection;
 pub mod title;
 pub mod window;
 
