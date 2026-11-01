@@ -9,6 +9,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod clock_sync;
+
 /// Where the file is: under `/home`, so on the persistent disk when one is attached (D131), in
 /// the home of `root`, the account every process runs as until there are accounts.
 pub const PATH: &str = "/home/root/.config/eggos/settings";
@@ -223,6 +225,20 @@ pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
 /// The time zone times are shown in: an IANA zone name such as `Europe/Paris`, or `UTC`
 /// (D194); `TZ` in a program's environment comes first.
 pub const TIME_ZONE: &str = "time.zone";
+
+/// Whether the clock is set from the network (D224): `on` (the default) or `off`.
+pub const TIME_AUTOMATIC: &str = "time.automatic";
+
+/// The settings kept for this session only, when no disk holds [`PATH`] (D224): read after
+/// [`PATH`], so a value here wins.
+pub const SESSION_PATH: &str = "/run/eggos/settings";
+
+/// Whether the clock is set from the network, by `disk` (the file at [`PATH`]) and `session`
+/// (the file at [`SESSION_PATH`]): on unless the later of them says `off`.
+pub fn time_automatic(disk: &[u8], session: &[u8]) -> bool {
+    let chosen = value(session, TIME_AUTOMATIC).or_else(|| value(disk, TIME_AUTOMATIC));
+    !matches!(chosen, Some(b"off"))
+}
 
 /// A keyboard layout as Settings and `settings` name and describe it
 /// (docs/ux/keyboard-v0.3.md).
@@ -721,6 +737,17 @@ pub fn with_value(file: &[u8], key: &str, value: &[u8], out: &mut [u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_clock_is_automatic_unless_the_session_or_else_the_disk_says_off() {
+        let off = b"eggos-settings 1\ntime.automatic=off\n";
+        let on = b"eggos-settings 1\ntime.automatic=on\n";
+        assert!(time_automatic(b"", b""));
+        assert!(!time_automatic(off, b""));
+        assert!(time_automatic(off, on));
+        assert!(!time_automatic(on, off));
+        assert!(time_automatic(b"eggos-settings 1\ntime.automatic=maybe\n", b""));
+    }
 
     #[test]
     fn input_preferences_out_of_range_or_absent_are_their_defaults() {
