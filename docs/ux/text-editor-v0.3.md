@@ -385,3 +385,140 @@ an auto-indent; indenting a selection with Tab; find and replace; go to line; a 
 highlight; one window per file (opening a file twice gives two windows); reload when the file
 changes on disk; printing; fonts, sizes and themes; syntax colouring; a `Saved.` notice; the
 terminal `edit` (moved after the release).
+
+## 17. Addendum: the menu bar, word wrap, replace, go to line, links and the picker
+
+Design by Claude Fable (D16) on the toolkit's second slice (`toolkit-v0.5.md`). Everything
+above stands unless this section says otherwise; of section 16's list, word wrap, find and
+replace, go to line and the file picker are now in. Numbers are px at 1x and double at 2x.
+
+### 17.1 The menu bar
+
+The toolkit `MenuBar` (v0.5 section 3): rows 0..27 above the toolbar in the Windows and Linux
+profiles, so every band of section 2 moves down 28 and the minimum height is 328; in the macOS
+profile it is in the top bar and nothing moves. The toolbar's five buttons stay. The keys shown
+are the labels of section 10 as amended by 17.5; dim rules as the context menu's.
+
+| Menu | Items (`─` a separator) |
+|------|-------------------------|
+| `&File` | `New` Mod+N, `Open...` Mod+O, `Save` Mod+S, `Save As...` Mod+Shift+S ─ `Close` Mod+W |
+| `&Edit` | `Undo` Mod+Z, `Redo` Mod+Shift+Z ─ `Cut` Mod+X, `Copy` Mod+C, `Paste` Mod+V ─ `Select All` Mod+A ─ `Find` Mod+F, `Find Next` F3, `Find Previous` Shift+F3, `Replace` Ctrl+H, `Go to Line` Ctrl+G |
+| `&View` | `Word Wrap` Alt+Z (checked while on) |
+
+`Open...` and `Save As...` carry `...` because they open the picker's window (17.6); the
+toolbar's `Open` and `Save As` labels are unchanged.
+
+### 17.2 Word wrap
+
+- **On by default** in every new window (Notepad's and TextEdit's default; a long line in a
+  note is read, not scrolled). `View > Word Wrap`, Alt+Z, toggles it; per window, not saved.
+- **Wrapping** follows the text area's pass (v0.5 section 5.3) in Egg Mono columns: the wrap
+  width is `(text view width - 16) / 8` columns, at least 8; a break opportunity is after
+  every space and tab, the spaces stay on the upper visual line, a word wider than the view
+  breaks at the column, a continuation line starts at column 0 with no indent. Each logical
+  line's visual lines follow it; the gutter numbers only the **first** visual line of a logical
+  line (the rest of the gutter stays `menu.bg`). Content width is the view's, so the horizontal
+  bar never shows while wrap is on; the pass runs on edit (from the edited line down), resize,
+  scale change and toggle, never on paint.
+- **Caret and keys** by visual line: Up/Down, PageUp/PageDown, Home/End (End before a wrapped
+  line's trailing spaces), the click's row, the drag past the top or bottom; Left/Right cross a
+  wrap as if it were not there; a caret at a wrapped line's first byte draws at that line's
+  start. **The status bar's `Ln` and `Col` are logical** (the file's line and the column in it),
+  and `Go to Line` counts logical lines.
+- Off, the view is section 4's exactly.
+
+### 17.3 Replace
+
+Ctrl+H (every profile; Cmd+Alt+F accepted, TextEdit's) or `Edit > Replace` opens the find bar
+with a **second row**: the bar slot grows to rows 32..95 (`bar.edge` line at row 95; the
+editing area starts at 96). Row 2, y 66 unless said:
+
+| Part | Rect | Look |
+|------|------|------|
+| field | `(12, 66)`, 180x28 | toolkit field, placeholder `Replace`, keeps its text while the window lives |
+| `Replace` | `(200, 66)`, 96x28 | toolkit push button; `text.dim` and inert while the find field is empty |
+| `Replace All` | `(304, 66)`, 96x28 | the same |
+
+- **`Replace`** (and Enter in the Replace field): when the selection is the current match, it
+  is replaced by the Replace field's text (empty deletes it) and the search moves to the next
+  match as `>` does; otherwise it only finds the next, so the person sees what will change
+  before it changes (Notepad and gedit do the same). Each press is one undo step.
+- **`Replace All`**: every match in the document, from the top, in **one undo step**; the
+  caret ends after the last replacement, and the result text reads `<N> replaced` (`1 replaced`;
+  `Not found` when there was no match). The `999+` rule does not apply to it (the count is
+  exact).
+- Mod+F opens the bar with one row (its find text focused); Ctrl+H opens it with both rows and
+  focuses the Replace field when the find field has text, else the find field; Esc closes the
+  whole bar. Tab order: find field, `Match case`, Replace field, `Replace`, `Replace All`;
+  `<`, `>` and `×` stay off the order. The `Match case` setting applies to both.
+
+### 17.4 Go to line
+
+Ctrl+G (every profile; Cmd+L accepted, TextEdit's) or `Edit > Go to Line` opens a bar in the
+slot (rows 32..63, replacing an open find or replace bar):
+
+| Part | Rect | Look |
+|------|------|------|
+| label | `(12, 40)` | `Go to line:` in `text` |
+| field | `(108, 34)`, 96x28 | toolkit field; only ASCII digits are accepted (other keys ignored), at most 7 |
+| hint | `(216, 40)` | `Line 1-<N>` in `text.dim`, `<N>` the line count |
+| `Go` | `(W - 140, 34)`, 64x28 | flat text button, as the path bar's |
+| `Cancel` | `(W - 72, 34)`, 64x28 | flat text button |
+
+Enter or `Go` with a number in `1..=N` puts the caret at that line's first column, clears the
+selection, scrolls so the line is the middle visible row (or as near as the document allows)
+and closes the bar; an empty field or a number outside the range keeps the bar open, keeps the
+focus in the field and turns the hint into **`Enter a line from 1 to <N>`** in `text` (no red:
+no palette has one; the words and the colour change are the cue). Esc and `Cancel` close it.
+The field is the bar's one focus stop; it opens empty each time.
+
+### 17.5 Keys amended
+
+`Find Next` is **F3 and Cmd+G**, `Find Previous` **Shift+F3 and Cmd+Shift+G**: the Super key
+only, since **Ctrl+G is Go to Line** (Notepad's, VS Code's) and the two keys differ physically
+in every profile; section 10's `Mod+G` and `Mod+Shift+G` rows read so. Added: `Ctrl+H`
+replace, `Ctrl+G` go to line, `Alt+Z` word wrap, `Mod+W` close (the window server's close
+request, now also a menu item). F10, Alt and Alt+letter reach the bar (toolkit v0.5 section 3).
+
+### 17.6 Open and Save As through the system file picker
+
+`/bin/pick` (`file-picker-v0.3.md`) replaces section 7's path bar when it is in the image
+(it is part of the base, so always, but the bar stays as the fallback for an image without it).
+
+- **Open** (`Open...`, Mod+O, the toolbar's `Open`; the unsaved-changes question first): `pick
+  open --over <window id> --title Open --folder <the document's folder; /home/root for
+  Untitled> --filter "Text files|*.txt;*.md;*.log;*.csv;*.json;*.toml" --filter "All files|*"`.
+  The chosen path loads as section 5 says, replacing the document; Cancel changes nothing.
+- **Save As** (`Save As...`, Mod+Shift+S, Save on `Untitled`): `pick save --over <window id>
+  --title "Save As" --folder <folder> --name <name, or Untitled.txt> --extension txt` with the
+  same filters. The picker asks `Replace <name>?` itself, so the panel of section 8's second row
+  is no longer the editor's; the chosen path is written, the document takes it, and a save that
+  answered a close request carries the close out. Cancel cancels the close too.
+- While the picker runs the editor's window **ignores keys, pointer and wheel and draws
+  unfocused** (as during a panel); a `CloseRequest` meanwhile is ignored. One picker at a
+  time. Errors after the choice are section 8's notices as before.
+
+### 17.7 Saving through a link
+
+A document opened through a symbolic link (`/home/root/Desktop/notes link.txt`) keeps the
+**link's path**: the title and gutter show the link's name, and `Save` writes **through the
+link** (the kernel's open of the path follows it), so the target's bytes change and the link
+stays as it is: the editor never writes a temporary file and renames it over the path. A
+**broken link** opens as a new document named by the link with `New file` in the status bar
+(section 1's missing-path rule); its first save creates the target, so the link heals. When the
+target cannot be created the notice reads `<name> points to <target>, which cannot be
+created.` (`<target>` the stored text). `Save As` onto a link asks `Replace <name>?` with line 2
+`<name> is a link to <target>, which will be replaced.` and writes through it likewise.
+
+### 17.8 Element tree, checks
+
+The bar is `menubar` `Menu` with its `menuitem`s (`Word Wrap` carries `checked`); the Replace
+row's field is a `text field` named `Replace`, its buttons `button`s `Replace` and `Replace
+All`; the go-to bar's field a `text field` named `Go to line` with the hint as a `label`.
+Host tests: a 100-column line wraps at 60 columns to two visual lines with one gutter number
+and `Col 70` on the second; Alt+Z off restores the horizontal bar; `Replace All` of `a` by `bb`
+in `banana` gives `bbbnbbnbb`, `3 replaced`, and one Mod+Z restores `banana`; Go to Line 0, N +
+1 and empty give the hint in `text`, 7 centres line 7; Ctrl+G opens the bar while Cmd+G finds
+next; a save through a link changes the target's bytes and `readlink` is unchanged; a broken
+link opens as `New file` and its save creates the target. QEMU: the replace bar open with `2
+of 3`, and the picker opened from Save As over the editor.

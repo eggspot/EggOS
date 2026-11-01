@@ -796,6 +796,170 @@ toolkit draws it (`toolkit-v0.3.md` section 1).
     right the free space, `12.0 GB free` or `Read-only`, as files-free-space-v0.3.md says
     (D171). The `Delete <name>?` dialog above and `/mnt/host` are superseded.
 
+#### 8.1.1 Files' next features (addendum, Claude Fable)
+
+Items 16 to 27 extend 8.1 with the toolkit's second slice (`toolkit-v0.5.md`: the menu bar,
+the table, the shared clipboard of D197) and `files-links-v0.3.md`. Everything above stands
+unless an item says otherwise. The list is the toolkit `Table`; "row" below is a table row.
+
+16. **The menu bar** (toolkit v0.5 section 3): rows 0..27 above the toolbar in the Windows and
+    Linux profiles, so every y in section 8 and 8.1 moves down 28 and the minimum height grows
+    by 28; in the macOS profile it is in the top bar and nothing moves. Mnemonics `&File`,
+    `&Edit`, `&View`, `&Go`; items dim by the context menu's rules (item 7). Keys are labels; the
+    key map is item 12 plus the keys below. A checked item (the current view, sort, order and
+    `Show Hidden Files`) draws a 4x4 `accent` square at x + 4, rows + 14..17 of its 32 px:
+    `menu::Entry::Item` gains `checked: bool`.
+
+    | Menu | Items (`─` a separator) |
+    |------|-------------------------|
+    | `File` | `New Folder` Mod+Shift+N, `Open` Enter, `Show Original`, `Make Link`, `Change Target...`, `Rename` F2, `Move to Trash` Delete, `Delete Permanently` Shift+Delete ─ `Properties` Alt+Enter ─ `Close Window` Mod+W |
+    | `Edit` | `Cut` Mod+X, `Copy` Mod+C, `Paste` Mod+V, `Paste Link`, `Copy Path` Mod+Shift+C ─ `Select All` Mod+A |
+    | `View` | `List` Mod+1, `Icons` Mod+2 ─ `Sort by Name`, `Sort by Size`, `Sort by Kind`, `Sort by Modified`, `Reverse Order` ─ `Show Hidden Files` Mod+H ─ `Reload` F5 |
+    | `Go` | `Back` Alt+Left, `Up` Alt+Up ─ `Home`, `Desktop`, `Documents`, `Downloads`, `Trash` ─ `Location...` Mod+L |
+
+    Profile wording as item 7: `Delete`, `Recycle Bin`, `Create shortcut`, `Open file location`,
+    `Paste shortcut`, `Copy as path`.
+17. **Multiple selection.** The table gains `multiple: bool`, an `anchor` row and a selection
+    bitmap of 4096 bits held in the tree (one per table that asks, as the text area's store
+    is); Files turns it on outside the Trash and in it. The toolkit's `selected` is the **focus
+    row** (the `>` in `accent`, the ring); every selected row is filled `selection`. A click
+    selects that row alone; **Mod+click** toggles a row; **Shift+click** selects from the anchor
+    (the last row selected without Shift) to it; **Shift+Up/Down/Home/End/PageUp/PageDown**
+    extend from the anchor; **Mod+A** selects all; Esc leaves the focus row selected alone. A
+    drag that starts on empty space (below the last row, or on a cell's gap in the icon view)
+    past 6 px draws a 1 px `accent` rectangle (no fill) and selects every row it touches; a drag
+    on a row is the toolkit's drag (section 7 there). Responses: `Chosen` for the focus row,
+    `Response::SelectionChanged(id)` for the set, `selected_rows(id)` to read it. Status bar
+    with two or more selected: `3 of 42 selected`, plus `, 1.2 MB` when every selected item is a
+    file (`size_text` of the sum); one or none: `N items` as today. **Acting on many**: `Cut`,
+    `Copy`, `Copy Path`, `Make Link` (one link each), `Move to Trash` (no dialog), `Delete
+    Permanently` (`Delete <N> items permanently?` / `This cannot be undone.`), `Restore`, `Open`
+    (each file in its app, each folder in a new Files window; over 8 items asks `Open <N>
+    items?` / `Each opens in its own window.`, `Cancel`, `Open`), and `Properties` (line 1
+    `<N> items`; `Kind: <n> folders, <m> files`; `Size: <sum> (<m> files)`; `Where: <folder>`;
+    four lines). **Dim with many**: `Rename`, `Show Original`, `Change Target...`, `Install...`,
+    `Uninstall...`, `Paste` (on a folder row). The clipboard holds up to 1024 paths (item 8's
+    one item becomes a list; names and name clashes per item). A right-click on a selected row
+    keeps the selection; on another row selects it alone.
+18. **Sort by column.** The columns are `Name`, `Size` (`Align::End`, 80), `Kind` (112, shown
+    while the list is at least 560 wide; sorting by it stays in `View`), `Modified` (128); `Name`
+    takes the rest, at least 160, the table scrolling sideways below that. Every header is
+    `sortable`: a click sorts ascending, a second click reverses (the toolkit's arrow in
+    `accent`, up for ascending). **Folders stay first** in either order; within each group the
+    column decides and `Name` breaks ties; `Size` sorts bytes (folders and folder links `-`),
+    `Kind` the column's words, `Modified` the time (descending is newest first). The Trash's
+    `Deleted` column sorts likewise, newest first by default. Remembered **per window only**:
+    every new window starts `Name` ascending; `View > Sort by ...` and `Reverse Order` are the
+    keyboard's way (the arrow follows). Kind words: `Folder`, `Text`, `Image`, `File`, `Zip
+    archive`, `Windows program`, `macOS program`, `Linux program`, `App`, `Link`, `Broken link`
+    (a link row's kind is `Link` here, its target's word in Properties). `Image` is a new
+    `Kind` (PNG, JPEG, GIF, BMP by their first bytes); Open on one shows `No app opens <name>
+    yet.` until a viewer exists.
+19. **Icon view.** `View > Icons` (Mod+2; `List` Mod+1) or the toolbar's two 28x28 glyph
+    buttons at `(W - 68, 2)` and `(W - 36, 2)` (the path field now ends at `W - 76`): list glyph
+    three 12x2 `text` bars at x + 8, rows 8, 13 and 18; grid glyph four 5x5 squares at (8, 8),
+    (15, 8), (8, 15), (15, 15); the active one `bar.pressed`, hover `bar.hover`, not Tab stops.
+    The view is a grid of **96x88 cells** from (168, 40) in content coordinates (8 px inside
+    the list area's corner), `(list width - 16) / 96` per row, no header: the 32x32 icon at (32, 8) of the cell (section 7's and app-icons'
+    32 set; a plain file the page `Tile(5,0,22,32, R4, icon.page, icon.page.edge)`, a text file
+    the editor's page without its caret, an image the 16 px image of item 26 at 2x, a program
+    the tile with a 10x10 source square at (18, 18)); the name centred in Egg Sans, two lines
+    with tops at 44 and 64, each at most 88 px, broken at the last space, `-`, `_` or `.` that
+    fits (else by glyph), the second end-ellipsised; the link badge 12x12 at (0, 20) of the
+    icon (item 22). Selected cells `selection` r6 with the ring on the focus cell; hover
+    `menu.hover` r6; hidden and cut names `text.dim`. Left/Right one cell, Up/Down one row,
+    Home/End, PageUp/PageDown by the visible rows, type-ahead, Shift and Mod as item 17; the
+    wheel scrolls 88; rename in place is a 96x28 field centred at the cell's y + 40. Sorting is
+    `View`'s. Per window; new windows open in the list view. Empty and unreadable texts at
+    (176, 44). Not in the Trash (its view is the table).
+20. **Hidden files.** Names starting with `.` are hidden in every folder (the Trash shows all).
+    `View > Show Hidden Files` (Mod+H; Cmd+Shift+. accepted, Finder's) checks and shows them
+    with name, size, kind and time in `text.dim` and the icon in its colours (the cut-row look);
+    selected, `text` wins. `N items` counts shown rows; type-ahead skips hidden ones. A typed or
+    linked path into a hidden folder opens regardless. Renaming to a dotted name hides the row
+    at the reload that follows. Per window only, off in every new window.
+21. **Properties gains two things.** A **folder**'s panel gets the volume's space after
+    `Where:`: a bar at y + 124, from x + 16 to right - 16, 8 tall, `progress.track`, the used
+    part `accent` from the left with `INSET_R4` (at least 2 px when used > 0), and at y + 140
+    in `text.dim` `<used> of <total> used, <free> free` (`size_text` each; used = total -
+    available of `statfs`); buttons at y + 164, height 208. A read-only file system shows no
+    bar and the line `Read-only`; no answer, no bar and no line (the five-line panel). Not on a
+    link's panel. files-free-space-v0.3.md item 5 is superseded for the panel; the status bar is
+    unchanged. A **file** with more than one hard link gets a sixth line `Links: <N>` (`status`'s
+    link count; height 192); folders never, and there is no column: no desktop lists one.
+22. **Link badges on desktop icons and in the launcher.** The desktop grid (6.3) lists, after
+    the installed apps, every entry of `/home/root/Desktop` alphabetically with its kind's 48 px
+    icon (an app folder, `.app` or a link to one its own icon; a folder Files'; a text file the
+    editor's page; others the page), named by its name; Open acts as Files' Open (item 11 and
+    links item 3). A link's icon carries the badge: a 16x16 plate at (0, 32) of the icon,
+    `menu.bg`, 1 px `menu.border`, `INSET_R4`, and the 6x6 arrow below at 2x (12x12) at (2, 34)
+    in `text`. The launcher lists a link in `/Applications` to an app under the link's name with
+    the app's 32 icon and a 12x12 plate at (0, 20), same chrome, the arrow at 1x at (3, 23).
+    Files' own 12x10 marks keep their 6x6 badge (links item 1). The arrow, `#` in `text`:
+
+    ```
+    ..####
+    ....##
+    ...#.#
+    ..#..#
+    .#....
+    #.....
+    ```
+23. **`Paste Link`** (`Paste shortcut` in the Windows profile): in `Edit` after `Paste`, and
+    in the context menu of a folder row and of empty space right after `Paste`. Makes a
+    symbolic link to each copied item in the current folder (a folder row: in it), the target
+    the copied item's absolute path, named `<stem> link<.ext>` by links item 5; the new links are
+    selected, the first renaming in place when there is one. `[dim]` with an empty clipboard, a
+    cut (a cut is a move), on the share and in the Trash. The clipboard is kept. No key.
+24. **`Change Target...`**: on every link row after `Show Original` (`[dim]` on the share). It
+    runs the system file picker (`file-picker-v0.3.md`) as `pick open --folders --over <window>
+    --title "Change target of <name>" --folder <the stored target's folder when it exists, else
+    the link's>`, the window ignoring input meanwhile; a chosen path is stored absolute in a new
+    link made beside the old one and **renamed over it** in one step, so there is never a moment
+    without the link; Cancel changes nothing. Error: `Could not change the target of <name>
+    (<errno name>).` The row keeps its selection; a broken link becomes sound in the reload.
+25. **`Copy Path`** (`Copy as path` in the Windows profile): in `Edit` and in every row's
+    context menu after `Copy` (not on trashed rows), Mod+Shift+C (Cmd+Alt+C accepted). Puts the
+    selected rows' absolute paths, as shown (through a link you came by), one per line joined
+    by `\n` with no quotes and no final newline, on the shared clipboard (D197, what `clip get`
+    prints). Files' item clipboard is untouched.
+26. **16 px row icons.** The list's type marks become 16x16 icons at (x + 8, y + 4) of the row;
+    the focus row's `>` still replaces them, and the 6x6 source square after a program's name
+    goes (its icon carries it). Tokens: `B` `icon.folder.back`, `F` `icon.folder`, `P`
+    `icon.page`, `E` `icon.page.edge`, `L` `icon.page.line`, `T` `icon.tile`, `R`
+    `icon.tile.border`, `S` the source colour (`icon.windows`, `icon.mac`, `icon.linux`), `A`
+    `accent`, `G` `icon.prompt`, `M` `menu.bg`, `X` `text`, `.` nothing; rects `x, y, w, h`:
+    - **Folder**: `1,1,6,2` B (the tab), `1,3,14,11` B, `1,7,14,7` F.
+    - **File**: rows 0..14, x 3..12: row 0 `EEEEEEEE` at x 3..10; row 1 x 3 E, 4..9 P, 10..11 E;
+      row 2 x 3 E, 4..9 P, 10..12 E (the flap); rows 3..13 x 3 E, 4..11 P, 12 E; row 14 x 3..12 E.
+    - **Text**: the file plus L bars `5,5,6,1`, `5,7,6,1`, `5,9,6,1`, `5,11,4,1`.
+    - **Image**: frame `1,2,14,12` outline E, fill P; sun `10,4,2,2` A; hills in G: row 8 x 6,
+      row 9 x 5..7, row 10 x 4..8 and x 11, row 11 x 3..12, row 12 x 2..13.
+    - **Program** (and an app folder or `.app`): `1,1,14,14` T with 1 px R, `INSET_R4`; `8,8,6,6` S.
+    - **Link badge**: plate `0,8,8,8` M; the arrow of item 22 at (1, 9) in X. The badge is drawn
+      over the target's icon; broken links keep it with the file icon.
+27. **The element tree.** The bar is `menubar` `Menu` with its `menuitem`s as toolkit v0.5
+    section 10 says. `Entries` becomes a `table` (not `Files`: the name is the one agents know)
+    with `columnheader`s `Name`, `Size`, `Kind`, `Modified` (or `Deleted`), its value `row 3 of
+    42` or `3 of 42 selected`, each shown `row` flagged `selected` when it is; `set-text
+    "2,5,7-9"` on it selects exactly those rows (1-based, ranges allowed) and `set-text "<n>"`
+    stays. The view buttons are a `radio group` `View` with `radio`s `List` and `Icons`; in the
+    icon view `Entries` is a `list` of `list item`s with the same names. `Show Hidden Files`,
+    `Reverse Order`, the sort and view items carry the `checked` flag. The Properties bar is a
+    `progress` named `Used` (per mille) and its line a `label` with the drawn text; `Links: 2`
+    is a `label`. Desktop links are `list item`s of `Desktop` named by the link with the value
+    `link to <target>`; launcher links the same under `Apps`. No new MCP tool: the CLI twins are
+    `ls -a`, `ls --sort`, `ln -s`, `readlink`, `clip set` and `stat` (D22).
+
+Checks: host tests hash a row with each 16 px icon and the badge, a hidden row shown dim, the
+icon view at 720x480 (5 cells per row, a two-line ellipsised name), the sorted header after one
+and two clicks with folders still first, the status bar `3 of 42 selected, 1.2 MB`, the
+four-line Properties of many, a folder's space bar at 75 % used, `Links: 2`, `Paste Link`
+making `report link.txt`, `Copy Path` of two rows as two lines on the clipboard, `Change
+Target...` replacing the link in one rename, the menu bar's four menus in both wordings and
+the Desktop grid with a badged link at 48. QEMU screenshots: the icon view of `/home/root`
+with a link, and the list sorted by `Modified` descending.
+
 ## 9. Install and uninstall (item 36)
 
 (As built, D134 and docs/apps.md supersede the details below: apps go to
