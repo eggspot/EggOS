@@ -63,6 +63,8 @@ mod ls;
 #[cfg(any(test, eggos_user))]
 mod network;
 #[cfg(any(test, eggos_user))]
+mod network_clock;
+#[cfg(any(test, eggos_user))]
 mod nslookup;
 #[cfg(any(test, eggos_user))]
 mod options;

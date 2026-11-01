@@ -2260,6 +2260,11 @@ pub const DATE: CommandDefinition = CommandDefinition {
             "sync",
             "Set the clock from pool.ntp.org, or --sync=host[:port], by SNTP.",
         ),
+        long_flag(
+            "automatic",
+            "With --sync, as the automatic clock: a step of over an hour, or past an hour of \
+             unchecked steps, needs two HTTPS Date headers to agree.",
+        ),
     ],
     operands: &[operand("+format", ValueType::Text, Count::ZeroOrOne)],
     outputs: TEXT_ONLY,

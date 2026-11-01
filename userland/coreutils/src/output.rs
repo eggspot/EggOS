@@ -9,6 +9,7 @@ pub const OUTPUT_CAPACITY: usize = 4096;
 const ERROR_JSON_BYTES: usize = 4096;
 const PAGE_JSON_BYTES: usize = page::MAX_CURSOR_BYTES + 128;
 const MESSAGE_BYTES_IN_JSON: usize = 512;
+pub const LAST_ERROR_BYTES: usize = 200;
 
 pub const FAILURE: i32 = 1;
 
@@ -20,6 +21,8 @@ pub struct Output<S: System> {
     length: usize,
     write_error: Option<Errno>,
     json: bool,
+    last_error: [u8; LAST_ERROR_BYTES],
+    last_error_length: usize,
 }
 
 impl<S: System> Output<S> {
@@ -31,7 +34,13 @@ impl<S: System> Output<S> {
             length: 0,
             write_error: None,
             json: false,
+            last_error: [0; LAST_ERROR_BYTES],
+            last_error_length: 0,
         }
+    }
+
+    pub fn last_error(&self) -> &[u8] {
+        &self.last_error[..self.last_error_length]
     }
 
     pub fn use_json(&mut self) {
@@ -82,6 +91,13 @@ impl<S: System> Output<S> {
 
     pub fn coded(&mut self, error: &ErrorDefinition, parts: &[&[u8]]) {
         self.flush();
+        self.last_error_length = 0;
+        for part in parts {
+            let room = LAST_ERROR_BYTES - self.last_error_length;
+            let taken = &part[..part.len().min(room)];
+            self.last_error[self.last_error_length..][..taken.len()].copy_from_slice(taken);
+            self.last_error_length += taken.len();
+        }
         if self.json {
             self.json_error(error, parts);
             return;

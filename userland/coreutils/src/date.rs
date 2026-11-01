@@ -1,6 +1,6 @@
-use crate::network::{Shown as ShownText, resolve};
+use crate::network_clock::{self, AUTOMATIC_OPTION, Asker, Https};
 use crate::output::{FAILURE, Output};
-use crate::system::{DatagramKind, Duration, SymbolicLinks, System};
+use crate::system::{Duration, SymbolicLinks, System};
 use crate::zone::{local_seconds, local_zone};
 use core::ffi::CStr;
 use eggos_calendar::zone::{Rule, UTC};
@@ -12,7 +12,6 @@ use eggos_runtime::errno::Errno;
 pub const DEFAULT_TIME_SERVER: &[u8] = b"pool.ntp.org";
 pub const SYNC_TIMEOUT_MS: u32 = 3000;
 pub const SYNC_ATTEMPTS: u32 = 3;
-const NANOSECONDS: i64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shown<'a> {
@@ -23,6 +22,7 @@ enum Shown<'a> {
 pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut set: Option<&CStr> = None;
     let mut sync: Option<&[u8]> = None;
+    let mut asker = Asker::Person;
     let mut shown = Shown::Now;
     let mut format: Option<&[u8]> = None;
     let mut universal = false;
@@ -39,6 +39,7 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             match bytes {
                 b"-u" | b"--utc" | b"--universal" => universal = true,
                 b"--sync" => sync = Some(DEFAULT_TIME_SERVER),
+                AUTOMATIC_OPTION => asker = Asker::Automatic,
                 _ if bytes.starts_with(b"--sync=") => sync = Some(&bytes[b"--sync=".len()..]),
                 b"-s" | b"--set" | b"-r" | b"--reference" => {
                     let Some(&value) = arguments.get(index) else {
@@ -80,15 +81,21 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             }
         }
     }
+    if asker == Asker::Automatic && sync.is_none() {
+        output.error(&[b"--automatic needs --sync"]);
+        return FAILURE;
+    }
     let seconds = match (sync, set, shown) {
         (Some(_), Some(_), _) | (Some(_), _, Shown::File(_)) | (None, Some(_), Shown::File(_)) => {
             output.error(&[b"the options to set the time and to show a file's time are exclusive"]);
             return FAILURE;
         }
-        (Some(server), None, Shown::Now) => match sync_clock(output, server) {
-            Ok(seconds) => seconds,
-            Err(status) => return status,
-        },
+        (Some(server), None, Shown::Now) => {
+            match network_clock::sync(output, server, asker, &mut Https) {
+                Ok(seconds) => seconds,
+                Err(status) => return status,
+            }
+        }
         (None, Some(text), Shown::Now) => match set_clock(output, text) {
             Ok(seconds) => seconds,
             Err(status) => return status,
@@ -150,7 +157,10 @@ fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32>
         nanoseconds: 0,
     };
     match output.system.set_time(since_epoch) {
-        Ok(()) => Ok(seconds),
+        Ok(()) => {
+            network_clock::forget_unproven_steps(&mut output.system);
+            Ok(seconds)
+        }
         Err(errno) => {
             output.error(&[b"cannot set date: ", errno.message()]);
             Err(FAILURE)
@@ -158,7 +168,7 @@ fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32>
     }
 }
 
-fn time_server(server: &[u8]) -> Option<(&[u8], u16)> {
+pub(crate) fn time_server(server: &[u8]) -> Option<(&[u8], u16)> {
     let (host, port) = match server.iter().rposition(|&byte| byte == b':') {
         Some(colon) => {
             let digits = &server[colon + 1..];
@@ -181,13 +191,13 @@ fn time_server(server: &[u8]) -> Option<(&[u8], u16)> {
     }
 }
 
-struct Answer {
-    reply: sntp::Reply,
-    round_trip_ns: i64,
-    arrived_us: u64,
+pub(crate) struct Answer {
+    pub(crate) reply: sntp::Reply,
+    pub(crate) round_trip_ns: i64,
+    pub(crate) arrived_us: u64,
 }
 
-fn ask_time<S: System>(
+pub(crate) fn ask_time<S: System>(
     output: &mut Output<S>,
     socket: usize,
     address: Ipv4Address,
@@ -248,67 +258,6 @@ fn ask_time<S: System>(
     }
     output.error(&[server, b": no answer from the time server"]);
     Err(FAILURE)
-}
-
-fn sync_clock<S: System>(output: &mut Output<S>, server: &[u8]) -> Result<i64, i32> {
-    let Some((host, port)) = time_server(server) else {
-        output.error(&[
-            b"invalid time server '",
-            server,
-            b"': give host or host:port",
-        ]);
-        return Err(FAILURE);
-    };
-    let address = resolve(output, host)?;
-    let socket = match output.system.open_datagram_socket(DatagramKind::Udp) {
-        Ok(socket) => socket,
-        Err(errno) => {
-            output.error(&[b"socket: ", errno.message()]);
-            return Err(FAILURE);
-        }
-    };
-    let answer = ask_time(output, socket, address, port, server);
-    output.system.close(socket);
-    let answer = answer?;
-    let elapsed_ns = (output
-        .system
-        .monotonic_us()
-        .saturating_sub(answer.arrived_us)
-        * 1000) as i64;
-    let time_ns = sntp::arrival_time(&answer.reply, answer.round_trip_ns) + elapsed_ns;
-    let before = output.system.now_with_nanoseconds();
-    let before_ns = before.seconds as i64 * NANOSECONDS + i64::from(before.nanoseconds);
-    let since_epoch = Duration {
-        seconds: time_ns.div_euclid(NANOSECONDS).max(0) as u64,
-        nanoseconds: time_ns.rem_euclid(NANOSECONDS) as u32,
-    };
-    if let Err(errno) = output.system.set_time(since_epoch) {
-        output.error(&[b"cannot set date: ", errno.message()]);
-        return Err(FAILURE);
-    }
-    let moved = time_ns - before_ns;
-    let stratum = ShownText::<4>::of(answer.reply.stratum);
-    output.write(b"Synchronized with ");
-    output.write(server);
-    output.write(b" (stratum ");
-    output.write(stratum.as_bytes());
-    output.write(b"): the clock moved by ");
-    output.write(if moved < 0 { b"-" } else { b"+" });
-    write_padded(
-        output,
-        (moved.unsigned_abs() / 1_000_000_000) as i64,
-        1,
-        b'0',
-    );
-    output.write(b".");
-    write_padded(
-        output,
-        (moved.unsigned_abs() % 1_000_000_000 / 1_000_000) as i64,
-        3,
-        b'0',
-    );
-    output.write(b" s\n");
-    Ok(since_epoch.seconds as i64)
 }
 
 fn write_padded<S: System>(output: &mut Output<S>, value: i64, width: usize, pad: u8) {
