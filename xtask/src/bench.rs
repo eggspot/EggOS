@@ -17,7 +17,9 @@
 //! kernel built with `qemu-boot-clock` and booted serial-only under the same `-icount`; and
 //! `release_image_bytes`, the size of the image `cargo xtask release` ships, and
 //! `idle_memory_bytes`, the memory in use when the shell first waits at its prompt (D203),
-//! neither of which may grow at all without a baseline update (CLAUDE.md, note 8).
+//! neither of which may grow at all without a baseline update (CLAUDE.md, note 8). A second boot of
+//! the boot-clock kernel with a display gives `boot_to_desktop`, the guest time to the frame
+//! that ends the boot screen (D221).
 
 use crate::{Arch, qemu};
 use std::collections::BTreeMap;
@@ -92,7 +94,11 @@ const FIRMWARE_DEPENDENT: &[(&str, &str, &[&str])] = &[(
 /// Benchmarks whose counts depend on the QEMU version, which builds each machine's devices
 /// and tables (Ubuntu 24.04's QEMU and QEMU 10.2 differ by up to 20% on x86_64's boot): those
 /// are compared only when QEMU's version matches the baseline's `<arch> qemu <version>` line.
-const QEMU_DEPENDENT: &[&str] = &["boot_to_prompt"];
+const QEMU_DEPENDENT: &[&str] = &["boot_to_prompt", BOOT_TO_DESKTOP];
+
+/// Must match `eggos_kernel::boot_clock::DESKTOP`: the release kernel's first desktop frame
+/// (D221), measured in a boot with a display.
+const BOOT_TO_DESKTOP: &str = "boot_to_desktop";
 
 /// Results in nanoseconds (= instructions, under icount) per iteration, keyed by
 /// (architecture, benchmark).
@@ -240,6 +246,19 @@ fn release_kernel_results(arch: &Arch) -> Result<Vec<(String, f64)>, String> {
         ICOUNT_ARGS,
     )?;
     let mut results = parse_console(&console)?;
+    let shown = qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::BootClock,
+        BENCH_CPUS,
+        qemu::Display::Attached,
+        ICOUNT_ARGS,
+    )?;
+    results.extend(
+        parse_console(&shown)?
+            .into_iter()
+            .filter(|(name, _)| name == BOOT_TO_DESKTOP),
+    );
     results.push((RELEASE_IMAGE_BYTES.to_owned(), bytes as f64));
     if arch.name == "aarch64" {
         results.push((
