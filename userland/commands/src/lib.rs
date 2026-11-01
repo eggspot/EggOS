@@ -194,7 +194,7 @@ impl ValueType {
 /// An option's value: what `help` calls it and its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptionValue {
-    /// Its name in the usage, such as `count`.
+    /// Its name in the usage, such as `count`; a name of two words (`x y`) takes two words.
     pub name: &'static str,
     /// Its type.
     pub value: ValueType,
