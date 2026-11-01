@@ -26,6 +26,9 @@ pub const END_APP_TITLE_CELLS: usize = 19;
 pub const END_APP_QUESTION: &str = " is not responding";
 /// Line 2 of the End app dialog.
 pub const END_APP_WARNING: &str = "Ending it loses its unsaved work.";
+/// Line 3 of the End app dialog, when the client serves every Linux window app (eggway's one
+/// connection for all Wayland apps): ending it ends them all.
+pub const END_APP_LINUX_APPS_WARNING: &str = "It also ends every Linux window app.";
 /// The dialog's button that leaves the window alone, focused when it opens.
 pub const WAIT_LABEL: &str = "Wait";
 /// The dialog's button that ends the app.
@@ -34,6 +37,7 @@ pub const END_APP_LABEL: &str = "End app";
 const LINE_X: u32 = 12;
 const FIRST_LINE_Y: u32 = 12;
 const SECOND_LINE_Y: u32 = 36;
+const LINE_STEP: u32 = SECOND_LINE_Y - FIRST_LINE_Y;
 const BUTTON_SIZE: (u32, u32) = (96, 28);
 const BUTTON_Y: u32 = 80;
 const WAIT_X: u32 = 212;
@@ -62,6 +66,7 @@ pub(super) struct Responsiveness {
     pub app_starting_since: Option<u32>,
     pub unread_since: [Option<(u16, u32)>; MAX_CLIENTS],
     pub dialog: Option<EndAppDialog>,
+    pub linux_apps_client: Option<u16>,
 }
 
 impl Default for Responsiveness {
@@ -70,6 +75,7 @@ impl Default for Responsiveness {
             app_starting_since: None,
             unread_since: [None; MAX_CLIENTS],
             dialog: None,
+            linux_apps_client: None,
         }
     }
 }
@@ -102,9 +108,19 @@ impl Desktop {
         self.refresh_responding(damage);
     }
 
-    /// Forgets client `client`'s unread clock, as when it disconnects.
+    /// Forgets client `client`'s unread clock, and that it serves every Linux window app, as
+    /// when it disconnects.
     pub fn forget_client(&mut self, client: u16, damage: &mut Damage) {
+        if self.responsiveness.linux_apps_client == Some(client) {
+            self.responsiveness.linux_apps_client = None;
+        }
         self.set_unread_since(client, None, damage);
+    }
+
+    /// Client `client` serves every Linux window app through its one connection (eggway): the
+    /// End app dialog for its windows says ending it ends them all.
+    pub fn set_linux_apps_client(&mut self, client: u16) {
+        self.responsiveness.linux_apps_client = Some(client);
     }
 
     /// Whether any window of client `client`'s says `(not responding)`.
@@ -279,6 +295,18 @@ impl Desktop {
         Some(self.end_app_rect(dialog.window))
     }
 
+    /// The End app dialog's lines under its first, while it is open: the unsaved work, and for
+    /// the client serving every Linux window app that ending it ends them all.
+    pub fn end_app_warnings(&self) -> Option<&'static [&'static str]> {
+        let dialog = self.responsiveness.dialog?;
+        let warnings: &'static [&'static str] =
+            match self.responsiveness.linux_apps_client == Some(dialog.client) {
+                true => &[END_APP_WARNING, END_APP_LINUX_APPS_WARNING],
+                false => &[END_APP_WARNING],
+            };
+        Some(warnings)
+    }
+
     /// The End app dialog's focused button, while it is open.
     pub fn end_app_focus(&self) -> Option<EndAppButton> {
         self.responsiveness.dialog.map(|dialog| dialog.focused)
@@ -436,12 +464,11 @@ impl Desktop {
             canvas.text(x, rect.y + FIRST_LINE_Y, part, colour::TEXT);
             x += part.chars().count() as u32 * GLYPH_WIDTH as u32;
         }
-        canvas.text(
-            rect.x + LINE_X,
-            rect.y + SECOND_LINE_Y,
-            END_APP_WARNING,
-            colour::TEXT_DIM,
-        );
+        let mut y = rect.y + SECOND_LINE_Y;
+        for warning in self.end_app_warnings().unwrap_or_default() {
+            canvas.text(rect.x + LINE_X, y, warning, colour::TEXT_DIM);
+            y += LINE_STEP;
+        }
         for (button, label) in [
             (EndAppButton::Wait, WAIT_LABEL),
             (EndAppButton::EndApp, END_APP_LABEL),
