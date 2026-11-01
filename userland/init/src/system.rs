@@ -642,6 +642,13 @@ fn start_clock_keeper(clock: &mut AgentServer) {
 
 fn keep_clock() -> ! {
     set_signal_actions(SIG_DFL);
+    let default = SignalAction::with_handler(SIG_DFL);
+    for signal in shutdown::SIGNALS {
+        call(
+            number::RT_SIGACTION,
+            [signal, &raw const default as usize, 0, SIGNAL_SET_SIZE, 0, 0],
+        );
+    }
     call(number::SETSID, [0; 6]);
     let mut schedule = Schedule::default();
     loop {
