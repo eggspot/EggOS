@@ -3,9 +3,9 @@
 //! `app install --arguments`, which lists it; in `/tmp` `app open` opens it as its icon does, so
 //! the terminal runs it through the loader it carries; its window appears on the display, a
 //! click focuses it, keys play turns (rest, then a step each way) and change what it shows,
-//! `S` and three Enters save the game and close it, so its window goes and the shell's prompt comes
-//! back. `/tmp` then holds the saved game, `wm list` no Brogue window, and after the power-off
-//! the disk's manifest names the loader, the library folder and the arguments.
+//! `S`, two Enters and Space save the game and close it, so its window goes and the shell's
+//! prompt comes back. `/tmp` then holds the saved game, `wm list` no Brogue window, and after the
+//! power-off the disk's manifest names the loader, the library folder and the arguments.
 
 use super::install::{file_at, image_volume};
 use super::settings::{Boot, Screen};
@@ -181,7 +181,7 @@ fn play_and_save(boot: &mut Boot<'_>, screen: &mut Screen, area: Rect) -> Result
     tap(screen, "ret")?;
     std::thread::sleep(SETTLE);
     picture(screen, arch, "-sdl-app-saved-more")?;
-    tap(screen, "ret")?;
+    tap(screen, "spc")?;
     Ok(())
 }
 

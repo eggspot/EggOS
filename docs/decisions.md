@@ -11918,8 +11918,9 @@ the license, by an explicit instruction recorded here.
   the zip in the host folder and 1 GiB, installs it with `--arguments '-n --data-dir
   /Applications/brogue/share/brogue'`, lists it, opens it from `/tmp` with `app open`, finds its
   window by where the screen changed, clicks its title bar, plays nine turns from the keyboard
-  through QMP and wants the window to change, saves with `S` and three Enters (Yes, the file
-  name it offers, then `--MORE--` after "Saved."; Brogue quits after that), and wants the saved game in `/tmp`, no Brogue window in `wm list`, a clean
+  through QMP and wants the window to change, saves with `S`, two Enters (Yes, the file name
+  it offers) and Space for the `--MORE--` after "Saved." (Enter doesn't dismiss it; Brogue
+  quits after that), and wants the saved game in `/tmp`, no Brogue window in `wm list`, a clean
   power-off and the manifest's `loader`, `libraries` and `arguments` on the disk.
 - **Tests.** wayland: the new tables and globals, the positioner's placement, flips, slides
   and resizes, a placement's scaling, offsets, clipping and blending. eggway (fake machine):
