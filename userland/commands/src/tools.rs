@@ -1272,11 +1272,12 @@ pub const CLOCK_SYNC: ToolDefinition = ToolDefinition {
     name: "clock_sync",
     title: "Set the clock from the network",
     description: "Sets the machine's date and time from a time server on the network \
-                      (SNTP, pool.ntp.org), as `date --sync` does, and its hardware clock, then \
-                      returns how far the clock moved and the new time. Needs the run grant and a \
-                      network.",
+                      (SNTP, pool.ntp.org), as `date --sync --automatic` does, and its hardware \
+                      clock, then returns how far the clock moved and the new time. As the \
+                      automatic clock, a step of over an hour needs two HTTPS Date headers to \
+                      agree, or it is refused with the reason. Needs the run grant and a network.",
     command: &["date"],
-    fixed: &["-u", "--sync"],
+    fixed: &["-u", "--sync", "--automatic"],
     arguments: &[],
     max_effect: Effect::Change,
     grant: Some(Grant::Run),
@@ -1714,7 +1715,8 @@ const SETTINGS_SET_ARGUMENTS: [Argument; 3] = [
          de, fr or us-intl for keyboard.layout; one to four layouts separated by commas such as us,de \
          for keyboard.layouts; profile, super+space, ctrl+space, alt+shift, ctrl+shift or none \
          for keyboard.switch_key; an IANA zone such as Europe/Paris, or UTC, for \
-         time.zone; 1 or 2 for display.scale; right or left for mouse.buttons; traditional or \
+         time.zone; on or off for time.automatic (on sets the clock from the network at \
+         once); 1 or 2 for display.scale; right or left for mouse.buttons; traditional or \
          natural for mouse.scrolling; 1 to 10 for mouse.speed; 150 to 2000 for \
          keyboard.repeat_delay_ms; 2 to 60 for keyboard.repeat_rate.",
     )),

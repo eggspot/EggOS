@@ -35,9 +35,11 @@ use eggos_settings::settings_window::{
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
+use eggos_runtime::process::{self, ChildStack, Spawn};
+use eggos_settings_file::clock_sync::{self, Record};
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, DisplayAccessibility, InputPreferences, KeyAccessibility,
-    LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
+    LARGEST, PATH, TEMPORARY_PATH_CAPACITY, TIME_AUTOMATIC,
 };
 use eggos_toolkit::theme::{Theme, palette_index, theme_of};
 use eggos_toolkit::application::{self, Application, View};
@@ -448,10 +450,100 @@ fn facts(server: Option<&WindowServer>) -> Facts {
             .and_then(|name| core::str::from_utf8(name).ok())
             .and_then(eggos_settings::facts::zone_index)
             .unwrap_or_else(eggos_settings::facts::utc_zone),
+        time_automatic: time_automatic(&file[..length]),
+        clock_sync: clock_sync_record(),
         input: settings_file::input_preferences(&file[..length]),
         keys: settings_file::key_accessibility(&file[..length]),
         display: saved_display(&file[..length], server),
     }
+}
+
+fn session_settings(file: &mut [u8; LARGEST + 1]) -> usize {
+    read_file(settings_file::SESSION_PATH, file).unwrap_or(0)
+}
+
+fn time_automatic(disk: &[u8]) -> bool {
+    let mut session = [0u8; LARGEST + 1];
+    let length = session_settings(&mut session);
+    settings_file::time_automatic(disk, &session[..length])
+}
+
+fn clock_sync_record() -> Option<Record> {
+    let mut file = [0u8; clock_sync::LARGEST + 1];
+    let length = read_file(clock_sync::PATH, &mut file).ok()?;
+    Record::parse(&file[..length])
+}
+
+fn save_session_value(key: &str, value: &str) -> Result<(), Errno> {
+    let folder = CPath::new(clock_sync::FOLDER);
+    match syscall(
+        number::MKDIRAT,
+        [AT_FDCWD, folder.pointer(), DIRECTORY_MODE, 0, 0, 0],
+    ) {
+        Ok(_) | Err(Errno::EEXIST) => {}
+        Err(error) => return Err(error),
+    }
+    let mut old = [0u8; LARGEST + 1];
+    let length = session_settings(&mut old);
+    let mut new = [0u8; LARGEST];
+    let new_length = settings_file::with_value(&old[..length], key, value.as_bytes(), &mut new)
+        .map_err(|_| Errno::E2BIG)?;
+    let process_id = syscall(number::GETPID, [0; 6])?;
+    let mut temporary = Text::<64>::new();
+    let _ = write!(temporary, "{}.{process_id}", settings_file::SESSION_PATH);
+    write_file(temporary.as_str(), &new[..new_length])?;
+    let (from, to) = (
+        CPath::new(temporary.as_str()),
+        CPath::new(settings_file::SESSION_PATH),
+    );
+    syscall(
+        number::RENAMEAT2,
+        [AT_FDCWD, from.pointer(), AT_FDCWD, to.pointer(), 0, 0],
+    )
+    .map(|_| ())
+}
+
+fn save_time_automatic(on: bool) -> Result<(), Errno> {
+    let value = match on {
+        true => "on",
+        false => "off",
+    };
+    let mut session = [0u8; LARGEST + 1];
+    let length = session_settings(&mut session);
+    let in_session = settings_file::value(&session[..length], TIME_AUTOMATIC).is_some();
+    if home_is_on_a_disk() {
+        save_through_a_temporary_file(TIME_AUTOMATIC, value)?;
+        if !in_session {
+            return Ok(());
+        }
+    }
+    save_session_value(TIME_AUTOMATIC, value)
+}
+
+fn start_clock_sync() -> Result<(), Errno> {
+    let null = CPath::new("/dev/null");
+    let quiet = syscall(
+        number::OPENAT,
+        [AT_FDCWD, null.pointer(), O_RDWR_CLOEXEC, 0, 0, 0],
+    );
+    let streams = match quiet {
+        Ok(fd) => [fd, fd, fd],
+        Err(_) => [0, 1, 2],
+    };
+    let arguments = [
+        c"date".as_ptr().cast::<u8>(),
+        c"--sync".as_ptr().cast::<u8>(),
+        c"--automatic".as_ptr().cast::<u8>(),
+        core::ptr::null(),
+    ];
+    let environment = [core::ptr::null()];
+    let request = Spawn::new(c"/bin/date", &arguments, &environment, streams).in_own_session();
+    let mut stack = alloc::boxed::Box::new(ChildStack::new());
+    let started = process::spawn(&mut stack, &request).map(|_| ());
+    if let Ok(fd) = quiet {
+        close(fd);
+    }
+    started
 }
 
 fn say_error(parts: &[&[u8]]) {
@@ -719,6 +811,14 @@ impl command::Machine for Machine {
 
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
         save_time_zone(index).map_err(Errno::message)
+    }
+
+    fn save_time_automatic(&mut self, on: bool) -> Result<(), &'static [u8]> {
+        save_time_automatic(on).map_err(Errno::message)
+    }
+
+    fn start_clock_sync(&mut self) -> Result<(), &'static [u8]> {
+        start_clock_sync().map_err(Errno::message)
     }
 
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {

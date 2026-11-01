@@ -2316,11 +2316,11 @@ fn clock_sync_needs_the_run_grant_and_runs_date_sync() {
     assert!(!is_error(&answer), "{answer}");
     assert_eq!(
         harness.system.runs.last().unwrap(),
-        &["/bin/date", "-u", "--sync"]
+        &["/bin/date", "-u", "--sync", "--automatic"]
     );
     assert_eq!(
         *harness.system.time_limits.last().unwrap(),
-        NETWORK_TIME_LIMIT_MS
+        CLOCK_SYNC_TIME_LIMIT_MS
     );
 }
 

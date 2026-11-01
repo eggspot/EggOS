@@ -56,6 +56,12 @@ pub trait Machine {
     /// Saves the time zone `index` (of `eggos_calendar::zone::ZONES`) to the settings file;
     /// programs read it each time they show a time.
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves `time.automatic` (D224): to the settings file, or for this session in
+    /// `/run/eggos/settings` without a disk.
+    fn save_time_automatic(&mut self, on: bool) -> Result<(), &'static [u8]>;
+    /// Starts `date --sync --automatic` in the background, which records its result in
+    /// `/run/eggos/clock-sync` (D224).
+    fn start_clock_sync(&mut self) -> Result<(), &'static [u8]>;
     /// Saves the display's scale to the settings file; the kernel shows at it from its next
     /// boot.
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]>;
@@ -302,6 +308,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
             keyboard.map_or(Ok(()), |choice| machine.save_keyboard(choice))
         }
         Change::TimeZone(index) => machine.save_time_zone(index),
+        Change::Automatic(on) => machine.save_time_automatic(on),
         Change::DisplayScale(scale) => machine.save_display_scale(scale),
         Change::Input(input) => machine.save_input(input),
         Change::Keys(keys) => machine.save_keys(keys),
@@ -318,7 +325,9 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))
         }
-        Change::TimeZone(_) | Change::DisplayScale(_) => Ok(()),
+        Change::TimeZone(_) | Change::DisplayScale(_) | Change::Automatic(false) => Ok(()),
+        Change::Automatic(true) if saved.is_ok() => machine.start_clock_sync(),
+        Change::Automatic(true) => Ok(()),
         Change::Input(input) => {
             let preferences = input.applied_to(machine.facts().input);
             machine.apply_input(preferences)
@@ -415,6 +424,8 @@ mod tests {
         layout_saved: Option<KeyboardChoice>,
         layout_applied: Option<KeyboardChoice>,
         zone_saved: Option<usize>,
+        automatic_saved: Option<bool>,
+        syncs_started: usize,
         scale_saved: Option<u32>,
         input_saved: Option<InputChange>,
         input_applied: Option<InputPreferences>,
@@ -465,6 +476,19 @@ mod tests {
 
         fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
             self.zone_saved = Some(index);
+            Ok(())
+        }
+
+        fn save_time_automatic(&mut self, on: bool) -> Result<(), &'static [u8]> {
+            if self.save_fails {
+                return Err(b"Read-only file system");
+            }
+            self.automatic_saved = Some(on);
+            Ok(())
+        }
+
+        fn start_clock_sync(&mut self) -> Result<(), &'static [u8]> {
+            self.syncs_started += 1;
             Ok(())
         }
 
@@ -567,6 +591,62 @@ mod tests {
         assert_eq!(
             output,
             "{\"key\":\"system.cpus\",\"value\":\"4\",\"settable\":false}\n"
+        );
+    }
+
+    #[test]
+    fn time_automatic_is_on_or_off_and_turning_it_on_syncs_at_once() {
+        let mut fake = Fake::default();
+        assert_eq!(
+            settings(&mut fake, &["get", "time.automatic"]),
+            (0, "on\n".to_owned(), String::new())
+        );
+        assert_eq!(
+            settings(&mut fake, &["set", "--dry-run", "time.automatic", "off"]).1,
+            "would set time.automatic from on to off\n"
+        );
+        assert_eq!(fake.automatic_saved, None);
+        assert_eq!(settings(&mut fake, &["set", "time.automatic", "off"]).0, 0);
+        assert_eq!((fake.automatic_saved, fake.syncs_started), (Some(false), 0));
+        assert_eq!(settings(&mut fake, &["set", "time.automatic", "on"]).0, 0);
+        assert_eq!((fake.automatic_saved, fake.syncs_started), (Some(true), 1));
+        let (status, _, errors) = settings(&mut fake, &["set", "time.automatic", "maybe"]);
+        assert_eq!(status, INVALID_VALUE_STATUS);
+        assert!(
+            errors.starts_with("settings: time.automatic: invalid value 'maybe' (on or off)\n"),
+            "{errors}"
+        );
+        let mut failing = Fake {
+            save_fails: true,
+            ..Fake::default()
+        };
+        assert_eq!(settings(&mut failing, &["set", "time.automatic", "on"]).0, FAILURE);
+        assert_eq!(failing.syncs_started, 0);
+    }
+
+    #[test]
+    fn time_sync_prints_the_last_record_and_is_read_only() {
+        let mut fake = Fake::default();
+        assert_eq!(
+            settings(&mut fake, &["get", "time.sync"]),
+            (0, "none\n".to_owned(), String::new())
+        );
+        let (status, _, errors) = settings(&mut fake, &["set", "time.sync", "x"]);
+        assert_eq!(status, FAILURE);
+        assert!(errors.starts_with("settings: time.sync: read-only\n"), "{errors}");
+        use eggos_settings_file::clock_sync::{Outcome, Record};
+        let mut record = Record::new(Outcome::Set, 1_793_282_700, b"pool.ntp.org");
+        record.finished = Some(1_793_282_709);
+        record.moved_ms = 12_000;
+        let mut value = keys::Value::new();
+        keys::write_clock_sync(&mut value, Some(&record)).unwrap();
+        assert_eq!(value.as_str(), "set 2026-10-29T14:05:09Z pool.ntp.org 12000");
+        let syncing = Record::new(Outcome::Syncing, 1_793_282_709, b"time.example.com:123");
+        let mut value = keys::Value::new();
+        keys::write_clock_sync(&mut value, Some(&syncing)).unwrap();
+        assert_eq!(
+            value.as_str(),
+            "syncing 2026-10-29T14:05:09Z time.example.com:123 0"
         );
     }
 

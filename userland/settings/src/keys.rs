@@ -4,6 +4,7 @@
 
 use crate::facts::Facts;
 use core::fmt::Write;
+use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
     DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS,
     KeyAccessibility,
@@ -30,6 +31,8 @@ pub enum Key {
     KeyboardLayouts,
     KeyboardSwitchKey,
     TimeZone,
+    TimeAutomatic,
+    TimeSync,
     MouseButtons,
     MouseScrolling,
     MouseSpeed,
@@ -76,6 +79,8 @@ pub enum Change {
     KeyboardSwitchKey(SwitchKey),
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     TimeZone(usize),
+    /// Whether the clock is set from the network; turning it on syncs at once (D224).
+    Automatic(bool),
     /// The display's scale, 1 or 2, from the next boot (D195).
     DisplayScale(u32),
     /// One mouse or key preference, used from the next event (D195).
@@ -320,7 +325,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 27] = [
         Self::ShellProfile,
         Self::AppearanceTheme,
         Self::DisplayScale,
@@ -330,6 +335,8 @@ impl Key {
         Self::KeyboardLayouts,
         Self::KeyboardSwitchKey,
         Self::TimeZone,
+        Self::TimeAutomatic,
+        Self::TimeSync,
         Self::MouseButtons,
         Self::MouseScrolling,
         Self::MouseSpeed,
@@ -360,6 +367,8 @@ impl Key {
             Self::KeyboardLayouts => eggos_settings_file::KEYBOARD_LAYOUT_SET,
             Self::KeyboardSwitchKey => eggos_settings_file::KEYBOARD_SWITCH_KEY,
             Self::TimeZone => eggos_settings_file::TIME_ZONE,
+            Self::TimeAutomatic => eggos_settings_file::TIME_AUTOMATIC,
+            Self::TimeSync => "time.sync",
             Self::MouseButtons => eggos_settings_file::MOUSE_BUTTONS,
             Self::MouseScrolling => eggos_settings_file::MOUSE_SCROLLING,
             Self::MouseSpeed => eggos_settings_file::MOUSE_SPEED,
@@ -395,6 +404,7 @@ impl Key {
                 | Self::KeyboardLayouts
                 | Self::KeyboardSwitchKey
                 | Self::TimeZone
+                | Self::TimeAutomatic
                 | Self::MouseButtons
                 | Self::MouseScrolling
                 | Self::MouseSpeed
@@ -422,6 +432,9 @@ impl Key {
             }
             Self::DisplayScale => {
                 let _ = choices.write_str("1 or 2");
+            }
+            Self::TimeAutomatic => {
+                let _ = choices.write_str("on or off");
             }
             Self::AppearanceTheme => {
                 let _ = choices.write_str("dark or light");
@@ -478,6 +491,11 @@ impl Key {
                     .get(facts.time_zone)
                     .map_or("UTC", |(name, _)| *name),
             ),
+            Self::TimeAutomatic => value.write_str(match facts.time_automatic {
+                true => "on",
+                false => "off",
+            }),
+            Self::TimeSync => write_clock_sync(&mut value, facts.clock_sync.as_ref()),
             Self::MouseButtons => value.write_str(buttons_name(facts.input.left_handed)),
             Self::MouseScrolling => value.write_str(scrolling_name(facts.input.natural_scrolling)),
             Self::MouseSpeed => write!(value, "{}", facts.input.pointer_speed),
@@ -521,6 +539,11 @@ impl Key {
             Self::TimeZone => crate::facts::zone_index(value)
                 .map(Change::TimeZone)
                 .ok_or(Refusal::InvalidValue),
+            Self::TimeAutomatic => match value {
+                "on" => Ok(Change::Automatic(true)),
+                "off" => Ok(Change::Automatic(false)),
+                _ => Err(Refusal::InvalidValue),
+            },
             Self::DisplayScale => match value {
                 "1" => Ok(Change::DisplayScale(1)),
                 "2" => Ok(Change::DisplayScale(2)),
@@ -556,6 +579,24 @@ impl Key {
             _ => Err(Refusal::ReadOnly),
         }
     }
+}
+
+/// Writes `time.sync`'s value: `<result> <finished, or started while syncing, in ISO 8601
+/// UTC> <server> <moved_ms or offset_ms or 0>`, or `none` without a record (D224).
+pub fn write_clock_sync(value: &mut Value, record: Option<&Record>) -> core::fmt::Result {
+    let Some(record) = record else {
+        return value.write_str("none");
+    };
+    let when = record.finished.unwrap_or(record.started);
+    let iso = eggos_calendar::rfc3339(when).unwrap_or([b'?'; 20]);
+    write!(
+        value,
+        "{} {} {} {}",
+        record.outcome.name(),
+        core::str::from_utf8(&iso).unwrap_or("?"),
+        core::str::from_utf8(record.server()).unwrap_or("?"),
+        record.moved_ms
+    )
 }
 
 fn write_choices(choices: &mut Text<256>, names: &[&str]) {

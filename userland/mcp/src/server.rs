@@ -74,6 +74,9 @@ pub const FETCH_TIME_LIMIT_MS: u64 = 60_000;
 /// How long `net_ping`'s and `net_lookup`'s twins may run: five pings a second apart, or a
 /// lookup that retries a silent server (D158).
 pub const NETWORK_TIME_LIMIT_MS: u64 = 15_000;
+/// How long `clock_sync`'s twin may run: the time server's three tries, then up to three
+/// HTTPS checks of 10 s each (D224).
+pub const CLOCK_SYNC_TIME_LIMIT_MS: u64 = 45_000;
 /// How long `file_copy`'s, `file_move`'s and `file_remove`'s twins may run: a folder's whole
 /// tree takes longer than one file (D225).
 pub const FILE_TREE_TIME_LIMIT_MS: u64 = 60_000;
@@ -2198,7 +2201,8 @@ impl Server {
             time_limit_ms: match tool.kind {
                 Kind::Run => prepared.checked.time_limit_ms,
                 Kind::Fetch => FETCH_TIME_LIMIT_MS,
-                Kind::NetPing | Kind::NetLookup | Kind::ClockSync => NETWORK_TIME_LIMIT_MS,
+                Kind::NetPing | Kind::NetLookup => NETWORK_TIME_LIMIT_MS,
+                Kind::ClockSync => CLOCK_SYNC_TIME_LIMIT_MS,
                 Kind::FileCopy | Kind::FileMove | Kind::FileRemove => FILE_TREE_TIME_LIMIT_MS,
                 _ => TWIN_TIME_LIMIT_MS,
             },

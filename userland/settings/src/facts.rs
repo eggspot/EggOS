@@ -1,6 +1,7 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
+use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
     DisplayAccessibility, InputPreferences, KeyAccessibility, KeyboardLayoutSet, SwitchKey,
 };
@@ -48,6 +49,10 @@ pub struct Facts {
     pub caps_lock: bool,
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     pub time_zone: usize,
+    /// Whether the clock is set from the network, `time.automatic` (D224).
+    pub time_automatic: bool,
+    /// What the last network clock sync did, from `/run/eggos/clock-sync` (D224).
+    pub clock_sync: Option<Record>,
     /// The mouse and key preferences (D195).
     pub input: InputPreferences,
     /// Sticky keys and slow keys (D205).
@@ -79,6 +84,8 @@ impl Facts {
             keyboard_layouts: KeyboardLayoutSet::DEFAULT,
             switch_key: SwitchKey::Profile,
             time_zone: utc_zone(),
+            time_automatic: true,
+            clock_sync: None,
             keyboard: true,
             caps_lock: false,
             input: InputPreferences::DEFAULT,

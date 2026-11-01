@@ -481,7 +481,7 @@ pub const TOOLS: [Tool; 62] = [
     tool(
         &registry::CLOCK_SYNC,
         Kind::ClockSync,
-        twin("/bin/date", &["-u", "--sync"], Operand::None),
+        twin("/bin/date", &["-u", "--sync", "--automatic"], Operand::None),
     ),
     tool(
         &registry::APP_INSTALL,
