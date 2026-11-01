@@ -37,8 +37,9 @@ pub enum Grant {
     View,
     /// Write and delete files below `/home/root` (`tee`, `trash`, `fetch`, `ln`).
     Write,
-    /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), and open
-    /// a text file in the Text Editor (`edit_open`).
+    /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), install
+    /// and remove components (`component_install`, `component_remove`, D237), and open a text
+    /// file in the Text Editor (`edit_open`).
     Install,
     /// Run any program (`run`), operate any window (`wm_click`, `wm_type`, `wm_press`,
     /// `wm_scroll`, `wm_menu_choose`) and set the clock (`clock_set`, D150): full control of
