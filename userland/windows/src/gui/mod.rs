@@ -11,6 +11,7 @@ pub mod dialog_template;
 pub mod drawn;
 pub mod input;
 pub mod keyboard;
+pub mod layout_keyboard;
 pub mod menus;
 pub mod message;
 pub mod objects;

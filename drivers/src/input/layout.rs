@@ -1020,6 +1020,25 @@ impl Typist {
         self.pending != 0
     }
 
+    /// The state in one word, for a caller that keeps it between presses elsewhere
+    /// ([`Self::from_bits`]).
+    pub const fn to_bits(&self) -> u32 {
+        self.layout as u32 | (self.pending as u32) << 8
+    }
+
+    /// The state [`Self::to_bits`] made `bits` from; the US layout for a layout that is none,
+    /// and then nothing waiting.
+    pub fn from_bits(bits: u32) -> Self {
+        let layout = (bits & 0xff) as usize;
+        match layout < LAYOUTS.len() {
+            true => Self {
+                layout: layout as u8,
+                pending: (bits >> 8) as u16,
+            },
+            false => Self::new(),
+        }
+    }
+
     /// The spacing accent of the dead key that waits for the next key, as the dead-key
     /// highlight shows it (D220), if one waits.
     pub fn pending_accent(&self) -> Option<char> {

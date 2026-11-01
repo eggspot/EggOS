@@ -372,3 +372,13 @@ fn the_pending_accent_is_the_dead_key_s_spacing_accent() {
     german.press(E, NONE);
     assert_eq!(german.pending_accent(), None);
 }
+
+#[test]
+fn a_typist_s_state_fits_one_word_and_comes_back() {
+    let mut german = typist("de");
+    german.press(ACUTE_ON_DE, NONE);
+    let kept = Typist::from_bits(german.to_bits());
+    assert_eq!(kept, german);
+    assert!(kept.is_pending());
+    assert_eq!(Typist::from_bits(0xff), Typist::new());
+}
