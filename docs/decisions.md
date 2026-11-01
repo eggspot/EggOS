@@ -17277,3 +17277,61 @@ the license, by an explicit instruction recorded here.
   number is deterministic). Also: folding a thread's time into its process's account only at exit and
   when read, instead of an atomic add per switch; an instruction profile of `vfork` + `execve` on
   x86_64; reserving `FileRanges` once per exec.
+
+## D217 Kernel and user builds are told apart by `cfg(eggos_kernel)` and `cfg(eggos_user)`, and each architecture's Linux ABI lives in one file, `kernel/src/linux/abi/<arch>.rs` (issue #96; extends D4, D6, D7) — Decided by the build loop (engineering)
+
+- **Context.** The kernel and the programs were told apart by the target: `target_os = "none"`
+  (68 uses in 14 files) for the kernel, `target_env = "musl"` (205 uses in 28 files, two
+  `Cargo.toml` target tables and eleven build scripts) for EggOS's own programs. Targets the
+  plan adds next are neither (riscv32 and 32-bit Arm kernels are `none`, but ppc64, s390x and
+  sparc64 user builds are `-gnu`), so those gates would build the wrong half there. The Linux
+  layer also had 226 `target_arch` sites across 22 files of `kernel/src` (issue #96): system-call
+  tables, struct layouts, signal frames, fault encodings, and as many in host tests, so every new
+  architecture touched each of them.
+- **Decision.**
+  - Every kernel target's `rustflags` in `.cargo/config.toml` carries `--cfg eggos_kernel`, every
+    EggOS user target's `--cfg eggos_user`; every xtask flag list that sets
+    `CARGO_ENCODED_RUSTFLAGS` for a user target carries the same (`xtask::USER_CFG`). The
+    workspace's `unexpected_cfgs` declares both. Build scripts read `CARGO_CFG_EGGOS_USER` and
+    `CARGO_CFG_EGGOS_KERNEL`. `hal` and `userland/runtime` refuse, with `compile_error!`, a
+    build with both cfgs, a bare-metal HAL build without `eggos_kernel` and a musl runtime build
+    without `eggos_user`. The separate workspaces `tests/{hello-crate,multi-crate,windows-rust}`
+    use neither cfg, so they keep their manifests (the plan's `[lints] workspace = true` would
+    name their own empty workspaces).
+  - `kernel/src/linux/abi/mod.rs` selects `<arch>.rs`, the only place with `target_arch` in
+    `kernel/src` and `drivers/src`. Each file holds its architecture's system-call numbers (the
+    generic table is shared in `abi::generic`), `uname`'s machine, the ELF machine, `O_DIRECTORY`
+    and `O_NOFOLLOW`, the `mmap` bits only some have, `struct stat`'s size and layout,
+    `epoll_event`'s size, `sigaction`'s restorer, `MINSIGSTKSZ`, the `rt_sigreturn` trampoline,
+    `clone`'s argument order, whether the Windows and macOS layers run there, the signal frame's
+    layout and code, the fault encodings, and a `test_support` module for host tests. Values
+    every architecture so far shares (`POLL*`, `RLIMIT_*`, socket constants, terminal `ioctl`s)
+    stay where they were; the old per-file `compile_error!` reminders are replaced by the module
+    documentation's list of what a new architecture checks.
+  - Each file has a `wants` module, Linux's `__ARCH_WANT_*`: `LEGACY_CALLS` (x86_64's calls older
+    than the `*at` family: `open`, `stat`, `fork`, `poll`, `select`, `time`, ...), `RENAMEAT`
+    (not RISC-V) and `ARCH_PRCTL`. The kernel's build script reads them and sets
+    `cfg(linux_abi_<want>)`, which gates the dispatch arms and functions of those calls, so the
+    dispatch stays one `match` of constants with no cost. Adding an architecture's Linux ABI is
+    one new file.
+  - Hardware facts the self-tests probed with `target_arch` moved to the HAL:
+    `eggos_hal::fp::programs_see_unswitched_state` (x86_64's `XSAVE` and protection keys) and
+    `eggos_hal::arch::TEST_MACHINE`.
+  - `cargo xtask lint` fails on `target_arch` in `kernel/src` or `drivers/src` outside
+    `kernel/src/linux/abi/`, and on the old gates in any tracked `.rs` or `.toml` file but a
+    `compile_error!` guard.
+  - CI's `big-endian-tests` job (its own parallel Linux job, 20 minutes, apt packages cached)
+    cross-compiles the pure crates' host tests (eggfs, net, png, tls, crypto, wayland,
+    app-manifest) for `s390x-unknown-linux-gnu` and runs them under `qemu-s390x`; `check` needs
+    it. Test tooling only (not D17); the target is installed in that job alone.
+- **Check.** Part 0's commit built alone against main 9e7661c6 (`cargo xtask build`, release, aarch64,
+  riscv64, x86_64): every user program in the release image is byte-identical; each kernel's
+  section sizes are identical and its `.text` and `.data` byte-identical, so the benchmarks
+  cannot move; `.rodata` differs in 26 bytes, the line numbers of panic locations in the files
+  whose lines moved; `nm --defined-only` names are identical on aarch64 and x86_64, and on
+  riscv64 457 local `.Lanon.<hash>.<n>` labels carry a new hash (same count, same contents).
+  Host tests (`eggos-kernel`, `eggos-hal`, `xtask`), host clippy on aarch64 and x86_64, and
+  `cargo xtask clippy-targets` pass.
+- **Not yet.** `compress` and `plist` join `big-endian-tests` when they exist (parts 51 and 14).
+  The legacy comments of the large files part 0 touched (`kernel/src/linux.rs`,
+  `kernel/src/lib.rs` and the userland mains) are left for the comment sweep's own PR (D66).
