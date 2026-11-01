@@ -229,6 +229,7 @@ pub struct TerminalWindow<S: Shell> {
     damage: Damage,
     render_due: bool,
     focused: bool,
+    reduce_motion: bool,
     active_at: u32,
     look: CursorLook,
     title: Title,
@@ -295,6 +296,7 @@ impl<S: Shell> TerminalWindow<S> {
             damage: Damage::new(),
             render_due: true,
             focused: true,
+            reduce_motion: false,
             active_at: now_ms,
             look: CursorLook::Block,
             title: Title::default(),
@@ -1068,7 +1070,7 @@ impl<S: Shell> TerminalWindow<S> {
         if !self.focused || self.panel.is_some() {
             return (CursorLook::Outline, None);
         }
-        if !self.terminal.cursor_blinks() {
+        if !self.terminal.cursor_blinks() || self.reduce_motion {
             return (CursorLook::Block, None);
         }
         let halves = now.wrapping_sub(self.active_at) / BLINK_HALF_MS;
@@ -1098,6 +1100,17 @@ impl<S: Shell> TerminalWindow<S> {
             .into_iter()
             .flatten()
             .min_by_key(|at| at.wrapping_sub(now_ms) as i32)
+    }
+
+    /// Whether nothing blinks (`accessibility.reduce_motion`, D223): the cursor is a steady
+    /// block, whatever the program asked with `CSI ? 12 h`.
+    pub fn set_reduce_motion(&mut self, reduce: bool) {
+        self.reduce_motion = reduce;
+        let (look, _) = self.look_at(self.now);
+        if look != self.look {
+            self.look = look;
+            self.render_due = true;
+        }
     }
 
     /// Looks at the clock: the cursor's blink, the indicator's end, a drag past the grid's top

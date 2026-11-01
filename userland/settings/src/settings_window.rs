@@ -6,13 +6,13 @@
 //! program must do; the program talks to the system.
 
 use crate::about_pane::AboutPane;
-use crate::accessibility_pane::AccessibilityPane;
+use crate::accessibility_pane::{AccessibilityPane, Shown};
 use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
-use crate::keys::{InputChange, KeysChange};
+use crate::keys::{DisplayChange, InputChange, KeysChange};
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use crate::zone_picker::{self, ZonePicker};
@@ -39,7 +39,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 189;
+pub const CAPACITY: usize = 193;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -370,6 +370,9 @@ pub enum Request {
     /// Save this key accessibility setting, then apply it, then say how both went
     /// ([`SettingsWindow::keys_changed`]) (D205).
     ChangeKeys(KeysChange),
+    /// Save this display accessibility setting, then apply it, then say how both went
+    /// ([`SettingsWindow::display_changed`]) (D223).
+    ChangeDisplay(DisplayChange),
     /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
     ReadDisks,
     /// Check this disk without writing, read the disks again, then show both
@@ -908,7 +911,8 @@ impl SettingsWindow {
             keyboard_no_disk,
             facts.input,
         );
-        let accessibility = AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], facts.keys);
+        let accessibility =
+            AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], Shown::of(&facts));
         let about_devices = AboutPane::build(&mut tree, panes[ABOUT]);
         let zones = ZonePicker::build(
             &mut tree,
@@ -1023,7 +1027,22 @@ impl SettingsWindow {
             self.facts.keys = change.applied_to(self.facts.keys);
         }
         self.accessibility
-            .changed(&mut self.tree, self.facts.keys, saved, applied);
+            .changed(&mut self.tree, Shown::of(&self.facts), saved, applied);
+    }
+
+    /// How saving, then applying, a display accessibility setting went
+    /// ([`Request::ChangeDisplay`]): `applied` is only looked at when `saved` worked.
+    pub fn display_changed(
+        &mut self,
+        change: DisplayChange,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        if saved.is_ok() {
+            self.facts.display = change.applied_to(self.facts.display);
+        }
+        self.accessibility
+            .changed(&mut self.tree, Shown::of(&self.facts), saved, applied);
     }
 
     /// How saving the display's scale went ([`Request::SetDisplayScale`]).
@@ -1574,7 +1593,7 @@ impl SettingsWindow {
             return request;
         }
         if let input_panes::Reply::Done(request) =
-            self.accessibility.respond(response, self.facts.keys)
+            self.accessibility.respond(response, Shown::of(&self.facts))
         {
             return request;
         }
@@ -2322,5 +2341,39 @@ mod tests {
         );
         window.keys_changed(KeysChange::SlowKeysMs(500), Err(Errno::EPERM), Ok(()));
         assert_eq!(window.facts().keys.slow_keys_ms, 300);
+    }
+
+    #[test]
+    fn the_accessibility_pane_turns_high_contrast_and_reduce_motion_on() {
+        let mut window = SettingsWindow::new(Facts::example());
+        click(&mut window, 40, ACCESSIBILITY_ROW);
+        assert_eq!(
+            window.accessibility_pane().display_state(window.widgets()),
+            (false, false)
+        );
+        assert_eq!(
+            click(&mut window, 200, 84),
+            Some(Request::ChangeDisplay(DisplayChange::HighContrast(true)))
+        );
+        window.display_changed(DisplayChange::HighContrast(true), Ok(()), Ok(()));
+        assert!(window.facts().display.high_contrast);
+        assert_eq!(
+            click(&mut window, 200, 84),
+            Some(Request::ChangeDisplay(DisplayChange::HighContrast(false)))
+        );
+        window.display_changed(
+            DisplayChange::HighContrast(false),
+            Err(Errno::EPERM),
+            Ok(()),
+        );
+        assert_eq!(
+            window.accessibility_pane().display_state(window.widgets()),
+            (true, false),
+            "a refused save puts the box back"
+        );
+        assert_eq!(
+            click(&mut window, 200, 124),
+            Some(Request::ChangeDisplay(DisplayChange::ReduceMotion(true)))
+        );
     }
 }

@@ -146,6 +146,26 @@ pub fn key_accessibility(file: &[u8]) -> KeyAccessibility {
     }
 }
 
+/// Whether every colour token takes its high-contrast value: `true` or `false` (D223).
+pub const HIGH_CONTRAST: &str = "accessibility.high_contrast";
+/// Whether nothing blinks: `true` or `false` (D223).
+pub const REDUCE_MOTION: &str = "accessibility.reduce_motion";
+
+/// How the screen is made easier to see (D223), as the settings file holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DisplayAccessibility {
+    pub high_contrast: bool,
+    pub reduce_motion: bool,
+}
+
+/// The display accessibility `file` holds: each `false` unless the file says `true`.
+pub fn display_accessibility(file: &[u8]) -> DisplayAccessibility {
+    DisplayAccessibility {
+        high_contrast: value(file, HIGH_CONTRAST) == Some(&b"true"[..]),
+        reduce_motion: value(file, REDUCE_MOTION) == Some(&b"true"[..]),
+    }
+}
+
 /// The mouse and key preferences the settings file holds (D195), each its default when absent
 /// or out of range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -721,6 +741,22 @@ mod tests {
         assert_eq!(
             input_preferences(b"eggos-settings 1\nmouse.speed=99999999\nmouse.buttons=LEFT\n"),
             InputPreferences::DEFAULT
+        );
+    }
+
+    #[test]
+    fn display_accessibility_is_off_unless_the_file_says_true() {
+        assert_eq!(display_accessibility(b""), DisplayAccessibility::default());
+        let file = b"eggos-settings 1
+accessibility.high_contrast=true
+                     accessibility.reduce_motion=on
+";
+        assert_eq!(
+            display_accessibility(file),
+            DisplayAccessibility {
+                high_contrast: true,
+                reduce_motion: false,
+            }
         );
     }
 

@@ -510,6 +510,24 @@ fn the_caret_blinks_every_500_ms_while_the_window_has_the_focus() {
 }
 
 #[test]
+fn reduce_motion_draws_the_caret_steady_and_asks_for_no_blink() {
+    let mut form = form();
+    let tree = &mut form.tree;
+    tree.set_focus(Some(form.field), 1000);
+    tree.tick(1500);
+    tree.take_damage();
+    tree.set_reduce_motion(true);
+    assert_eq!(tree.take_damage().rects().len(), 1, "the blanked caret is drawn again");
+    assert_eq!(tree.next_deadline(1600), None);
+    for at in [1600, 2100, 2600] {
+        tree.tick(at);
+        assert!(tree.take_damage().is_empty());
+    }
+    tree.set_reduce_motion(false);
+    assert!(tree.next_deadline(2600).is_some());
+}
+
+#[test]
 fn rendering_draws_the_tokens_and_the_focus_ring_only_while_the_window_is_focused() {
     let mut form = form();
     let mut pixels = vec![0u32; 400 * 200];

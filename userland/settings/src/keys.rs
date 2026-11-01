@@ -5,7 +5,8 @@
 use crate::facts::Facts;
 use core::fmt::Write;
 use eggos_settings_file::{
-    InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS, KeyAccessibility,
+    DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS,
+    KeyAccessibility,
     KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS, PROFILES, SwitchKey,
 };
 use eggos_toolkit::text::Text;
@@ -34,6 +35,8 @@ pub enum Key {
     MouseSpeed,
     KeyboardRepeatDelay,
     KeyboardRepeatRate,
+    HighContrast,
+    ReduceMotion,
     StickyKeys,
     SlowKeys,
     SlowKeysMs,
@@ -79,6 +82,8 @@ pub enum Change {
     Input(InputChange),
     /// Sticky keys or slow keys, used from the next key (D205).
     Keys(KeysChange),
+    /// High contrast or reduced motion, shown at once (D223).
+    Display(DisplayChange),
 }
 
 /// What the keyboard uses, all of it (D220): the layouts the switch key cycles through, the
@@ -178,6 +183,36 @@ impl KeysChange {
                 eggos_settings_file::SLOW_KEYS_MS
             }
         };
+        (key, value)
+    }
+}
+
+/// One display accessibility setting's new value (D223).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayChange {
+    HighContrast(bool),
+    ReduceMotion(bool),
+}
+
+impl DisplayChange {
+    /// `display` with this one changed.
+    pub const fn applied_to(self, display: DisplayAccessibility) -> DisplayAccessibility {
+        let mut changed = display;
+        match self {
+            Self::HighContrast(on) => changed.high_contrast = on,
+            Self::ReduceMotion(on) => changed.reduce_motion = on,
+        }
+        changed
+    }
+
+    /// The setting it changes and its value as the settings file holds it.
+    pub fn saved(self) -> (&'static str, Value) {
+        let (key, on) = match self {
+            Self::HighContrast(on) => (eggos_settings_file::HIGH_CONTRAST, on),
+            Self::ReduceMotion(on) => (eggos_settings_file::REDUCE_MOTION, on),
+        };
+        let mut value = Value::new();
+        let _ = value.write_str(boolean_name(on));
         (key, value)
     }
 }
@@ -285,7 +320,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 25] = [
         Self::ShellProfile,
         Self::AppearanceTheme,
         Self::DisplayScale,
@@ -300,6 +335,8 @@ impl Key {
         Self::MouseSpeed,
         Self::KeyboardRepeatDelay,
         Self::KeyboardRepeatRate,
+        Self::HighContrast,
+        Self::ReduceMotion,
         Self::StickyKeys,
         Self::SlowKeys,
         Self::SlowKeysMs,
@@ -328,6 +365,8 @@ impl Key {
             Self::MouseSpeed => eggos_settings_file::MOUSE_SPEED,
             Self::KeyboardRepeatDelay => eggos_settings_file::KEYBOARD_REPEAT_DELAY,
             Self::KeyboardRepeatRate => eggos_settings_file::KEYBOARD_REPEAT_RATE,
+            Self::HighContrast => eggos_settings_file::HIGH_CONTRAST,
+            Self::ReduceMotion => eggos_settings_file::REDUCE_MOTION,
             Self::StickyKeys => eggos_settings_file::STICKY_KEYS,
             Self::SlowKeys => eggos_settings_file::SLOW_KEYS,
             Self::SlowKeysMs => eggos_settings_file::SLOW_KEYS_MS,
@@ -361,6 +400,8 @@ impl Key {
                 | Self::MouseSpeed
                 | Self::KeyboardRepeatDelay
                 | Self::KeyboardRepeatRate
+                | Self::HighContrast
+                | Self::ReduceMotion
                 | Self::StickyKeys
                 | Self::SlowKeys
                 | Self::SlowKeysMs
@@ -400,7 +441,7 @@ impl Key {
             Self::KeyboardRepeatRate => {
                 let _ = choices.write_str("2 to 60");
             }
-            Self::StickyKeys | Self::SlowKeys => {
+            Self::HighContrast | Self::ReduceMotion | Self::StickyKeys | Self::SlowKeys => {
                 let _ = choices.write_str("true or false");
             }
             Self::SlowKeysMs => {
@@ -442,6 +483,8 @@ impl Key {
             Self::MouseSpeed => write!(value, "{}", facts.input.pointer_speed),
             Self::KeyboardRepeatDelay => write!(value, "{}", facts.input.repeat_delay_ms),
             Self::KeyboardRepeatRate => write!(value, "{}", facts.input.repeat_rate),
+            Self::HighContrast => value.write_str(boolean_name(facts.display.high_contrast)),
+            Self::ReduceMotion => value.write_str(boolean_name(facts.display.reduce_motion)),
             Self::StickyKeys => value.write_str(boolean_name(facts.keys.sticky_keys)),
             Self::SlowKeys => value.write_str(boolean_name(facts.keys.slow_keys)),
             Self::SlowKeysMs => write!(value, "{}", facts.keys.slow_keys_ms),
@@ -499,6 +542,12 @@ impl Key {
                 .map(|delay| Change::Input(InputChange::RepeatDelayMs(delay))),
             Self::KeyboardRepeatRate => {
                 number_within(value, 2, 60).map(|rate| Change::Input(InputChange::RepeatRate(rate)))
+            }
+            Self::HighContrast => {
+                boolean(value).map(|on| Change::Display(DisplayChange::HighContrast(on)))
+            }
+            Self::ReduceMotion => {
+                boolean(value).map(|on| Change::Display(DisplayChange::ReduceMotion(on)))
             }
             Self::StickyKeys => boolean(value).map(|on| Change::Keys(KeysChange::StickyKeys(on))),
             Self::SlowKeys => boolean(value).map(|on| Change::Keys(KeysChange::SlowKeys(on))),
@@ -577,6 +626,8 @@ mod tests {
                 ("mouse.speed", "5".to_owned()),
                 ("keyboard.repeat_delay_ms", "400".to_owned()),
                 ("keyboard.repeat_rate", "25".to_owned()),
+                ("accessibility.high_contrast", "false".to_owned()),
+                ("accessibility.reduce_motion", "false".to_owned()),
                 ("accessibility.sticky_keys", "false".to_owned()),
                 ("accessibility.slow_keys", "false".to_owned()),
                 ("accessibility.slow_keys_ms", "300".to_owned()),

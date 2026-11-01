@@ -30,6 +30,8 @@ const CHANGE_FLAGS: usize = 0x400c_7725;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const GET_PALETTE: usize = 0x8004_7727;
 const SET_PALETTE: usize = 0x4004_7728;
+const GET_REDUCE_MOTION: usize = 0x8004_7729;
+const SET_REDUCE_MOTION: usize = 0x4004_772a;
 const SET_MENU: usize = 0x4100_7715;
 const MENU_POOL: usize = 8;
 const CAPS_LOCK_FLAG: u32 = 1;
@@ -233,6 +235,19 @@ impl WindowServer {
     /// `PaletteChanged`.
     pub fn set_palette(&self, index: u32) -> Result<(), Errno> {
         self.ioctl(SET_PALETTE, &mut index.to_ne_bytes())
+    }
+
+    /// Whether nothing blinks on the desktop (`accessibility.reduce_motion`, D223).
+    pub fn reduce_motion(&self) -> Result<bool, Errno> {
+        let mut reduce = [0u8; 4];
+        self.ioctl(GET_REDUCE_MOTION, &mut reduce)?;
+        Ok(word(&reduce, 0) == 1)
+    }
+
+    /// Makes motion reduced or not: the shell's and every window's blinks stop or start, each
+    /// window told with `PaletteChanged`.
+    pub fn set_reduce_motion(&self, reduce: bool) -> Result<(), Errno> {
+        self.ioctl(SET_REDUCE_MOTION, &mut u32::from(reduce).to_ne_bytes())
     }
 
     /// Gives window `window` the main menu `pool` (`SET_MENU`, D147), or removes it when the

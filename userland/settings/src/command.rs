@@ -5,12 +5,14 @@
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
-use crate::keys::{self, Change, InputChange, Key, KeyboardChoice, KeysChange, Refusal};
+use crate::keys::{
+    self, Change, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange, Refusal,
+};
 use core::fmt::Write;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
-use eggos_settings_file::{InputPreferences, KeyAccessibility, PATH};
+use eggos_settings_file::{DisplayAccessibility, InputPreferences, KeyAccessibility, PATH};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
@@ -65,6 +67,15 @@ pub trait Machine {
     fn save_keys(&mut self, change: KeysChange) -> Result<(), &'static [u8]>;
     /// Uses `keys` from the next key on.
     fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]>;
+    /// Saves high contrast or reduced motion to the settings file (D223).
+    fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]>;
+    /// Shows `display` at once in `theme` (`SET_PALETTE` with the high-contrast index and
+    /// `SET_REDUCE_MOTION`): every window repaints.
+    fn apply_display(
+        &mut self,
+        theme: Theme,
+        display: DisplayAccessibility,
+    ) -> Result<(), &'static [u8]>;
     /// Writes to standard output.
     fn write_output(&mut self, bytes: &[u8]);
     /// Writes to standard error.
@@ -287,6 +298,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::DisplayScale(scale) => machine.save_display_scale(scale),
         Change::Input(input) => machine.save_input(input),
         Change::Keys(keys) => machine.save_keys(keys),
+        Change::Display(display) => machine.save_display(display),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -307,6 +319,10 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Keys(keys) => {
             let applied = keys.applied_to(machine.facts().keys);
             machine.apply_keys(applied)
+        }
+        Change::Display(display) => {
+            let facts = machine.facts();
+            machine.apply_display(facts.theme, display.applied_to(facts.display))
         }
     };
     if let Err(why) = applied {
@@ -398,6 +414,8 @@ mod tests {
         apply_fails: bool,
         theme_saved: Option<Theme>,
         theme_applied: Option<Theme>,
+        display_saved: Option<DisplayChange>,
+        display_applied: Option<(Theme, DisplayAccessibility)>,
     }
 
     impl Machine for Fake {
@@ -462,6 +480,20 @@ mod tests {
 
         fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]> {
             self.keys_applied = Some(keys);
+            Ok(())
+        }
+
+        fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]> {
+            self.display_saved = Some(change);
+            Ok(())
+        }
+
+        fn apply_display(
+            &mut self,
+            theme: Theme,
+            display: DisplayAccessibility,
+        ) -> Result<(), &'static [u8]> {
+            self.display_applied = Some((theme, display));
             Ok(())
         }
 
@@ -693,6 +725,40 @@ mod tests {
             ),
             FAILURE
         );
+    }
+
+    #[test]
+    fn high_contrast_and_reduce_motion_are_saved_and_shown_at_once() {
+        let mut fake = Fake::default();
+        let (status, _, _) = settings(&mut fake, &["set", "accessibility.high_contrast", "on"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.display_saved, Some(DisplayChange::HighContrast(true)));
+        assert_eq!(
+            fake.display_applied,
+            Some((
+                Theme::Dark,
+                DisplayAccessibility {
+                    high_contrast: true,
+                    reduce_motion: false,
+                }
+            ))
+        );
+        let mut fake = Fake::default();
+        assert_eq!(
+            run(&mut fake, &["set", "accessibility.reduce_motion", "yes"]),
+            0
+        );
+        assert_eq!(
+            fake.display_applied.map(|(_, display)| display.reduce_motion),
+            Some(true)
+        );
+        assert_eq!(
+            run(&mut fake, &["set", "accessibility.reduce_motion", "maybe"]),
+            INVALID_VALUE_STATUS
+        );
+        let mut fake = Fake::default();
+        let (_, listed, _) = settings(&mut fake, &["get", "accessibility.high_contrast"]);
+        assert_eq!(listed, "false\n");
     }
 
     #[test]

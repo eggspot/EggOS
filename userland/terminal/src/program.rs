@@ -552,6 +552,10 @@ impl View for Program {
         self.window.tick(now_ms);
     }
 
+    fn motion_changed(&mut self, reduce: bool) {
+        self.window.set_reduce_motion(reduce);
+    }
+
     fn close_requested(&mut self, time_ms: u32) -> bool {
         self.window.close_requested(time_ms)
     }

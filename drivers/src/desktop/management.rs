@@ -244,13 +244,15 @@ impl Desktop {
     }
 
     /// Makes palette `index` the desktop's (D218): every window's client gets
-    /// `PaletteChanged` and the whole screen is drawn again.
+    /// `PaletteChanged`, with whether motion is reduced (D223), and the whole screen is drawn
+    /// again.
     pub fn set_palette(&mut self, index: u32, damage: &mut Damage, events: &mut dyn EventSink) {
+        let reduce = i32::from(self.reduce_motion);
         for slot in 0..self.windows.len() {
             if self.windows[slot].is_some() {
                 self.send(
                     slot,
-                    EventRecord::new(event::PALETTE_CHANGED, 0, index as i32, 0, 0, 0),
+                    EventRecord::new(event::PALETTE_CHANGED, 0, index as i32, reduce, 0, 0),
                     events,
                 );
             }
@@ -650,8 +652,7 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) {
-        let window = self.window_at(slot);
-        let normal = self.window_at(window.parent.map_or(slot, usize::from));
+        let normal = self.window_at(self.owner_window(slot));
         if normal.role == Role::Normal && normal.desktop != self.current_desktop {
             let desktop = normal.desktop;
             let _ = self.switch_desktop(desktop, damage, events);
@@ -688,7 +689,7 @@ impl Desktop {
 
     pub(super) fn focused_normal(&self) -> Option<usize> {
         let focus = self.focus.filter(|&slot| self.is_visible(slot))?;
-        Some(self.window_at(focus).parent.map_or(focus, usize::from))
+        Some(self.owner_window(focus))
     }
 
     /// Runs `shortcut`, pressed now.

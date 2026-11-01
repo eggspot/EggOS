@@ -164,6 +164,7 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     text_before_focus: Text<255>,
     damage: Damage,
     palette: &'static Palette,
+    reduce_motion: bool,
     form: FormFactor,
     global_menu: bool,
     menu: Option<WidgetId>,
@@ -215,6 +216,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             text_before_focus: Text::new(),
             damage: Damage::new(),
             palette: &theme::DARK,
+            reduce_motion: false,
             form: FormFactor::Desktop,
             global_menu: false,
             menu: None,
@@ -237,6 +239,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if !core::ptr::eq(self.palette, palette) {
             self.palette = palette;
             self.damage_all();
+        }
+    }
+
+    /// Whether nothing blinks (`accessibility.reduce_motion`, D223): the caret is drawn steady.
+    pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
+        self.reduce_motion = reduce_motion;
+        if reduce_motion && !self.caret_shown {
+            self.caret_shown = true;
+            self.damage_caret();
         }
     }
 
@@ -1169,7 +1180,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     pub fn tick(&mut self, now_ms: u32) -> Response {
         if self.focused_field() {
             let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
-            let shown = (elapsed / CARET_BLINK_MS).is_multiple_of(2);
+            let shown = self.reduce_motion || (elapsed / CARET_BLINK_MS).is_multiple_of(2);
             if shown != self.caret_shown {
                 self.caret_shown = shown;
                 self.damage_caret();
@@ -1181,7 +1192,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     /// When [`Self::tick`] next has something to do, if ever.
     pub fn next_deadline(&self, now_ms: u32) -> Option<u32> {
-        let caret = self.focused_field().then(|| {
+        let caret = (self.focused_field() && !self.reduce_motion).then(|| {
             let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
             now_ms.wrapping_add(CARET_BLINK_MS - elapsed % CARET_BLINK_MS)
         });

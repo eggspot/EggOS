@@ -4,7 +4,7 @@ use crate::paste::{PASTE_CAPACITY, PASTE_CHUNK, prepare};
 use crate::selection::SelectionMode;
 use crate::title::{CUT_TEXT, DEFAULT_TITLE, TITLE_CAPACITY, Title};
 use crate::window::{
-    DEFAULT_CONTENT, INDICATOR_MS, MAX_COLUMNS, MAX_ROWS, MINIMUM_CONTENT, PASTE,
+    BLINK_HALF_MS, DEFAULT_CONTENT, INDICATOR_MS, MAX_COLUMNS, MAX_ROWS, MINIMUM_CONTENT, PASTE,
     PROGRAM_END_CHECK_MS, ProcessEnd, ProgramState, SELECT_ALL, Shell, ShellOutput, TerminalWindow,
     exit_line, grid_for,
 };
@@ -815,4 +815,17 @@ fn agents_select_a_row_s_line_or_the_whole_screen() {
     assert_eq!(window.act(2, Action::Select), Outcome::Done);
     assert_eq!(window.selected_text(), "first\nsecond");
     assert_eq!(window.act(2 + 25, Action::Invoke), Outcome::NotSupported);
+}
+
+#[test]
+fn reduce_motion_keeps_the_cursor_steady_and_wants_no_blink_tick() {
+    let mut window = open_window();
+    window.tick(10_000);
+    assert_eq!(window.deadline(10_000), Some(10_000 + BLINK_HALF_MS));
+    window.set_reduce_motion(true);
+    assert_eq!(window.deadline(10_000), None);
+    shell_writes(&mut window, b"\x1b[?12h", 10_001);
+    assert_eq!(window.deadline(10_002), None);
+    window.set_reduce_motion(false);
+    assert!(window.deadline(10_002).is_some());
 }

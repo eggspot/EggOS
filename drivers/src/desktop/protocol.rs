@@ -85,6 +85,8 @@ pub mod size {
     pub const GET_PALETTE: usize = 4;
     pub const SET_PALETTE: usize = 4;
     pub const SET_KEYBOARD_LAYOUTS: usize = 12;
+    pub const GET_REDUCE_MOTION: usize = 4;
+    pub const SET_REDUCE_MOTION: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -134,6 +136,8 @@ pub mod request {
     pub const GET_PALETTE: u32 = encode(READ, 39, size::GET_PALETTE);
     pub const SET_PALETTE: u32 = encode(WRITE, 40, size::SET_PALETTE);
     pub const SET_KEYBOARD_LAYOUTS: u32 = encode(WRITE, 38, size::SET_KEYBOARD_LAYOUTS);
+    pub const GET_REDUCE_MOTION: u32 = encode(READ, 41, size::GET_REDUCE_MOTION);
+    pub const SET_REDUCE_MOTION: u32 = encode(WRITE, 42, size::SET_REDUCE_MOTION);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -239,7 +243,8 @@ pub mod event {
     pub const OVERFLOW: u16 = 13;
     pub const MENU_CHOSEN: u16 = 14;
     pub const QUERY: u16 = 15;
-    /// The desktop's palette changed to index `a` (D218): repaint the whole window.
+    /// The desktop's palette changed to index `a` (D218), or whether motion is reduced to `b`
+    /// (1 reduced, D223): repaint the whole window.
     pub const PALETTE_CHANGED: u16 = 16;
 }
 
@@ -443,6 +448,10 @@ pub enum Request {
     SetPalette {
         palette: u32,
     },
+    GetReduceMotion,
+    SetReduceMotion {
+        reduce: u32,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -634,6 +643,8 @@ impl Request {
             request::GET_PALETTE => size::GET_PALETTE,
             request::SET_PALETTE => size::SET_PALETTE,
             request::SET_KEYBOARD_LAYOUTS => size::SET_KEYBOARD_LAYOUTS,
+            request::GET_REDUCE_MOTION => size::GET_REDUCE_MOTION,
+            request::SET_REDUCE_MOTION => size::SET_REDUCE_MOTION,
             _ => return None,
         })
     }
@@ -710,6 +721,8 @@ impl Request {
             request::SET_PROFILE => Self::SetProfile { profile: at(0) },
             request::GET_PALETTE => Self::GetPalette,
             request::SET_PALETTE => Self::SetPalette { palette: at(0) },
+            request::GET_REDUCE_MOTION => Self::GetReduceMotion,
+            request::SET_REDUCE_MOTION => Self::SetReduceMotion { reduce: at(0) },
             request::APPS_CHANGED => Self::AppsChanged,
             request::OPEN_APP => {
                 let mut name = [0; APP_NAME_CAPACITY];

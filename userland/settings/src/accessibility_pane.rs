@@ -1,14 +1,15 @@
-//! The Accessibility pane's key rows (D205, docs/ux/first-run-accessibility-v0.3.md section 2):
-//! sticky keys, slow keys and the delay a key must be held, and full keyboard navigation,
-//! always on. Each change is one [`Request::ChangeKeys`] the program saves, then applies.
+//! The Accessibility pane (D205, D223, docs/ux/first-run-accessibility-v0.3.md section 2):
+//! high contrast, reduce motion, sticky keys, slow keys and the delay a key must be held, and
+//! full keyboard navigation, always on. Each change is one [`Request::ChangeDisplay`] or
+//! [`Request::ChangeKeys`] the program saves, then applies.
 
 use crate::agents_pane::show_line;
 use crate::facts::Facts;
 use crate::input_panes::Reply;
-use crate::keys::KeysChange;
+use crate::keys::{DisplayChange, KeysChange};
 use crate::settings_window::{CAPACITY, Request};
 use eggos_runtime::errno::Errno;
-use eggos_settings_file::KeyAccessibility;
+use eggos_settings_file::{DisplayAccessibility, KeyAccessibility};
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
@@ -60,9 +61,28 @@ fn checkbox(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, y: i32, words: &str
     )
 }
 
-/// The Accessibility pane's key widgets.
+/// What the pane's controls show: the display's and the keys' accessibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shown {
+    pub display: DisplayAccessibility,
+    pub keys: KeyAccessibility,
+}
+
+impl Shown {
+    /// What `facts` hold.
+    pub fn of(facts: &Facts) -> Self {
+        Self {
+            display: facts.display,
+            keys: facts.keys,
+        }
+    }
+}
+
+/// The Accessibility pane's widgets.
 #[derive(Debug)]
 pub struct AccessibilityPane {
+    contrast: WidgetId,
+    motion: WidgetId,
     sticky: WidgetId,
     slow: WidgetId,
     delay: WidgetId,
@@ -70,8 +90,18 @@ pub struct AccessibilityPane {
 }
 
 impl AccessibilityPane {
-    /// Builds the pane's rows in `pane`, under its heading, showing `keys`.
-    pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, keys: KeyAccessibility) -> Self {
+    /// Builds the pane's rows in `pane`, under its heading, showing `shown`.
+    pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, shown: Shown) -> Self {
+        let contrast = checkbox(tree, pane, 70, "High contrast");
+        meaning(
+            tree,
+            pane,
+            76,
+            "White on black, every edge drawn.",
+            Token::TextDim,
+        );
+        let motion = checkbox(tree, pane, 110, "Reduce motion");
+        meaning(tree, pane, 116, "No blinking, no animation.", Token::TextDim);
         let sticky = checkbox(tree, pane, 150, "Sticky keys");
         meaning(
             tree,
@@ -103,7 +133,7 @@ impl AccessibilityPane {
                 100,
                 1000,
                 50,
-                keys.slow_keys_ms as i32,
+                shown.keys.slow_keys_ms as i32,
                 " ms",
             ),
         );
@@ -126,18 +156,23 @@ impl AccessibilityPane {
         );
         let status = label(tree, pane, PADDING, 316, "", Token::TextDim);
         let accessibility = Self {
+            contrast,
+            motion,
             sticky,
             slow,
             delay,
             status,
         };
-        accessibility.show(tree, keys);
+        accessibility.show(tree, shown);
         tree.set_shown(status, false);
         accessibility
     }
 
-    /// Shows `keys` in the controls.
-    pub fn show(&self, tree: &mut WidgetTree<CAPACITY>, keys: KeyAccessibility) {
+    /// Shows `shown` in the controls.
+    pub fn show(&self, tree: &mut WidgetTree<CAPACITY>, shown: Shown) {
+        let Shown { display, keys } = shown;
+        tree.set_selected(self.contrast, usize::from(display.high_contrast));
+        tree.set_selected(self.motion, usize::from(display.reduce_motion));
         tree.set_selected(self.sticky, usize::from(keys.sticky_keys));
         tree.set_selected(self.slow, usize::from(keys.slow_keys));
         tree.set_value(self.delay, keys.slow_keys_ms as i32);
@@ -146,7 +181,7 @@ impl AccessibilityPane {
 
     /// Shows the pane afresh: the controls at `facts`, the status line at its "shown" state.
     pub fn reset(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
-        self.show(tree, facts.keys);
+        self.show(tree, Shown::of(facts));
         match facts.on_disk {
             true => tree.set_shown(self.status, false),
             false => {
@@ -156,25 +191,33 @@ impl AccessibilityPane {
         }
     }
 
-    /// How a change went: `keys` are those in force after it.
+    /// How a change went: `shown` is what is in force after it.
     pub fn changed(
         &self,
         tree: &mut WidgetTree<CAPACITY>,
-        keys: KeyAccessibility,
+        shown: Shown,
         saved: Result<(), Errno>,
         applied: Result<(), Errno>,
     ) {
-        self.show(tree, keys);
+        self.show(tree, shown);
         let line = match (saved, applied) {
             (Err(Errno::EPERM | Errno::EACCES), _) => {
-                "Not allowed: this user may not change the keyboard settings."
+                "Not allowed: this user may not change the accessibility settings."
             }
-            (Err(_), _) => "No disk attached: the keyboard settings could not be saved.",
+            (Err(_), _) => "No disk attached: the accessibility settings could not be saved.",
             (Ok(()), Err(_)) => "Saved for the next boot, but the window server did not take it.",
             (Ok(()), Ok(())) => return,
         };
         show_line(tree, self.status, line, Token::Text);
         tree.set_shown(self.status, true);
+    }
+
+    /// Whether the high contrast and reduce motion boxes are checked.
+    pub fn display_state(&self, tree: &WidgetTree<CAPACITY>) -> (bool, bool) {
+        (
+            tree.selected(self.contrast) == Some(1),
+            tree.selected(self.motion) == Some(1),
+        )
     }
 
     /// The controls' state: sticky keys, slow keys, the delay and whether it is enabled.
@@ -187,8 +230,22 @@ impl AccessibilityPane {
         )
     }
 
-    /// Acts on a response, the keys in force being `keys`.
-    pub fn respond(&self, response: Response, keys: KeyAccessibility) -> Reply {
+    /// Acts on a response, what is in force being `shown`.
+    pub fn respond(&self, response: Response, shown: Shown) -> Reply {
+        let display = match response {
+            Response::Toggled(id, on) if id == self.contrast => {
+                Some(DisplayChange::HighContrast(on))
+            }
+            Response::Toggled(id, on) if id == self.motion => {
+                Some(DisplayChange::ReduceMotion(on))
+            }
+            _ => None,
+        };
+        if let Some(change) = display {
+            let unchanged = change.applied_to(shown.display) == shown.display;
+            return Reply::Done((!unchanged).then_some(Request::ChangeDisplay(change)));
+        }
+        let keys = shown.keys;
         let change = match response {
             Response::Toggled(id, on) if id == self.sticky => KeysChange::StickyKeys(on),
             Response::Toggled(id, on) if id == self.slow => KeysChange::SlowKeys(on),

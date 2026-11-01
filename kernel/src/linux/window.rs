@@ -102,6 +102,7 @@ pub fn ioctl<P: Platform>(
     if number != request::GET_WORK_AREA
         && number != request::GET_PROFILE
         && number != request::GET_PALETTE
+        && number != request::GET_REDUCE_MOTION
         && number != request::GET_KEYBOARD_LAYOUT
         && number != request::APPS_CHANGED
     {
@@ -125,6 +126,7 @@ pub fn ioctl<P: Platform>(
         request,
         Request::SetProfile { .. }
             | Request::SetPalette { .. }
+            | Request::SetReduceMotion { .. }
             | Request::SetKeyboardLayout { .. }
             | Request::SetKeyboardLayouts { .. }
             | Request::SetInputPreferences { .. }
@@ -359,6 +361,18 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EINVAL);
             }
             crate::terminal::set_desktop_palette::<P>(palette);
+        }
+        Request::GetReduceMotion => {
+            put_word(bytes, 0, u32::from(crate::terminal::reduce_motion()));
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetReduceMotion { reduce } => {
+            if reduce > 1 {
+                return Err(Errno::EINVAL);
+            }
+            crate::terminal::set_reduce_motion::<P>(reduce == 1);
         }
         Request::GetKeyboardLayout => {
             let flags = [

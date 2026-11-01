@@ -288,6 +288,26 @@ pub fn set_desktop_palette<P: Platform>(index: u32) {
     });
 }
 
+static REDUCE_MOTION: AtomicBool = AtomicBool::new(false);
+const HIGH_CONTRAST_PALETTES: u8 = 2;
+
+/// Whether nothing blinks (`accessibility.reduce_motion`, D223): what the settings file held at
+/// boot or the last `SET_REDUCE_MOTION` set.
+pub fn reduce_motion() -> bool {
+    REDUCE_MOTION.load(Ordering::Relaxed)
+}
+
+/// Makes motion reduced or not: the console's cursor and the launcher's caret stop or start
+/// blinking, and every window's client is told with `PaletteChanged`.
+pub fn set_reduce_motion<P: Platform>(reduce: bool) {
+    REDUCE_MOTION.store(reduce, Ordering::Relaxed);
+    let palette = desktop_palette();
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.set_reduce_motion(reduce, damage);
+        desktop.set_palette(palette, damage, events);
+    });
+}
+
 fn remember_profile(profile: Profile) {
     CHOSEN_PROFILE.store(profile.number() as u8 + 1, Ordering::Relaxed);
 }
@@ -339,9 +359,17 @@ pub fn load_saved_settings() {
         eggos_settings_file::keyboard_layout_set(&file[..length]),
         switch_key,
     );
-    if eggos_settings_file::value(&file[..length], APPEARANCE_THEME) == Some(&b"light"[..]) {
-        CHOSEN_PALETTE.store(LIGHT_PALETTE, Ordering::Relaxed);
-    }
+    let theme = match eggos_settings_file::value(&file[..length], APPEARANCE_THEME) {
+        Some(b"light") => LIGHT_PALETTE,
+        _ => 0,
+    };
+    let display = eggos_settings_file::display_accessibility(&file[..length]);
+    let contrast = match display.high_contrast {
+        true => HIGH_CONTRAST_PALETTES,
+        false => 0,
+    };
+    CHOSEN_PALETTE.store(theme + contrast, Ordering::Relaxed);
+    REDUCE_MOTION.store(display.reduce_motion, Ordering::Relaxed);
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
@@ -387,6 +415,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let desktop = match Desktop::new(mode.width, mode.height) {
         Some(mut desktop) => {
             desktop.set_profile(desktop_profile(), &mut Damage::new(), &mut DiscardEvents);
+            desktop.set_reduce_motion(reduce_motion(), &mut Damage::new());
             if session == Session::Interactive {
                 desktop.set_catalogue(
                     crate::apps::catalogue(),
@@ -720,6 +749,10 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 desktop.wheel(delta, &mut queues);
                 Action::None
             }
+            InputEvent::SidewaysWheel { delta } => {
+                desktop.sideways_wheel(delta, &mut queues);
+                Action::None
+            }
             InputEvent::LayoutChanged(number) => {
                 if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number)) {
                     desktop.show_layout_hint(layout.title, damage);
@@ -803,7 +836,8 @@ fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Dama
         screen.active_at = now;
     }
     let focused = screen.desktop.as_ref().is_none_or(Desktop::focused);
-    let blinks = screen.session == Session::Interactive && terminal.cursor_blinks();
+    let blinks =
+        screen.session == Session::Interactive && terminal.cursor_blinks() && !reduce_motion();
     let half = mul_div_ceil(BLINK_HALF_MS, P::clock_frequency(), 1000);
     let (look, next) = cursor_look_at(focused, blinks, screen.active_at, now, half);
     terminal.set_cursor_look(look);

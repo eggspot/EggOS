@@ -228,6 +228,10 @@ pub trait View {
     /// drawn again after it.
     fn palette_changed(&mut self, _index: u32) {}
 
+    /// Whether nothing blinks now (`accessibility.reduce_motion`, D223): a caret or a cursor
+    /// is drawn steady while it is.
+    fn motion_changed(&mut self, _reduce: bool) {}
+
     /// Whether the menu bar goes to the top bar (the macOS profile) rather than the window.
     fn set_global_menu(&mut self, _global: bool) {}
 
@@ -338,6 +342,10 @@ impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, 
         self.0.tree().set_palette(theme::palette_at(index));
     }
 
+    fn motion_changed(&mut self, reduce: bool) {
+        self.0.tree().set_reduce_motion(reduce);
+    }
+
     fn set_global_menu(&mut self, global: bool) {
         self.0.tree().set_global_menu(global);
     }
@@ -417,6 +425,7 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     let mut view_only = false;
     let mut palette = window.server().palette().unwrap_or(0);
     view.palette_changed(palette);
+    view.motion_changed(window.server().reduce_motion().unwrap_or(false));
     let mut global = window.server().desktop_profile() == Ok(MACOS_PROFILE);
     view.set_global_menu(global);
     let mut sent_menu: Option<([u8; POOL_CAPACITY], usize)> = None;
@@ -455,6 +464,7 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
             if u32::from(for_window) == window.id() && kind == PALETTE_CHANGED {
                 palette = record_word(record, 8);
                 view.palette_changed(palette);
+                view.motion_changed(record_word(record, 12) == 1);
                 everything = true;
                 continue;
             }

@@ -25,7 +25,7 @@ use eggos_settings::command::{
 use eggos_settings::facts::Facts;
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
-use eggos_settings::keys::{InputChange, KeyboardChoice, KeysChange};
+use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
@@ -35,8 +35,8 @@ use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
 use eggos_settings_file::{
-    self as settings_file, DIRECTORIES, InputPreferences, KeyAccessibility, LARGEST, PATH,
-    TEMPORARY_PATH_CAPACITY,
+    self as settings_file, DIRECTORIES, DisplayAccessibility, InputPreferences, KeyAccessibility,
+    LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
 };
 use eggos_toolkit::theme::{Theme, palette_index, theme_of};
 use eggos_toolkit::application::{self, Application, View};
@@ -449,6 +449,7 @@ fn facts(server: Option<&WindowServer>) -> Facts {
             .unwrap_or_else(eggos_settings::facts::utc_zone),
         input: settings_file::input_preferences(&file[..length]),
         keys: settings_file::key_accessibility(&file[..length]),
+        display: saved_display(&file[..length], server),
     }
 }
 
@@ -605,8 +606,47 @@ fn apply_theme(theme: Theme, server: Option<&WindowServer>) -> Result<(), Errno>
         }
     };
     match server {
-        Some(server) => server.set_palette(palette_index(theme, false)),
+        Some(server) => {
+            let high_contrast = server.palette().is_ok_and(|index| index >= HIGH_CONTRAST);
+            server.set_palette(palette_index(theme, high_contrast))
+        }
         None => Ok(()),
+    }
+}
+
+const HIGH_CONTRAST: u32 = 2;
+
+fn apply_display(
+    theme: Theme,
+    display: DisplayAccessibility,
+    server: Option<&WindowServer>,
+) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => {
+            server.set_palette(palette_index(theme, display.high_contrast))?;
+            server.set_reduce_motion(display.reduce_motion)
+        }
+        None => Ok(()),
+    }
+}
+
+fn saved_display(file: &[u8], server: Option<&WindowServer>) -> DisplayAccessibility {
+    let saved = settings_file::display_accessibility(file);
+    DisplayAccessibility {
+        high_contrast: server
+            .and_then(|server| server.palette().ok())
+            .map_or(saved.high_contrast, |index| index >= HIGH_CONTRAST),
+        reduce_motion: server
+            .and_then(|server| server.reduce_motion().ok())
+            .unwrap_or(saved.reduce_motion),
     }
 }
 
@@ -713,6 +753,19 @@ impl command::Machine for Machine {
                 .map_err(Errno::message),
             None => Ok(()),
         }
+    }
+
+    fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]> {
+        let (key, value) = change.saved();
+        save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
+    }
+
+    fn apply_display(
+        &mut self,
+        theme: Theme,
+        display: DisplayAccessibility,
+    ) -> Result<(), &'static [u8]> {
+        apply_display(theme, display, self.server.as_ref()).map_err(Errno::message)
     }
 
     fn write_output(&mut self, bytes: &[u8]) {
@@ -918,6 +971,19 @@ impl Application<CAPACITY> for Settings {
                     _ => Ok(()),
                 };
                 self.window.keys_changed(change, saved, applied);
+            }
+            Some(Request::ChangeDisplay(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match saved {
+                    Ok(()) => {
+                        let facts = self.window.facts();
+                        let display = change.applied_to(facts.display);
+                        apply_display(facts.theme, display, self.server.as_ref())
+                    }
+                    Err(_) => Ok(()),
+                };
+                self.window.display_changed(change, saved, applied);
             }
             Some(Request::ChangeInput(change)) => {
                 let (key, value) = change.saved();
