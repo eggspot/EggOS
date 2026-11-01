@@ -61,12 +61,14 @@ mod overlapped;
 mod paint;
 mod pipe;
 mod placement;
+mod pointer;
 mod private_profile;
 mod process;
 mod processes;
 mod psapi;
 mod random;
 mod resource;
+mod scroll_bar;
 mod send_input;
 mod shell;
 mod shell_desktop;
@@ -271,6 +273,8 @@ const USER32: &[&[Export]] = &[
     accelerator::EXPORTS,
     dialog_box::EXPORTS,
     menu_items::EXPORTS,
+    scroll_bar::EXPORTS,
+    pointer::EXPORTS,
 ];
 
 const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];

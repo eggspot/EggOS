@@ -36,6 +36,7 @@ pub enum ControlKind {
     Static,
     ListBox,
     ComboBox,
+    ScrollBar,
     Common(CommonKind),
 }
 

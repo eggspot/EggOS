@@ -94,6 +94,7 @@ fn system_name(kind: ControlKind) -> &'static str {
         ControlKind::Static => "Static",
         ControlKind::ListBox => "ListBox",
         ControlKind::ComboBox => "ComboBox",
+        ControlKind::ScrollBar => "ScrollBar",
         ControlKind::Common(kind) => common_name(kind),
     }
 }
@@ -115,16 +116,18 @@ fn system_atom(kind: ControlKind) -> u16 {
         ControlKind::Edit => 0x81,
         ControlKind::Static => 0x82,
         ControlKind::ListBox => 0x83,
+        ControlKind::ScrollBar => 0x84,
         ControlKind::ComboBox => 0x85,
         ControlKind::Common(kind) => FIRST_COMMON_ATOM + kind as u16,
     }
 }
 
-const SYSTEM_KINDS: [ControlKind; 12] = [
+const SYSTEM_KINDS: [ControlKind; 13] = [
     ControlKind::Button,
     ControlKind::Edit,
     ControlKind::Static,
     ControlKind::ListBox,
+    ControlKind::ScrollBar,
     ControlKind::ComboBox,
     ControlKind::Common(CommonKind::StatusBar),
     ControlKind::Common(CommonKind::Progress),

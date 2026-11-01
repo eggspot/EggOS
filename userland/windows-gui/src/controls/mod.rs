@@ -75,6 +75,9 @@ pub struct Palette {
     pub scroll_thumb: u32,
     pub scroll_arrow: u32,
     pub scroll_arrow_disabled: u32,
+    pub scroll_arrow_pressed_fill: u32,
+    pub scroll_arrow_pressed_glyph: u32,
+    pub scroll_thumb_pressed: u32,
 }
 
 /// Inside a program: Win32's light colours.
@@ -121,6 +124,9 @@ pub const LIGHT: Palette = Palette {
     scroll_thumb: 0x00cd_cdcd,
     scroll_arrow: 0x0060_6060,
     scroll_arrow_disabled: 0x00bf_bfbf,
+    scroll_arrow_pressed_fill: 0x0060_6060,
+    scroll_arrow_pressed_glyph: 0x00ff_ffff,
+    scroll_thumb_pressed: 0x0060_6060,
 };
 
 /// In EggOS's own dialogs: the desktop's dark tokens.
@@ -167,6 +173,9 @@ pub const DARK: Palette = Palette {
     scroll_thumb: 0x0033_4052,
     scroll_arrow: 0x008a_94a6,
     scroll_arrow_disabled: 0x003a_4454,
+    scroll_arrow_pressed_fill: 0x0020_2833,
+    scroll_arrow_pressed_glyph: 0x00e6_eaf0,
+    scroll_thumb_pressed: 0x00e6_eaf0,
 };
 
 /// The dark palette's focus ring on a default button.

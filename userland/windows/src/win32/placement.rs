@@ -400,7 +400,7 @@ unsafe extern "efiapi" fn get_keyboard_state(out: *mut u8) -> Bool {
     TRUE
 }
 
-fn key_state(virtual_key: i32) -> i16 {
+pub(super) fn key_state(virtual_key: i32) -> i16 {
     let Ok(key) = usize::try_from(virtual_key) else {
         return 0;
     };
