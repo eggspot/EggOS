@@ -1,7 +1,9 @@
 use crate::disk::{ABSOLUTE_CAPACITY, SystemFiles, absolute_path};
+use crate::options::{Refused, parse_defined};
 use crate::output::{FAILURE, Output};
 use crate::system::{SymbolicLinks, System};
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_app::files::Files;
 use eggos_files::clock::deletion_date;
 use eggos_files::names::is_valid;
@@ -28,56 +30,36 @@ pub fn trash<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut action = Action::Put;
     let mut force = false;
     let mut dry_run = false;
-    let mut operands = [c""; crate::utilities::MAX_ARGUMENTS];
-    let mut count = 0;
-    let mut options_end = false;
-    for &argument in arguments {
-        let chosen = match argument.to_bytes() {
-            _ if options_end => None,
-            b"--" => {
-                options_end = true;
-                continue;
-            }
-            b"-l" | b"--list" => Some(Action::List),
-            b"-r" | b"--restore" => Some(Action::Restore),
-            b"-e" | b"--empty" => Some(Action::Empty),
-            b"-f" | b"--force" => {
+    let parsed = parse_defined(output, arguments, &commands::TRASH, |_, given| {
+        let chosen = match given.option.short {
+            Some(b'l') => Action::List,
+            Some(b'r') => Action::Restore,
+            Some(b'e') => Action::Empty,
+            Some(b'f') => {
                 force = true;
-                continue;
+                return Ok(());
             }
-            b"--dry-run" => {
-                dry_run = true;
-                continue;
+            _ => {
+                dry_run |= given.is_long("dry-run");
+                return Ok(());
             }
-            bytes if bytes.len() > 1 && bytes[0] == b'-' => {
-                output.invalid_option(bytes);
-                output.error(&[USAGE]);
-                return USAGE_STATUS;
-            }
-            _ => None,
         };
-        match chosen {
-            Some(chosen) if action == Action::Put || action == chosen => action = chosen,
-            Some(_) => {
-                output.error(&[USAGE]);
-                return USAGE_STATUS;
-            }
-            None => {
-                if count == operands.len() {
-                    output.error(&[b"too many operands"]);
-                    return FAILURE;
-                }
-                operands[count] = argument;
-                count += 1;
-            }
+        if action != Action::Put && action != chosen {
+            return Err(Refused::Reported);
         }
-    }
-    let operands = &operands[..count];
+        action = chosen;
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        output.coded(&errors::USAGE, &[USAGE]);
+        return USAGE_STATUS;
+    };
+    let operands = operands.all();
     let wants_operands = matches!(action, Action::Put | Action::Restore);
     if (wants_operands == operands.is_empty() && !(force && action == Action::Put))
         || (dry_run && action != Action::Put)
     {
-        output.error(&[USAGE]);
+        output.coded(&errors::USAGE, &[USAGE]);
         return USAGE_STATUS;
     }
     if dry_run {
@@ -397,7 +379,15 @@ mod tests {
         assert_eq!(run(home(), &[]).0, 2);
         assert_eq!(run(home(), &[c"-l", c"x"]).0, 2);
         assert_eq!(run(home(), &[c"-l", c"-e"]).0, 2);
-        assert_eq!(run(home(), &[c"-z"]).0, 2);
+        assert_eq!(run(home(), &[c"-le"]).0, 2);
+        let (status, fake) = run(home(), &[c"-z"]);
+        assert_eq!(status, 2);
+        assert!(
+            fake.errors()
+                .starts_with("trash: invalid option -- 'z'\ntrash: usage: trash [-f]"),
+            "{}",
+            fake.errors()
+        );
         let (status, fake) = run(home(), &[c"--", c"-l"]);
         assert_eq!(status, 1);
         assert!(fake.errors().starts_with("trash: cannot move '-l'"));
