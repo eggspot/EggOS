@@ -260,6 +260,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-math"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-mcp"
 version = "0.2.0"
 dependencies = [
