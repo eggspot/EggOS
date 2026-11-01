@@ -12,6 +12,7 @@
 use super::Errno;
 use crate::process::Process;
 use crate::sync::LeafSpinLock;
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use eggos_android_log as format;
@@ -19,7 +20,7 @@ use eggos_hal::Platform;
 
 pub use eggos_android_log::{CAPACITY, CLEAR_REQUEST, SNAPSHOT_REQUEST};
 
-static LOG: LeafSpinLock<Log> = LeafSpinLock::new_leaf(Log::new());
+static LOG: LeafSpinLock<Option<Box<Log>>> = LeafSpinLock::new_leaf(None);
 
 #[derive(Debug)]
 struct Log {
@@ -105,12 +106,16 @@ pub fn write(datagram: &[u8], pid: u32) -> bool {
     if format::encode_record(&entry, &mut record).is_none() {
         return false;
     }
-    LOG.lock().append(&record)
+    LOG.lock()
+        .get_or_insert_with(|| Box::new(Log::new()))
+        .append(&record)
 }
 
 /// The log's size in bytes, as `stat` reports it.
 pub fn size() -> u64 {
-    LOG.lock().records.len() as u64
+    LOG.lock()
+        .as_ref()
+        .map_or(0, |log| log.records.len() as u64)
 }
 
 /// Copies the log's bytes from `offset` into `buffer`: how many, 0 at its end. Records may be
@@ -119,13 +124,21 @@ pub fn read_into(offset: u64, buffer: &mut [u8]) -> usize {
     let Ok(offset) = usize::try_from(offset) else {
         return 0;
     };
-    LOG.lock().copy_from(offset, buffer)
+    LOG.lock()
+        .as_ref()
+        .map_or(0, |log| log.copy_from(offset, buffer))
 }
 
 /// Empties the log and gives its memory back.
 pub fn clear() {
-    let records = core::mem::take(&mut LOG.lock().records);
-    drop(records);
+    let log = LOG.lock().take();
+    drop(log);
+}
+
+fn snapshot() -> Result<Vec<u8>, Errno> {
+    LOG.lock()
+        .as_ref()
+        .map_or(Ok(Vec::new()), |log| log.snapshot())
 }
 
 /// `ioctl(fd, request, argument)` on `/dev/android_log`: [`SNAPSHOT_REQUEST`] writes the log's
@@ -136,7 +149,7 @@ pub fn clear() {
 pub fn ioctl<P: Platform>(process: &Process<P>, request: u64, argument: u64) -> Result<u64, Errno> {
     match request as u32 {
         SNAPSHOT_REQUEST => {
-            let records = LOG.lock().snapshot()?;
+            let records = snapshot()?;
             let length = records.len() as u32;
             process
                 .write_user_memory(argument, &length.to_le_bytes())
@@ -229,7 +242,7 @@ mod tests {
         let length = format::encode_datagram(&entry, &mut datagram).unwrap();
         assert!(write(&datagram[..length], 77));
         assert!(!write(&datagram[..format::HEADER_SIZE], 77));
-        let bytes = LOG.lock().snapshot().unwrap();
+        let bytes = snapshot().unwrap();
         let found = format::records(&bytes)
             .find(|found| found.tag == b"eggos-kernel-test")
             .unwrap();
