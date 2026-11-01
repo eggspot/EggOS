@@ -8,6 +8,10 @@ use crate::surface::{Rect, Surface};
 
 /// A scroll bar's width, and its arrow buttons' size.
 pub const WIDTH: i32 = 16;
+/// How long an arrow or the track is held before its request repeats.
+pub const REPEAT_DELAY_MS: u32 = 250;
+/// How often a held arrow or track repeats its request after the first delay.
+pub const REPEAT_INTERVAL_MS: u32 = 50;
 const SMALLEST_THUMB: i32 = 16;
 const VERTICAL_CHEVRON_AT: (i32, i32) = (4, 6);
 const HORIZONTAL_CHEVRON_AT: (i32, i32) = (6, 4);
@@ -268,6 +272,7 @@ pub struct ScrollBar {
     pressed: Option<Part>,
     hovered: Option<Part>,
     track: Option<Track>,
+    pointer: i32,
 }
 
 impl ScrollBar {
@@ -283,6 +288,7 @@ impl ScrollBar {
             pressed: None,
             hovered: None,
             track: None,
+            pointer: 0,
         }
     }
 
@@ -341,6 +347,7 @@ impl ScrollBar {
     /// A left button-down `offset` along a bar `length` long: an arrow scrolls a line, the
     /// track a page, the thumb starts a drag (no request until it moves).
     pub fn button_down(&mut self, offset: i32, length: i32) -> Option<Scroll> {
+        self.pointer = offset;
         let part = self.part_at(offset, length)?;
         self.pressed = Some(part);
         let code = match part {
@@ -364,6 +371,7 @@ impl ScrollBar {
     /// The pointer moved to `offset` while the button is held: a dragged thumb follows it,
     /// keeping the grab, and reports each new position as `SB_THUMBTRACK`.
     pub fn pointer_moved(&mut self, offset: i32, length: i32) -> Option<Scroll> {
+        self.pointer = offset;
         let info = self.info;
         let track = self.track.as_mut()?;
         let (_, size) = thumb(length, &info)?;
@@ -378,6 +386,21 @@ impl ScrollBar {
             code: request::THUMB_TRACK,
             position,
         })
+    }
+
+    /// The request a held arrow or track repeats now: the arrow's line while the pointer is on
+    /// it, the track's page while the pointer is still on that side of the thumb (so paging
+    /// stops when the thumb reaches it); `None` otherwise.
+    pub fn repeat(&self, length: i32) -> Option<Scroll> {
+        let pressed = self.pressed?;
+        let code = match pressed {
+            Part::LineUp => request::LINE_UP,
+            Part::LineDown => request::LINE_DOWN,
+            Part::PageUp => request::PAGE_UP,
+            Part::PageDown => request::PAGE_DOWN,
+            Part::Thumb => return None,
+        };
+        (self.part_at(self.pointer, length) == Some(pressed)).then_some(Scroll::plain(code))
     }
 
     /// The left button released: a drag ends with `SB_THUMBPOSITION` and `SB_ENDSCROLL`, any
@@ -685,5 +708,46 @@ mod tests {
         assert_eq!(surface.get(199, 0), Some(LIGHT.scroll_track));
         assert!(bar.hover(None, 200));
         assert_eq!(bar.hovered(), None);
+    }
+
+    #[test]
+    fn a_held_arrow_repeats_while_the_pointer_stays_on_it_and_paging_stops_at_the_thumb() {
+        let mut bar = ScrollBar::new(true);
+        bar.set_info(
+            mask::RANGE | mask::PAGE,
+            &ScrollInfo {
+                minimum: 0,
+                maximum: 99,
+                page: 10,
+                position: 0,
+            },
+        );
+        assert_eq!(bar.repeat(200), None);
+        bar.button_down(190, 200);
+        assert_eq!(bar.repeat(200), Some(Scroll::plain(request::LINE_DOWN)));
+        bar.pointer_moved(100, 200);
+        assert_eq!(bar.repeat(200), None);
+        bar.pointer_moved(195, 200);
+        assert_eq!(bar.repeat(200), Some(Scroll::plain(request::LINE_DOWN)));
+        bar.button_up();
+        assert_eq!(bar.repeat(200), None);
+        bar.button_down(100, 200);
+        assert_eq!(bar.repeat(200), Some(Scroll::plain(request::PAGE_DOWN)));
+        bar.set_info(
+            mask::POSITION,
+            &ScrollInfo {
+                minimum: 0,
+                maximum: 0,
+                page: 0,
+                position: 50,
+            },
+        );
+        assert_eq!(bar.repeat(200), None);
+        bar.button_up();
+        bar.button_down(20, 200);
+        assert_eq!(bar.repeat(200), Some(Scroll::plain(request::PAGE_UP)));
+        bar.button_up();
+        bar.button_down(105, 200);
+        assert_eq!(bar.repeat(200), None);
     }
 }

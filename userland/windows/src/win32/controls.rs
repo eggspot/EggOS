@@ -33,6 +33,7 @@ const VK_SPACE: usize = 0x20;
 const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const LB_ERR: usize = usize::MAX;
+const SCROLL_REPEAT_TIMER: usize = 0xffff_0227;
 /// The layer's own message that does an agent's action on a list box's item on the list's
 /// thread (D226): `wParam` the item, `lParam` the [`Action`]'s number.
 pub const ACT_ON_LIST_ITEM: u32 = 0x03f3;
@@ -856,6 +857,10 @@ pub fn procedure(
         {
             super::scroll_bar::control_message(window, number, wparam, lparam)
         }
+        message::TIMER if kind == ControlKind::ScrollBar && wparam == SCROLL_REPEAT_TIMER => {
+            repeat_scroll(window);
+            0
+        }
         ACT_ON_LIST_ITEM if kind == ControlKind::ListBox => {
             if let Some(action) = Action::from_value(lparam as u32) {
                 act_on_list_item(window, wparam, action);
@@ -948,6 +953,9 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             })
             .flatten();
             invalidate(window);
+            if scroll.is_some() {
+                repeat_after(window, bar_model::REPEAT_DELAY_MS);
+            }
             super::scroll_bar::send_scroll(window, scroll);
         }
         ControlKind::ListBox => {
@@ -962,6 +970,43 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             list_changed(window, changed);
         }
         ControlKind::Static | ControlKind::ComboBox | ControlKind::Common(_) => {}
+    }
+}
+
+fn repeat_after(window: usize, interval: u32) {
+    with(|gui| {
+        let thread = gui.windows.get(window)?.thread;
+        let now = super::user32::now_ms();
+        gui.timers.set(window, SCROLL_REPEAT_TIMER, interval, 0, thread, now)
+    });
+    gui::wake();
+}
+
+fn stop_repeat(window: usize) {
+    with(|gui| {
+        let thread = gui.windows.get(window).map_or(0, |entry| entry.thread);
+        gui.timers.kill(window, SCROLL_REPEAT_TIMER, thread)
+    });
+}
+
+fn repeat_scroll(window: usize) {
+    let repeated = with_state(window, |entry, state| match state {
+        State::ScrollBar(bar) if bar.pressed().is_some() => {
+            let length = match bar.vertical {
+                true => entry.height as i32,
+                false => entry.width as i32,
+            };
+            Some(bar.repeat(length))
+        }
+        _ => None,
+    })
+    .flatten();
+    match repeated {
+        Some(scroll) => {
+            repeat_after(window, bar_model::REPEAT_INTERVAL_MS);
+            super::scroll_bar::send_scroll(window, scroll);
+        }
+        None => stop_repeat(window),
     }
 }
 
@@ -1114,6 +1159,7 @@ fn left_button_up(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
         }
         ControlKind::ScrollBar => {
             release_capture();
+            stop_repeat(window);
             let scrolls = with_state(window, |_, state| match state {
                 State::ScrollBar(bar) => bar.button_up(),
                 _ => [None, None],
