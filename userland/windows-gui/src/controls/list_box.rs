@@ -40,6 +40,7 @@ struct Item {
     start: u16,
     length: u16,
     marked: bool,
+    data: usize,
 }
 
 /// A list's items, selection and scroll.
@@ -81,6 +82,7 @@ impl ListBox {
                 start: 0,
                 length: 0,
                 marked: false,
+                data: 0,
             }; LIST_CAPACITY],
             count: 0,
             selected: None,
@@ -143,6 +145,7 @@ impl ListBox {
             start: self.used as u16,
             length: length as u16,
             marked: false,
+            data: 0,
         };
         self.used += length;
         self.count += 1;
@@ -152,6 +155,22 @@ impl ListBox {
             self.selected = Some(selected + 1);
         }
         Some(index)
+    }
+
+    /// Item `index`'s value (`LB_GETITEMDATA`), 0 until the program sets one.
+    pub fn data(&self, index: usize) -> Option<usize> {
+        self.items[..self.count].get(index).map(|item| item.data)
+    }
+
+    /// `LB_SETITEMDATA`: whether item `index` exists.
+    pub fn set_data(&mut self, index: usize, value: usize) -> bool {
+        match self.items[..self.count].get_mut(index) {
+            Some(item) => {
+                item.data = value;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Gives item `index` the folder mark.
@@ -376,6 +395,23 @@ mod tests {
         (0..list.count())
             .map(|index| String::from_utf16(list.text(index).unwrap()).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn item_data_follows_its_item_through_inserts_and_deletes() {
+        let mut list = ListBox::new();
+        list.add(&units("b"), true);
+        list.add(&units("d"), true);
+        assert!(list.set_data(0, 11));
+        assert!(list.set_data(1, 44));
+        assert!(!list.set_data(2, 9));
+        list.add(&units("a"), true);
+        assert_eq!(list.data(0), Some(0));
+        assert_eq!(list.data(1), Some(11));
+        assert_eq!(list.data(2), Some(44));
+        list.delete(1);
+        assert_eq!(list.data(1), Some(44));
+        assert_eq!(list.data(2), None);
     }
 
     #[test]

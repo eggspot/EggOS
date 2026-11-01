@@ -62,6 +62,8 @@ pub mod code {
     pub const LB_GETTEXT: u32 = 0x0189;
     pub const LB_GETTEXTLEN: u32 = 0x018a;
     pub const LB_GETCOUNT: u32 = 0x018b;
+    pub const LB_GETITEMDATA: u32 = 0x0199;
+    pub const LB_SETITEMDATA: u32 = 0x019a;
     pub const LB_GETITEMHEIGHT: u32 = 0x01a1;
     pub const BN_CLICKED: usize = 0;
     pub const STN_CLICKED: usize = 0;
@@ -1222,6 +1224,11 @@ fn list_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
             },
             code::LB_GETTEXTLEN => (index(list.text(wparam).map(<[u16]>::len)), false),
             code::LB_GETCOUNT => (list.count(), false),
+            code::LB_GETITEMDATA => (index(list.data(wparam)), false),
+            code::LB_SETITEMDATA => match list.set_data(wparam, lparam) {
+                true => (1, false),
+                false => (LB_ERR, false),
+            },
             code::LB_GETITEMHEIGHT => (ITEM_HEIGHT as usize, false),
             _ => (LB_ERR, false),
         }
