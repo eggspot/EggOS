@@ -23,6 +23,7 @@ use crate::gui::accelerators::{self, AcceleratorTables};
 use crate::gui::atoms::AtomTable;
 use crate::gui::classes::ClassTable;
 use crate::gui::drawn::DrawnTexts;
+use crate::gui::handed_over;
 use crate::gui::input::{Event, InputState, KEY_STATES, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects::{self, ContextTable, ObjectTable};
@@ -814,7 +815,8 @@ pub enum Next {
 
 /// The calling thread's next message `filter` accepts (taken out of the queue when `remove`
 /// says so), the server's records read first; with `wait`, the thread sleeps until one comes
-/// or `done` holds for the state, checked under the lock.
+/// or `done` holds for the state, checked under the lock. An agent's action another thread
+/// handed to this one is done on the way and never returned (D226).
 pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) -> bool) -> Next {
     let thread = thread_environment::thread_id();
     let filter = Filter { thread, ..filter };
@@ -825,6 +827,12 @@ pub fn wait_for(filter: Filter, remove: bool, wait: bool, done: &dyn Fn(&Gui) ->
             false => find(gui, &filter, remove).map_or(Next::Nothing, Next::Message),
         });
         match found {
+            Some(Next::Message(message)) if handed_over::is_handed_over(&message) => {
+                if !remove {
+                    with(|gui| gui.queue.take(&handed_over::taking(&message), true));
+                }
+                super::elements::act_handed_over(&message);
+            }
             Some(Next::Nothing) if wait => sleep(&filter, done),
             Some(found) => return found,
             None => return Next::Nothing,

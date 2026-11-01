@@ -269,6 +269,15 @@ pub fn row_at(y: i32, height: i32) -> Option<usize> {
     (inner >= 0 && y < height - 1).then_some((inner / ITEM_HEIGHT) as usize)
 }
 
+/// Where item `index` sits in a list `width` wide whose first row shown is item `top`: the
+/// row's rectangle inside the frame, above the list for items before `top` and below it for
+/// those past the rows shown, as agents' element tree places each item (D226).
+pub fn row_bounds(index: usize, top: usize, width: i32) -> Rect {
+    let rows = |count: usize| count.min(LIST_CAPACITY) as i32;
+    let y = 1 + (rows(index) - rows(top)) * ITEM_HEIGHT;
+    Rect::sized(1, y, width.saturating_sub(2).max(0), ITEM_HEIGHT)
+}
+
 /// How a list looks at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListLook {
@@ -367,6 +376,32 @@ mod tests {
         (0..list.count())
             .map(|index| String::from_utf16(list.text(index).unwrap()).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn each_item_s_bounds_are_the_row_a_click_finds_it_in() {
+        let height = 102;
+        let visible = visible_rows(height);
+        let mut list = ListBox::new();
+        for index in 0..12 {
+            list.add(&units(&format!("item {index}")), false);
+        }
+        list.select(Some(9), visible);
+        let top = list.top();
+        assert!(top > 0);
+        for index in top..top + visible {
+            let bounds = row_bounds(index, top, 120);
+            assert_eq!(
+                (bounds.left, bounds.width(), bounds.height()),
+                (1, 118, ITEM_HEIGHT)
+            );
+            assert_eq!(row_at(bounds.top, height), Some(index - top));
+            assert_eq!(row_at(bounds.bottom - 1, height), Some(index - top));
+        }
+        let below = 1 + visible as i32 * ITEM_HEIGHT;
+        assert!(row_bounds(top - 1, top, 120).bottom <= 1);
+        assert!(row_bounds(top + visible, top, 120).top >= below);
+        assert_eq!(row_bounds(0, 0, 1).width(), 0);
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod atoms;
 pub mod classes;
 pub mod dialog_template;
 pub mod drawn;
+pub mod handed_over;
 pub mod input;
 pub mod keyboard;
 pub mod layout_keyboard;

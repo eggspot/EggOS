@@ -17,6 +17,7 @@ use crate::gui::message;
 use crate::gui::objects::{self, Object};
 use crate::gui::windows::{self, ControlKind, Procedure, Window};
 use crate::text::equal_ignoring_ascii_case;
+use eggos_element_tree::Action;
 use eggos_windows_gui::controls::button::{self, Button, ButtonKind, ButtonLook, ButtonOutcome};
 use eggos_windows_gui::controls::edit::{self, Edit, EditLook, EditOutcome, visible_cells};
 use eggos_windows_gui::controls::image::{self, Picture};
@@ -27,6 +28,9 @@ use eggos_windows_gui::surface::{Rect, Surface};
 
 const VK_SPACE: usize = 0x20;
 const LB_ERR: usize = usize::MAX;
+/// The layer's own message that does an agent's action on a list box's item on the list's
+/// thread (D226): `wParam` the item, `lParam` the [`Action`]'s number.
+pub const ACT_ON_LIST_ITEM: u32 = 0x03f3;
 
 /// The class messages and notification codes the controls answer and send.
 pub mod code {
@@ -56,6 +60,7 @@ pub mod code {
     pub const EN_CHANGE: usize = 0x0300;
     pub const EN_UPDATE: usize = 0x0400;
     pub const LBN_SELCHANGE: usize = 1;
+    pub const LBN_DBLCLK: usize = 2;
     pub const LBN_SETFOCUS: usize = 4;
     pub const LBN_KILLFOCUS: usize = 5;
 }
@@ -250,6 +255,72 @@ fn with_state<R>(window: usize, work: impl FnOnce(&mut Window, State<'_>) -> R) 
         Some(work(entry, state))
     })
     .flatten()
+}
+
+/// Runs `work` on list box `window`'s entry and items, read under the lock `gui` holds;
+/// `None` when `window` is not a list box.
+pub(super) fn read_list<R>(
+    gui: &Gui,
+    window: usize,
+    work: impl FnOnce(&Window, &ListBox) -> R,
+) -> Option<R> {
+    let entry = gui.windows.get(window)?;
+    let Procedure::Control(ControlKind::ListBox, address) = entry.procedure else {
+        return None;
+    };
+    // SAFETY: as `state_of`: the block is this list's, alive while its window is in the table,
+    // and the lock is held through `gui`; only a shared reference is made here.
+    let list = unsafe { &*(address as *const ListBox) };
+    Some(work(entry, list))
+}
+
+/// Whether button `window`, a check box or radio button, is checked.
+pub(super) fn is_checked(window: &Window) -> bool {
+    match window.procedure {
+        Procedure::Control(ControlKind::Button, address) if address != 0 => {
+            // SAFETY: as `state_of`: a button's state is the `Button` `new_state` made, alive
+            // while its window is in the table, which the caller reads under the lock; only a
+            // shared reference is made here.
+            unsafe { &*(address as *const Button) }.checked
+        }
+        _ => false,
+    }
+}
+
+fn act_on_list_item(window: usize, item: usize, action: Action) {
+    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
+    if enabled != Some(true) {
+        return;
+    }
+    let exists = with_state(window, |_, state| match state {
+        State::ListBox(list) => item < list.count(),
+        _ => false,
+    });
+    if exists != Some(true) {
+        return;
+    }
+    set_focus(window);
+    if action == Action::Focus {
+        return;
+    }
+    let changed = with_state(window, |entry, state| match state {
+        State::ListBox(list) if item < list.count() => {
+            let changed = list.selected() != Some(item);
+            list.select(Some(item), visible_rows(entry.height as i32));
+            Some(changed)
+        }
+        _ => None,
+    })
+    .flatten();
+    list_changed(window, changed);
+    let notifies = with(|gui| {
+        gui.windows
+            .get(window)
+            .is_some_and(|entry| entry.style & list_box::style::NOTIFY != 0)
+    });
+    if action == Action::Invoke && changed.is_some() && notifies == Some(true) {
+        notify(window, code::LBN_DBLCLK);
+    }
 }
 
 pub(super) fn invalidate(window: usize) {
@@ -674,6 +745,12 @@ pub fn procedure(
         }
         static_image::STM_SETICON..=static_image::STM_GETIMAGE if kind == ControlKind::Static => {
             picture_message(window, number, wparam, lparam)
+        }
+        ACT_ON_LIST_ITEM if kind == ControlKind::ListBox => {
+            if let Some(action) = Action::from_value(lparam as u32) {
+                act_on_list_item(window, wparam, action);
+            }
+            0
         }
         _ => def_window_proc_w(window, number, wparam, lparam),
     }
