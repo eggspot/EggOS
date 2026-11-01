@@ -25,7 +25,7 @@ use eggos_mcp::grants::{AgentId, AgentName, GrantStore};
 use eggos_mcp::pairing::{Code, PairError};
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::KEYBOARD_LAYOUTS;
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::{Theme, Token};
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
@@ -130,6 +130,14 @@ const EVERY_PANE_SYNONYMS: [&str; 4] =
 const PANE_WORDS: [&[&str]; 10] = [
     &[
         "theme",
+        "dark",
+        "light",
+        "dark mode",
+        "light mode",
+        "appearance",
+        "colours",
+        "colors",
+        "Choose your mode",
         "layout",
         "shortcuts",
         "profile",
@@ -288,6 +296,8 @@ pub enum Request {
     /// Make the profile at this index of the settings file's `PROFILES` the desktop's and
     /// save it.
     SetProfile(usize),
+    /// Make this theme the desktop's and save it as `appearance.theme` (D218).
+    SetTheme(Theme),
     /// Set the clock to these seconds since the epoch, then say how it went
     /// ([`SettingsWindow::show_set_outcome`]).
     SetTime(u64),
@@ -353,6 +363,8 @@ const SHOWN_WITHOUT_HARDWARE_CLOCK: &str = "No hardware clock: the time started 
 
 /// The primary modifier of each profile, in `PROFILES` order.
 pub const PRIMARY_MODIFIERS: [&str; 3] = ["Ctrl", "Cmd (Super key)", "Ctrl"];
+/// The theme radios' labels, at each theme's number.
+pub const THEME_LABELS: [&str; 2] = ["Dark", "Light"];
 /// The side of each profile's window controls.
 pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 
@@ -364,6 +376,7 @@ struct Widgets {
     cards: WidgetId,
     modifier: WidgetId,
     controls: WidgetId,
+    theme: WidgetId,
     uptime: WidgetId,
     now: WidgetId,
     set_field: WidgetId,
@@ -484,7 +497,7 @@ impl Builder<'_> {
             .expect("the Settings window fits its tree")
     }
 
-    fn label(&mut self, parent: WidgetId, x: i32, y: i32, text: &str, ink: u32) -> WidgetId {
+    fn label(&mut self, parent: WidgetId, x: i32, y: i32, text: &str, ink: Token) -> WidgetId {
         self.add(
             Some(parent),
             Place::at(x, y, Length::Content, Length::Content),
@@ -496,7 +509,7 @@ impl Builder<'_> {
         self.add(
             Some(parent),
             Place::right(PADDING, y),
-            Kind::label(text, colour::TEXT),
+            Kind::label(text, Token::Text),
         )
     }
 
@@ -521,7 +534,7 @@ impl Builder<'_> {
 
     fn row(&mut self, pane: WidgetId, row: i32, name: &str, value: &str) -> WidgetId {
         let y = FIRST_ROW + row * SETTING_ROW + TEXT_IN_ROW;
-        self.label(pane, PADDING, y, name, colour::TEXT);
+        self.label(pane, PADDING, y, name, Token::Text);
         self.value(pane, y, value)
     }
 }
@@ -535,8 +548,8 @@ impl SettingsWindow {
             None,
             Place::at(0, 0, Length::Px(SIDEBAR_WIDTH), Length::Fill(0)),
             Kind::Panel {
-                fill: Some(colour::DOCK),
-                border_right: Some(colour::MENU_BORDER),
+                fill: Some(Token::Dock),
+                border_right: Some(Token::MenuBorder),
             },
         );
         let search = build.add(
@@ -557,15 +570,12 @@ impl SettingsWindow {
         let pane_area = build.add(
             None,
             Place::at(SIDEBAR_WIDTH, 0, Length::Fill(0), Length::Fill(0)),
-            Kind::panel(colour::MENU),
+            Kind::panel(Token::Menu),
         );
         let scroll = build.add(
             Some(pane_area),
             Place::fill(),
-            Kind::ScrollView {
-                offset: 0,
-                content_height: 0,
-            },
+            Kind::scroll_view(),
         );
         let panes = [(); PANES.len()].map(|()| build.pane(scroll));
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
@@ -589,7 +599,7 @@ impl SettingsWindow {
             PADDING,
             row_y(0) + TEXT_IN_ROW,
             "Primary modifier",
-            colour::TEXT,
+            Token::Text,
         );
         let modifier = build.value(
             appearance,
@@ -601,10 +611,22 @@ impl SettingsWindow {
             PADDING,
             row_y(1) + TEXT_IN_ROW,
             "Window controls",
-            colour::TEXT,
+            Token::Text,
         );
         let controls = build.value(appearance, row_y(1) + TEXT_IN_ROW, CONTROL_SIDES[profile]);
-        let no_disk = build.label(appearance, PADDING, NO_DISK_LINE, NO_DISK, colour::TEXT_DIM);
+        build.label(
+            appearance,
+            PADDING,
+            row_y(2) + TEXT_IN_ROW,
+            "Theme",
+            Token::Text,
+        );
+        let theme = build.add(
+            Some(appearance),
+            Place::right(PADDING, row_y(2)),
+            Kind::radios(&THEME_LABELS, facts.theme.number() as usize, true),
+        );
+        let no_disk = build.label(appearance, PADDING, NO_DISK_LINE, NO_DISK, Token::TextDim);
 
         build.heading(panes[DISPLAY], PANES[DISPLAY]);
         build.heading(panes[MOUSE], PANES[MOUSE]);
@@ -628,14 +650,14 @@ impl SettingsWindow {
             KEYBOARD_FACTS_X,
             THIRD_LEVEL_LINE,
             third_level_text(layout, profile),
-            colour::TEXT,
+            Token::Text,
         );
         let dead_keys = build.label(
             keyboard,
             KEYBOARD_FACTS_X,
             DEAD_KEYS_LINE,
             dead_keys_text(layout).as_str(),
-            colour::TEXT,
+            Token::Text,
         );
         let try_field = build.add(
             Some(keyboard),
@@ -652,10 +674,10 @@ impl SettingsWindow {
             KEYBOARD_FACTS_X,
             KEYBOARD_LINE,
             CAPS_LOCK_ON,
-            colour::TEXT,
+            Token::Text,
         );
         let keyboard_no_disk =
-            build.label(keyboard, PADDING, NO_DISK_LINE, NO_DISK, colour::TEXT_DIM);
+            build.label(keyboard, PADDING, NO_DISK_LINE, NO_DISK, Token::TextDim);
 
         build.heading(panes[COMPONENTS], PANES[COMPONENTS]);
         build.label(
@@ -663,7 +685,7 @@ impl SettingsWindow {
             PADDING,
             FIRST_ROW,
             "Coming in a later version.",
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
 
         let date_and_time = panes[DATE_AND_TIME];
@@ -679,7 +701,7 @@ impl SettingsWindow {
             PADDING,
             FIRST_ROW + SETTING_ROW + TEXT_IN_ROW,
             "Set to",
-            colour::TEXT,
+            Token::Text,
         );
         let set_field = build.add(
             Some(date_and_time),
@@ -706,7 +728,7 @@ impl SettingsWindow {
             PADDING,
             STATUS_LINE,
             shown_status(&facts),
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
 
         let about = panes[ABOUT];
@@ -743,21 +765,21 @@ impl SettingsWindow {
             ABOUT_TEXT_X,
             ABOUT_LINES,
             machine.as_str(),
-            colour::TEXT,
+            Token::Text,
         );
         let uptime = build.label(
             about,
             ABOUT_TEXT_X,
             ABOUT_LINES + ABOUT_LINE_PITCH,
             uptime_text(facts.uptime_s).as_str(),
-            colour::TEXT,
+            Token::Text,
         );
         build.label(
             about,
             ABOUT_TEXT_X,
             ABOUT_LINES + 2 * ABOUT_LINE_PITCH,
             "MIT OR Apache-2.0",
-            colour::TEXT,
+            Token::Text,
         );
 
         let storage = StoragePane::build(&mut tree, panes[STORAGE], set_button);
@@ -797,6 +819,7 @@ impl SettingsWindow {
                 cards,
                 modifier,
                 controls,
+                theme,
                 uptime,
                 now,
                 set_field,
@@ -1090,8 +1113,8 @@ impl SettingsWindow {
         self.facts.caps_lock = caps_lock;
         let line = self.widgets.keyboard_line;
         let (text, ink) = match present {
-            true => (CAPS_LOCK_ON, colour::TEXT),
-            false => (NO_KEYBOARD, colour::TEXT_DIM),
+            true => (CAPS_LOCK_ON, Token::Text),
+            false => (NO_KEYBOARD, Token::TextDim),
         };
         self.tree.set_text(line, text);
         self.tree.change(line, |kind| {
@@ -1152,14 +1175,14 @@ impl SettingsWindow {
                 self.zones.reselect_chosen(&mut self.tree);
                 self.set_status(
                     "Not allowed: this user may not set the time zone.",
-                    colour::TEXT,
+                    Token::Text,
                 );
             }
             Err(_) => {
                 self.zones.reselect_chosen(&mut self.tree);
                 self.set_status(
                     "No disk attached: the time zone could not be saved.",
-                    colour::TEXT,
+                    Token::Text,
                 );
             }
         }
@@ -1192,7 +1215,7 @@ impl SettingsWindow {
             self.tree.set_enabled(self.widgets.set_button, false);
             self.tree.set_focus(Some(self.widgets.set_field), now_ms);
         }
-        self.set_status(text, colour::TEXT);
+        self.set_status(text, Token::Text);
     }
 
     /// The `Date & time` pane's status line.
@@ -1200,7 +1223,7 @@ impl SettingsWindow {
         self.tree.text_of(self.widgets.status)
     }
 
-    fn set_status(&mut self, text: &str, ink: u32) {
+    fn set_status(&mut self, text: &str, ink: Token) {
         self.tree.set_text(self.widgets.status, text);
         self.tree.change(self.widgets.status, |kind| {
             if let Kind::Label { colour, .. } = kind {
@@ -1212,7 +1235,7 @@ impl SettingsWindow {
     fn reset_date_and_time(&mut self) {
         self.tree.set_text(self.widgets.set_field, "");
         self.tree.set_enabled(self.widgets.set_button, false);
-        self.set_status(shown_status(&self.facts), colour::TEXT_DIM);
+        self.set_status(shown_status(&self.facts), Token::TextDim);
         self.zones.reset(&mut self.tree, self.facts.now_s as i64);
     }
 
@@ -1231,7 +1254,7 @@ impl SettingsWindow {
             Err(ParseError::NeedsTheDate) => "Type the date too: YYYY-MM-DD HH:MM.",
             Err(ParseError::YearOutOfRange) => "The year must be 2000 to 2099.",
         };
-        self.set_status(refusal, colour::TEXT);
+        self.set_status(refusal, Token::Text);
         None
     }
 
@@ -1284,6 +1307,11 @@ impl SettingsWindow {
         }
         let widgets = self.widgets;
         match response {
+            Response::Chosen(id, index) if id == widgets.theme => {
+                let theme = Theme::from_number(index as u32)?;
+                self.facts.theme = theme;
+                Some(Request::SetTheme(theme))
+            }
             Response::Chosen(id, card) if id == widgets.cards => {
                 self.show_profile(card);
                 Some(Request::SetProfile(card))
@@ -1396,6 +1424,22 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_row_sits_in_row_2_and_choosing_light_asks_for_it() {
+        let mut window = SettingsWindow::new(Facts::example());
+        let pane = window.tree.rect(window.widgets.panes[APPEARANCE]).unwrap();
+        let radios = window.tree.rect(window.widgets.theme).unwrap();
+        assert_eq!(
+            (radios.x - pane.x, radios.y - pane.y, radios.width, radios.height),
+            (331, 272, 117, 28)
+        );
+        assert_eq!(window.tree.selected(window.widgets.theme), Some(0));
+        let request = click(&mut window, radios.x + 70 + 8, radios.y + 14);
+        assert_eq!(request, Some(Request::SetTheme(Theme::Light)));
+        assert_eq!(window.facts().theme, Theme::Light);
+        assert!(pane_matches(APPEARANCE, "dark mode"));
+    }
+
+    #[test]
     fn clicking_a_card_asks_for_its_profile_and_updates_the_rows() {
         let mut window = SettingsWindow::new(Facts::example());
         let card = window.card_rect(0).unwrap();
@@ -1451,7 +1495,7 @@ mod tests {
         let with_disk = render(true);
         let without = render(false);
         let line = |pixels: &[u32]| {
-            (316..332).any(|y| (192..500).any(|x| pixels[y * 640 + x] == colour::TEXT_DIM))
+            (316..332).any(|y| (192..500).any(|x| pixels[y * 640 + x] == eggos_toolkit::colour::TEXT_DIM))
         };
         assert!(!line(&with_disk));
         assert!(line(&without));

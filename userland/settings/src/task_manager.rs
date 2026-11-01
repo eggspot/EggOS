@@ -7,7 +7,7 @@
 
 use alloc::vec::Vec;
 use core::fmt::Write;
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
@@ -165,7 +165,7 @@ fn add(
         .expect("the Task Manager fits its tree")
 }
 
-fn label(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, ink: u32) -> WidgetId {
+fn label(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, ink: Token) -> WidgetId {
     add(
         tree,
         Some(parent),
@@ -179,7 +179,7 @@ fn right_label(
     parent: WidgetId,
     margin: i32,
     y: i32,
-    ink: u32,
+    ink: Token,
 ) -> WidgetId {
     add(
         tree,
@@ -247,7 +247,7 @@ impl TaskManager {
             &mut tree,
             None,
             Place::fill(),
-            Kind::panel(colour::WINDOW_BACKGROUND),
+            Kind::panel(Token::WindowBackground),
         );
         let filter = add(
             &mut tree,
@@ -272,8 +272,8 @@ impl TaskManager {
             (24, "CPU", true),
         ] {
             let header = match right {
-                true => right_label(&mut tree, root, x, 56, colour::TEXT_DIM),
-                false => label(&mut tree, root, x, 56, colour::TEXT_DIM),
+                true => right_label(&mut tree, root, x, 56, Token::TextDim),
+                false => label(&mut tree, root, x, 56, Token::TextDim),
             };
             tree.set_text(header, words);
         }
@@ -291,16 +291,16 @@ impl TaskManager {
         let cells = core::array::from_fn(|row| {
             let y = ROW_TEXT_TOP + row as i32 * ROW;
             [
-                label(&mut tree, root, 40, y, colour::TEXT),
-                right_label(&mut tree, root, 264, y, colour::TEXT),
-                label(&mut tree, root, 392, y, colour::TEXT),
-                right_label(&mut tree, root, 88, y, colour::TEXT),
-                right_label(&mut tree, root, 24, y, colour::TEXT),
+                label(&mut tree, root, 40, y, Token::Text),
+                right_label(&mut tree, root, 264, y, Token::Text),
+                label(&mut tree, root, 392, y, Token::Text),
+                right_label(&mut tree, root, 88, y, Token::Text),
+                right_label(&mut tree, root, 24, y, Token::Text),
             ]
         });
-        let status = label(&mut tree, root, 16, 304, colour::TEXT_DIM);
-        let cpu_line = label(&mut tree, root, 16, 328, colour::TEXT);
-        let memory_line = label(&mut tree, root, 16, 348, colour::TEXT);
+        let status = label(&mut tree, root, 16, 304, Token::TextDim);
+        let cpu_line = label(&mut tree, root, 16, 328, Token::Text);
+        let memory_line = label(&mut tree, root, 16, 348, Token::Text);
         let memory_bar = add(
             &mut tree,
             Some(root),
@@ -323,10 +323,10 @@ impl TaskManager {
             &mut tree,
             Some(root),
             Place::at(120, 164, Length::Px(400), Length::Px(112)),
-            Kind::panel(colour::MENU),
+            Kind::panel(Token::Menu),
         );
-        let question = label(&mut tree, panel, 16, 16, colour::TEXT);
-        let warning = label(&mut tree, panel, 16, 36, colour::TEXT_DIM);
+        let question = label(&mut tree, panel, 16, 16, Token::Text);
+        let warning = label(&mut tree, panel, 16, 36, Token::TextDim);
         tree.set_text(warning, "Unsaved work in it is lost.");
         let cancel = add(
             &mut tree,

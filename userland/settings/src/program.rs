@@ -24,6 +24,7 @@ use eggos_settings::command::{
 };
 use eggos_settings::facts::Facts;
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
+use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
@@ -37,6 +38,7 @@ use eggos_settings_file::{
     self as settings_file, DIRECTORIES, InputPreferences, KeyAccessibility, LARGEST, PATH,
     TEMPORARY_PATH_CAPACITY,
 };
+use eggos_toolkit::theme::{Theme, palette_index, theme_of};
 use eggos_toolkit::application::{self, Application, View};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::damage::Damage;
@@ -430,6 +432,7 @@ fn facts(server: Option<&WindowServer>) -> Facts {
             .unwrap_or_else(|| area.map_or(1, |area| area.scale)),
         scale_in_force: area.map_or(1, |area| area.scale.max(1)),
         profile,
+        theme: saved_theme(&file[..length], server),
         on_disk: home_is_on_a_disk(),
         now_s: wall_clock().0,
         hardware_clock: hardware_clock_s().is_some(),
@@ -590,6 +593,40 @@ fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
     applied.is_ok()
 }
 
+fn apply_theme(theme: Theme, server: Option<&WindowServer>) -> Result<(), Errno> {
+    let opened;
+    let server = match server {
+        Some(server) => Some(server),
+        None => {
+            opened = WindowServer::open();
+            opened.as_ref().ok()
+        }
+    };
+    match server {
+        Some(server) => server.set_palette(palette_index(theme, false)),
+        None => Ok(()),
+    }
+}
+
+fn choose_theme(theme: Theme, server: Option<&WindowServer>) {
+    if let Err(error) = apply_theme(theme, server) {
+        say_error(&[APPEARANCE_THEME.as_bytes(), b": not applied: ", error.message()]);
+    }
+    if let Err(error) = save_through_a_temporary_file(APPEARANCE_THEME, theme.name()) {
+        say_error(&[PATH.as_bytes(), b": ", error.message()]);
+    }
+}
+
+fn saved_theme(file: &[u8], server: Option<&WindowServer>) -> Theme {
+    let saved = settings_file::value(file, APPEARANCE_THEME)
+        .and_then(|value| core::str::from_utf8(value).ok())
+        .and_then(Theme::named)
+        .unwrap_or_default();
+    server
+        .and_then(|server| server.palette().ok())
+        .map_or(saved, theme_of)
+}
+
 struct Machine {
     server: Option<WindowServer>,
 }
@@ -597,6 +634,14 @@ struct Machine {
 impl command::Machine for Machine {
     fn facts(&mut self) -> Facts {
         facts(self.server.as_ref())
+    }
+
+    fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {
+        save_through_a_temporary_file(APPEARANCE_THEME, theme.name()).map_err(Errno::message)
+    }
+
+    fn apply_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {
+        apply_theme(theme, self.server.as_ref()).map_err(Errno::message)
     }
 
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
@@ -823,6 +868,7 @@ impl Application<CAPACITY> for Settings {
 
     fn respond(&mut self, response: Response, now_ms: u32) {
         match self.window.respond(response, now_ms) {
+            Some(Request::SetTheme(theme)) => choose_theme(theme, self.server.as_ref()),
             Some(Request::SetProfile(index)) => {
                 apply_profile(index, self.server.as_ref());
                 self.unsaved_profile = Some(index);

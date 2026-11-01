@@ -1346,33 +1346,39 @@ impl<'a> EditorWindow<'a> {
         let entries = [
             Entry::Item {
                 label: "Undo",
+                key: "",
                 enabled: editor.can_undo(),
                 id: item::UNDO,
             },
             Entry::Item {
                 label: "Redo",
+                key: "",
                 enabled: editor.can_redo(),
                 id: item::REDO,
             },
             Entry::Separator,
             Entry::Item {
                 label: "Cut",
+                key: "",
                 enabled: editor.has_selection(),
                 id: item::CUT,
             },
             Entry::Item {
                 label: "Copy",
+                key: "",
                 enabled: editor.has_selection(),
                 id: item::COPY,
             },
             Entry::Item {
                 label: "Paste",
+                key: "",
                 enabled: editor.can_paste(),
                 id: item::PASTE,
             },
             Entry::Separator,
             Entry::Item {
                 label: "Select All",
+                key: "",
                 enabled: !editor.document().is_empty(),
                 id: item::SELECT_ALL,
             },

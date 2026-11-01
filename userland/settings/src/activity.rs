@@ -13,7 +13,7 @@ use eggos_mcp::audit::calls::{self, CallRow, CallRows, LogFiles};
 use eggos_mcp::audit::{self, Filter, Outcome};
 use eggos_mcp::grants::AgentId;
 use eggos_runtime::errno::Errno;
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
@@ -265,7 +265,7 @@ impl ActivityView {
             tree,
             pane,
             Place::right(PADDING, COUNT_TOP),
-            Kind::label("", colour::TEXT_DIM),
+            Kind::label("", Token::TextDim),
         );
         let since = add(
             tree,
@@ -397,27 +397,27 @@ impl ActivityView {
                 .map(record_row)
                 .unwrap_or_default();
             if tree.text_of(*id) != Some(shortened(&text).as_str()) {
-                show_line(tree, *id, &text, colour::TEXT);
+                show_line(tree, *id, &text, Token::Text);
             }
         }
     }
 
     /// The status line this view shows: the selected record's detail line, or why there is
     /// none, and its colour.
-    pub fn status_line(&self, tree: &WidgetTree<CAPACITY>) -> (String, u32) {
+    pub fn status_line(&self, tree: &WidgetTree<CAPACITY>) -> (String, Token) {
         if let Some(errno) = self.read.error {
             let reason = core::str::from_utf8(errno.message()).unwrap_or("?");
             return (
                 alloc::format!("The log could not be read: {reason}."),
-                colour::TEXT,
+                Token::Text,
             );
         }
         let selected = tree
             .selected(self.widgets.list)
             .and_then(|index| self.read.records.get(index));
         match selected {
-            Some(record) => (detail_line(record), colour::TEXT),
-            None => (String::from(NO_RECORDS), colour::TEXT_DIM),
+            Some(record) => (detail_line(record), Token::Text),
+            None => (String::from(NO_RECORDS), Token::TextDim),
         }
     }
 

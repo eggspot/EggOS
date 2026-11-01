@@ -186,7 +186,7 @@ fn the_pane_is_laid_out_as_the_design_says() {
     assert_eq!(pane.status(tree), Some(kept(&in_use).as_str()));
     assert!(matches!(
         tree.kind(widgets.status),
-        Some(Kind::Label { colour: ink, .. }) if *ink == colour::TEXT_DIM
+        Some(Kind::Label { colour: ink, .. }) if *ink == Token::TextDim
     ));
     assert!(pane.report_lines(tree).is_empty());
 }

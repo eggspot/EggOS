@@ -12,6 +12,7 @@ use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
 use eggos_settings_file::{InputPreferences, KeyAccessibility, PATH};
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Theme;
 
 /// The command's usage, printed for a usage error.
 pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | list [--json] | get \
@@ -39,6 +40,10 @@ pub trait Machine {
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves the desktop's theme to the settings file as `appearance.theme` (D218).
+    fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]>;
+    /// Makes `theme` the desktop's now (`SET_PALETTE`): every window repaints in it.
+    fn apply_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]>;
     /// Saves what the keyboard uses (`keyboard.layouts`, `keyboard.layout` and
     /// `keyboard.switch_key`) to the settings file; the error's text on failure.
     fn save_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]>;
@@ -263,6 +268,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     let keyboard = change.keyboard_choice(&machine.facts());
     let saved = match change {
         Change::Profile(index) => machine.save_profile(index),
+        Change::Theme(theme) => machine.save_theme(theme),
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.save_keyboard(choice))
         }
@@ -278,6 +284,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     }
     let applied = match change {
         Change::Profile(index) => machine.apply_profile(index),
+        Change::Theme(theme) => machine.apply_theme(theme),
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))
         }
@@ -357,6 +364,8 @@ mod tests {
         keys_applied: Option<KeyAccessibility>,
         save_fails: bool,
         apply_fails: bool,
+        theme_saved: Option<Theme>,
+        theme_applied: Option<Theme>,
     }
 
     impl Machine for Fake {
@@ -377,6 +386,16 @@ mod tests {
                 return Err(b"No such device");
             }
             self.applied = Some(index);
+            Ok(())
+        }
+
+        fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {
+            self.theme_saved = Some(theme);
+            Ok(())
+        }
+
+        fn apply_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {
+            self.theme_applied = Some(theme);
             Ok(())
         }
 
@@ -716,5 +735,27 @@ mod tests {
         );
         let (_, output, _) = settings(&mut Fake::default(), &["get", "keyboard.switch_key"]);
         assert_eq!(output, "profile\n");
+    }
+
+    #[test]
+    fn the_theme_is_read_set_and_refused_through_one_change() {
+        let mut fake = Fake::default();
+        let (_, output, _) = settings(&mut fake, &["get", "appearance.theme"]);
+        assert_eq!(output, "dark\n");
+        let (status, _, _) = settings(&mut fake, &["set", "appearance.theme", "light"]);
+        assert_eq!(status, 0);
+        assert_eq!(fake.theme_saved, Some(Theme::Light));
+        assert_eq!(fake.theme_applied, Some(Theme::Light));
+        let (status, _, errors) = settings(&mut fake, &["set", "appearance.theme", "blue"]);
+        assert_eq!(status, INVALID_VALUE_STATUS);
+        assert_eq!(
+            errors,
+            "settings: appearance.theme: invalid value 'blue' (dark or light)\n"
+        );
+        let (_, output, _) = settings(
+            &mut fake,
+            &["set", "--dry-run", "appearance.theme", "light"],
+        );
+        assert_eq!(output, "would set appearance.theme from dark to light\n");
     }
 }

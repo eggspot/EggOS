@@ -10,7 +10,7 @@ use crate::settings_window::{CAPACITY, Request};
 use core::fmt::Write;
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::InputPreferences;
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
@@ -52,7 +52,7 @@ fn label(
         tree,
         parent,
         Place::at(x, y, Length::Content, Length::Content),
-        Kind::label(text, colour::TEXT),
+        Kind::label(text, Token::Text),
     )
 }
 
@@ -65,7 +65,7 @@ fn from_right(margin: i32, top: i32, width: i32, height: i32) -> Place {
     }
 }
 
-fn show_status(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, text: Option<(&str, u32)>) {
+fn show_status(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, text: Option<(&str, Token)>) {
     match text {
         Some((words, ink)) => {
             show_line(tree, id, words, ink);
@@ -207,7 +207,7 @@ impl DisplayPane {
             tree,
             pane,
             Place::right(PADDING, 76),
-            Kind::label("", colour::TEXT),
+            Kind::label("", Token::Text),
         );
         label(tree, pane, PADDING, 116, "Scale");
         let radios = Kind::radios(&SCALES, 0, true);
@@ -217,7 +217,7 @@ impl DisplayPane {
             tree,
             pane,
             Place::right(PADDING + radios_width + PADDING, 116),
-            Kind::label(SCALE_HINT, colour::TEXT_DIM),
+            Kind::label(SCALE_HINT, Token::TextDim),
         );
         let status = label(tree, pane, PADDING, 156, "");
         label(tree, pane, PADDING, 196, "Pointer");
@@ -225,7 +225,7 @@ impl DisplayPane {
             tree,
             pane,
             Place::right(PADDING, 196),
-            Kind::label("Software", colour::TEXT),
+            Kind::label("Software", Token::Text),
         );
         let display = Self {
             resolution,
@@ -250,8 +250,8 @@ impl DisplayPane {
         tree.set_enabled(self.scales, choosable);
         let (line, caused) = scale_line(facts);
         let ink = match caused {
-            true => colour::TEXT,
-            false => colour::TEXT_DIM,
+            true => Token::Text,
+            false => Token::TextDim,
         };
         show_status(tree, self.status, Some((line.as_str(), ink)));
     }
@@ -264,7 +264,7 @@ impl DisplayPane {
             Err(Errno::EPERM | Errno::EACCES) => "Not allowed: this user may not set the scale.",
             Err(_) => "No disk attached: the scale could not be saved.",
         };
-        show_status(tree, self.status, Some((refusal, colour::TEXT)));
+        show_status(tree, self.status, Some((refusal, Token::Text)));
     }
 
     /// The device's size as shown.
@@ -358,7 +358,7 @@ impl InputPanes {
     /// Shows the panes afresh: the controls at `facts`, the status lines at their "shown" state.
     pub fn reset(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
         self.show(tree, facts.input);
-        let line = (!facts.on_disk).then_some((NO_DISK, colour::TEXT_DIM));
+        let line = (!facts.on_disk).then_some((NO_DISK, Token::TextDim));
         show_status(tree, self.mouse_status, line);
         show_status(tree, self.keyboard_status, line);
     }
@@ -396,7 +396,7 @@ impl InputPanes {
             (Ok(()), Err(_)) => NOT_TAKEN,
             (Ok(()), Ok(())) => return,
         };
-        show_status(tree, status, Some((line, colour::TEXT)));
+        show_status(tree, status, Some((line, Token::Text)));
     }
 
     /// The Mouse pane's status line when shown.

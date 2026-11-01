@@ -8,7 +8,7 @@ use crate::settings_window::{CAPACITY, Request};
 use core::fmt::Write;
 use eggos_calendar::format::{is_numeric_abbreviation, utc_offset};
 use eggos_calendar::zone::{self, Rule, ZONES};
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
@@ -161,19 +161,19 @@ impl ZonePicker {
             tree,
             pane,
             Place::at(PADDING, ZONE_LINE, Length::Content, Length::Content),
-            Kind::label("Time zone", colour::TEXT),
+            Kind::label("Time zone", Token::Text),
         );
         let name = add(
             tree,
             pane,
             Place::right(PADDING, ZONE_LINE),
-            Kind::label("", colour::TEXT),
+            Kind::label("", Token::Text),
         );
         let facts = add(
             tree,
             pane,
             Place::right(PADDING, FACTS_LINE),
-            Kind::label("", colour::TEXT_DIM),
+            Kind::label("", Token::TextDim),
         );
         let field = add(
             tree,
@@ -185,7 +185,7 @@ impl ZonePicker {
             tree,
             pane,
             Place::right(PADDING, COUNT_LINE),
-            Kind::label("", colour::TEXT_DIM),
+            Kind::label("", Token::TextDim),
         );
         let list = add(
             tree,
@@ -208,7 +208,7 @@ impl ZonePicker {
                     Length::Px(ROW_LABEL_WIDTH),
                     Length::Content,
                 ),
-                Kind::label("", colour::TEXT),
+                Kind::label("", Token::Text),
             )
         });
         let mut picker = Self {
@@ -318,7 +318,7 @@ impl ZonePicker {
                 None => Text::new(),
             };
             if tree.text_of(*id) != Some(text.as_str()) {
-                show_line(tree, *id, text.as_str(), colour::TEXT);
+                show_line(tree, *id, text.as_str(), Token::Text);
             }
         }
     }

@@ -9,7 +9,7 @@ use crate::keys::KeysChange;
 use crate::settings_window::{CAPACITY, Request};
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::KeyAccessibility;
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
@@ -29,7 +29,7 @@ fn label(
     x: i32,
     y: i32,
     words: &str,
-    ink: u32,
+    ink: Token,
 ) -> WidgetId {
     add(
         tree,
@@ -39,7 +39,7 @@ fn label(
     )
 }
 
-fn meaning(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, y: i32, words: &str, ink: u32) {
+fn meaning(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, y: i32, words: &str, ink: Token) {
     add(
         tree,
         pane,
@@ -78,7 +78,7 @@ impl AccessibilityPane {
             pane,
             156,
             "Tap a modifier, then the key; twice locks it.",
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
         let slow = checkbox(tree, pane, 190, "Slow keys");
         meaning(
@@ -86,9 +86,9 @@ impl AccessibilityPane {
             pane,
             196,
             "A key counts only when held this long.",
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
-        label(tree, pane, 40, 236, "Hold a key for", colour::TEXT);
+        label(tree, pane, 40, 236, "Hold a key for", Token::Text);
         let delay = add(
             tree,
             pane,
@@ -113,18 +113,18 @@ impl AccessibilityPane {
             PADDING,
             276,
             "Full keyboard navigation",
-            colour::TEXT,
+            Token::Text,
         );
-        meaning(tree, pane, 276, "Always on", colour::TEXT);
+        meaning(tree, pane, 276, "Always on", Token::Text);
         label(
             tree,
             pane,
             PADDING,
             296,
             "Tab reaches every control; Ctrl+Alt+Tab reaches the bar.",
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
-        let status = label(tree, pane, PADDING, 316, "", colour::TEXT_DIM);
+        let status = label(tree, pane, PADDING, 316, "", Token::TextDim);
         let accessibility = Self {
             sticky,
             slow,
@@ -150,7 +150,7 @@ impl AccessibilityPane {
         match facts.on_disk {
             true => tree.set_shown(self.status, false),
             false => {
-                show_line(tree, self.status, NO_DISK, colour::TEXT_DIM);
+                show_line(tree, self.status, NO_DISK, Token::TextDim);
                 tree.set_shown(self.status, true);
             }
         }
@@ -173,7 +173,7 @@ impl AccessibilityPane {
             (Ok(()), Err(_)) => "Saved for the next boot, but the window server did not take it.",
             (Ok(()), Ok(())) => return,
         };
-        show_line(tree, self.status, line, colour::TEXT);
+        show_line(tree, self.status, line, Token::Text);
         tree.set_shown(self.status, true);
     }
 

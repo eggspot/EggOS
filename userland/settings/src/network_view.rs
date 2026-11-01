@@ -13,7 +13,7 @@ use eggos_mcp::pairing::{
     CODE_LIFETIME_S, Code, DEFAULT_PORT, FINGERPRINT_TEXT_BYTES, MAX_WRONG_CODES, NetworkState,
     PairError, PendingPairing, code_text,
 };
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::input::key;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
@@ -353,16 +353,16 @@ impl NetworkView {
                 tree,
                 widgets.lines[0],
                 &alloc::format!("Agents connect to https://<this machine>:{port}/mcp"),
-                colour::TEXT,
+                Token::Text,
             ),
-            NetworkState::Off => show_line(tree, widgets.lines[0], OFF_LINE, colour::TEXT_DIM),
+            NetworkState::Off => show_line(tree, widgets.lines[0], OFF_LINE, Token::TextDim),
         }
         match &self.read.fingerprint {
             Some(fingerprint) => {
                 let (first, second) = fingerprint_halves(fingerprint);
-                show_line(tree, widgets.lines[1], PEM_LINE, colour::TEXT);
-                show_line(tree, widgets.lines[2], &first, colour::TEXT);
-                show_line(tree, widgets.lines[3], &second, colour::TEXT);
+                show_line(tree, widgets.lines[1], PEM_LINE, Token::Text);
+                show_line(tree, widgets.lines[2], &first, Token::Text);
+                show_line(tree, widgets.lines[3], &second, Token::Text);
                 tree.set_shown(widgets.lines[2], tree.is_shown(widgets.pair));
                 tree.set_shown(widgets.lines[3], tree.is_shown(widgets.pair));
             }
@@ -371,7 +371,7 @@ impl NetworkView {
                     tree,
                     widgets.lines[1],
                     NO_CERTIFICATE_LINE,
-                    colour::TEXT_DIM,
+                    Token::TextDim,
                 );
                 tree.set_shown(widgets.lines[2], false);
                 tree.set_shown(widgets.lines[3], false);
@@ -380,12 +380,12 @@ impl NetworkView {
     }
 
     /// The status line while the view shows.
-    pub fn status_line(&self) -> (String, u32) {
+    pub fn status_line(&self) -> (String, Token) {
         if let Some(status) = &self.status {
-            return (status.clone(), colour::TEXT);
+            return (status.clone(), Token::Text);
         }
         if self.counting_down() && self.read.state == NetworkState::Off {
-            return (String::from(OFF_NOTE), colour::TEXT);
+            return (String::from(OFF_NOTE), Token::Text);
         }
         match self.read.pending {
             Some(pending) if pending.is_open(self.read.now) => {
@@ -395,10 +395,10 @@ impl NetworkView {
                         "Waiting to pair: {id}; its code ends {}.",
                         clock_time(pending.expires())
                     ),
-                    colour::TEXT,
+                    Token::Text,
                 )
             }
-            _ => (String::from(IDLE_LINE), colour::TEXT_DIM),
+            _ => (String::from(IDLE_LINE), Token::TextDim),
         }
     }
 
@@ -465,24 +465,24 @@ impl NetworkView {
             tree,
             widgets.title,
             &alloc::format!("Pairing {id}"),
-            colour::TEXT,
+            Token::Text,
         );
         tree.set_text(
             widgets.code,
             core::str::from_utf8(&code_text(&code)).unwrap_or_default(),
         );
-        show_line(tree, widgets.hint, SENDS_LINE, colour::TEXT_DIM);
+        show_line(tree, widgets.hint, SENDS_LINE, Token::TextDim);
         show_line(
             tree,
             widgets.url,
             &alloc::format!("https://<this machine>:{}/pair", self.port()),
-            colour::TEXT,
+            Token::Text,
         );
         match &self.read.fingerprint {
             Some(fingerprint) => {
                 let (first, second) = fingerprint_halves(fingerprint);
-                show_line(tree, widgets.fingerprint[0], &first, colour::TEXT);
-                show_line(tree, widgets.fingerprint[1], &second, colour::TEXT);
+                show_line(tree, widgets.fingerprint[0], &first, Token::Text);
+                show_line(tree, widgets.fingerprint[1], &second, Token::Text);
                 tree.set_shown(widgets.fingerprint[1], true);
             }
             None => {
@@ -490,7 +490,7 @@ impl NetworkView {
                     tree,
                     widgets.fingerprint[0],
                     NO_CERTIFICATE_LINE,
-                    colour::TEXT_DIM,
+                    Token::TextDim,
                 );
                 tree.set_shown(widgets.fingerprint[1], false);
             }
@@ -499,7 +499,7 @@ impl NetworkView {
             Some(pending) if *pending.agent() == agent => countdown_text(&pending, self.read.now),
             _ => String::from(ENDED_LINE),
         };
-        show_line(tree, widgets.countdown, &countdown, colour::TEXT);
+        show_line(tree, widgets.countdown, &countdown, Token::Text);
     }
 
     fn open_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
@@ -508,7 +508,7 @@ impl NetworkView {
         self.hint_refusal = None;
         tree.set_text(widgets.id_field, "");
         tree.set_text(widgets.name_field, "");
-        show_line(tree, widgets.title, ASK_TITLE, colour::TEXT);
+        show_line(tree, widgets.title, ASK_TITLE, Token::Text);
         for id in [widgets.id_field, widgets.name_field, widgets.cancel] {
             tree.set_shown(id, true);
         }
@@ -588,8 +588,8 @@ impl NetworkView {
         }
         let (hint, ok) = self.hint(tree, rows, full);
         match &self.hint_refusal {
-            Some(refusal) => show_line(tree, self.widgets.hint, refusal, colour::TEXT),
-            None => show_line(tree, self.widgets.hint, &hint, colour::TEXT_DIM),
+            Some(refusal) => show_line(tree, self.widgets.hint, refusal, Token::Text),
+            None => show_line(tree, self.widgets.hint, &hint, Token::TextDim),
         }
         tree.set_enabled(self.widgets.primary, ok);
     }
@@ -635,7 +635,7 @@ impl NetworkView {
             Err(error) => {
                 self.hint_refusal = Some(pair_error_text(error));
                 if let Some(refusal) = &self.hint_refusal {
-                    show_line(tree, self.widgets.hint, refusal, colour::TEXT);
+                    show_line(tree, self.widgets.hint, refusal, Token::Text);
                 }
             }
         }

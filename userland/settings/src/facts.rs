@@ -3,6 +3,7 @@
 
 use eggos_settings_file::{InputPreferences, KeyAccessibility, KeyboardLayoutSet, SwitchKey};
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Theme;
 
 /// The system's facts and the current choices.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,6 +26,8 @@ pub struct Facts {
     pub scale_in_force: u32,
     /// The desktop's layout profile: its index in the settings file's `PROFILES`.
     pub profile: usize,
+    /// The desktop's theme, `appearance.theme` (D218).
+    pub theme: Theme,
     /// Whether `/home` is on a disk, so a choice survives a power-off.
     pub on_disk: bool,
     /// The wall clock: seconds since 1970-01-01 00:00:00 UTC (D150).
@@ -64,6 +67,7 @@ impl Facts {
             scale: 1,
             scale_in_force: 1,
             profile: 1,
+            theme: Theme::Dark,
             on_disk: true,
             now_s: 1_793_282_709,
             hardware_clock: true,

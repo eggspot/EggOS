@@ -9,6 +9,10 @@ use eggos_settings_file::{
     KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS, PROFILES, SwitchKey,
 };
 use eggos_toolkit::text::Text;
+use eggos_toolkit::theme::Theme;
+
+/// The setting that holds the desktop's theme in the settings file (D218).
+pub const APPEARANCE_THEME: &str = "appearance.theme";
 
 /// A value as it is printed and shown.
 pub type Value = Text<64>;
@@ -17,6 +21,7 @@ pub type Value = Text<64>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     ShellProfile,
+    AppearanceTheme,
     DisplayScale,
     DisplayResolution,
     DisplayPointer,
@@ -58,6 +63,8 @@ pub enum Refusal {
 pub enum Change {
     /// The desktop's layout profile: its index in [`PROFILES`].
     Profile(usize),
+    /// The desktop's theme, applied at once (D218).
+    Theme(Theme),
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     KeyboardLayout(usize),
     /// The layouts the switch key cycles through (D220).
@@ -278,8 +285,9 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::ShellProfile,
+        Self::AppearanceTheme,
         Self::DisplayScale,
         Self::DisplayResolution,
         Self::DisplayPointer,
@@ -307,6 +315,7 @@ impl Key {
     pub const fn name(self) -> &'static str {
         match self {
             Self::ShellProfile => eggos_settings_file::SHELL_PROFILE,
+            Self::AppearanceTheme => APPEARANCE_THEME,
             Self::DisplayScale => eggos_settings_file::DISPLAY_SCALE,
             Self::DisplayResolution => "display.resolution",
             Self::DisplayPointer => "display.pointer",
@@ -341,6 +350,7 @@ impl Key {
         matches!(
             self,
             Self::ShellProfile
+                | Self::AppearanceTheme
                 | Self::DisplayScale
                 | Self::KeyboardLayout
                 | Self::KeyboardLayouts
@@ -371,6 +381,9 @@ impl Key {
             }
             Self::DisplayScale => {
                 let _ = choices.write_str("1 or 2");
+            }
+            Self::AppearanceTheme => {
+                let _ = choices.write_str("dark or light");
             }
             Self::MouseButtons => {
                 let _ = choices.write_str("right or left");
@@ -405,6 +418,7 @@ impl Key {
         let mut value = Value::new();
         let _ = match self {
             Self::ShellProfile => value.write_str(PROFILES[facts.profile.min(PROFILES.len() - 1)]),
+            Self::AppearanceTheme => value.write_str(facts.theme.name()),
             Self::DisplayScale => write!(value, "{}", facts.scale),
             Self::DisplayResolution => {
                 write!(value, "{}x{}", facts.resolution.0, facts.resolution.1)
@@ -448,6 +462,9 @@ impl Key {
                 .iter()
                 .position(|profile| *profile == value)
                 .map(Change::Profile)
+                .ok_or(Refusal::InvalidValue),
+            Self::AppearanceTheme => Theme::named(value)
+                .map(Change::Theme)
                 .ok_or(Refusal::InvalidValue),
             Self::KeyboardLayout => eggos_settings_file::keyboard_layout_named(value.as_bytes())
                 .map(Change::KeyboardLayout)
@@ -547,6 +564,7 @@ mod tests {
             values,
             [
                 ("shell.profile", "macos".to_owned()),
+                ("appearance.theme", "dark".to_owned()),
                 ("display.scale", "1".to_owned()),
                 ("display.resolution", "1280x800".to_owned()),
                 ("display.pointer", "software".to_owned()),

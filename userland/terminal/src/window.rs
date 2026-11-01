@@ -741,17 +741,20 @@ impl<S: Shell> TerminalWindow<S> {
         let entries = [
             Entry::Item {
                 label: "Copy",
+                key: "",
                 enabled: selected,
                 id: COPY,
             },
             Entry::Item {
                 label: "Paste",
+                key: "",
                 enabled: pastable,
                 id: PASTE,
             },
             Entry::Separator,
             Entry::Item {
                 label: "Select All",
+                key: "",
                 enabled: any_text,
                 id: SELECT_ALL,
             },

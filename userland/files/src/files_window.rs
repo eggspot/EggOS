@@ -1903,7 +1903,12 @@ impl FilesWindow {
         let windows = self.windows_words;
         let share = self.on_share();
         let pasteable = self.clipboard.is_some() && !share;
-        let item = |label, enabled, id| Entry::Item { label, enabled, id };
+        let item = |label, enabled, id| Entry::Item {
+            label,
+            key: "",
+            enabled,
+            id,
+        };
         let delete_label = match (windows, self.trashable() || share) {
             (_, false) => "Delete permanently",
             (true, true) => "Delete",

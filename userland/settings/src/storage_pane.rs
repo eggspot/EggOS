@@ -13,7 +13,7 @@ use eggos_files::storage::{
     sizes_text, used_permille,
 };
 use eggos_toolkit::canvas::{Canvas, INSET_R6};
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Token;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::{ELLIPSIS, Text};
@@ -58,10 +58,10 @@ const PANEL_EDGE: i32 = 2;
 /// Draws the format panel: Files' dialog panel, a 2 px field-coloured edge, a 1 px border and
 /// the menu colour inside, corners cut at radius 6.
 pub fn format_panel(canvas: &mut Canvas<'_>, rect: Rect, _: u32) {
-    canvas.rounded(rect, &INSET_R6, colour::FIELD);
+    canvas.rounded(rect, &INSET_R6, canvas.palette().field);
     let inner = rect.inset(PANEL_EDGE);
-    canvas.rounded(inner, &INSET_R6, colour::MENU);
-    canvas.outline(inner, &INSET_R6, 1, colour::MENU_BORDER);
+    canvas.rounded(inner, &INSET_R6, canvas.palette().menu);
+    canvas.outline(inner, &INSET_R6, 1, canvas.palette().menu_border);
 }
 
 fn shortened(words: &str) -> Text<LABEL_BYTES> {
@@ -80,7 +80,7 @@ fn shortened(words: &str) -> Text<LABEL_BYTES> {
     text
 }
 
-fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: u32) {
+fn show_line(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, ink: Token) {
     tree.set_text(id, shortened(words).as_str());
     tree.change(id, |kind| {
         if let Kind::Label { colour, .. } = kind {
@@ -158,7 +158,7 @@ fn line(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, x: i32, y: i32, width
         tree,
         parent,
         Place::at(x, y, Length::Px(width), Length::Content),
-        Kind::label("", colour::TEXT),
+        Kind::label("", Token::Text),
     )
 }
 
@@ -209,7 +209,7 @@ impl StoragePane {
             tree,
             pane,
             Place::at(FACTS_X, READ_ONLY_LINE, Length::Content, Length::Content),
-            Kind::label("Read-only", colour::TEXT),
+            Kind::label("Read-only", Token::Text),
         );
         let usage = add(
             tree,
@@ -367,20 +367,20 @@ impl StoragePane {
         }
         let repairable = match &result {
             Ok(check) => {
-                show_line(tree, widgets.status, &headline(check), colour::TEXT);
+                show_line(tree, widgets.status, &headline(check), Token::Text);
                 let findings = &check.findings;
                 let listed = match findings.len() > REPORT_LINES {
                     true => REPORT_LINES - 1,
                     false => findings.len(),
                 };
                 for (id, finding) in widgets.report.iter().zip(&findings[..listed]) {
-                    show_line(tree, *id, &finding_line(finding), colour::TEXT);
+                    show_line(tree, *id, &finding_line(finding), Token::Text);
                     tree.set_shown(*id, true);
                 }
                 if findings.len() > REPORT_LINES {
                     let last = widgets.report[REPORT_LINES - 1];
                     let more = more_findings_text(findings.len() - listed, device);
-                    show_line(tree, last, &more, colour::TEXT);
+                    show_line(tree, last, &more, Token::Text);
                     tree.set_shown(last, true);
                 }
                 mode == CheckMode::ReadOnly
@@ -389,7 +389,7 @@ impl StoragePane {
                         .any(|finding| finding.outcome == Outcome::Repairable)
             }
             Err(error) => {
-                show_line(tree, widgets.status, &error.sentence(), colour::TEXT);
+                show_line(tree, widgets.status, &error.sentence(), Token::Text);
                 false
             }
         };
@@ -419,7 +419,7 @@ impl StoragePane {
                     tree,
                     widgets.status,
                     &formatted_text(device, label),
-                    colour::TEXT,
+                    Token::Text,
                 );
                 self.report = Some(Report {
                     device,
@@ -431,7 +431,7 @@ impl StoragePane {
                     tree.set_enabled(id, true);
                 }
                 self.update_format_now(tree);
-                show_line(tree, widgets.confirm, &error.sentence(), colour::TEXT);
+                show_line(tree, widgets.confirm, &error.sentence(), Token::Text);
             }
         }
         self.refresh(tree);
@@ -475,8 +475,8 @@ impl StoragePane {
             }
             self.report = None;
             match &self.list_error {
-                Some(error) => show_line(tree, widgets.status, &error.sentence(), colour::TEXT),
-                None => show_line(tree, widgets.status, NOTHING_TO_DO, colour::TEXT_DIM),
+                Some(error) => show_line(tree, widgets.status, &error.sentence(), Token::Text),
+                None => show_line(tree, widgets.status, NOTHING_TO_DO, Token::TextDim),
             }
             return;
         };
@@ -484,10 +484,10 @@ impl StoragePane {
             tree,
             widgets.contents,
             &contents_text(&record),
-            colour::TEXT,
+            Token::Text,
         );
-        show_line(tree, widgets.sizes, &sizes_text(&record), colour::TEXT);
-        show_line(tree, widgets.place, &place_text(&record), colour::TEXT);
+        show_line(tree, widgets.sizes, &sizes_text(&record), Token::Text);
+        show_line(tree, widgets.place, &place_text(&record), Token::Text);
         tree.set_shown(widgets.read_only, record.read_only);
         match used_permille(&record) {
             Some(permille) => {
@@ -511,7 +511,7 @@ impl StoragePane {
             for id in widgets.report {
                 tree.set_shown(id, false);
             }
-            show_line(tree, widgets.status, &idle_text(&record), colour::TEXT_DIM);
+            show_line(tree, widgets.status, &idle_text(&record), Token::TextDim);
         }
     }
 
@@ -531,7 +531,7 @@ impl StoragePane {
             tree,
             widgets.status,
             &running_text(record.device, mode),
-            colour::TEXT,
+            Token::Text,
         );
         self.refresh(tree);
         match mode {
@@ -546,14 +546,14 @@ impl StoragePane {
             tree,
             widgets.question,
             &format_question(record.device),
-            colour::TEXT,
+            Token::Text,
         );
-        show_line(tree, widgets.erases, &erases_text(record), colour::TEXT_DIM);
+        show_line(tree, widgets.erases, &erases_text(record), Token::TextDim);
         show_line(
             tree,
             widgets.confirm,
             &confirm_text(record),
-            colour::TEXT_DIM,
+            Token::TextDim,
         );
         let placeholder = confirm_placeholder(record.device);
         tree.change(widgets.confirm_field, |kind| {
@@ -594,8 +594,8 @@ impl StoragePane {
         let fits = label_fits(trimmed_text(tree, widgets.label_field));
         let typed = trimmed_text(tree, widgets.confirm_field) == name;
         let line = match fits {
-            true => (confirm_text(record), colour::TEXT_DIM),
-            false => (StorageError::LabelTooLong.sentence(), colour::TEXT),
+            true => (confirm_text(record), Token::TextDim),
+            false => (StorageError::LabelTooLong.sentence(), Token::Text),
         };
         tree.set_enabled(widgets.format_now, fits && typed);
         show_line(tree, widgets.confirm, &line.0, line.1);
@@ -620,7 +620,7 @@ impl StoragePane {
             tree,
             widgets.confirm,
             &formatting_text(device),
-            colour::TEXT,
+            Token::Text,
         );
         Some(Request::FormatDisk(device))
     }
