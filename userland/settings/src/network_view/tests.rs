@@ -7,7 +7,7 @@ use eggos_mcp::pairing::{fingerprint_text, token_from};
 use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 use eggos_toolkit::widget::radio_rect;
 
-const AGENTS_ROW_Y: i32 = 44 + 7 * 32 + 10;
+const AGENTS_ROW_Y: i32 = 44 + AGENTS as i32 * 32 + 10;
 const NOW: u64 = 1_793_438_042;
 const CODE: Code = *b"BCDEFGHJ";
 
@@ -117,7 +117,6 @@ fn status(window: &SettingsWindow) -> &str {
 #[test]
 fn the_network_view_says_where_agents_connect_and_shows_the_fingerprint_in_halves() {
     assert_eq!(VIEWS, ["Grants", "Activity", "Network"]);
-    assert_eq!(CAPACITY, 176);
     let window = on_network_view(network(NetworkState::On(8443), None));
     let lines = window.agents_pane().network().lines(window.widgets());
     assert_eq!(lines[0], "Network");

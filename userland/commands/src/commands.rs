@@ -2867,8 +2867,9 @@ pub const REBOOT: CommandDefinition = power(
     Surface::Gui("the desktop's Restart"),
 );
 
-const NO_NETWORK_PANE: &str =
-    "the Network pane is designed (docs/ux/network-v0.3.md) and not built yet";
+const NETWORK_PANE: Surface = Surface::Gui("Settings: Network");
+const NO_HOST_PANE: &str =
+    "Settings: Network shows the network's state; reaching a host has no window yet";
 
 /// `ip`.
 pub const IP: CommandDefinition = CommandDefinition {
@@ -2899,7 +2900,7 @@ pub const IP: CommandDefinition = CommandDefinition {
     max_effect: Effect::Read,
     errors: &[exits(&USAGE, 1), exits(&NO_SUCH_FILE, 1), exits(&FAILED, 1)],
     examples: &[],
-    surface: Surface::NoGui(NO_NETWORK_PANE),
+    surface: NETWORK_PANE,
 };
 
 /// `ping`.
@@ -2951,7 +2952,7 @@ pub const PING: CommandDefinition = CommandDefinition {
     max_effect: Effect::Read,
     errors: &[exits(&USAGE, 2), exits(&FAILED, 2)],
     examples: &[],
-    surface: Surface::NoGui(NO_NETWORK_PANE),
+    surface: Surface::NoGui(NO_HOST_PANE),
 };
 
 /// `nslookup`.
@@ -2970,7 +2971,7 @@ pub const NSLOOKUP: CommandDefinition = CommandDefinition {
     max_effect: Effect::Read,
     errors: &[exits(&USAGE, 1), exits(&FAILED, 1)],
     examples: &[],
-    surface: Surface::NoGui(NO_NETWORK_PANE),
+    surface: Surface::NoGui(NO_HOST_PANE),
 };
 
 /// `fetch`.
@@ -3052,6 +3053,7 @@ pub const SETTINGS: CommandDefinition = CommandDefinition {
 
 const SETTINGS_LIST_TEXT: &str = concat!(
     "shell.profile=macos\n",
+    "appearance.theme=dark\n",
     "display.scale=1\n",
     "display.resolution=1280x800\n",
     "display.pointer=software\n",
@@ -3066,10 +3068,17 @@ const SETTINGS_LIST_TEXT: &str = concat!(
     "mouse.speed=5\n",
     "keyboard.repeat_delay_ms=400\n",
     "keyboard.repeat_rate=25\n",
+    "accessibility.high_contrast=false\n",
+    "accessibility.reduce_motion=false\n",
     "accessibility.sticky_keys=false\n",
     "accessibility.slow_keys=false\n",
     "accessibility.slow_keys_ms=300\n",
     "accessibility.keyboard_navigation=always\n",
+    "network.state=connected\n",
+    "network.address=10.0.2.15/24\n",
+    "network.router=10.0.2.2\n",
+    "network.dns=10.0.2.3\n",
+    "network.mac=52:54:00:12:34:56\n",
     "system.version=0.2.0\n",
     "system.arch=aarch64\n",
     "system.cpus=4\n",
@@ -3120,6 +3129,22 @@ pub const SETTINGS_GET: CommandDefinition = CommandDefinition {
         ),
     ],
     surface: Surface::Gui("Settings' panes"),
+};
+
+/// `settings open` (D224, docs/ux/network-v0.3.md section 4.5).
+pub const SETTINGS_OPEN: CommandDefinition = CommandDefinition {
+    words: &["settings", "open"],
+    summary: "Opens the Settings window on a pane.",
+    description: "Opens Settings on the pane named: its name in lower case with - for spaces \
+                  and and for &, such as network, keyboard or date-and-time, as the bar's \
+                  network indicator opens Network. A name that is no pane is a usage error.",
+    options: &[],
+    operands: &[operand("pane", ValueType::Text, Count::One)],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 2)],
+    examples: &[],
+    surface: Surface::Gui("Settings itself"),
 };
 
 /// `settings set`.
@@ -3354,7 +3379,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 94] = [
+pub static COMMANDS: [CommandDefinition; 95] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3413,6 +3438,7 @@ pub static COMMANDS: [CommandDefinition; 94] = [
     SETTINGS,
     SETTINGS_GET,
     SETTINGS_LIST,
+    SETTINGS_OPEN,
     SETTINGS_SET,
     SLEEP,
     STTY,

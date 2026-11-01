@@ -3,7 +3,9 @@
 //! same values from the same code.
 
 use crate::facts::Facts;
+use crate::network_pane::servers_text;
 use core::fmt::Write;
+use eggos_net::status::{InterfaceStatus, State, state_word};
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
     DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS,
@@ -44,6 +46,11 @@ pub enum Key {
     SlowKeys,
     SlowKeysMs,
     KeyboardNavigation,
+    NetworkState,
+    NetworkAddress,
+    NetworkRouter,
+    NetworkDns,
+    NetworkMac,
     SystemVersion,
     SystemArch,
     SystemCpus,
@@ -325,7 +332,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 32] = [
         Self::ShellProfile,
         Self::AppearanceTheme,
         Self::DisplayScale,
@@ -348,6 +355,11 @@ impl Key {
         Self::SlowKeys,
         Self::SlowKeysMs,
         Self::KeyboardNavigation,
+        Self::NetworkState,
+        Self::NetworkAddress,
+        Self::NetworkRouter,
+        Self::NetworkDns,
+        Self::NetworkMac,
         Self::SystemVersion,
         Self::SystemArch,
         Self::SystemCpus,
@@ -380,6 +392,11 @@ impl Key {
             Self::SlowKeys => eggos_settings_file::SLOW_KEYS,
             Self::SlowKeysMs => eggos_settings_file::SLOW_KEYS_MS,
             Self::KeyboardNavigation => "accessibility.keyboard_navigation",
+            Self::NetworkState => "network.state",
+            Self::NetworkAddress => "network.address",
+            Self::NetworkRouter => "network.router",
+            Self::NetworkDns => "network.dns",
+            Self::NetworkMac => "network.mac",
             Self::SystemVersion => "system.version",
             Self::SystemArch => "system.arch",
             Self::SystemCpus => "system.cpus",
@@ -470,6 +487,7 @@ impl Key {
     /// Its value now.
     pub fn value(self, facts: &Facts) -> Value {
         let mut value = Value::new();
+        let connected = connected(facts);
         let _ = match self {
             Self::ShellProfile => value.write_str(PROFILES[facts.profile.min(PROFILES.len() - 1)]),
             Self::AppearanceTheme => value.write_str(facts.theme.name()),
@@ -507,6 +525,22 @@ impl Key {
             Self::SlowKeys => value.write_str(boolean_name(facts.keys.slow_keys)),
             Self::SlowKeysMs => write!(value, "{}", facts.keys.slow_keys_ms),
             Self::KeyboardNavigation => value.write_str("always"),
+            Self::NetworkState => value.write_str(state_word(facts.network_adapter.as_ref())),
+            Self::NetworkAddress => {
+                write_or_none(&mut value, connected.and_then(|adapter| adapter.subnet))
+            }
+            Self::NetworkRouter => {
+                write_or_none(&mut value, connected.and_then(|adapter| adapter.router))
+            }
+            Self::NetworkDns => match connected {
+                Some(adapter) if adapter.dns_servers().next().is_some() => {
+                    value.write_str(servers_text(adapter, ",").as_str())
+                }
+                _ => value.write_str(NETWORK_NONE),
+            },
+            Self::NetworkMac => {
+                write_or_none(&mut value, facts.network_adapter.map(|status| status.mac))
+            }
             Self::SystemVersion => value.write_str(facts.version),
             Self::SystemArch => value.write_str(facts.architecture.as_str()),
             Self::SystemCpus => write!(value, "{}", facts.cpus),
@@ -578,6 +612,23 @@ impl Key {
                 .map(|delay| Change::Keys(KeysChange::SlowKeysMs(delay))),
             _ => Err(Refusal::ReadOnly),
         }
+    }
+}
+
+/// What a `network.*` key holds when the network gave nothing for it (D224).
+pub const NETWORK_NONE: &str = "none";
+
+fn connected(facts: &Facts) -> Option<&InterfaceStatus> {
+    facts
+        .network_adapter
+        .as_ref()
+        .filter(|adapter| adapter.state() == State::Connected)
+}
+
+fn write_or_none(value: &mut Value, shown: Option<impl core::fmt::Display>) -> core::fmt::Result {
+    match shown {
+        Some(shown) => write!(value, "{shown}"),
+        None => value.write_str(NETWORK_NONE),
     }
 }
 
@@ -662,6 +713,8 @@ mod tests {
                 ("keyboard.layouts", "us".to_owned()),
                 ("keyboard.switch_key", "profile".to_owned()),
                 ("time.zone", "UTC".to_owned()),
+                ("time.automatic", "on".to_owned()),
+                ("time.sync", "none".to_owned()),
                 ("mouse.buttons", "right".to_owned()),
                 ("mouse.scrolling", "traditional".to_owned()),
                 ("mouse.speed", "5".to_owned()),
@@ -673,6 +726,11 @@ mod tests {
                 ("accessibility.slow_keys", "false".to_owned()),
                 ("accessibility.slow_keys_ms", "300".to_owned()),
                 ("accessibility.keyboard_navigation", "always".to_owned()),
+                ("network.state", "connected".to_owned()),
+                ("network.address", "10.0.2.15/24".to_owned()),
+                ("network.router", "10.0.2.2".to_owned()),
+                ("network.dns", "10.0.2.3".to_owned()),
+                ("network.mac", "52:54:00:12:34:56".to_owned()),
                 ("system.version", "0.2.0".to_owned()),
                 ("system.arch", "aarch64".to_owned()),
                 ("system.cpus", "4".to_owned()),
@@ -680,6 +738,57 @@ mod tests {
                 ("system.uptime_s", "3725".to_owned()),
             ]
         );
+    }
+
+    fn network_values(line: &str) -> [String; 5] {
+        let facts = Facts {
+            network_adapter: eggos_net::status::adapter(line.as_bytes()),
+            ..Facts::example()
+        };
+        [
+            Key::NetworkState,
+            Key::NetworkAddress,
+            Key::NetworkRouter,
+            Key::NetworkDns,
+            Key::NetworkMac,
+        ]
+        .map(|key| key.value(&facts).as_str().to_owned())
+    }
+
+    #[test]
+    fn the_network_keys_say_the_state_in_net_status_words_and_only_a_connected_address() {
+        use crate::facts::EXAMPLE_ADAPTER;
+        let three = EXAMPLE_ADAPTER.replacen(" 10.0.2.3 ", " 10.0.2.3,10.0.2.4,10.0.2.5 ", 1);
+        assert_eq!(
+            network_values(&three),
+            [
+                "connected",
+                "10.0.2.15/24",
+                "10.0.2.2",
+                "10.0.2.3,10.0.2.4,10.0.2.5",
+                "52:54:00:12:34:56",
+            ]
+        );
+        let unplugged = EXAMPLE_ADAPTER.replacen(" up ", " down ", 1);
+        assert_eq!(
+            network_values(&unplugged),
+            ["cable-unplugged", "none", "none", "none", "52:54:00:12:34:56"]
+        );
+        let asking = "eth0 up 52:54:00:12:34:56 1500 asking - - - - - - 3 900 0 0 3 1026 0\n";
+        assert_eq!(network_values(asking)[0], "getting-address");
+        let no_address = asking.replacen("asking", "no-address", 1);
+        assert_eq!(network_values(&no_address)[..2], ["no-address", "none"]);
+        assert_eq!(network_values(""), ["none", "none", "none", "none", "none"]);
+        for key in [
+            "network.state",
+            "network.address",
+            "network.router",
+            "network.dns",
+            "network.mac",
+        ] {
+            assert!(!Key::named(key).unwrap().is_settable(), "{key}");
+            assert_eq!(change(key, "x"), Err(Refusal::ReadOnly), "{key}");
+        }
     }
 
     #[test]

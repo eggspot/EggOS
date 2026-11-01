@@ -19,6 +19,7 @@ pub mod first_run;
 pub mod grant_prompt;
 pub mod input_panes;
 pub mod keys;
+pub mod network_pane;
 pub mod network_view;
 pub mod settings_window;
 pub mod storage_pane;

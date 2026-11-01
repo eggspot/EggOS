@@ -2549,6 +2549,12 @@ fn the_settings_tools_run_settings_with_the_key_after_a_double_dash() {
         &["/bin/settings", "get", "--", "shell.profile"]
     );
     assert_eq!(last_record(&harness).2, r#"{"key":"shell.profile"}"#);
+    let answer = harness.call(2, "settings_get", r#"{"key":"network.state"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "get", "--", "network.state"]
+    );
     let answer = harness.call(
         3,
         "settings_set",

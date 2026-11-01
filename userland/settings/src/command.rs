@@ -17,9 +17,9 @@ use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
 /// The command's usage, printed for a usage error.
-pub const USAGE: &str = "usage: settings [--pair <id> [--name <name>] | --pane <pane> | \
-                         --first-run | list [--json] | get [--json] <key> | set [--dry-run] \
-                         <key> <value>]\n";
+pub const USAGE: &str = "usage: settings [open <pane> | --pair <id> [--name <name>] | --pane \
+                         <pane> | --first-run | list [--json] | get [--json] <key> | set \
+                         [--dry-run] <key> <value>]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -97,6 +97,10 @@ pub const NAME_OPTION: &str = "--name";
 /// Opens the window on the pane it names (D220): a pane's title in lower case, its spaces as
 /// `-` and `&` as `and` (`keyboard`, `date-and-time`).
 pub const PANE_OPTION: &str = "--pane";
+/// The verb that opens the window on the pane it names (D224, docs/ux/network-v0.3.md section
+/// 4.5): `settings open network`, what the bar's network indicator runs; the pane is named as
+/// [`PANE_OPTION`] names it.
+pub const OPEN_VERB: &str = "open";
 /// Opens the first run's window (D223, docs/ux/first-run-accessibility-v0.3.md section 1): the
 /// profile, the keyboard and the time zone, each saved as it is chosen.
 pub const FIRST_RUN_OPTION: &str = "--first-run";
@@ -126,8 +130,9 @@ pub enum WindowAsked<'a> {
     Usage,
 }
 
-/// Reads `settings --pair <id> [--name <name>]` (the options in either order) from
-/// `arguments`, the words after the program's name.
+/// Reads `settings --pair <id> [--name <name>]` (the options in either order), `--pane
+/// <pane>`, `open <pane>` and `--first-run` from `arguments`, the words after the program's
+/// name.
 pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
     let asked = |id, name| WindowAsked::Pairing(PairingAsked { id, name });
     match *arguments {
@@ -136,10 +141,11 @@ pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
             asked(id, name)
         }
         [FIRST_RUN_OPTION] => WindowAsked::FirstRun,
-        [PANE_OPTION, name] => match crate::settings_window::pane_named(name) {
+        [PANE_OPTION | OPEN_VERB, name] => match crate::settings_window::pane_named(name) {
             Some(pane) => WindowAsked::Pane(pane),
             None => WindowAsked::Usage,
         },
+        [OPEN_VERB, ..] => WindowAsked::Usage,
         [first, ..] if WINDOW_OPTIONS.contains(&first) => WindowAsked::Usage,
         _ => WindowAsked::Other,
     }
@@ -413,6 +419,33 @@ mod tests {
         ] {
             assert_eq!(window_asked(wrong), WindowAsked::Usage, "{wrong:?}");
         }
+    }
+
+    #[test]
+    fn open_names_a_pane_as_the_bar_s_network_indicator_does_and_nowhere_is_a_usage_error() {
+        use crate::settings_window::{DATE_AND_TIME, NETWORK, SettingsWindow};
+        assert_eq!(
+            window_asked(&["open", "network"]),
+            WindowAsked::Pane(NETWORK)
+        );
+        assert_eq!(
+            window_asked(&["open", "date-and-time"]),
+            WindowAsked::Pane(DATE_AND_TIME)
+        );
+        for wrong in [
+            &["open"][..],
+            &["open", "nowhere"],
+            &["open", "Network"],
+            &["open", "network", "now"],
+        ] {
+            assert_eq!(window_asked(wrong), WindowAsked::Usage, "{wrong:?}");
+        }
+        assert_eq!(window_asked(&[]), WindowAsked::Other);
+        assert!(USAGE.contains("open <pane>"));
+        let mut window = SettingsWindow::new(Facts::example());
+        assert_eq!(window.pane(), 0);
+        window.open_pane(NETWORK);
+        assert_eq!(window.pane(), NETWORK);
     }
 
     #[derive(Debug, Default)]

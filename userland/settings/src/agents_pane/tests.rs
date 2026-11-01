@@ -2,7 +2,7 @@ use super::*;
 use crate::activity::tests::{Log, agentlog_test_log};
 use crate::activity::{ActivityWidgets, read_activity};
 use crate::facts::Facts;
-use crate::settings_window::{AGENTS, PANES, SettingsWindow, pane_matches};
+use crate::settings_window::{ABOUT, AGENTS, PANES, SettingsWindow, pane_matches};
 use eggos_mcp::grant_files::STORE_TEMPORARY;
 use eggos_mcp::grants::ClassGrant;
 use eggos_runtime::errno::Errno;
@@ -11,7 +11,7 @@ use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 use eggos_toolkit::tree::element_of;
 use eggos_toolkit::widget::radio_rect;
 
-const AGENTS_ROW_Y: i32 = 44 + 7 * 32 + 10;
+const AGENTS_ROW_Y: i32 = 44 + AGENTS as i32 * 32 + 10;
 const NOW: u64 = 1_793_438_042;
 const WRITE_ENDS: u64 = 1_793_445_240;
 const DENY: usize = 0;
@@ -448,7 +448,7 @@ fn an_agent_cannot_change_grants_through_the_element_tree() {
     assert!(window.grants_to_write().get(&id("tv")).is_none());
 }
 
-const ABOUT_ROW_Y: i32 = 44 + 9 * 32 + 10;
+const ABOUT_ROW_Y: i32 = 44 + ABOUT as i32 * 32 + 10;
 const GRANTS_VIEW: usize = 0;
 const ACTIVITY: usize = 1;
 

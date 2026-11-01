@@ -8,7 +8,7 @@ use eggos_files::storage::{Usage, list};
 use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 
 const BLOCKS: usize = 512;
-const STORAGE_ROW_Y: i32 = 44 + 5 * 32 + 10;
+const STORAGE_ROW_Y: i32 = 44 + STORAGE as i32 * 32 + 10;
 const PANE_X: i32 = 176;
 
 fn machine() -> MemoryDisks {

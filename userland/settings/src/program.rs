@@ -6,6 +6,7 @@ use crate::disk_system::LinuxDisks;
 use core::ffi::CStr;
 use core::fmt::Write;
 use eggos_eggfs::CheckMode;
+use eggos_net::status::{self as network_status, InterfaceStatus};
 use eggos_files::storage;
 use eggos_mcp::audit::calls::LogFiles;
 use eggos_mcp::grant_files::{self, GrantFiles, SaveError};
@@ -29,8 +30,8 @@ use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
-    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
-    SettingsWindow, TITLE,
+    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, Request,
+    SetOutcome, SettingsWindow, TITLE,
 };
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
@@ -124,6 +125,7 @@ fn close(fd: usize) {
 }
 
 const DEVICES_TEXT_CAPACITY: usize = 32 * 1024;
+const INTERFACES_TEXT_CAPACITY: usize = 2048;
 
 fn read_file(path: &str, buffer: &mut [u8]) -> Result<usize, Errno> {
     let path = CPath::new(path);
@@ -326,6 +328,12 @@ fn uptime_s() -> u64 {
     first_number(&uptime[..length]).unwrap_or(0)
 }
 
+fn network_adapter() -> Option<InterfaceStatus> {
+    let mut text = [0u8; INTERFACES_TEXT_CAPACITY];
+    let length = read_file(network_status::INTERFACES_PATH, &mut text).ok()?;
+    network_status::adapter(&text[..length])
+}
+
 fn wall_clock() -> (u64, u32) {
     let mut time = [0u64; 2];
     match syscall(
@@ -455,6 +463,7 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         input: settings_file::input_preferences(&file[..length]),
         keys: settings_file::key_accessibility(&file[..length]),
         display: saved_display(&file[..length], server),
+        network_adapter: network_adapter(),
     }
 }
 
@@ -1164,7 +1173,7 @@ impl Application<CAPACITY> for Settings {
             return Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS));
         }
         match self.window.pane() {
-            ABOUT => {
+            ABOUT | NETWORK => {
                 let elapsed = now_ms.wrapping_sub(self.uptime_from_ms);
                 Some(now_ms.wrapping_add(SECOND_MS - elapsed % SECOND_MS))
             }
@@ -1238,6 +1247,7 @@ impl Settings {
                 self.window
                     .show_devices(read.map(|length| &text[..length]));
             }
+            _ if pane == NETWORK => self.window.show_network_adapter(network_adapter()),
             _ => {}
         }
     }
@@ -1283,6 +1293,7 @@ impl Settings {
         match self.window.pane() {
             ABOUT => self.show_uptime(now_ms),
             DATE_AND_TIME => self.window.show_time(wall_clock().0),
+            NETWORK => self.window.show_network_adapter(network_adapter()),
             _ => {}
         }
     }

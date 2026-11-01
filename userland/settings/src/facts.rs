@@ -1,6 +1,7 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
+use eggos_net::status::InterfaceStatus;
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
     DisplayAccessibility, InputPreferences, KeyAccessibility, KeyboardLayoutSet, SwitchKey,
@@ -59,12 +60,23 @@ pub struct Facts {
     pub keys: KeyAccessibility,
     /// High contrast and reduced motion (D223).
     pub display: DisplayAccessibility,
+    /// The network adapter as `/proc/net/interfaces` reports it; `None` on a machine without
+    /// one (D224).
+    pub network_adapter: Option<InterfaceStatus>,
 }
+
+/// The `/proc/net/interfaces` line of [`Facts::example`]'s adapter: connected as
+/// `10.0.2.15/24` through the router `10.0.2.2` with the DNS server `10.0.2.3`, 86342 of 86400
+/// seconds of lease left, 3,600,000 bytes received in 2,905 packets and 1,300,000 sent in 812.
+pub const EXAMPLE_ADAPTER: &str = "eth0 up 52:54:00:12:34:56 1500 configured 10.0.2.15/24 \
+                                   10.0.2.2 10.0.2.3 10.0.2.2 86342 86400 2905 3600000 0 0 812 \
+                                   1300000 0\n";
 
 impl Facts {
     /// The facts of a 1280x800 aarch64 machine with 4 CPUs and 1 GiB, up 1:02:05, in the
     /// macOS profile with a disk, a hardware clock reading Thursday 29 October 2026, 14:05:09
-    /// UTC, and a keyboard in the US layout with Caps Lock off: what tests show.
+    /// UTC, a keyboard in the US layout with Caps Lock off and the network adapter of
+    /// [`EXAMPLE_ADAPTER`]: what tests show.
     pub fn example() -> Self {
         Self {
             version: "0.2.0",
@@ -94,6 +106,7 @@ impl Facts {
                 high_contrast: false,
                 reduce_motion: false,
             },
+            network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
         }
     }
 }

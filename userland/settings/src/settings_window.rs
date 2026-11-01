@@ -13,6 +13,7 @@ use crate::art;
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
 use crate::keys::{DisplayChange, InputChange, KeysChange};
+use crate::network_pane::NetworkPane;
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
 use crate::zone_picker::{self, ZonePicker};
@@ -24,6 +25,7 @@ use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_mcp::grant_files::SaveError;
 use eggos_mcp::grants::{AgentId, AgentName, GrantStore};
 use eggos_mcp::pairing::{Code, PairError};
+use eggos_net::status::InterfaceStatus;
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::{KEYBOARD_LAYOUTS, KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 use eggos_toolkit::theme::{Theme, Token};
@@ -39,7 +41,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 193;
+pub const CAPACITY: usize = 209;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -116,8 +118,9 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 10] = [
+pub const PANES: [&str; 11] = [
     "Appearance",
+    "Network",
     "Display",
     "Keyboard",
     "Mouse",
@@ -130,26 +133,28 @@ pub const PANES: [&str; 10] = [
 ];
 
 const APPEARANCE: usize = 0;
-const DISPLAY: usize = 1;
+/// The `Network` pane's place in [`PANES`] (D224, docs/ux/network-v0.3.md).
+pub const NETWORK: usize = 1;
+const DISPLAY: usize = 2;
 /// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
-pub const KEYBOARD: usize = 2;
-const MOUSE: usize = 3;
+pub const KEYBOARD: usize = 3;
+const MOUSE: usize = 4;
 /// The `Accessibility` pane's place in [`PANES`] (D205, docs/ux/first-run-accessibility-v0.3.md).
-pub const ACCESSIBILITY: usize = 4;
+pub const ACCESSIBILITY: usize = 5;
 /// The `Storage` pane's place in [`PANES`] (D192, docs/ux/storage-v0.3.md).
-pub const STORAGE: usize = 5;
+pub const STORAGE: usize = 6;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
-pub const DATE_AND_TIME: usize = 6;
+pub const DATE_AND_TIME: usize = 7;
 /// The `Agents` pane's place in [`PANES`] (D193, docs/ux/agents-v0.3.md).
-pub const AGENTS: usize = 7;
-const COMPONENTS: usize = 8;
+pub const AGENTS: usize = 8;
+const COMPONENTS: usize = 9;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 9;
+pub const ABOUT: usize = 10;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 10] = [
+const PANE_WORDS: [&[&str]; 11] = [
     &[
         "theme",
         "dark",
@@ -168,6 +173,34 @@ const PANE_WORDS: [&[&str]; 10] = [
         "Linux",
         "Primary modifier",
         "Window controls",
+    ],
+    &[
+        "Ethernet",
+        "wired",
+        "eth0",
+        "Wi-Fi",
+        "WiFi",
+        "wireless",
+        "internet",
+        "online",
+        "connection",
+        "LAN",
+        "cable",
+        "adapter",
+        "IP address",
+        "IPv4",
+        "DNS",
+        "DHCP",
+        "gateway",
+        "router",
+        "MAC address",
+        "hardware address",
+        "MTU",
+        "lease",
+        "IPv4 address",
+        "DNS servers",
+        "DHCP server",
+        "Traffic",
     ],
     &[
         "Resolution",
@@ -468,6 +501,7 @@ pub struct SettingsWindow {
     inputs: InputPanes,
     accessibility: AccessibilityPane,
     about: AboutPane,
+    network: NetworkPane,
     facts: Facts,
     pane: usize,
 }
@@ -914,6 +948,12 @@ impl SettingsWindow {
         let accessibility =
             AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], Shown::of(&facts));
         let about_devices = AboutPane::build(&mut tree, panes[ABOUT]);
+        let network = NetworkPane::build(
+            &mut tree,
+            panes[NETWORK],
+            PANES[NETWORK],
+            facts.network_adapter.as_ref(),
+        );
         let zones = ZonePicker::build(
             &mut tree,
             panes[DATE_AND_TIME],
@@ -965,6 +1005,7 @@ impl SettingsWindow {
             inputs,
             accessibility,
             about: about_devices,
+            network,
             facts,
             pane: APPEARANCE,
         };
@@ -1113,6 +1154,18 @@ impl SettingsWindow {
     /// The About pane's `Devices` section.
     pub fn about_pane(&self) -> &AboutPane {
         &self.about
+    }
+
+    /// Shows `adapter`, just read from `/proc/net/interfaces` (`None`: the machine has none),
+    /// in the Network pane, changing only what differs from what it shows (D224).
+    pub fn show_network_adapter(&mut self, adapter: Option<InterfaceStatus>) {
+        self.facts.network_adapter = adapter;
+        self.network.show(&mut self.tree, adapter.as_ref());
+    }
+
+    /// The Network pane (D224).
+    pub fn network_pane(&self) -> &NetworkPane {
+        &self.network
     }
 
     /// Shows the agents' grants just read on the Agents pane (D193).
@@ -1763,7 +1816,7 @@ mod tests {
     #[test]
     fn the_sidebar_switches_panes_and_the_search_filters_them_by_synonyms() {
         let mut window = SettingsWindow::new(Facts::example());
-        click(&mut window, 40, 44 + 9 * 32 + 10);
+        click(&mut window, 40, LIST_TOP + ABOUT as i32 * SIDEBAR_ROW + 10);
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());
         click(&mut window, 40, 20);
@@ -1814,7 +1867,7 @@ mod tests {
         assert_eq!(uptime_text(59).as_str(), "Up 0:00:59");
     }
 
-    const DATE_AND_TIME_ROW: i32 = 44 + 6 * 32 + 10;
+    const DATE_AND_TIME_ROW: i32 = LIST_TOP + DATE_AND_TIME as i32 * SIDEBAR_ROW + 10;
 
     fn press(window: &mut SettingsWindow, code: u16, character: u32) -> Option<Request> {
         let response = window.tree().handle(
@@ -2193,9 +2246,9 @@ mod tests {
         );
     }
 
-    const DISPLAY_ROW: i32 = 44 + 32 + 10;
-    const KEYBOARD_ROW: i32 = 44 + 2 * 32 + 10;
-    const MOUSE_ROW: i32 = 44 + 3 * 32 + 10;
+    const DISPLAY_ROW: i32 = LIST_TOP + DISPLAY as i32 * SIDEBAR_ROW + 10;
+    const KEYBOARD_ROW: i32 = LIST_TOP + KEYBOARD as i32 * SIDEBAR_ROW + 10;
+    const MOUSE_ROW: i32 = LIST_TOP + MOUSE as i32 * SIDEBAR_ROW + 10;
 
     #[test]
     fn the_display_pane_saves_the_scale_for_the_next_restart() {
@@ -2314,7 +2367,7 @@ mod tests {
         assert_eq!(window.input_panes().values(window.widgets())[2], Some(10));
     }
 
-    const ACCESSIBILITY_ROW: i32 = 44 + 4 * 32 + 10;
+    const ACCESSIBILITY_ROW: i32 = LIST_TOP + ACCESSIBILITY as i32 * SIDEBAR_ROW + 10;
 
     #[test]
     fn the_accessibility_pane_turns_sticky_and_slow_keys_on() {

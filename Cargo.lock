@@ -320,6 +320,7 @@ dependencies = [
  "eggos-files",
  "eggos-font",
  "eggos-mcp",
+ "eggos-net",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-terminal-window",

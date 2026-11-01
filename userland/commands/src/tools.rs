@@ -1799,7 +1799,9 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
      key preferences (mouse.buttons, mouse.scrolling, mouse.speed, keyboard.repeat_delay_ms, \
      keyboard.repeat_rate) and accessibility.sticky_keys, accessibility.slow_keys and \
      accessibility.slow_keys_ms can be set with settings_set; the others report facts: the display's resolution and pointer, the \
-     version, architecture, CPUs, memory and uptime.",
+     network's state (network.state: connected, getting-address, no-address, cable-unplugged \
+     or none), address, router, DNS servers and hardware address, the version, architecture, \
+     CPUs, memory and uptime.",
     &["settings", "list"],
     &[],
     &[],
