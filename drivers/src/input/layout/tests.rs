@@ -175,7 +175,7 @@ fn us_international_dead_keys_type_ascii_accents_and_c_cedilla() {
             &mut international,
             &[(APOSTROPHE_ON_US, SHIFT), (Y_ON_US, SHIFT)]
         ),
-        "\"Y"
+        "Ÿ"
     );
     assert_eq!(
         typed(
@@ -276,6 +276,10 @@ fn the_dead_keys_each_layout_has() {
     assert_eq!(listed("fr"), "^¨");
     assert_eq!(listed("es"), "´`^¨");
     assert_eq!(listed("se"), "´`^¨~");
+    assert_eq!(listed("ca"), "`^¨~¸");
+    assert_eq!(listed("us-mac"), "´`^¨~");
+    assert_eq!(listed("pt"), "´`^¨~");
+    assert_eq!(listed("latam"), "´`^¨");
 }
 
 #[test]
@@ -292,4 +296,79 @@ fn a_plain_character_is_what_the_press_types() {
             }
         }
     }
+}
+
+const K: u16 = 37;
+const A: u16 = 30;
+const U: u16 = 22;
+const S: u16 = 31;
+const T: u16 = 20;
+const RIGHT_BRACKET: u16 = 27;
+const LEFT_BRACKET: u16 = 26;
+const APOSTROPHE: u16 = 40;
+const BACKSLASH: u16 = 43;
+
+#[test]
+fn the_twenty_layouts_are_in_the_table_s_order() {
+    let names: Vec<&str> = LAYOUTS.iter().map(|layout| layout.name).collect();
+    assert_eq!(
+        names,
+        [
+            "us", "us-intl", "us-mac", "gb", "us-dvorak", "us-colemak", "dk", "fi", "fr", "be",
+            "ca", "de", "ch", "it", "no", "br", "pt", "es", "latam", "se",
+        ]
+    );
+    assert_eq!(named(b"us-mac"), Some(2));
+    assert_eq!(named(b"gb"), Some(3));
+}
+
+#[test]
+fn the_new_layouts_type_their_dead_keys() {
+    let mut canadian = typist("ca");
+    assert_eq!(typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (C, NONE)]), "ç");
+    assert_eq!(
+        typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (key::SPACE, NONE)]),
+        "¸"
+    );
+    assert_eq!(typed(&mut canadian, &[(RIGHT_BRACKET, NONE), (K, NONE)]), "¸k");
+    let mut portuguese = typist("pt");
+    assert_eq!(typed(&mut portuguese, &[(BACKSLASH, NONE), (A, NONE)]), "ã");
+    let mut swiss = typist("ch");
+    assert_eq!(typed(&mut swiss, &[(RIGHT_BRACKET, NONE), (A, NONE)]), "ä");
+    assert_eq!(typed(&mut swiss, &[(RIGHT_BRACKET, NONE), (A, SHIFT)]), "Ä");
+    let mut belgian = typist("be");
+    assert_eq!(typed(&mut belgian, &[(APOSTROPHE, ALT_GRAPH), (E, NONE)]), "é");
+    let mut latin_american = typist("latam");
+    assert_eq!(typed(&mut latin_american, &[(LEFT_BRACKET, NONE), (E, NONE)]), "é");
+    let mut international = typist("us-intl");
+    assert_eq!(
+        typed(&mut international, &[(APOSTROPHE_ON_US, SHIFT), (Y_ON_US, NONE)]),
+        "ÿ"
+    );
+}
+
+#[test]
+fn us_mac_types_the_option_layer() {
+    let mut mac = typist("us-mac");
+    let option = ALT_GRAPH.with(Modifiers::ALT);
+    let shift_option = option.with(SHIFT);
+    assert_eq!(typed(&mut mac, &[(E, option), (E, NONE)]), "é");
+    assert_eq!(typed(&mut mac, &[(U, option), (U, SHIFT)]), "Ü");
+    assert_eq!(typed(&mut mac, &[(Q, option)]), "œ");
+    assert_eq!(typed(&mut mac, &[(Q, shift_option)]), "Œ");
+    assert_eq!(typed(&mut mac, &[(S, option)]), "ß");
+    assert_eq!(typed(&mut mac, &[(TWO, shift_option)]), "€");
+    assert_eq!(typed(&mut mac, &[(T, ALT_GRAPH)]), "");
+    assert_eq!(typed(&mut mac, &[(E, ALT_GRAPH), (E, NONE)]), "é");
+    assert_eq!(typed(&mut mac, &[(E, NONE)]), "e");
+}
+
+#[test]
+fn the_pending_accent_is_the_dead_key_s_spacing_accent() {
+    let mut german = typist("de");
+    assert_eq!(german.pending_accent(), None);
+    german.press(ACUTE_ON_DE, NONE);
+    assert_eq!(german.pending_accent(), Some('´'));
+    german.press(E, NONE);
+    assert_eq!(german.pending_accent(), None);
 }

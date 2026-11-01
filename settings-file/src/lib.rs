@@ -217,11 +217,14 @@ pub struct KeyboardLayout {
     /// The spacing accents of its dead keys, in the pane's order, separated by spaces; empty
     /// for none.
     pub dead_keys: &'static str,
+    /// The two capital letters the bar's layout indicator shows (D220).
+    pub code: &'static str,
 }
 
 const fn entry(
     name: &'static str,
     title: &'static str,
+    code: &'static str,
     third_level: bool,
     dead_keys: &'static str,
 ) -> KeyboardLayout {
@@ -230,26 +233,33 @@ const fn entry(
         title,
         third_level,
         dead_keys,
+        code,
     }
 }
 
 /// The keyboard layouts, in the Keyboard pane's order, each at the index that is its number in
 /// `/dev/window`'s `GET_KEYBOARD_LAYOUT` and `SET_KEYBOARD_LAYOUT` and in the kernel's table.
-pub const KEYBOARD_LAYOUTS: [KeyboardLayout; 14] = [
-    entry("us", "English (US)", false, ""),
-    entry("us-intl", "English (US, international)", true, "´ ` ^ ¨ ~"),
-    entry("gb", "English (UK)", true, ""),
-    entry("us-dvorak", "English (US, Dvorak)", false, ""),
-    entry("us-colemak", "English (US, Colemak)", false, ""),
-    entry("dk", "Danish", true, "´ ` ^ ¨ ~"),
-    entry("fi", "Finnish", true, "´ ` ^ ¨ ~"),
-    entry("fr", "French", true, "^ ¨"),
-    entry("de", "German", true, "´ ` ^"),
-    entry("it", "Italian", true, ""),
-    entry("no", "Norwegian", true, "´ ` ^ ¨ ~"),
-    entry("br", "Portuguese (Brazil)", true, "´ ` ^ ¨ ~"),
-    entry("es", "Spanish", true, "´ ` ^ ¨"),
-    entry("se", "Swedish", true, "´ ` ^ ¨ ~"),
+pub const KEYBOARD_LAYOUTS: [KeyboardLayout; 20] = [
+    entry("us", "English (US)", "US", false, ""),
+    entry("us-intl", "English (US, international)", "UI", true, "´ ` ^ ¨ ~"),
+    entry("us-mac", "English (US, Mac)", "UM", true, "´ ` ^ ¨ ~"),
+    entry("gb", "English (UK)", "GB", true, ""),
+    entry("us-dvorak", "English (US, Dvorak)", "DV", false, ""),
+    entry("us-colemak", "English (US, Colemak)", "CK", false, ""),
+    entry("dk", "Danish", "DK", true, "´ ` ^ ¨ ~"),
+    entry("fi", "Finnish", "FI", true, "´ ` ^ ¨ ~"),
+    entry("fr", "French", "FR", true, "^ ¨"),
+    entry("be", "French (Belgium)", "BE", true, "´ ` ^ ¨ ~"),
+    entry("ca", "French (Canada)", "CA", true, "` ^ ¨ ~ ¸"),
+    entry("de", "German", "DE", true, "´ ` ^"),
+    entry("ch", "German (Switzerland)", "CH", true, "´ ` ^ ¨ ~"),
+    entry("it", "Italian", "IT", true, ""),
+    entry("no", "Norwegian", "NO", true, "´ ` ^ ¨ ~"),
+    entry("br", "Portuguese (Brazil)", "BR", true, "´ ` ^ ¨ ~"),
+    entry("pt", "Portuguese (Portugal)", "PT", true, "´ ` ^ ¨ ~"),
+    entry("es", "Spanish", "ES", true, "´ ` ^ ¨"),
+    entry("latam", "Spanish (Latin America)", "LA", true, "´ ` ^ ¨"),
+    entry("se", "Swedish", "SE", true, "´ ` ^ ¨ ~"),
 ];
 
 /// The number in [`KEYBOARD_LAYOUTS`] of the layout named `name`.
@@ -263,6 +273,291 @@ pub fn keyboard_layout_named(name: &[u8]) -> Option<usize> {
 /// one.
 pub fn keyboard_layout(file: &[u8]) -> Option<usize> {
     keyboard_layout_named(value(file, KEYBOARD_LAYOUT)?)
+}
+
+/// The layouts the switch key cycles through: one to [`MAX_KEYBOARD_LAYOUTS`] names of
+/// [`KEYBOARD_LAYOUTS`], in order, separated by commas without spaces (D220).
+pub const KEYBOARD_LAYOUT_SET: &str = "keyboard.layouts";
+
+/// The key that switches to the next layout of [`KEYBOARD_LAYOUT_SET`]: one of
+/// [`SwitchKey::NAMES`] (D220).
+pub const KEYBOARD_SWITCH_KEY: &str = "keyboard.switch_key";
+
+/// The most layouts [`KEYBOARD_LAYOUT_SET`] holds.
+pub const MAX_KEYBOARD_LAYOUTS: usize = 4;
+
+/// The longest text [`KeyboardLayoutSet::write`] makes: four of the longest names and three
+/// commas.
+pub const KEYBOARD_LAYOUT_SET_CAPACITY: usize = 48;
+
+/// One to [`MAX_KEYBOARD_LAYOUTS`] keyboard layouts, by their numbers in [`KEYBOARD_LAYOUTS`],
+/// none twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardLayoutSet {
+    layouts: [u8; MAX_KEYBOARD_LAYOUTS],
+    count: u8,
+}
+
+/// Why a [`KEYBOARD_LAYOUT_SET`] value was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutSetRefusal {
+    /// It names no layout, or more than [`MAX_KEYBOARD_LAYOUTS`].
+    TooMany,
+    /// The layout of this number is listed twice.
+    Repeated(usize),
+    /// The bytes from `start` to `end` of the value name no layout.
+    Unknown { start: usize, end: usize },
+}
+
+impl KeyboardLayoutSet {
+    /// The US layout alone, the default.
+    pub const DEFAULT: Self = Self::of_one(0);
+
+    /// Layout `number` alone.
+    pub const fn of_one(number: usize) -> Self {
+        Self {
+            layouts: [number as u8, 0, 0, 0],
+            count: 1,
+        }
+    }
+
+    /// The set of `numbers` in order, if they are one to four layouts and none twice.
+    pub fn of(numbers: &[usize]) -> Option<Self> {
+        if numbers.is_empty() || numbers.len() > MAX_KEYBOARD_LAYOUTS {
+            return None;
+        }
+        let mut set = Self {
+            layouts: [0; MAX_KEYBOARD_LAYOUTS],
+            count: 0,
+        };
+        for &number in numbers {
+            if number >= KEYBOARD_LAYOUTS.len() || set.contains(number) {
+                return None;
+            }
+            set.layouts[usize::from(set.count)] = number as u8;
+            set.count += 1;
+        }
+        Some(set)
+    }
+
+    /// The set a [`KEYBOARD_LAYOUT_SET`] value names.
+    pub fn parse(value: &[u8]) -> Result<Self, LayoutSetRefusal> {
+        let mut numbers = [0usize; MAX_KEYBOARD_LAYOUTS];
+        let mut count = 0;
+        let mut start = 0;
+        for name in value.split(|&byte| byte == b',') {
+            let end = start + name.len();
+            let number = keyboard_layout_named(name).ok_or(LayoutSetRefusal::Unknown { start, end });
+            start = end + 1;
+            let number = number?;
+            if numbers[..count.min(MAX_KEYBOARD_LAYOUTS)].contains(&number) {
+                return Err(LayoutSetRefusal::Repeated(number));
+            }
+            if count == MAX_KEYBOARD_LAYOUTS {
+                return Err(LayoutSetRefusal::TooMany);
+            }
+            numbers[count] = number;
+            count += 1;
+        }
+        Self::of(&numbers[..count]).ok_or(LayoutSetRefusal::TooMany)
+    }
+
+    /// The layouts' numbers, in order.
+    pub fn numbers(&self) -> impl Iterator<Item = usize> + '_ {
+        self.layouts[..usize::from(self.count)]
+            .iter()
+            .map(|&number| usize::from(number))
+    }
+
+    /// How many layouts it holds.
+    pub const fn len(&self) -> usize {
+        self.count as usize
+    }
+
+    /// Whether it holds nothing: never, as every set holds a layout.
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// The layout at `position`, if there is one.
+    pub fn get(&self, position: usize) -> Option<usize> {
+        self.numbers().nth(position)
+    }
+
+    /// Where layout `number` is in the set, if it is there.
+    pub fn position(&self, number: usize) -> Option<usize> {
+        self.numbers().position(|listed| listed == number)
+    }
+
+    /// Whether layout `number` is in the set.
+    pub fn contains(&self, number: usize) -> bool {
+        self.position(number).is_some()
+    }
+
+    /// The set with layout `number` put in force while `in_force` is: unchanged when it is
+    /// listed, appended when there is room, else in the place of `in_force` (D220).
+    pub fn with_chosen(&self, number: usize, in_force: usize) -> Self {
+        if self.contains(number) || number >= KEYBOARD_LAYOUTS.len() {
+            return *self;
+        }
+        let mut set = *self;
+        if set.len() < MAX_KEYBOARD_LAYOUTS {
+            set.layouts[set.len()] = number as u8;
+            set.count += 1;
+            return set;
+        }
+        let place = set.position(in_force).unwrap_or(0);
+        set.layouts[place] = number as u8;
+        set
+    }
+
+    /// The layout in force once this set is chosen while `in_force` was: `in_force` when it is
+    /// listed, else the first.
+    pub fn keeping(&self, in_force: usize) -> usize {
+        match self.contains(in_force) {
+            true => in_force,
+            false => usize::from(self.layouts[0]),
+        }
+    }
+
+    /// The layout after `number` in the set, or before it when `backwards`, wrapping round;
+    /// the first for a layout not listed.
+    pub fn next_after(&self, number: usize, backwards: bool) -> usize {
+        let count = self.len().max(1);
+        let next = match (self.position(number), backwards) {
+            (None, _) => 0,
+            (Some(at), false) => (at + 1) % count,
+            (Some(at), true) => (at + count - 1) % count,
+        };
+        usize::from(self.layouts[next])
+    }
+
+    /// Writes the [`KEYBOARD_LAYOUT_SET`] value into `out`.
+    pub fn write<'a>(&self, out: &'a mut [u8; KEYBOARD_LAYOUT_SET_CAPACITY]) -> &'a str {
+        let mut length = 0;
+        for (index, number) in self.numbers().enumerate() {
+            if index > 0 {
+                out[length] = b',';
+                length += 1;
+            }
+            let name = KEYBOARD_LAYOUTS[number].name.as_bytes();
+            out[length..length + name.len()].copy_from_slice(name);
+            length += name.len();
+        }
+        core::str::from_utf8(&out[..length]).unwrap_or("us")
+    }
+}
+
+/// The set of layouts `file` holds, the US layout alone when it holds none or one refused.
+pub fn keyboard_layout_set(file: &[u8]) -> KeyboardLayoutSet {
+    value(file, KEYBOARD_LAYOUT_SET)
+        .and_then(|value| KeyboardLayoutSet::parse(value).ok())
+        .unwrap_or(KeyboardLayoutSet::DEFAULT)
+}
+
+/// The key that switches layouts ([`KEYBOARD_SWITCH_KEY`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SwitchKey {
+    /// The key of the profile's OS: Ctrl+Space in the macOS profile, Super+Space otherwise.
+    #[default]
+    Profile,
+    /// Super+Space; with Shift, backwards.
+    SuperSpace,
+    /// Ctrl+Space; with Shift, backwards.
+    CtrlSpace,
+    /// Alt then Shift, released with no other key between.
+    AltShift,
+    /// Ctrl then Shift, released with no other key between.
+    CtrlShift,
+    /// No key switches.
+    None,
+}
+
+impl SwitchKey {
+    /// Every switch key, in the Keyboard pane's order; its index is its number.
+    pub const ALL: [Self; 6] = [
+        Self::Profile,
+        Self::SuperSpace,
+        Self::CtrlSpace,
+        Self::AltShift,
+        Self::CtrlShift,
+        Self::None,
+    ];
+
+    /// The values of [`KEYBOARD_SWITCH_KEY`], in [`Self::ALL`]'s order.
+    pub const NAMES: [&'static str; 6] = [
+        "profile",
+        "super+space",
+        "ctrl+space",
+        "alt+shift",
+        "ctrl+shift",
+        "none",
+    ];
+
+    /// What the Keyboard pane's dropdown shows, in [`Self::ALL`]'s order.
+    pub const LABELS: [&'static str; 6] = [
+        "Profile's key",
+        "Super+Space",
+        "Ctrl+Space",
+        "Alt+Shift",
+        "Ctrl+Shift",
+        "None",
+    ];
+
+    /// Its number: its index in [`Self::ALL`].
+    pub const fn number(self) -> usize {
+        self as usize
+    }
+
+    /// The switch key numbered `number`, [`Self::Profile`] for a number that is none.
+    pub const fn from_number(number: usize) -> Self {
+        match number {
+            1 => Self::SuperSpace,
+            2 => Self::CtrlSpace,
+            3 => Self::AltShift,
+            4 => Self::CtrlShift,
+            5 => Self::None,
+            _ => Self::Profile,
+        }
+    }
+
+    /// Its [`KEYBOARD_SWITCH_KEY`] value.
+    pub const fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    /// The switch key a [`KEYBOARD_SWITCH_KEY`] value names.
+    pub fn named(name: &[u8]) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .position(|known| known.as_bytes() == name)
+            .map(Self::from_number)
+    }
+
+    /// The key it is in the profile numbered `profile` (an index of [`PROFILES`]):
+    /// [`Self::Profile`] resolved.
+    pub const fn resolved(self, profile: usize) -> Self {
+        match (self, profile) {
+            (Self::Profile, 1) => Self::CtrlSpace,
+            (Self::Profile, _) => Self::SuperSpace,
+            (key, _) => key,
+        }
+    }
+
+    /// The chord's name as the bar's tooltip says it, `None` for [`Self::None`].
+    pub const fn chord(self, profile: usize) -> Option<&'static str> {
+        match self.resolved(profile) {
+            Self::None => None,
+            key => Some(Self::LABELS[key as usize]),
+        }
+    }
+}
+
+/// The switch key `file` holds, [`SwitchKey::Profile`] when none or an unknown one.
+pub fn keyboard_switch_key(file: &[u8]) -> SwitchKey {
+    value(file, KEYBOARD_SWITCH_KEY)
+        .and_then(SwitchKey::named)
+        .unwrap_or_default()
 }
 
 /// Why a setting could not be written.
@@ -582,8 +877,8 @@ mod tests {
     #[test]
     fn the_keyboard_layout_is_one_of_the_named_layouts() {
         let file = b"eggos-settings 1\nkeyboard.layout=de\n";
-        assert_eq!(keyboard_layout(file), Some(8));
-        assert_eq!(KEYBOARD_LAYOUTS[8].title, "German");
+        assert_eq!(keyboard_layout(file), Some(11));
+        assert_eq!(KEYBOARD_LAYOUTS[11].title, "German");
         assert_eq!(
             keyboard_layout(b"eggos-settings 1\nkeyboard.layout=DE\n"),
             None
@@ -593,6 +888,97 @@ mod tests {
         for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
             assert_eq!(keyboard_layout_named(layout.name.as_bytes()), Some(index));
             assert!(is_key(KEYBOARD_LAYOUT.as_bytes()) && is_value(layout.name.as_bytes()));
+        }
+    }
+
+    #[test]
+    fn the_layouts_table_has_twenty_rows_with_distinct_two_letter_codes() {
+        assert_eq!(KEYBOARD_LAYOUTS.len(), 20);
+        assert_eq!(keyboard_layout_named(b"us-mac"), Some(2));
+        assert_eq!(keyboard_layout_named(b"gb"), Some(3));
+        let ids: [&str; 20] = [
+            "us", "us-intl", "us-mac", "gb", "us-dvorak", "us-colemak", "dk", "fi", "fr", "be",
+            "ca", "de", "ch", "it", "no", "br", "pt", "es", "latam", "se",
+        ];
+        for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
+            assert_eq!(layout.name, ids[index]);
+            assert_eq!(layout.code.len(), 2, "{}", layout.name);
+            assert!(layout.code.bytes().all(|byte| byte.is_ascii_uppercase()));
+            for other in &KEYBOARD_LAYOUTS[index + 1..] {
+                assert_ne!(layout.code, other.code);
+            }
+        }
+        assert_eq!(KEYBOARD_LAYOUTS[10].dead_keys, "` ^ ¨ ~ ¸");
+    }
+
+    #[test]
+    fn a_layout_set_is_one_to_four_known_layouts_none_twice() {
+        let file = b"eggos-settings 1\nkeyboard.layouts=us,de\nkeyboard.layout=de\n";
+        let set = keyboard_layout_set(file);
+        assert_eq!(set.numbers().collect::<Vec<_>>(), [0, 11]);
+        assert_eq!(keyboard_layout(file), set.get(1));
+        assert_eq!(
+            KeyboardLayoutSet::parse(b"us,de,fr,es,it"),
+            Err(LayoutSetRefusal::TooMany)
+        );
+        assert_eq!(
+            KeyboardLayoutSet::parse(b"us,us"),
+            Err(LayoutSetRefusal::Repeated(0))
+        );
+        assert_eq!(
+            KeyboardLayoutSet::parse(b"us,xx"),
+            Err(LayoutSetRefusal::Unknown { start: 3, end: 5 })
+        );
+        assert_eq!(keyboard_layout_set(b"eggos-settings 1\n"), KeyboardLayoutSet::DEFAULT);
+        let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
+        assert_eq!(set.write(&mut text), "us,de");
+        let longest = KeyboardLayoutSet::of(&[4, 5, 1, 2]).unwrap();
+        assert_eq!(longest.write(&mut text), "us-dvorak,us-colemak,us-intl,us-mac");
+    }
+
+    #[test]
+    fn choosing_a_layout_appends_it_or_takes_the_place_of_the_one_in_force() {
+        let named = |name: &[u8]| keyboard_layout_named(name).unwrap();
+        let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
+        let us_de = KeyboardLayoutSet::parse(b"us,de").unwrap();
+        assert_eq!(
+            us_de.with_chosen(named(b"fr"), named(b"us")).write(&mut text),
+            "us,de,fr"
+        );
+        let full = KeyboardLayoutSet::parse(b"us,de,fr,es").unwrap();
+        assert_eq!(full.with_chosen(named(b"fr"), named(b"de")), full);
+        assert_eq!(
+            full.with_chosen(named(b"it"), named(b"de")).write(&mut text),
+            "us,it,fr,es"
+        );
+        let one = KeyboardLayoutSet::DEFAULT;
+        assert_eq!(one.with_chosen(named(b"de"), 0).write(&mut text), "us,de");
+        let gb_se = KeyboardLayoutSet::parse(b"gb,se").unwrap();
+        assert_eq!(gb_se.keeping(named(b"de")), named(b"gb"));
+        assert_eq!(gb_se.keeping(named(b"se")), named(b"se"));
+        let three = KeyboardLayoutSet::parse(b"us,de,fr").unwrap();
+        assert_eq!(three.next_after(0, false), named(b"de"));
+        assert_eq!(three.next_after(named(b"de"), false), named(b"fr"));
+        assert_eq!(three.next_after(named(b"fr"), false), 0);
+        assert_eq!(three.next_after(0, true), named(b"fr"));
+    }
+
+    #[test]
+    fn the_switch_key_is_the_profile_s_unless_chosen() {
+        assert_eq!(keyboard_switch_key(b"eggos-settings 1\n"), SwitchKey::Profile);
+        assert_eq!(
+            keyboard_switch_key(b"eggos-settings 1\nkeyboard.switch_key=alt+shift\n"),
+            SwitchKey::AltShift
+        );
+        assert_eq!(SwitchKey::named(b"x"), None);
+        assert_eq!(SwitchKey::Profile.resolved(0), SwitchKey::SuperSpace);
+        assert_eq!(SwitchKey::Profile.resolved(1), SwitchKey::CtrlSpace);
+        assert_eq!(SwitchKey::Profile.resolved(2), SwitchKey::SuperSpace);
+        assert_eq!(SwitchKey::Profile.chord(2), Some("Super+Space"));
+        assert_eq!(SwitchKey::None.chord(2), None);
+        for (index, key) in SwitchKey::ALL.iter().enumerate() {
+            assert_eq!(key.number(), index);
+            assert_eq!(SwitchKey::named(key.name().as_bytes()), Some(*key));
         }
     }
 }
