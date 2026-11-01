@@ -2,8 +2,10 @@
 //! and their mutable and constant (compiler-emitted literal) classes, NSBundle, NSLog and the
 //! class and selector name functions, as classes of the layer's own Objective-C runtime; and
 //! (D175) NSException, NSProcessInfo, NSDate, NSError, NSData, NSSet, NSTimer, NSRunLoop and
-//! the string constants Foundation exports; and (D231) NSNotification and its center and NSUUID.
+//! the string constants Foundation exports; and (D231) NSNotification and its center, NSUUID and
+//! NSFileManager.
 
+pub mod file_manager;
 pub mod nib_archive;
 pub mod string_encoding;
 pub mod string_text;
@@ -95,6 +97,7 @@ mod runtime {
         NSNOTIFICATION, NSNOTIFICATION_META;
         NSNOTIFICATIONCENTER, NSNOTIFICATIONCENTER_META;
         NSUUID, NSUUID_META;
+        NSFILEMANAGER, NSFILEMANAGER_META;
     }
 
     /// The class object `class` as the pointer the runtime takes.
@@ -190,6 +193,7 @@ mod runtime {
                 && timer::define(runtime)
                 && notification::define(runtime)
                 && super::uuid::define(runtime)
+                && super::file_manager::define(runtime)
                 && super::description::extend_object(runtime)
         }) && number::set_up_booleans()
             && array::set_up_empty()
@@ -249,13 +253,16 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSNotificationCenter" => class(&NSNOTIFICATIONCENTER_META),
             b"_OBJC_CLASS_$_NSUUID" => class(&NSUUID),
             b"_OBJC_METACLASS_$_NSUUID" => class(&NSUUID_META),
+            b"_OBJC_CLASS_$_NSFileManager" => class(&NSFILEMANAGER),
+            b"_OBJC_METACLASS_$_NSFileManager" => class(&NSFILEMANAGER_META),
             b"___NSArray0__struct" => Some(array::empty_address()),
             b"___NSDictionary0__struct" => Some(dictionary::empty_address()),
             b"___kCFBooleanTrue" => Some(number::boolean_object(true)),
             b"___kCFBooleanFalse" => Some(number::boolean_object(false)),
             _ => log::resolve(name)
                 .or_else(|| exception::resolve(name))
-                .or_else(|| constants::resolve(name)),
+                .or_else(|| constants::resolve(name))
+                .or_else(|| super::file_manager::resolve(name)),
         }
     }
 
