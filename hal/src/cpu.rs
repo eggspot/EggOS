@@ -29,8 +29,10 @@ use core::sync::atomic::AtomicU64;
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
 /// has called [`CpuStart::entry`]; the architecture's entry code reads it through the boot
-/// page tables, at the address the kernel passed (on x86_64 that address is in the
-/// trampoline's slot, which the CPU reads through the boot tables' identity map).
+/// page tables, at the address the kernel passed (on x86_64 that address and the first of
+/// [`CpuStart::page_table_roots`] are in the trampoline, which the CPU reads through the boot
+/// tables' identity map, and it reads the `CpuStart` itself after switching to that root,
+/// since the boot tables map only the first 4 GiB).
 #[derive(Debug)]
 #[repr(C)]
 pub struct CpuStart {
