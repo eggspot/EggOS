@@ -12,7 +12,7 @@
 //! the progress bar's per mille),
 //! a click on the `Tree` tab (the tree shows with its `+` boxes), a click on `Fruit`'s box (it
 //! opens and is selected), Down (`Apples` selected); Alt+F4 closes the window, AutoHotkey exits
-//! and `wm list` has no such window.
+//! with status 0 and no unhandled exception, and `wm list` has no such window.
 
 use super::settings::{Boot, Screen};
 use super::win32_app::{SUSPEND, changed, crop, picture, pixel, tap, type_line, window_area};
@@ -421,6 +421,18 @@ fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
             return Err(format!("{arch}: the console has no `{wanted}` line"));
         }
     }
+    if let Some(line) = unhandled_windows_exception(console) {
+        return Err(format!("{arch}: AutoHotkey crashed: {line}"));
+    }
+    let ran = format!("/Applications/{APP}/{PROGRAM} {SCRIPT}");
+    if !console
+        .lines()
+        .any(|line| line.contains(" Done ") && line.trim_end().ends_with(&ran))
+    {
+        return Err(format!(
+            "{arch}: the shell did not report AutoHotkey done with status 0"
+        ));
+    }
     let listed = format!("{APP}\twindows\t{arch}\t/Applications/{APP}/{PROGRAM}\t");
     if !console.lines().any(|line| line.starts_with(&listed)) {
         return Err(format!(
@@ -559,7 +571,9 @@ mod tests {
                 "Installed autohotkey in /Applications/autohotkey.\nAUTOHOTKEY install 0\n\
                  autohotkey\twindows\tx86_64\t/Applications/autohotkey/AutoHotkey64.exe\t\
                  /Applications/autohotkey/app.icon\nOpened autohotkey.\nAUTOHOTKEY open 0\n\
-                 {WM_LIST_HEADER}\n{windows}AUTOHOTKEY after 0\n{POWER_DOWN_LINE}\n"
+                 {WM_LIST_HEADER}\n{windows}AUTOHOTKEY after 0\n\
+                 [1]+  Done                    /Applications/autohotkey/AutoHotkey64.exe \
+                 controls.ahk\n{POWER_DOWN_LINE}\n"
             )
         };
         let good = console("1 normal 0 0 640 400 65535 Terminal\n");
@@ -570,6 +584,22 @@ mod tests {
             verdict("x86_64", &open, true)
                 .unwrap_err()
                 .contains("still listed")
+        );
+        let crashed = good.replace(
+            "AUTOHOTKEY after 0",
+            "windows: AutoHotkey64.exe: exception 0xc0000029 was not handled, raised at \
+             0x140001010 (AutoHotkey64.exe+0x1010)\nAUTOHOTKEY after 0",
+        );
+        assert!(
+            verdict("x86_64", &crashed, true)
+                .unwrap_err()
+                .contains("0xc0000029")
+        );
+        let failed = good.replace("Done                ", "Exit 41             ");
+        assert!(
+            verdict("x86_64", &failed, true)
+                .unwrap_err()
+                .contains("done")
         );
     }
 }

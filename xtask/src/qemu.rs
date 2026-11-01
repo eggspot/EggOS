@@ -2625,6 +2625,9 @@ fn session_verdict<const N: usize>(
     if !clean_exit {
         return Err(format!("{arch}: QEMU exited with an error"));
     }
+    if let Some(line) = unhandled_windows_exception(console) {
+        return Err(format!("{arch}: a Windows program crashed: {line}"));
+    }
     for (typed, expected) in session.iter().zip(outputs) {
         let command = String::from_utf8_lossy(typed);
         let command = command.trim_end_matches('\r');
@@ -3044,6 +3047,28 @@ fn check_terminal_frame(
 }
 
 const CLOSE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+const WINDOWS_CRASH_MARKERS: [&str; 7] = [
+    " was not handled, raised at ",
+    ": the program ended itself at once (__fastfail) at ",
+    ": memory access violation at ",
+    ": illegal instruction at ",
+    ": breakpoint at ",
+    ": bus error at ",
+    ": arithmetic exception at ",
+];
+
+fn unhandled_windows_exception(console: &str) -> Option<&str> {
+    console
+        .lines()
+        .find(|line| {
+            line.contains("windows: ")
+                && WINDOWS_CRASH_MARKERS
+                    .iter()
+                    .any(|marker| line.contains(marker))
+        })
+        .map(str::trim_end)
+}
 
 fn has_line(console: &str, wanted: &str) -> bool {
     console
@@ -4296,6 +4321,16 @@ mod tests {
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &lost).is_err());
         let failed = ok.replace("EGGPAD status 0", "EGGPAD status 126");
         assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+        let crashed = ok.replace(
+            "EGGPAD exit\r\n",
+            "EGGPAD exit\r\nwindows: eggpad.exe: exception 0xc0000029 was not handled, raised at \
+             0x140001010 (eggpad.exe+0x1010)\r\n",
+        );
+        assert!(
+            verdict("x86_64", Expect::WindowsCrt, true, &crashed)
+                .unwrap_err()
+                .contains("crashed")
+        );
     }
 
     #[test]

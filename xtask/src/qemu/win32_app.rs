@@ -461,6 +461,9 @@ fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
             return Err(format!("{arch}: the console has no `{wanted}` line"));
         }
     }
+    if let Some(line) = unhandled_windows_exception(console) {
+        return Err(format!("{arch}: Pegs crashed: {line}"));
+    }
     let listed = format!("{APP}\twindows\t{arch}\t/Applications/{APP}/{PROGRAM}\t");
     if !console.lines().any(|line| line.starts_with(&listed)) {
         return Err(format!(
@@ -563,6 +566,16 @@ mod tests {
                 .contains("still listed")
         );
         assert!(verdict("x86_64", "Opened pegs.\n", true).is_err());
+        let crashed = good.replace(
+            "WIN32-APP after 0",
+            "windows: pegs.exe: exception 0xc0000005 was not handled, raised at 0x401000 \
+             (pegs.exe+0x1000)\nWIN32-APP after 0",
+        );
+        assert!(
+            verdict("x86_64", &crashed, true)
+                .unwrap_err()
+                .contains("crashed")
+        );
     }
 
     #[test]
