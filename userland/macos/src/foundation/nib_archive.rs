@@ -98,8 +98,8 @@ mod kind {
     pub const INT16: u8 = 1;
     pub const INT32: u8 = 2;
     pub const INT64: u8 = 3;
-    pub const TRUE: u8 = 4;
-    pub const FALSE: u8 = 5;
+    pub const FALSE: u8 = 4;
+    pub const TRUE: u8 = 5;
     pub const FLOAT: u8 = 6;
     pub const DOUBLE: u8 = 7;
     pub const DATA: u8 = 8;
@@ -430,7 +430,6 @@ pub fn numbers<const N: usize>(text: &[u8]) -> Option<[f64; N]> {
 /// the windows visible at load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectData {
-    pub data: usize,
     pub root: usize,
     pub visible_windows: Option<usize>,
     pub connections: Option<usize>,
@@ -463,7 +462,6 @@ impl<'b> NibArchive<'b, '_> {
             return None;
         }
         Some(ObjectData {
-            data,
             root: self.reference(data, b"NSRoot")?,
             visible_windows: self.reference(data, b"NSVisibleWindows"),
             connections: self.reference(data, b"NSConnections"),
@@ -510,6 +508,23 @@ impl<'b> NibArchive<'b, '_> {
             _ => None,
         })
     }
+}
+
+/// The folders of a bundle a nib is looked for in, in order: the resources, then the base and
+/// English localizations.
+pub const NIB_FOLDERS: [&[u8]; 3] = [
+    b"/Contents/Resources/",
+    b"/Contents/Resources/Base.lproj/",
+    b"/Contents/Resources/en.lproj/",
+];
+
+/// What follows a nib's name in its file's path, in order: a nib folder's object file, then a
+/// nib file.
+pub const NIB_SUFFIXES: [&[u8]; 2] = [b".nib/keyedobjects.nib", b".nib"];
+
+/// `name` without a trailing `.nib`, as `NSMainNibFile` and `loadNibNamed:` may give it.
+pub fn nib_stem(name: &[u8]) -> &[u8] {
+    name.strip_suffix(b".nib").unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -737,6 +752,15 @@ mod tests {
     }
 
     #[test]
+    fn a_nib_name_loses_its_extension_and_is_looked_for_in_the_resources_first() {
+        assert_eq!(nib_stem(b"MainMenu"), b"MainMenu");
+        assert_eq!(nib_stem(b"MainMenu.nib"), b"MainMenu");
+        assert_eq!(nib_stem(b".nib"), b"");
+        assert_eq!(NIB_FOLDERS[0], b"/Contents/Resources/");
+        assert_eq!(NIB_SUFFIXES[1], b".nib");
+    }
+
+    #[test]
     fn a_nib_ibtool_compiles_from_our_xib_reads_back() {
         let xib = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/macos-nib/MainMenu.xib");
         let output = std::env::temp_dir().join(format!("eggos-mac-nib-{}.nib", std::process::id()));
@@ -760,6 +784,10 @@ mod tests {
                 .collect();
             assert!(top.contains(&&b"NSWindowTemplate"[..]));
             assert!(top.contains(&&b"NSMenu"[..]));
+            let field = (0..archive.object_count())
+                .find(|&object| archive.class_name(object) == Some(&b"NSTextField"[..]))
+                .unwrap();
+            assert_eq!(archive.field(field, b"NSEnabled"), Some(NibValue::Boolean(true)));
             let connections: Vec<_> = archive
                 .members(data.connections.unwrap())
                 .filter_map(|member| match member {

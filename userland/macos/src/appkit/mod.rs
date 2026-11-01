@@ -5,7 +5,8 @@
 //! window and its pixels, `NSView` and its subclasses draw into them through `eggos-macos-gui`
 //! (`NSButton`, `NSTextField` as the toolkit's controls), `NSAlert` runs a dialog of its own,
 //! `NSMenu` is shown by the server in the top bar, the standard About panel is the layer's own
-//! window, and every window answers agents with its views as an element tree (D175).
+//! window, and every window answers agents with its views as an element tree (D175); compiled
+//! nibs are loaded into these classes (D231).
 
 mod about;
 mod alert;
@@ -15,6 +16,7 @@ mod drawing;
 mod elements;
 mod event;
 mod menu;
+mod nib;
 mod server;
 mod view;
 mod window;
@@ -154,6 +156,7 @@ pub fn set_up() -> bool {
             && drawing::define(runtime)
             && alert::define(runtime)
             && menu::define(runtime)
+            && nib::extend_bundle(runtime)
     });
     defined && drawing::set_up()
 }

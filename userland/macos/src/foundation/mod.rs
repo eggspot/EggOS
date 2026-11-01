@@ -4,7 +4,6 @@
 //! (D175) NSException, NSProcessInfo, NSDate, NSError, NSData, NSSet, NSTimer, NSRunLoop and
 //! the string constants Foundation exports.
 
-#[cfg(test)]
 pub mod nib_archive;
 pub mod string_text;
 

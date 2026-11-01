@@ -1,13 +1,13 @@
-//! NSApplication and `NSApp`: the delegate's launch and termination, the event loop over the
-//! window server's records (each made an NSEvent and sent through `sendEvent:`, the main menu's
-//! key equivalents first, Cmd+Q always quitting; agents' queries answered with element trees;
-//! the About panel's records to it), the app's windows, and actions sent to their target or
-//! along the responder chain.
+//! NSApplication and `NSApp`: `NSApplicationMain` (its principal class and main nib, D231), the
+//! delegate's launch and termination, the event loop over the window server's records (each
+//! made an NSEvent and sent through `sendEvent:`, the main menu's key equivalents first, Cmd+Q
+//! always quitting; agents' queries answered with element trees; the About panel's records to
+//! it), the app's windows, and actions sent to their target or along the responder chain.
 
 use super::event::{self, kind};
 use super::{
-    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, elements, menu, responds, server, view,
-    window,
+    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, elements, menu, nib, responds, server,
+    view, window,
 };
 use crate::foundation::{self, NSARRAY, class_pointer, info_string};
 use crate::libsystem::{Exclusive, write_error};
@@ -26,7 +26,7 @@ use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE};
 const NS_TERMINATE_CANCEL: usize = 0;
 const RECORDS_PER_READ: usize = 16;
 const NO_WINDOW_SERVER: i32 = 1;
-const NIB_APP: i32 = 1;
+const NIB_NOT_LOADED: i32 = 1;
 
 static APPLICATION: AtomicUsize = AtomicUsize::new(0);
 static DELEGATE: AtomicUsize = AtomicUsize::new(0);
@@ -516,20 +516,35 @@ extern "C" fn order_front_about_panel_with_options(_: Id, _: Sel, options: Id) {
     about::show(options);
 }
 
+fn principal_class() -> *mut crate::objc::abi::ClassObject {
+    let named = info_string(b"NSPrincipalClass")
+        .filter(|name| !name.is_empty())
+        .map_or(core::ptr::null_mut(), crate::objc::class_named);
+    let application = class_pointer(&NSAPPLICATION);
+    match !named.is_null() && crate::objc::root::descends_from(named, application) {
+        true => named,
+        false => application,
+    }
+}
+
 extern "C" fn application_main(_: i32, _: usize) -> i32 {
-    if [&b"NSMainNibFile"[..], &b"NSMainStoryboardFile"[..]]
-        .into_iter()
-        .any(|key| info_string(key).is_some_and(|name| !name.is_empty()))
+    if info_string(b"NSMainStoryboardFile").is_some_and(|name| !name.is_empty()) {
+        write_error(
+            b"eggos-macos: this app builds its interface from a storyboard \
+              (NSMainStoryboardFile in its Info.plist), which EggOS cannot load yet\n",
+        );
+        crate::libsystem::exit(NIB_NOT_LOADED);
+    }
+    let application = send(principal_class().cast(), sel!("sharedApplication"));
+    if let Some(name) = info_string(b"NSMainNibFile").filter(|name| !name.is_empty())
+        && nib::load_main(name, application).is_err()
     {
         write_error(
-            b"eggos-macos: this app builds its interface from a nib or storyboard \
-              (NSMainNibFile or NSMainStoryboardFile in its Info.plist), which EggOS cannot \
-              load yet\n",
+            b"eggos-macos: the app's main nib (NSMainNibFile in its Info.plist) is missing \
+              from its bundle's Resources or could not be read\n",
         );
-        crate::libsystem::exit(NIB_APP);
+        crate::libsystem::exit(NIB_NOT_LOADED);
     }
-    let class = class_pointer(&NSAPPLICATION).cast();
-    let application = send(class, sel!("sharedApplication"));
     send(application, sel!("run"));
     0
 }

@@ -2043,6 +2043,25 @@ fn write_mac_paint(
     Ok(())
 }
 
+fn write_mac_nib(
+    programs: &macos::Programs,
+    cpu: &str,
+    folder: &std::path::Path,
+) -> Result<(), String> {
+    let app = macos::objc_program(macos::NIB_APP)
+        .ok_or_else(|| format!("{} is not an Objective-C test program", macos::NIB_APP))?;
+    let bundle = macos::assemble_app(
+        folder,
+        macos::NIB_APP,
+        &macos::source_folder(&app).join(macos::INFO_PLIST),
+        &programs.path(macos::NIB_APP, cpu),
+    )?;
+    macos::add_test_icon(&bundle)?;
+    macos::add_resource(&bundle, macos::MAIN_NIB, &programs.nib(macos::NIB_APP))?;
+    macos::archive_app(&bundle)?;
+    Ok(())
+}
+
 fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let hello_window = build_runtime_program(arch, "eggos-hello-window")?;
     let extra = [
@@ -2148,6 +2167,7 @@ fn build_macos_gui_folder(arch: &Arch) -> Result<Option<std::path::PathBuf>, Str
     let folder = target_directory().join(format!("macos-gui-folder-{}", arch.name));
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     write_mac_paint(&programs, cpu, &folder)?;
+    write_mac_nib(&programs, cpu, &folder)?;
     Ok(Some(std::path::PathBuf::from(host_folder(
         &folder.to_string_lossy(),
     )?)))

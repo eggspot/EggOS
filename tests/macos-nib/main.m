@@ -9,6 +9,7 @@
 @implementation NibDelegate
 
 - (void)awakeFromNib {
+    [super awakeFromNib];
     NSLog(@"mac-nib: awake, window %@", self.window.title);
 }
 
