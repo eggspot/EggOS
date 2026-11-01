@@ -203,7 +203,7 @@ specification's OAuth sign-in comes later.
 | `net_status` | The network's state as JSON (D157, docs/network.md): `state` (`connected`, `getting-address`, `no-address`, `cable-unplugged`, or `none` without an adapter) and an `adapters` array, each interface's link, DHCP state, hardware address, MTU, address, prefix and mask, router, DNS servers, DHCP server, lease and counters | `ip -j addr` | |
 | `net_ping` | Pings a host (`host`, an IPv4 address or a name; `count`, 1 to 5, 4 by default) and returns ping's report; an error when no reply came (D158) | `ping -W 1 -c <count> <host>` | |
 | `net_lookup` | Looks a host name up (`host`) with the network's DNS servers and returns nslookup's report (D158) | `nslookup <host>` | |
-| `settings_list` | Every setting and its value, `key=value` a line: `shell.profile`, `keyboard.layout`, `keyboard.layouts`, `keyboard.switch_key`, `time.zone`, `display.scale`, the mouse and key preferences (`mouse.buttons`, `mouse.scrolling`, `mouse.speed`, `keyboard.repeat_delay_ms`, `keyboard.repeat_rate`) and `accessibility.sticky_keys`, `accessibility.slow_keys` and `accessibility.slow_keys_ms` can be set, the others report facts (display, version, architecture, CPUs, memory, uptime) (D163, D185) | `settings list` | |
+| `settings_list` | Every setting and its value, `key=value` a line: `shell.profile`, `keyboard.layout`, `keyboard.layouts`, `keyboard.switch_key`, `time.zone`, `display.scale`, the mouse and key preferences (`mouse.buttons`, `mouse.scrolling`, `mouse.speed`, `keyboard.repeat_delay_ms`, `keyboard.repeat_rate`) and `accessibility.sticky_keys`, `accessibility.slow_keys` and `accessibility.slow_keys_ms` can be set, the others report facts (display, version, architecture, CPUs, memory, uptime) (D163, D185); `limit` and `after` page them by key (D225) | `settings list [--limit <n>] [--after <cursor>]` | |
 | `settings_get` | One setting's value (`key`, such as `shell.profile`); `no_such_setting` for an unknown key (D163) | `settings get -- <key>` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`, `dry_run`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`, `dry_run`); you can restore it | `trash -- <path>` | `write` |
@@ -271,8 +271,10 @@ exit status, also as an error result. Every twin but `run`'s program also runs w
 `{"error":{...}}` line, and the server moves the last such line into the result's
 `structuredContent.error` (the code must be one EggOS defines; its category, fix and
 `fix_command` come from the registry, the message from the command) and leaves those lines out
-of the text, so a failed command's error is as structured as a refusal. A command that ends
-without a coded error (killed, timed out) has none. Every command starts in `/home` with `PATH=/bin`, no input
+of the text, so a failed command's error is as structured as a refusal; the core utilities,
+`app`, `component`, `settings` and `windows registry` write these lines. A command that ends
+without a coded error (killed, timed out), or `edit` (`edit_open`, whose errors are not coded
+yet), has none. Every command starts in `/home` with `PATH=/bin`, no input
 but `tee`'s content, and as root; it is stopped, with every process it started, after 10 s
 (`run`: its `timeout_seconds`), or as soon as its output passes 128 KiB (the result says it was
 cut). `run` takes no shell: `run {"program": "/bin/uname", "arguments": ["-a"]}`.
@@ -366,7 +368,8 @@ Replacing an existing file with `tee` (not adding to it with `append`, not creat
 
 ## Pages
 
-`ls`, `ps`, `wm_list` and `app_list` take `limit` and `after` (D164). With either, the result
+`ls`, `ps`, `wm_list` and `app_list` take `limit` and `after` (D164), and `settings_list` by
+key (D225). With either, the result
 keeps its text and adds `structuredContent`: `{"truncated":true,"truncated_by":"limit",
 "next_cursor":"<cursor>"}` when more follow (and a line saying to call again with `after`),
 `{"truncated":false}` on the last page, and `{"truncated":true,"truncated_by":"bytes"}` when
@@ -513,7 +516,7 @@ clock at boot (D150). The log in Settings comes after the release.
 
 Asking the client in the 2026-07-28 version (`input_required`), resources for files and apps, `subscriptions/listen`; tools for the commands that have none
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
+is returned as before); `outputSchema`; pages for tools added
 later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees of macOS alerts; non-ASCII typing; capturing the
 terminal's window; OAuth sign-in, an event stream and session ids for MCP over the network; the grant prompt on a phone (a bottom sheet), centred and kept above other windows (it opens
 where the window server puts a new window). A window whose program stopped answering keeps input

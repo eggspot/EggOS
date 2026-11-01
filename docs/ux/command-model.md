@@ -239,6 +239,7 @@ get|list|set`, `sleep`, `stty`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `t
 | `app list --json` | `name`, `source`, `architecture` (or `null`), `program`, `icon` (or `null`) |
 | `agent list --json`, `agent show --json` | `id`, `name`, `view`, `view_ends_at`, `write`, `write_ends_at`, `install`, `install_ends_at`, `run`, `run_ends_at` (each grant `allow`, `ask` or `deny`; `null` for never): one per agent, or one object (D193) |
 | `agentlog --json` | `called_at`, `call`, `agent` (D193), `client`, `tool`, `result`, `arguments`, `detail`, one per line of the log (`--agent`, `--tool`, `--outcome` and `--since` keep the matching ones) |
+| `trash -l --json` | `name`, `deleted_at` (or `null`), `original_path` (or `null`), one per entry of the Trash (D225) |
 | `help --json` | `words`, `summary`, `description`, `options`, `operands`, `outputs`, `max_effect`, `errors`, `examples` (D163), `surface`, one per command |
 | `wc --json` | `path` (`null` for standard input), `lines`, `words`, `size_bytes`, one per input (D163) |
 | `readlink --json` | `path`, `target`, one per link (D170) |
@@ -252,7 +253,11 @@ get|list|set`, `sleep`, `stty`, `sync`, `tail`, `taskset`, `tee`, `terminal`, `t
 **Pages and previews** (D164): `ls` (at most 500 a page, one folder however many entries it
 holds), `ps`, `wm list` and `app list` (at most 100) take `--limit` and `--after`, keyed by
 name, process id, window id and app name; `ps` lists by id, `wm list` and `app list` keep their
-own order within a page. `trash`, `app uninstall` and `settings set` take `--dry-run`.
+own order within a page. So do (D225, at most 100) `agentlog`, keyed by the row's position in
+the log (1 for the oldest kept row), `help`, keyed by the command's words (`wm%20list`),
+`trash -l`, keyed by the entry's name, and `settings list`, keyed by the setting's key; `help`
+and `settings list` keep the registry's and the list's order within a page, `trash -l` the
+folder's. `trash`, `app uninstall` and `settings set` take `--dry-run`.
 
 **Error codes:**
 
@@ -271,7 +276,7 @@ own order within a page. `trash`, `app uninstall` and `settings set` take `--dry
 | `out_of_memory` | too_large | ENOMEM | |
 | `failed` | failed | anything else | |
 | `too_many_entries` | too_large | `ls` without `--limit` (exit 1) | |
-| `bad_cursor` | usage | `--after` of `ls`, `wm list`, `app list` (exit 2) and `ps` (exit 1) (D164) | |
+| `bad_cursor` | usage | `--after` of `ls`, `wm list`, `app list`, `agentlog`, `help`, `trash -l`, `settings list` (exit 2; D225) and `ps` (exit 1) (D164) | |
 | `no_such_window` | not_found | `wm` (exit 1) | `wm list` |
 | `person_active` | busy | `wm` (exit 75) | |
 | `no_window_server` | not_found | `wm` (exit 1) | |
