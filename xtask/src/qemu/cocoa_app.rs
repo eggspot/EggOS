@@ -140,13 +140,13 @@ fn screen_pixel(picture: &Picture, x: u32, y: u32) -> Option<u32> {
         .then(|| picture.pixels[(y * picture.width + x) as usize] & 0x00ff_ffff)
 }
 
-fn in_window_corner(column: u32, row: u32) -> bool {
-    let from_bottom = BOARD - 1 - row;
+fn in_window_corner(column: u32, row: u32, (width, height): (u32, u32)) -> bool {
+    let from_bottom = height - 1 - row;
     let inset = CONTENT_CORNER_INSETS
         .get(from_bottom as usize)
         .copied()
         .unwrap_or(0);
-    column < inset || column >= BOARD - inset
+    column < inset || column >= width.saturating_sub(inset)
 }
 
 fn board_shows(picture: &Picture, board: Rect, player: Cell, food: Cell) -> bool {
@@ -159,7 +159,7 @@ fn board_shows(picture: &Picture, board: Rect, player: Cell, food: Cell) -> bool
             .enumerate()
             .all(|(at, (shown, wanted))| {
                 let (column, row) = (at as u32 % BOARD, at as u32 / BOARD);
-                shown == wanted || in_window_corner(column, row)
+                shown == wanted || in_window_corner(column, row, (BOARD, BOARD))
             })
 }
 
@@ -248,7 +248,11 @@ fn find_exact(
                 screen
                     .iter()
                     .zip(wanted)
-                    .all(|(&shown, &want)| shown & 0x00ff_ffff == want & 0x00ff_ffff)
+                    .enumerate()
+                    .all(|(column, (&shown, &want))| {
+                        shown & 0x00ff_ffff == want & 0x00ff_ffff
+                            || in_window_corner(column as u32, row, (width, height))
+                    })
             };
             if row_matches(0) && (1..height).all(row_matches) {
                 return Some((left, top));
@@ -821,6 +825,7 @@ mod tests {
                     expected.2[(y * expected.0 + x) as usize];
             }
         }
+        picture.pixels[((200 + expected.1 - 1) * 800 + 250) as usize] = 0x00ff_00ff;
         let area = changed_box(&before, &picture).unwrap();
         assert_eq!(
             find_exact(&picture, &expected.2, (expected.0, expected.1), area),
