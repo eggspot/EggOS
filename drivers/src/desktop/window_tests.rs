@@ -928,6 +928,19 @@ fn the_keyboard_layout_requests_have_their_numbers_and_arguments() {
         Some(Request::SetKeyboardLayout { layout: 8 })
     );
     assert_eq!(key_modifiers(Modifiers::ALT_GRAPH), modifier::ALT_GRAPH);
+    assert_eq!(request::SET_KEYBOARD_LAYOUTS, 0x400c_7726);
+    let mut layouts = [0u8; size::SET_KEYBOARD_LAYOUTS];
+    layouts[0..4].copy_from_slice(&2u32.to_ne_bytes());
+    layouts[4..8].copy_from_slice(&[0, 11, 0, 0]);
+    layouts[8..12].copy_from_slice(&3u32.to_ne_bytes());
+    assert_eq!(
+        Request::parse(request::SET_KEYBOARD_LAYOUTS, &layouts),
+        Some(Request::SetKeyboardLayouts {
+            count: 2,
+            layouts: [0, 11, 0, 0],
+            switch_key: 3,
+        })
+    );
 }
 
 #[test]

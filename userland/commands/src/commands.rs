@@ -2831,6 +2831,8 @@ const SETTINGS_LIST_TEXT: &str = concat!(
     "display.resolution=1280x800\n",
     "display.pointer=software\n",
     "keyboard.layout=us\n",
+    "keyboard.layouts=us\n",
+    "keyboard.switch_key=profile\n",
     "time.zone=UTC\n",
     "mouse.buttons=right\n",
     "mouse.scrolling=traditional\n",
@@ -2899,8 +2901,12 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     summary: "Sets a setting.",
     description: "Sets the setting with that key to the value, saves it and applies it at once: \
                   shell.profile takes windows, macos or linux, the desktop's layout; \
-                  keyboard.layout takes a keyboard layout's name (us, us-intl, gb, us-dvorak, \
-                  us-colemak, dk, fi, fr, de, it, no, br, es or se); time.zone takes an IANA \
+                  keyboard.layout takes a keyboard layout's name (us, us-intl, us-mac, gb, \
+                  us-dvorak, us-colemak, dk, fi, fr, be, ca, de, ch, it, no, br, pt, es, latam \
+                  or se), added to keyboard.layouts when missing; keyboard.layouts takes one \
+                  to four of those names separated by commas, the layouts the switch key \
+                  cycles through; keyboard.switch_key takes profile, super+space, ctrl+space, \
+                  alt+shift, ctrl+shift or none; time.zone takes an IANA \
                   zone such as Europe/Paris, or UTC, which date, ls and the other programs show \
                   times in unless TZ says another; display.scale takes 1 or 2, which the \
                   display shows at from the next boot; mouse.buttons takes right or left (left \
@@ -2924,6 +2930,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
     examples: &[
         example("settings set shell.profile linux", ""),
         example("settings set keyboard.layout de", ""),
+        example("settings set keyboard.layouts us,de", ""),
         example("settings set time.zone Europe/Paris", ""),
         example(
             "settings set --dry-run shell.profile windows",

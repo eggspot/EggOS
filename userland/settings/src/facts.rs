@@ -1,7 +1,7 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
-use eggos_settings_file::{InputPreferences, KeyAccessibility};
+use eggos_settings_file::{InputPreferences, KeyAccessibility, KeyboardLayoutSet, SwitchKey};
 use eggos_toolkit::text::Text;
 
 /// The system's facts and the current choices.
@@ -33,6 +33,10 @@ pub struct Facts {
     pub hardware_clock: bool,
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     pub keyboard_layout: usize,
+    /// The layouts the switch key cycles through (D220).
+    pub keyboard_layouts: KeyboardLayoutSet,
+    /// The key that switches layouts (D220).
+    pub switch_key: SwitchKey,
     /// Whether the machine has a keyboard.
     pub keyboard: bool,
     /// Whether Caps Lock is on.
@@ -64,6 +68,8 @@ impl Facts {
             now_s: 1_793_282_709,
             hardware_clock: true,
             keyboard_layout: 0,
+            keyboard_layouts: KeyboardLayoutSet::DEFAULT,
+            switch_key: SwitchKey::Profile,
             time_zone: utc_zone(),
             keyboard: true,
             caps_lock: false,

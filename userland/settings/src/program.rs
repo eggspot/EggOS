@@ -24,7 +24,7 @@ use eggos_settings::command::{
 };
 use eggos_settings::facts::Facts;
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
-use eggos_settings::keys::{InputChange, KeysChange};
+use eggos_settings::keys::{InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, Request, SetOutcome,
@@ -255,6 +255,10 @@ fn remove_stale_temporary_files(own: u32) {
 }
 
 fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
+    save_values_through_a_temporary_file(&[(key, value)])
+}
+
+fn save_values_through_a_temporary_file(values: &[(&str, &str)]) -> Result<(), Errno> {
     for directory in DIRECTORIES {
         let directory = CPath::new(directory);
         match syscall(
@@ -268,8 +272,15 @@ fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
     let mut old = [0u8; LARGEST + 1];
     let length = saved_settings(&mut old);
     let mut new = [0u8; LARGEST];
-    let new_length = settings_file::with_value(&old[..length], key, value.as_bytes(), &mut new)
-        .map_err(|_| Errno::E2BIG)?;
+    let mut new_length = 0;
+    for (index, &(key, value)) in values.iter().enumerate() {
+        let from = match index {
+            0 => old[..length].to_vec(),
+            _ => new[..new_length].to_vec(),
+        };
+        new_length = settings_file::with_value(&from, key, value.as_bytes(), &mut new)
+            .map_err(|_| Errno::E2BIG)?;
+    }
     let process_id = syscall(number::GETPID, [0; 6])? as u32;
     remove_stale_temporary_files(process_id);
     let mut temporary = [0u8; TEMPORARY_PATH_CAPACITY];
@@ -399,7 +410,9 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         .and_then(|server| server.desktop_profile().ok())
         .map_or(saved, |profile| profile as usize);
     let area = server.and_then(|server| server.work_area().ok());
-    let saved_layout = settings_file::keyboard_layout(&file[..length]).unwrap_or(0);
+    let saved_layouts = settings_file::keyboard_layout_set(&file[..length]);
+    let saved_layout = settings_file::keyboard_layout(&file[..length])
+        .unwrap_or_else(|| saved_layouts.keeping(0));
     let keyboard = server.and_then(|server| server.keyboard().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
@@ -421,6 +434,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         now_s: wall_clock().0,
         hardware_clock: hardware_clock_s().is_some(),
         keyboard_layout: keyboard.map_or(saved_layout, |keyboard| keyboard.layout as usize),
+        keyboard_layouts: saved_layouts,
+        switch_key: settings_file::keyboard_switch_key(&file[..length]),
         keyboard: keyboard.is_none_or(|keyboard| keyboard.present),
         caps_lock: keyboard.is_some_and(|keyboard| keyboard.caps_lock),
         time_zone: settings_file::value(&file[..length], settings_file::TIME_ZONE)
@@ -466,12 +481,26 @@ fn save_time_zone(index: usize) -> Result<(), Errno> {
     save_through_a_temporary_file(settings_file::TIME_ZONE, name)
 }
 
-fn save_keyboard_layout(index: usize) -> Result<(), Errno> {
-    let name = settings_file::KEYBOARD_LAYOUTS[index].name;
-    save_through_a_temporary_file(settings_file::KEYBOARD_LAYOUT, name)
+fn save_keyboard(choice: KeyboardChoice) -> Result<(), Errno> {
+    let mut layouts = [0u8; settings_file::KEYBOARD_LAYOUT_SET_CAPACITY];
+    let in_force = settings_file::KEYBOARD_LAYOUTS
+        .get(choice.in_force)
+        .map_or("us", |layout| layout.name);
+    save_values_through_a_temporary_file(&[
+        (
+            settings_file::KEYBOARD_LAYOUT_SET,
+            choice.layouts.write(&mut layouts),
+        ),
+        (settings_file::KEYBOARD_LAYOUT, in_force),
+        (settings_file::KEYBOARD_SWITCH_KEY, choice.switch_key.name()),
+    ])
 }
 
-fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<(), Errno> {
+const KEYBOARD_LAYOUT_CONTROL: &str = "/proc/sys/eggos/keyboard_layout";
+const KEYBOARD_LAYOUTS_CONTROL: &str = "/proc/sys/eggos/keyboard_layouts";
+const KEYBOARD_SWITCH_KEY_CONTROL: &str = "/proc/sys/eggos/keyboard_switch_key";
+
+fn apply_keyboard(choice: KeyboardChoice, server: Option<&WindowServer>) -> Result<(), Errno> {
     let opened;
     let server = match server {
         Some(server) => Some(server),
@@ -480,10 +509,28 @@ fn apply_keyboard_layout(index: usize, server: Option<&WindowServer>) -> Result<
             opened.as_ref().ok()
         }
     };
-    match server {
-        Some(server) => server.set_keyboard_layout(index as u32),
-        None => Ok(()),
+    if let Some(server) = server {
+        let mut numbers = [0u8; 4];
+        for (place, number) in numbers.iter_mut().zip(choice.layouts.numbers()) {
+            *place = number as u8;
+        }
+        server.set_keyboard_layouts(
+            choice.layouts.len() as u32,
+            numbers,
+            choice.switch_key.number() as u32,
+        )?;
+        return server.set_keyboard_layout(choice.in_force as u32);
     }
+    let mut layouts = [0u8; settings_file::KEYBOARD_LAYOUT_SET_CAPACITY];
+    let in_force = settings_file::KEYBOARD_LAYOUTS
+        .get(choice.in_force)
+        .map_or("us", |layout| layout.name);
+    write_file(
+        KEYBOARD_LAYOUTS_CONTROL,
+        choice.layouts.write(&mut layouts).as_bytes(),
+    )?;
+    write_file(KEYBOARD_SWITCH_KEY_CONTROL, choice.switch_key.name().as_bytes())?;
+    write_file(KEYBOARD_LAYOUT_CONTROL, in_force.as_bytes())
 }
 
 fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> Result<(), Errno> {
@@ -507,15 +554,15 @@ fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> 
     }
 }
 
-fn choose_keyboard_layout(index: usize, server: Option<&WindowServer>) {
-    if let Err(error) = apply_keyboard_layout(index, server) {
+fn choose_keyboard(choice: KeyboardChoice, server: Option<&WindowServer>) {
+    if let Err(error) = apply_keyboard(choice, server) {
         say_error(&[
             settings_file::KEYBOARD_LAYOUT.as_bytes(),
             b": not applied: ",
             error.message(),
         ]);
     }
-    if let Err(error) = save_keyboard_layout(index) {
+    if let Err(error) = save_keyboard(choice) {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
 }
@@ -574,12 +621,12 @@ impl command::Machine for Machine {
         }
     }
 
-    fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
-        save_keyboard_layout(index).map_err(Errno::message)
+    fn save_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]> {
+        save_keyboard(choice).map_err(Errno::message)
     }
 
-    fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
-        apply_keyboard_layout(index, self.server.as_ref()).map_err(Errno::message)
+    fn apply_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]> {
+        apply_keyboard(choice, self.server.as_ref()).map_err(Errno::message)
     }
 
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
@@ -786,7 +833,8 @@ impl Application<CAPACITY> for Settings {
                 self.window.show_time(wall_clock().0);
             }
             Some(Request::SetKeyboardLayout(index)) => {
-                choose_keyboard_layout(index, self.server.as_ref());
+                let choice = KeyboardChoice::of(self.window.facts()).choosing(index);
+                choose_keyboard(choice, self.server.as_ref());
             }
             Some(Request::SetTimeZone(index)) => {
                 self.window.time_zone_saved(index, save_time_zone(index));

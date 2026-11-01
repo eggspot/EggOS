@@ -4,7 +4,10 @@
 
 use crate::facts::Facts;
 use core::fmt::Write;
-use eggos_settings_file::{InputPreferences, KEYBOARD_LAYOUTS, KeyAccessibility, PROFILES};
+use eggos_settings_file::{
+    InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS, KeyAccessibility,
+    KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS, PROFILES, SwitchKey,
+};
 use eggos_toolkit::text::Text;
 
 /// A value as it is printed and shown.
@@ -18,6 +21,8 @@ pub enum Key {
     DisplayResolution,
     DisplayPointer,
     KeyboardLayout,
+    KeyboardLayouts,
+    KeyboardSwitchKey,
     TimeZone,
     MouseButtons,
     MouseScrolling,
@@ -44,6 +49,8 @@ pub enum Refusal {
     ReadOnly,
     /// The value is not one the setting takes.
     InvalidValue,
+    /// The value is not a set of layouts `keyboard.layouts` takes, for this reason (D220).
+    InvalidLayouts(LayoutSetRefusal),
 }
 
 /// What setting a value changes.
@@ -53,6 +60,10 @@ pub enum Change {
     Profile(usize),
     /// The keyboard layout: its index in the settings file's `KEYBOARD_LAYOUTS` (D185).
     KeyboardLayout(usize),
+    /// The layouts the switch key cycles through (D220).
+    KeyboardLayouts(KeyboardLayoutSet),
+    /// The key that switches layouts (D220).
+    KeyboardSwitchKey(SwitchKey),
     /// The time zone: its index in `eggos_calendar::zone::ZONES` (D194).
     TimeZone(usize),
     /// The display's scale, 1 or 2, from the next boot (D195).
@@ -61,6 +72,65 @@ pub enum Change {
     Input(InputChange),
     /// Sticky keys or slow keys, used from the next key (D205).
     Keys(KeysChange),
+}
+
+/// What the keyboard uses, all of it (D220): the layouts the switch key cycles through, the
+/// one in force (an index of the settings file's `KEYBOARD_LAYOUTS`, always in the set) and
+/// the switch key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardChoice {
+    pub layouts: KeyboardLayoutSet,
+    pub in_force: usize,
+    pub switch_key: SwitchKey,
+}
+
+impl KeyboardChoice {
+    /// What the keyboard uses as `facts` tell it.
+    pub fn of(facts: &Facts) -> Self {
+        Self {
+            layouts: facts.keyboard_layouts,
+            in_force: facts.keyboard_layout,
+            switch_key: facts.switch_key,
+        }
+    }
+
+    /// With layout `number` in force: the set keeps it, gains it while it has room, or has it
+    /// take the place of the layout that was in force.
+    pub fn choosing(self, number: usize) -> Self {
+        Self {
+            layouts: self.layouts.with_chosen(number, self.in_force),
+            in_force: number,
+            ..self
+        }
+    }
+
+    /// With `layouts` the set: the layout in force stays when listed, else the first is.
+    pub fn listing(self, layouts: KeyboardLayoutSet) -> Self {
+        Self {
+            layouts,
+            in_force: layouts.keeping(self.in_force),
+            ..self
+        }
+    }
+
+    /// With `switch_key` the switch key.
+    pub fn switching_with(self, switch_key: SwitchKey) -> Self {
+        Self { switch_key, ..self }
+    }
+}
+
+impl Change {
+    /// What the keyboard uses after this change, from what it uses as `facts` tell it; `None`
+    /// for a change of something else.
+    pub fn keyboard_choice(self, facts: &Facts) -> Option<KeyboardChoice> {
+        let now = KeyboardChoice::of(facts);
+        match self {
+            Self::KeyboardLayout(number) => Some(now.choosing(number)),
+            Self::KeyboardLayouts(layouts) => Some(now.listing(layouts)),
+            Self::KeyboardSwitchKey(switch_key) => Some(now.switching_with(switch_key)),
+            _ => None,
+        }
+    }
 }
 
 /// One key accessibility setting's new value (D205).
@@ -208,12 +278,14 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::ShellProfile,
         Self::DisplayScale,
         Self::DisplayResolution,
         Self::DisplayPointer,
         Self::KeyboardLayout,
+        Self::KeyboardLayouts,
+        Self::KeyboardSwitchKey,
         Self::TimeZone,
         Self::MouseButtons,
         Self::MouseScrolling,
@@ -239,6 +311,8 @@ impl Key {
             Self::DisplayResolution => "display.resolution",
             Self::DisplayPointer => "display.pointer",
             Self::KeyboardLayout => eggos_settings_file::KEYBOARD_LAYOUT,
+            Self::KeyboardLayouts => eggos_settings_file::KEYBOARD_LAYOUT_SET,
+            Self::KeyboardSwitchKey => eggos_settings_file::KEYBOARD_SWITCH_KEY,
             Self::TimeZone => eggos_settings_file::TIME_ZONE,
             Self::MouseButtons => eggos_settings_file::MOUSE_BUTTONS,
             Self::MouseScrolling => eggos_settings_file::MOUSE_SCROLLING,
@@ -269,6 +343,8 @@ impl Key {
             Self::ShellProfile
                 | Self::DisplayScale
                 | Self::KeyboardLayout
+                | Self::KeyboardLayouts
+                | Self::KeyboardSwitchKey
                 | Self::TimeZone
                 | Self::MouseButtons
                 | Self::MouseScrolling
@@ -285,17 +361,11 @@ impl Key {
     pub fn choices(self) -> Text<256> {
         let mut choices = Text::<256>::new();
         match self {
-            Self::KeyboardLayout => {
-                let last = KEYBOARD_LAYOUTS.len() - 1;
-                for (index, layout) in KEYBOARD_LAYOUTS.iter().enumerate() {
-                    let separator = match index {
-                        0 => "",
-                        _ if index == last => " or ",
-                        _ => ", ",
-                    };
-                    let _ = write!(choices, "{separator}{}", layout.name);
-                }
+            Self::KeyboardLayout | Self::KeyboardLayouts => {
+                let names = KEYBOARD_LAYOUTS.map(|layout| layout.name);
+                write_choices(&mut choices, &names);
             }
+            Self::KeyboardSwitchKey => write_choices(&mut choices, &SwitchKey::NAMES),
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
             }
@@ -343,6 +413,11 @@ impl Key {
             Self::KeyboardLayout => value.write_str(
                 KEYBOARD_LAYOUTS[facts.keyboard_layout.min(KEYBOARD_LAYOUTS.len() - 1)].name,
             ),
+            Self::KeyboardLayouts => {
+                let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
+                value.write_str(facts.keyboard_layouts.write(&mut text))
+            }
+            Self::KeyboardSwitchKey => value.write_str(facts.switch_key.name()),
             Self::TimeZone => value.write_str(
                 eggos_calendar::zone::ZONES
                     .get(facts.time_zone)
@@ -376,6 +451,12 @@ impl Key {
                 .ok_or(Refusal::InvalidValue),
             Self::KeyboardLayout => eggos_settings_file::keyboard_layout_named(value.as_bytes())
                 .map(Change::KeyboardLayout)
+                .ok_or(Refusal::InvalidValue),
+            Self::KeyboardLayouts => KeyboardLayoutSet::parse(value.as_bytes())
+                .map(Change::KeyboardLayouts)
+                .map_err(Refusal::InvalidLayouts),
+            Self::KeyboardSwitchKey => SwitchKey::named(value.as_bytes())
+                .map(Change::KeyboardSwitchKey)
                 .ok_or(Refusal::InvalidValue),
             Self::TimeZone => crate::facts::zone_index(value)
                 .map(Change::TimeZone)
@@ -411,6 +492,40 @@ impl Key {
     }
 }
 
+fn write_choices(choices: &mut Text<256>, names: &[&str]) {
+    let last = names.len().saturating_sub(1);
+    for (index, name) in names.iter().enumerate() {
+        let separator = match index {
+            0 => "",
+            _ if index == last => " or ",
+            _ => ", ",
+        };
+        let _ = write!(choices, "{separator}{name}");
+    }
+}
+
+/// Why `value` was refused for `keyboard.layouts`, as `settings set` says it: the value or
+/// the unknown name in it, and the reason (D220).
+pub fn layouts_refusal<'a>(value: &'a str, refusal: LayoutSetRefusal) -> (&'a str, Text<256>) {
+    let mut reason = Text::<256>::new();
+    let quoted = match refusal {
+        LayoutSetRefusal::TooMany => {
+            let _ = write!(reason, "at most {MAX_KEYBOARD_LAYOUTS} layouts");
+            value
+        }
+        LayoutSetRefusal::Repeated(number) => {
+            let name = KEYBOARD_LAYOUTS.get(number).map_or("?", |layout| layout.name);
+            let _ = write!(reason, "'{name}' is listed twice");
+            value
+        }
+        LayoutSetRefusal::Unknown { start, end } => {
+            reason = Key::KeyboardLayouts.choices();
+            value.get(start..end).unwrap_or(value)
+        }
+    };
+    (quoted, reason)
+}
+
 /// What `settings set name value` changes.
 pub fn change(name: &str, value: &str) -> Result<(Key, Change), Refusal> {
     let key = Key::named(name).ok_or(Refusal::NoSuchSetting)?;
@@ -436,6 +551,8 @@ mod tests {
                 ("display.resolution", "1280x800".to_owned()),
                 ("display.pointer", "software".to_owned()),
                 ("keyboard.layout", "us".to_owned()),
+                ("keyboard.layouts", "us".to_owned()),
+                ("keyboard.switch_key", "profile".to_owned()),
                 ("time.zone", "UTC".to_owned()),
                 ("mouse.buttons", "right".to_owned()),
                 ("mouse.scrolling", "traditional".to_owned()),
@@ -478,20 +595,20 @@ mod tests {
         assert_eq!(change("display.scale", "3"), Err(Refusal::InvalidValue));
         assert_eq!(
             change("keyboard.layout", "de"),
-            Ok((Key::KeyboardLayout, Change::KeyboardLayout(8)))
+            Ok((Key::KeyboardLayout, Change::KeyboardLayout(11)))
         );
         assert_eq!(change("keyboard.layout", "DE"), Err(Refusal::InvalidValue));
         assert!(
             Key::KeyboardLayout
                 .choices()
                 .as_str()
-                .starts_with("us, us-intl, gb, us-dvorak")
+                .starts_with("us, us-intl, us-mac, gb, us-dvorak")
         );
         assert!(
             Key::KeyboardLayout
                 .choices()
                 .as_str()
-                .ends_with(", es or se")
+                .ends_with(", es, latam or se")
         );
         assert_eq!(Key::ShellProfile.choices().as_str(), PROFILE_CHOICES);
         assert_eq!(change("nope", "x"), Err(Refusal::NoSuchSetting));
@@ -558,5 +675,65 @@ mod tests {
         assert_eq!((key, value.as_str()), ("mouse.scrolling", "traditional"));
         let (key, value) = InputChange::RepeatDelayMs(600).saved();
         assert_eq!((key, value.as_str()), ("keyboard.repeat_delay_ms", "600"));
+    }
+
+    #[test]
+    fn the_layouts_and_the_switch_key_take_only_their_values() {
+        let us_de = KeyboardLayoutSet::parse(b"us,de").unwrap();
+        assert_eq!(
+            change("keyboard.layouts", "us,de"),
+            Ok((Key::KeyboardLayouts, Change::KeyboardLayouts(us_de)))
+        );
+        for (value, quoted, reason) in [
+            ("us,de,fr,es,it", "us,de,fr,es,it", "at most 4 layouts".to_owned()),
+            ("us,us", "us,us", "'us' is listed twice".to_owned()),
+            (
+                "us,xx",
+                "xx",
+                Key::KeyboardLayout.choices().as_str().to_owned(),
+            ),
+        ] {
+            let Err(Refusal::InvalidLayouts(refusal)) = change("keyboard.layouts", value) else {
+                panic!("{value}");
+            };
+            let (shown, why) = layouts_refusal(value, refusal);
+            assert_eq!((shown, why.as_str()), (quoted, reason.as_str()));
+        }
+        assert_eq!(
+            change("keyboard.switch_key", "alt+shift"),
+            Ok((
+                Key::KeyboardSwitchKey,
+                Change::KeyboardSwitchKey(SwitchKey::AltShift)
+            ))
+        );
+        assert_eq!(change("keyboard.switch_key", "x"), Err(Refusal::InvalidValue));
+        assert_eq!(
+            Key::KeyboardSwitchKey.choices().as_str(),
+            "profile, super+space, ctrl+space, alt+shift, ctrl+shift or none"
+        );
+    }
+
+    #[test]
+    fn a_layout_set_from_the_cli_keeps_the_layout_in_force_or_makes_the_first_one() {
+        let named = |name: &[u8]| eggos_settings_file::keyboard_layout_named(name).unwrap();
+        let mut facts = Facts::example();
+        facts.keyboard_layouts = KeyboardLayoutSet::parse(b"us,de").unwrap();
+        let mut text = [0u8; KEYBOARD_LAYOUT_SET_CAPACITY];
+        let chosen = Change::KeyboardLayout(named(b"fr"))
+            .keyboard_choice(&facts)
+            .unwrap();
+        assert_eq!(chosen.layouts.write(&mut text), "us,de,fr");
+        assert_eq!(chosen.in_force, named(b"fr"));
+        facts.keyboard_layouts = KeyboardLayoutSet::parse(b"us,de,fr,es").unwrap();
+        facts.keyboard_layout = named(b"de");
+        let chosen = Change::KeyboardLayout(named(b"it"))
+            .keyboard_choice(&facts)
+            .unwrap();
+        assert_eq!(chosen.layouts.write(&mut text), "us,it,fr,es");
+        let listed = Change::KeyboardLayouts(KeyboardLayoutSet::parse(b"gb,se").unwrap())
+            .keyboard_choice(&facts)
+            .unwrap();
+        assert_eq!(listed.in_force, named(b"gb"));
+        assert_eq!(Change::TimeZone(0).keyboard_choice(&facts), None);
     }
 }

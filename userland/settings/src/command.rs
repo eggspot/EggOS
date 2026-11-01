@@ -5,7 +5,7 @@
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
-use crate::keys::{self, Change, InputChange, Key, KeysChange, Refusal};
+use crate::keys::{self, Change, InputChange, Key, KeyboardChoice, KeysChange, Refusal};
 use core::fmt::Write;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
@@ -39,11 +39,12 @@ pub trait Machine {
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
-    /// Saves the keyboard layout `index` (of the settings file's `KEYBOARD_LAYOUTS`) to the
-    /// settings file; the error's text on failure.
-    fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]>;
-    /// Applies the keyboard layout `index` now; the error's text on failure.
-    fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Saves what the keyboard uses (`keyboard.layouts`, `keyboard.layout` and
+    /// `keyboard.switch_key`) to the settings file; the error's text on failure.
+    fn save_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]>;
+    /// Has the keyboard use `choice` now, with or without a desktop (D220); the error's text
+    /// on failure.
+    fn apply_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]>;
     /// Saves the time zone `index` (of `eggos_calendar::zone::ZONES`) to the settings file;
     /// programs read it each time they show a time.
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]>;
@@ -241,14 +242,11 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         }
         Err(Refusal::InvalidValue) => {
             let choices = Key::named(name).map_or_else(Text::new, Key::choices);
-            let mut message = Message::new();
-            let _ = write!(
-                message,
-                "{name}: invalid value '{value}' ({})",
-                choices.as_str()
-            );
-            report(machine, false, &errors::INVALID_VALUE, message.as_str());
-            return INVALID_VALUE_STATUS;
+            return invalid_value(machine, name, value, choices.as_str());
+        }
+        Err(Refusal::InvalidLayouts(refusal)) => {
+            let (quoted, reason) = keys::layouts_refusal(value, refusal);
+            return invalid_value(machine, name, quoted, reason.as_str());
         }
     };
     if dry_run {
@@ -262,9 +260,12 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         machine.write_output(message.as_str().as_bytes());
         return 0;
     }
+    let keyboard = change.keyboard_choice(&machine.facts());
     let saved = match change {
         Change::Profile(index) => machine.save_profile(index),
-        Change::KeyboardLayout(index) => machine.save_keyboard_layout(index),
+        Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
+            keyboard.map_or(Ok(()), |choice| machine.save_keyboard(choice))
+        }
         Change::TimeZone(index) => machine.save_time_zone(index),
         Change::DisplayScale(scale) => machine.save_display_scale(scale),
         Change::Input(input) => machine.save_input(input),
@@ -277,7 +278,9 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
     }
     let applied = match change {
         Change::Profile(index) => machine.apply_profile(index),
-        Change::KeyboardLayout(index) => machine.apply_keyboard_layout(index),
+        Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
+            keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))
+        }
         Change::TimeZone(_) | Change::DisplayScale(_) => Ok(()),
         Change::Input(input) => {
             let preferences = input.applied_to(machine.facts().input);
@@ -297,6 +300,13 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         true => 0,
         false => FAILURE,
     }
+}
+
+fn invalid_value(machine: &mut impl Machine, name: &str, value: &str, choices: &str) -> i32 {
+    let mut message = Message::new();
+    let _ = write!(message, "{name}: invalid value '{value}' ({choices})");
+    report(machine, false, &errors::INVALID_VALUE, message.as_str());
+    INVALID_VALUE_STATUS
 }
 
 fn text_of(bytes: &[u8]) -> &str {
@@ -338,8 +348,8 @@ mod tests {
         errors: Vec<u8>,
         saved: Option<usize>,
         applied: Option<usize>,
-        layout_saved: Option<usize>,
-        layout_applied: Option<usize>,
+        layout_saved: Option<KeyboardChoice>,
+        layout_applied: Option<KeyboardChoice>,
         zone_saved: Option<usize>,
         scale_saved: Option<u32>,
         input_saved: Option<InputChange>,
@@ -370,8 +380,8 @@ mod tests {
             Ok(())
         }
 
-        fn save_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
-            self.layout_saved = Some(index);
+        fn save_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]> {
+            self.layout_saved = Some(choice);
             Ok(())
         }
 
@@ -404,11 +414,11 @@ mod tests {
             Ok(())
         }
 
-        fn apply_keyboard_layout(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        fn apply_keyboard(&mut self, choice: KeyboardChoice) -> Result<(), &'static [u8]> {
             if self.apply_fails {
                 return Err(b"No such device");
             }
-            self.layout_applied = Some(index);
+            self.layout_applied = Some(choice);
             Ok(())
         }
 
@@ -504,14 +514,22 @@ mod tests {
             settings(&mut fake, &["set", "keyboard.layout", "de"]),
             (0, String::new(), String::new())
         );
-        assert_eq!((fake.layout_saved, fake.layout_applied), (Some(8), Some(8)));
+        let german = eggos_settings_file::keyboard_layout_named(b"de").unwrap();
+        let in_force = |choice: Option<KeyboardChoice>| choice.map(|choice| choice.in_force);
+        assert_eq!(
+            (in_force(fake.layout_saved), in_force(fake.layout_applied)),
+            (Some(german), Some(german))
+        );
+        let mut text = [0u8; eggos_settings_file::KEYBOARD_LAYOUT_SET_CAPACITY];
+        assert_eq!(fake.layout_saved.unwrap().layouts.write(&mut text), "us,de");
         assert_eq!(fake.saved, None);
         let (status, _, errors) = settings(&mut fake, &["set", "keyboard.layout", "xx"]);
         assert_eq!(status, 2);
         assert_eq!(
             errors,
-            "settings: keyboard.layout: invalid value 'xx' (us, us-intl, gb, us-dvorak, \
-             us-colemak, dk, fi, fr, de, it, no, br, es or se)\n"
+            "settings: keyboard.layout: invalid value 'xx' (us, us-intl, us-mac, gb, \
+             us-dvorak, us-colemak, dk, fi, fr, be, ca, de, ch, it, no, br, pt, es, latam \
+             or se)\n"
         );
         let mut fake = Fake {
             apply_fails: true,
@@ -519,7 +537,10 @@ mod tests {
         };
         let (status, _, errors) = settings(&mut fake, &["set", "keyboard.layout", "fr"]);
         assert_eq!(status, 1);
-        assert_eq!(fake.layout_saved, Some(7));
+        assert_eq!(
+            in_force(fake.layout_saved),
+            eggos_settings_file::keyboard_layout_named(b"fr")
+        );
         assert_eq!(
             errors,
             "settings: keyboard.layout: not applied: No such device\n"
@@ -640,5 +661,60 @@ mod tests {
         assert_eq!(status, INVALID_VALUE_STATUS);
         assert!(errors.contains("(1 to 10)"), "{errors}");
         assert_eq!(fake.input_applied, None);
+    }
+
+    #[test]
+    fn the_layouts_and_the_switch_key_are_saved_and_applied_and_refused_with_their_reasons() {
+        let mut fake = Fake::default();
+        assert_eq!(settings(&mut fake, &["set", "keyboard.layouts", "gb,se"]).0, 0);
+        let choice = fake.layout_applied.unwrap();
+        assert_eq!(
+            Some(choice.in_force),
+            eggos_settings_file::keyboard_layout_named(b"gb")
+        );
+        assert_eq!(fake.layout_saved, Some(choice));
+        for (value, line) in [
+            (
+                "us,de,fr,es,it",
+                "settings: keyboard.layouts: invalid value 'us,de,fr,es,it' (at most 4 layouts)\n",
+            ),
+            (
+                "us,us",
+                "settings: keyboard.layouts: invalid value 'us,us' ('us' is listed twice)\n",
+            ),
+        ] {
+            assert_eq!(
+                settings(&mut Fake::default(), &["set", "keyboard.layouts", value]),
+                (INVALID_VALUE_STATUS, String::new(), line.to_owned())
+            );
+        }
+        let (status, _, errors) =
+            settings(&mut Fake::default(), &["set", "keyboard.layouts", "us,xx"]);
+        assert_eq!(status, INVALID_VALUE_STATUS);
+        assert!(
+            errors.starts_with("settings: keyboard.layouts: invalid value 'xx' (us, us-intl, "),
+            "{errors}"
+        );
+        let mut fake = Fake::default();
+        assert_eq!(
+            settings(&mut fake, &["set", "keyboard.switch_key", "alt+shift"]).0,
+            0
+        );
+        assert_eq!(
+            fake.layout_applied.map(|choice| choice.switch_key),
+            Some(eggos_settings_file::SwitchKey::AltShift)
+        );
+        assert_eq!(
+            settings(&mut Fake::default(), &["set", "keyboard.switch_key", "x"]),
+            (
+                INVALID_VALUE_STATUS,
+                String::new(),
+                "settings: keyboard.switch_key: invalid value 'x' (profile, super+space, \
+                 ctrl+space, alt+shift, ctrl+shift or none)\n"
+                    .to_owned()
+            )
+        );
+        let (_, output, _) = settings(&mut Fake::default(), &["get", "keyboard.switch_key"]);
+        assert_eq!(output, "profile\n");
     }
 }
