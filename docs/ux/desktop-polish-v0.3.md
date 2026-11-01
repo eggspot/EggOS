@@ -219,6 +219,10 @@ bar moves, the controls work, close goes the 3.6 way.
 320x120, `dock.bg`, popup chrome, centred on the window's visible rectangle and clamped into
 the work area. Line 1 at (12, 12) in `text`: the title cut to 19 cells by `cut_title`, then
 ` is not responding`. Line 2 at (12, 36) in `text.dim`: `Ending it loses its unsaved work.`
+When the client is eggway (one `/dev/window` connection for every Wayland app), line 3 at
+(12, 60) in `text.dim`, the same step: `It also ends every Linux window app.` (36 cells, 288 px,
+ending 4 px above the buttons; added by the build loop, D221's research pass, in the dialog's
+own words and tokens).
 Two 96x28 buttons at y 80: `Wait` at x 212 (focused, Enter and Esc), `End app` at x 108, so
 a hasty Enter waits. `Wait`, Esc or a click outside closes it and leaves the window alone;
 `End app` kills the client's process (`Action::EndClient(client)`) and its windows go in the
@@ -230,7 +234,9 @@ suffix exactly as the title bar shows it, and `--json` adds `"responding": true|
 every row. `wm show` on a busy window does not wait on the client: it answers at once with
 the root alone (`role` `window`, the name, `flags` `["not-responding"]`). `wm act`, `wm type`
 and `wm menu` on a busy window answer the error `not_responding` (kind `busy`, exit 75, then
-`wm list`) at once. `wm close` stays the way to end it from the CLI: the request goes unread
+`wm list`) at once, and so does every other input an agent would put in its app's queue
+(`wm click`, `wm drag`, `wm press`, `wm scroll`; D221's research pass): an agent cannot
+see what it would act on. Moving, sizing and closing it are the server's and stay allowed. `wm close` stays the way to end it from the CLI: the request goes unread
 and the window is destroyed 2 s later, as today. The MCP tools mirror all of it.
 
 ### 4.3 Windows hanging off the left edge
@@ -309,7 +315,9 @@ the placeholder when the query is empty.
    by the client closes the popup by itself.
 9. `wm list` text: `... 67 Editor (not responding)`; `--json`: `"responding":false`; `wm show`
    on it answers within one tick with one element flagged `not-responding`; `wm act`,
-   `wm type`, `wm menu` answer `not_responding`, exit 75.
+   `wm type`, `wm menu`, `wm click`, `wm drag`, `wm press` and `wm scroll` answer
+   `not_responding`, exit 75; `wm move` still moves it. The End app dialog of eggway's window
+   has line 3.
 10. Dragging a 658-wide window: Windows profile, left limit x = work.x − 542, right limit
     x = work.right − 48; macOS profile, left limit x = work.x − 610, right limit
     x = work.right − 116. Every profile: y ≥ work.y, y ≤ work.bottom − 29. A 100-wide window
