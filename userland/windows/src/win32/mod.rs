@@ -45,6 +45,7 @@ mod gdi;
 mod gdiplus;
 mod gui;
 mod heap;
+mod hover;
 mod icon;
 mod keyboard;
 mod memory;
@@ -275,6 +276,7 @@ const USER32: &[&[Export]] = &[
     menu_items::EXPORTS,
     scroll_bar::EXPORTS,
     pointer::EXPORTS,
+    hover::EXPORTS,
 ];
 
 const COMDLG32: &[&[Export]] = &[file_picker::EXPORTS];

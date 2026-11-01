@@ -437,6 +437,7 @@ fn paint_control(window: usize) {
         let rect = entry.client();
         let palette = palette_of(gui, window);
         let focused = has_focus(gui, window);
+        let hovered = gui.hover.under() == window;
         let text = window_text::of(gui, window);
         match kind {
             ControlKind::Button => {
@@ -450,6 +451,7 @@ fn paint_control(window: usize) {
                     focused,
                     default: is_default_button(gui, window, model.kind),
                     enabled: entry.enabled(),
+                    hovered,
                 };
                 button::paint(surface, rect, text, look, palette);
             }
@@ -459,6 +461,7 @@ fn paint_control(window: usize) {
                 let look = EditLook {
                     focused,
                     enabled: entry.enabled(),
+                    hovered,
                 };
                 edit::paint(surface, rect, model, look, palette);
             }
@@ -477,6 +480,7 @@ fn paint_control(window: usize) {
                 let look = BarLook {
                     enabled: entry.enabled(),
                     focused,
+                    hovered,
                 };
                 bar_model::paint(surface, rect, model, look, palette);
             }
@@ -1029,6 +1033,7 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
         Button(ButtonOutcome),
         Edit(EditOutcome),
         Scroll(Option<bar_model::Scroll>),
+        Hover(bool),
     }
     let effect = with_state(window, |entry, state| match state {
         State::Button(button) => {
@@ -1041,6 +1046,10 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
             let (offset, length) = along(bar, entry, (x, y));
             Effect::Scroll(bar.pointer_moved(offset, length))
         }
+        State::ScrollBar(bar) => {
+            let (offset, length) = along(bar, entry, (x, y));
+            Effect::Hover(bar.hover(Some(offset), length))
+        }
         _ => Effect::Button(ButtonOutcome::Unchanged),
     });
     match effect {
@@ -1052,7 +1061,8 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
             }
             super::scroll_bar::send_scroll(window, scroll);
         }
-        None => {}
+        Some(Effect::Hover(true)) => invalidate(window),
+        Some(Effect::Hover(false)) | None => {}
     }
 }
 

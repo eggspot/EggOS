@@ -30,6 +30,8 @@ const CLIENT: u16 = 0;
 const ROLE_NORMAL: u32 = 0;
 const KEY_PAUSE: Duration = Duration::from_millis(100);
 const BUTTON_FACE: u32 = 15;
+const ARROW: u32 = 0;
+const I_BEAM: u32 = 1;
 const VK_LEFT: u32 = 0x25;
 const SHIFT: (&str, u16) = ("shift", 42);
 const LEFT: (&str, u16) = ("left", 105);
@@ -54,7 +56,8 @@ enum Focus {
 }
 
 /// The window's state at one moment: the three edits' models, the selected radio, the bar's
-/// position and the focus.
+/// position, the focus and whether the pointer rests on the bar's right arrow rather than the
+/// word edit (each draws hovered, D227).
 #[derive(Clone)]
 struct Frame {
     word: Box<Edit>,
@@ -63,6 +66,7 @@ struct Frame {
     large: bool,
     position: i32,
     focus: Focus,
+    over_bar: bool,
 }
 
 fn units(text: &str) -> Vec<u16> {
@@ -90,6 +94,7 @@ impl Frame {
             large: false,
             position: 0,
             focus: Focus::Word,
+            over_bar: false,
         }
     }
 
@@ -109,11 +114,17 @@ fn at(surface: &mut Surface<'_>, rect: Rect, paint: impl FnOnce(&mut Surface<'_>
     surface.set_clip(saved);
 }
 
-fn paint_edit(surface: &mut Surface<'_>, control: &Control, model: &Edit, focused: bool) {
+fn paint_edit(
+    surface: &mut Surface<'_>,
+    control: &Control,
+    model: &Edit,
+    (focused, hovered): (bool, bool),
+) {
     at(surface, rect_of(control), |surface, local| {
         let look = EditLook {
             focused,
             enabled: true,
+            hovered,
         };
         edit::paint(surface, local, model, look, &LIGHT)
     });
@@ -134,6 +145,7 @@ fn paint_button(
             focused,
             default: false,
             enabled: true,
+            hovered: false,
         };
         button::paint(surface, local, &units(control.text), look, &LIGHT)
     });
@@ -164,19 +176,19 @@ fn window_content(frame: &Frame) -> WindowContent {
         &mut surface,
         &scene::WORD,
         &frame.word,
-        frame.focus == Focus::Word,
+        (frame.focus == Focus::Word, !frame.over_bar),
     );
     paint_edit(
         &mut surface,
         &scene::PASSWORD,
         &frame.password,
-        frame.focus == Focus::Password,
+        (frame.focus == Focus::Password, false),
     );
     paint_edit(
         &mut surface,
         &scene::NUMBER,
         &frame.number,
-        frame.focus == Focus::Number,
+        (frame.focus == Focus::Number, false),
     );
     paint_button(
         &mut surface,
@@ -199,11 +211,14 @@ fn window_content(frame: &Frame) -> WindowContent {
         frame.large,
         frame.focus == Focus::Large,
     );
-    let bar = bar_at(frame.position);
+    let mut bar = bar_at(frame.position);
+    let (bar_x, _, bar_width, _) = scene::BAR.rect;
+    bar.hover(Some(scene::BAR_RIGHT_ARROW.0 - bar_x), bar_width);
     at(&mut surface, rect_of(&scene::BAR), |surface, local| {
         let look = BarLook {
             enabled: true,
             focused: frame.focus == Focus::Bar,
+            hovered: frame.over_bar,
         };
         scroll_bar::paint(surface, local, &bar, look, &LIGHT)
     });
@@ -300,8 +315,15 @@ impl Steps<'_> {
         Ok(())
     }
 
+    fn pointer_shape(&mut self, shape: u32) -> Result<(), String> {
+        self.desktop
+            .set_pointer(CLIENT, u32::from(self.window), shape, &mut Damage::new())
+            .map_err(|error| self.refused("a pointer shape", error))
+    }
+
     fn run(&mut self) -> Result<(), String> {
         self.click(scene::WORD_END)?;
+        self.pointer_shape(I_BEAM)?;
         self.check(
             "win-controls2's window, its word edit clicked at the end",
             FIRST_FRAME_TIMEOUT,
@@ -350,6 +372,8 @@ impl Steps<'_> {
         )?;
 
         self.click(scene::BAR_RIGHT_ARROW)?;
+        self.pointer_shape(ARROW)?;
+        self.frame.over_bar = true;
         self.frame.position = 1;
         self.frame.focus = Focus::Bar;
         self.check(
@@ -428,7 +452,13 @@ mod tests {
         frame.large = true;
         frame.focus = Focus::Bar;
         frame.position = 1;
+        frame.over_bar = true;
         let (_, moved) = pixels_of(&frame);
+        assert_eq!(at(&moved, 383, 121), LIGHT.scroll_arrow_hover_fill);
+        frame.focus = Focus::Number;
+        frame.over_bar = false;
+        let (_, typed) = pixels_of(&frame);
+        assert_eq!(at(&typed, 16, 16), LIGHT.field_hover_border);
         assert_eq!(at(&moved, 249, 48), LIGHT.box_fill);
         assert_eq!(at(&moved, 249, 80), LIGHT.box_mark);
         assert_ne!(pixels, moved);

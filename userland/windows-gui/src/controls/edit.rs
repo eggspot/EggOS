@@ -368,6 +368,7 @@ pub fn visible_cells(width: i32) -> usize {
 pub struct EditLook {
     pub focused: bool,
     pub enabled: bool,
+    pub hovered: bool,
 }
 
 /// Paints `edit` over the whole of `rect`.
@@ -390,6 +391,7 @@ pub fn paint(
             palette.text,
         ),
         () if look.focused => (palette.field_fill, palette.field_focus_border, palette.text),
+        () if look.hovered => (palette.field_fill, palette.field_hover_border, palette.text),
         () => (palette.field_fill, palette.field_border, palette.text),
     };
     let saved = surface.clip();
@@ -500,6 +502,7 @@ mod tests {
         let look = EditLook {
             focused: true,
             enabled: true,
+            hovered: false,
         };
         paint(&mut surface, Rect::new(0, 0, 200, 24), &edit, look, &LIGHT);
         assert_eq!(surface.get(0, 0), Some(0x0000_78d7));
@@ -596,6 +599,7 @@ mod tests {
         let look = EditLook {
             focused: false,
             enabled: true,
+            hovered: false,
         };
         paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, look, &LIGHT);
         let mut star = vec![0u32; 8 * 16];
@@ -633,6 +637,7 @@ mod tests {
         let focused = EditLook {
             focused: true,
             enabled: true,
+            hovered: false,
         };
         paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, focused, &LIGHT);
         assert_eq!(surface.get(4, 4), Some(LIGHT.highlight));
@@ -643,5 +648,25 @@ mod tests {
         };
         paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, unfocused, &LIGHT);
         assert_eq!(surface.get(4, 4), Some(LIGHT.field_fill));
+    }
+
+    #[test]
+    fn a_hovered_edit_darkens_its_border_unless_it_has_the_focus() {
+        let edit = Edit::new();
+        let mut pixels = vec![0u32; 100 * 24];
+        let mut surface = Surface::new(&mut pixels, 100, 24).unwrap();
+        let hovered = EditLook {
+            focused: false,
+            enabled: true,
+            hovered: true,
+        };
+        paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, hovered, &LIGHT);
+        assert_eq!(surface.get(0, 0), Some(LIGHT.field_hover_border));
+        let focused = EditLook {
+            focused: true,
+            ..hovered
+        };
+        paint(&mut surface, Rect::new(0, 0, 100, 24), &edit, focused, &LIGHT);
+        assert_eq!(surface.get(0, 0), Some(LIGHT.field_focus_border));
     }
 }

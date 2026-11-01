@@ -32,6 +32,8 @@ const ROLE_NORMAL: u32 = 0;
 const ROLE_DIALOG: u32 = 1;
 const KEY_PAUSE: Duration = Duration::from_millis(100);
 const BUTTON_FACE: u32 = 15;
+const ARROW: u32 = 0;
+const I_BEAM: u32 = 1;
 const ENTER: (&str, u16) = ("ret", 28);
 const LETTERS: [(char, &str, u16); 5] = [
     ('e', "e", 18),
@@ -86,12 +88,21 @@ fn at(surface: &mut Surface<'_>, rect: Rect, paint: impl FnOnce(&mut Surface<'_>
     surface.set_clip(saved);
 }
 
+/// The control under the pointer, which draws hovered (D227).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Hovered {
+    Nothing,
+    Name,
+    Add,
+    UpperCase,
+}
+
 fn push_button(
     surface: &mut Surface<'_>,
     rect: Rect,
     text: &str,
     kind: ButtonKind,
-    focused: bool,
+    (focused, hovered): (bool, bool),
     palette: &Palette,
 ) {
     let look = ButtonLook {
@@ -101,6 +112,7 @@ fn push_button(
         focused,
         default: focused || kind == ButtonKind::DefaultPush,
         enabled: true,
+        hovered,
     };
     at(surface, rect, |surface, local| {
         button::paint(surface, local, &units(text), look, palette)
@@ -127,7 +139,7 @@ fn as_labels(labels: &[(Vec<u16>, bool)]) -> Vec<MenuLabel<'_>> {
 }
 
 /// The main window's content at `frame`.
-pub(super) fn window_content(frame: &Frame) -> WindowContent {
+pub(super) fn window_content(frame: &Frame, hovered: Hovered) -> WindowContent {
     let (width, height) = (scene::CONTENT.0 as u32, scene::CONTENT.1 as u32);
     let face = colour::system_colour(BUTTON_FACE).expect("COLOR_BTNFACE");
     let mut pixels = vec![face; (width * height) as usize];
@@ -168,6 +180,7 @@ pub(super) fn window_content(frame: &Frame) -> WindowContent {
         let look = EditLook {
             focused: frame.focus == Focus::Name,
             enabled: true,
+            hovered: hovered == Hovered::Name,
         };
         edit::paint(surface, local, &name, look, &LIGHT)
     });
@@ -176,7 +189,7 @@ pub(super) fn window_content(frame: &Frame) -> WindowContent {
         rect_of(&scene::ADD),
         scene::ADD.text,
         ButtonKind::DefaultPush,
-        frame.focus == Focus::Add,
+        (frame.focus == Focus::Add, hovered == Hovered::Add),
         &LIGHT,
     );
     at(
@@ -190,6 +203,7 @@ pub(super) fn window_content(frame: &Frame) -> WindowContent {
                 focused: frame.focus == Focus::UpperCase,
                 default: false,
                 enabled: true,
+                hovered: hovered == Hovered::UpperCase,
             };
             button::paint(surface, local, &units(scene::UPPER_CASE.text), look, &LIGHT)
         },
@@ -241,7 +255,7 @@ pub(super) fn picker_content(frame: &PickerFrame) -> WindowContent {
         picker_layout::UP,
         picker_layout::UP_LABEL,
         ButtonKind::Push,
-        false,
+        (false, false),
         &DARK,
     );
     let folder = edit_holding(scene::FOLDER, true, picker_layout::FOLDER.width(), false);
@@ -249,6 +263,7 @@ pub(super) fn picker_content(frame: &PickerFrame) -> WindowContent {
         let look = EditLook {
             focused: false,
             enabled: true,
+            hovered: false,
         };
         edit::paint(surface, local, &folder, look, &DARK)
     });
@@ -283,6 +298,7 @@ pub(super) fn picker_content(frame: &PickerFrame) -> WindowContent {
         let look = EditLook {
             focused: frame.name_focused,
             enabled: true,
+            hovered: false,
         };
         edit::paint(surface, local, &name, look, &DARK)
     });
@@ -304,7 +320,7 @@ pub(super) fn picker_content(frame: &PickerFrame) -> WindowContent {
         picker_layout::CANCEL,
         picker_layout::CANCEL_LABEL,
         ButtonKind::Push,
-        false,
+        (false, false),
         &DARK,
     );
     push_button(
@@ -312,7 +328,7 @@ pub(super) fn picker_content(frame: &PickerFrame) -> WindowContent {
         picker_layout::ACCEPT,
         frame.kind.accept_label(),
         ButtonKind::DefaultPush,
-        false,
+        (false, false),
         &DARK,
     );
     WindowContent::Pixels { width, pixels }
@@ -327,12 +343,13 @@ pub(super) struct ControlsSteps<'a> {
     pub screen: (u32, u32),
     window: WindowId,
     frame: Frame,
+    hovered: Hovered,
     picker: Option<(WindowId, PickerFrame)>,
 }
 
 impl ControlsSteps<'_> {
     fn check(&mut self, at: &str, timeout: Duration) -> Result<(), String> {
-        let mut windows = vec![(self.window, window_content(&self.frame))];
+        let mut windows = vec![(self.window, window_content(&self.frame, self.hovered))];
         if let Some((picker, frame)) = &self.picker {
             windows.push((*picker, picker_content(frame)));
         }
@@ -455,6 +472,12 @@ impl ControlsSteps<'_> {
         Ok(())
     }
 
+    fn pointer_shape(&mut self, shape: u32) -> Result<(), String> {
+        self.desktop
+            .set_pointer(CLIENT, u32::from(self.window), shape, &mut Damage::new())
+            .map_err(|error| self.refused("a pointer shape", error))
+    }
+
     fn run(&mut self) -> Result<(), String> {
         self.check(
             "win-controls' window with its timers fired",
@@ -462,19 +485,25 @@ impl ControlsSteps<'_> {
         )?;
 
         self.click_control(&scene::NAME, (100, 12))?;
+        self.hovered = Hovered::Name;
+        self.pointer_shape(I_BEAM)?;
         self.type_text(scene::TYPED)?;
         self.frame = scene::TYPED_IN;
         self.check("egg typed into the edit", TERMINAL_FRAME_TIMEOUT)?;
 
         self.click_control(&scene::ADD, (44, 12))?;
+        self.hovered = Hovered::Add;
+        self.pointer_shape(ARROW)?;
         self.frame = scene::ADDED;
         self.check("Add clicked: egg in the list", TERMINAL_FRAME_TIMEOUT)?;
 
         self.click_control(&scene::UPPER_CASE, (80, 12))?;
+        self.hovered = Hovered::UpperCase;
         self.frame = scene::CHECKED;
         self.check("the check box checked", TERMINAL_FRAME_TIMEOUT)?;
 
         self.click_control(&scene::LIST, (100, 31))?;
+        self.hovered = Hovered::Nothing;
         self.frame = scene::SELECTED;
         self.check("the egg row selected", TERMINAL_FRAME_TIMEOUT)?;
 
@@ -572,6 +601,7 @@ pub(super) fn check(
         screen,
         window: WindowId::default(),
         frame: scene::STARTED,
+        hovered: Hovered::Nothing,
         picker: None,
     };
     steps.window = steps.create(ROLE_NORMAL, 0, scene::CONTENT, scene::TITLE)?;
@@ -591,7 +621,7 @@ mod tests {
 
     #[test]
     fn the_main_window_follows_the_designs_worked_example() {
-        let (width, pixels) = pixels_of(window_content(&scene::TYPED_IN));
+        let (width, pixels) = pixels_of(window_content(&scene::TYPED_IN, Hovered::Nothing));
         let at = |x: i32, y: i32| pixels[(y as u32 * width + x as u32) as usize];
         assert_eq!(width, 400);
         assert_eq!(pixels.len(), 400 * 324);
@@ -602,7 +632,7 @@ mod tests {
         assert_eq!(at(297, 39), 0x0000_78d7);
         assert_eq!(at(18, 81), LIGHT.box_border);
         assert_eq!(at(16, 112), LIGHT.field_border);
-        let (_, open) = pixels_of(window_content(&scene::MENU_OPEN));
+        let (_, open) = pixels_of(window_content(&scene::MENU_OPEN, Hovered::Nothing));
         assert_eq!(open[(24 * 400) as usize], LIGHT.menu_border);
         assert_eq!(open[(10 * 400 + 2) as usize], LIGHT.menu_highlight);
     }

@@ -97,6 +97,8 @@ pub struct Gui {
     /// The `QS_` bits `GetQueueStatus` last reported.
     pub queue_reported: u32,
     pub input: InputState,
+    /// The window under the pointer and `TrackMouseEvent`'s requests (D227).
+    pub hover: super::hover::Hover,
     last_click: Option<(usize, u32, (i32, i32))>,
     characters: [PendingCharacter; PENDING_CHARACTERS],
     next_character: usize,
@@ -123,6 +125,7 @@ impl Gui {
             last_input: super::user32::now_ms(),
             queue_reported: 0,
             input: InputState::default(),
+            hover: super::hover::Hover::new(),
             last_click: None,
             characters: [PendingCharacter::default(); PENDING_CHARACTERS],
             next_character: 0,
@@ -581,7 +584,11 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             });
             Some(to_window(message::KILL_FOCUS, 0, 0))
         }
-        Event::PointerLeft | Event::Ignored => None,
+        Event::PointerLeft => {
+            with(|gui| super::hover::pointer_left(gui, handle));
+            None
+        }
+        Event::Ignored => None,
     }
 }
 
@@ -621,12 +628,24 @@ fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Opti
                 Err(_) => Routed::Dropped,
             };
         }
+        let hovers = is_mouse(number)
+            && !matches!(number, message::MOUSE_WHEEL | message::MOUSE_HORIZONTAL_WHEEL);
         let combo = super::combo_box::input(gui, root, number, wparam, point, input.character);
         if let Some(effect) = combo {
+            if hovers {
+                super::hover::pointer_input(gui, None, input.time);
+            }
             return Routed::Combo(effect);
         }
         if let Some(effect) = super::menu::input(gui, root, number, wparam, point) {
+            if hovers {
+                super::hover::pointer_input(gui, None, input.time);
+            }
             return Routed::Menu(effect);
+        }
+        if hovers {
+            let under = under_pointer(gui, root, point);
+            super::hover::pointer_input(gui, under, input.time);
         }
         match route_input(gui, root, number, wparam, input.lparam, point, input.time) {
             Some(message) => {
@@ -665,6 +684,14 @@ pub fn inject(root: usize, input: &Input) {
         deliver(&delivery, thread_environment::thread_id());
     }
     wake();
+}
+
+fn under_pointer(gui: &Gui, root: usize, point: (i32, i32)) -> Option<(usize, (i32, i32))> {
+    let top = gui.windows.get(root)?;
+    if point.1 < top.menu_height {
+        return None;
+    }
+    Some(windows::child_at(&gui.windows, root, point.0, point.1 - top.menu_height))
 }
 
 fn is_mouse(number: u32) -> bool {
@@ -802,7 +829,11 @@ fn find(gui: &mut Gui, filter: &Filter, remove: bool) -> Option<Message> {
             ..Message::default()
         });
     }
-    gui.timers.take_due(filter, super::user32::now_ms(), remove)
+    let now = super::user32::now_ms();
+    if let Some(message) = gui.timers.take_due(filter, now, remove) {
+        return Some(message);
+    }
+    super::hover::take_due(gui, filter, now, remove)
 }
 
 /// What [`wait_for`] found.
@@ -856,7 +887,12 @@ pub fn has_message() -> bool {
 /// for.
 pub fn next_message(filter: Filter, remove: bool, wait: bool) -> Option<Message> {
     match wait_for(filter, remove, wait, &|_| false) {
-        Next::Message(message) => Some(message),
+        Next::Message(message) => {
+            if remove {
+                super::hover::send_set_cursor(&message);
+            }
+            Some(message)
+        }
         Next::Done | Next::Nothing => None,
     }
 }
@@ -873,9 +909,17 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
         linux::yield_now();
         return;
     };
-    let timeout = with(|gui| gui.timers.next_due(filter, super::user32::now_ms()))
-        .flatten()
-        .map(|milliseconds| u64::from(milliseconds) * NANOSECONDS_PER_MILLISECOND);
+    let timeout = with(|gui| {
+        let now = super::user32::now_ms();
+        let timer = gui.timers.next_due(filter, now);
+        let hover = super::hover::next_due(gui, filter, now);
+        match (timer, hover) {
+            (Some(timer), Some(hover)) => Some(timer.min(hover)),
+            (timer, hover) => timer.or(hover),
+        }
+    })
+    .flatten()
+    .map(|milliseconds| u64::from(milliseconds) * NANOSECONDS_PER_MILLISECOND);
     if timeout == Some(0) {
         return;
     }

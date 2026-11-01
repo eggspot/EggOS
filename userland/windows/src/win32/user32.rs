@@ -434,6 +434,7 @@ pub fn remove_window(handle: usize) {
         }
         gui.contexts.retain(|context| context.window != handle);
         gui.timers.kill_window(handle);
+        gui.hover.forget(handle);
         gui.drawn.forget_window(handle);
         if let Some(extras) = gui.made_extras_mut() {
             extras.properties.forget(handle);
@@ -909,6 +910,7 @@ pub extern "efiapi" fn def_window_proc_w(
             0
         }
         message::NC_CREATE => 1,
+        super::hover::SET_CURSOR => super::hover::default_set_cursor(handle, wparam, lparam),
         message::CLOSE => {
             destroy_window(handle);
             0

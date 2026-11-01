@@ -266,6 +266,7 @@ pub struct ScrollBar {
     pub info: ScrollInfo,
     pub vertical: bool,
     pressed: Option<Part>,
+    hovered: Option<Part>,
     track: Option<Track>,
 }
 
@@ -280,8 +281,23 @@ impl ScrollBar {
             },
             vertical,
             pressed: None,
+            hovered: None,
             track: None,
         }
+    }
+
+    /// The part under the pointer, if any.
+    pub fn hovered(&self) -> Option<Part> {
+        self.hovered
+    }
+
+    /// The pointer is `offset` along a bar `length` long, or off it (`None`); whether the part
+    /// under it changed.
+    pub fn hover(&mut self, offset: Option<i32>, length: i32) -> bool {
+        let part = offset.and_then(|offset| self.part_at(offset, length));
+        let changed = part != self.hovered;
+        self.hovered = part;
+        changed
     }
 
     /// The part held down, if any.
@@ -405,6 +421,7 @@ impl ScrollBar {
 pub struct BarLook {
     pub enabled: bool,
     pub focused: bool,
+    pub hovered: bool,
 }
 
 /// Paints scroll bar control `bar` over the whole of `rect`: track, arrows (the held one
@@ -439,13 +456,16 @@ pub fn paint(
     ] {
         let button = along(start, arrow);
         let pressed = placed.is_some() && bar.pressed == Some(part);
+        let hovered = placed.is_some() && look.hovered && bar.hovered == Some(part);
         let colour = match (placed, pressed) {
             (None, _) => palette.scroll_arrow_disabled,
             (Some(_), true) => palette.scroll_arrow_pressed_glyph,
             (Some(_), false) => palette.scroll_arrow,
         };
-        if pressed {
-            surface.fill(button, palette.scroll_arrow_pressed_fill);
+        match (pressed, hovered) {
+            (true, _) => surface.fill(button, palette.scroll_arrow_pressed_fill),
+            (false, true) => surface.fill(button, palette.scroll_arrow_hover_fill),
+            (false, false) => {}
         }
         if arrow >= WIDTH {
             draw_chevron(surface, button.left + at.0, button.top + at.1, chevron, colour);
@@ -453,8 +473,9 @@ pub fn paint(
     }
     if let Some((start, size)) = placed {
         let thumb_rect = along(start, size);
-        let fill = match bar.pressed {
-            Some(Part::Thumb) => palette.scroll_thumb_pressed,
+        let fill = match (bar.pressed, look.hovered && bar.hovered == Some(Part::Thumb)) {
+            (Some(Part::Thumb), _) => palette.scroll_thumb_pressed,
+            (_, true) => palette.scroll_thumb_hover,
             _ => palette.scroll_thumb,
         };
         surface.fill(thumb_rect, fill);
@@ -614,6 +635,7 @@ mod tests {
         let look = BarLook {
             enabled: true,
             focused: true,
+            hovered: false,
         };
         paint(&mut surface, Rect::sized(0, 0, 200, 16), &bar, look, &LIGHT);
         assert_eq!(surface.get(0, 0), Some(LIGHT.scroll_arrow_pressed_fill));
@@ -625,9 +647,43 @@ mod tests {
         let disabled = BarLook {
             enabled: false,
             focused: false,
+            hovered: false,
         };
         paint(&mut surface, Rect::sized(0, 0, 200, 16), &bar, disabled, &LIGHT);
         assert_eq!(surface.get(17, 1), Some(LIGHT.scroll_track));
         assert_eq!(surface.get(0, 0), Some(LIGHT.scroll_track));
+    }
+
+    #[test]
+    fn the_part_under_the_pointer_takes_the_hover_colours_while_the_bar_is_hovered() {
+        let mut bar = ScrollBar::new(false);
+        bar.set_info(
+            mask::RANGE | mask::PAGE,
+            &ScrollInfo {
+                minimum: 0,
+                maximum: 99,
+                page: 10,
+                position: 0,
+            },
+        );
+        assert!(bar.hover(Some(195), 200));
+        assert_eq!(bar.hovered(), Some(Part::LineDown));
+        assert!(!bar.hover(Some(190), 200));
+        let mut pixels = vec![0u32; 200 * 16];
+        let mut surface = Surface::new(&mut pixels, 200, 16).unwrap();
+        let look = BarLook {
+            enabled: true,
+            focused: false,
+            hovered: true,
+        };
+        paint(&mut surface, Rect::sized(0, 0, 200, 16), &bar, look, &LIGHT);
+        assert_eq!(surface.get(199, 0), Some(LIGHT.scroll_arrow_hover_fill));
+        assert_eq!(surface.get(0, 0), Some(LIGHT.scroll_track));
+        assert!(bar.hover(Some(20), 200));
+        paint(&mut surface, Rect::sized(0, 0, 200, 16), &bar, look, &LIGHT);
+        assert_eq!(surface.get(20, 8), Some(LIGHT.scroll_thumb_hover));
+        assert_eq!(surface.get(199, 0), Some(LIGHT.scroll_track));
+        assert!(bar.hover(None, 200));
+        assert_eq!(bar.hovered(), None);
     }
 }

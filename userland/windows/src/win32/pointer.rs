@@ -51,13 +51,19 @@ fn apply() {
     }
 }
 
-extern "efiapi" fn set_cursor(handle: usize) -> usize {
+/// `SetCursor`: makes `handle` the program's cursor, applied at once when it changes; the
+/// previous cursor.
+pub(super) fn replace(handle: usize) -> usize {
     let previous = current();
     CURRENT.store(handle, Ordering::Relaxed);
     if previous != handle {
         apply();
     }
     previous
+}
+
+extern "efiapi" fn set_cursor(handle: usize) -> usize {
+    replace(handle)
 }
 
 extern "efiapi" fn get_cursor() -> usize {

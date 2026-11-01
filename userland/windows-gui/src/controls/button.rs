@@ -92,6 +92,7 @@ pub struct ButtonLook {
     pub focused: bool,
     pub default: bool,
     pub enabled: bool,
+    pub hovered: bool,
 }
 
 /// Paints a button over the whole of `rect` with the label `units` (`&` underlines).
@@ -164,6 +165,11 @@ fn paint_push(
                 .map(|_| palette.button_pressed_border),
             palette.default_text,
         ),
+        () if look.default && look.hovered => (
+            palette.default_hover_fill,
+            palette.default_border,
+            palette.default_text,
+        ),
         () if look.default => (
             palette.default_fill,
             palette.default_border,
@@ -172,6 +178,11 @@ fn paint_push(
         () if look.pressed => (
             palette.button_pressed_fill,
             Some(palette.button_pressed_border),
+            palette.text,
+        ),
+        () if look.hovered => (
+            palette.button_hover_fill,
+            Some(palette.button_hover_border),
             palette.text,
         ),
         () => (
@@ -251,6 +262,10 @@ fn paint_check_box(
             palette.box_mark,
         ),
         () => (palette.box_fill, palette.box_border, palette.box_mark),
+    };
+    let border = match look.enabled && look.hovered {
+        true => palette.box_hover_border,
+        false => border,
     };
     match look.kind.is_radio() {
         true => {
@@ -444,6 +459,7 @@ mod tests {
             focused: false,
             default: false,
             enabled: true,
+            hovered: false,
         }
     }
 
@@ -596,6 +612,38 @@ mod tests {
         assert_eq!(group.click(), ButtonOutcome::Unchanged);
         assert_eq!(ButtonKind::of(0x5000_0009), ButtonKind::AutoRadio);
         assert_eq!(ButtonKind::of(0x5000_0007), ButtonKind::GroupBox);
+    }
+
+    #[test]
+    fn a_hovered_push_button_and_check_box_take_the_hover_colours_and_pressed_wins() {
+        let mut pixels = vec![0u32; 160 * 24];
+        let mut surface = Surface::new(&mut pixels, 160, 24).unwrap();
+        let hovered = ButtonLook {
+            hovered: true,
+            ..look(ButtonKind::Push)
+        };
+        paint(&mut surface, Rect::new(0, 0, 88, 24), &units("Add"), hovered, &LIGHT);
+        assert_eq!(surface.get(0, 0), Some(LIGHT.button_hover_border));
+        assert_eq!(surface.get(4, 4), Some(LIGHT.button_hover_fill));
+        let pressed = ButtonLook {
+            pressed: true,
+            ..hovered
+        };
+        paint(&mut surface, Rect::new(0, 0, 88, 24), &units("Add"), pressed, &LIGHT);
+        assert_eq!(surface.get(4, 4), Some(LIGHT.button_pressed_fill));
+        let check = ButtonLook {
+            hovered: true,
+            ..look(ButtonKind::AutoCheckBox)
+        };
+        paint(&mut surface, Rect::new(0, 0, 160, 24), &units("Upper"), check, &LIGHT);
+        assert_eq!(surface.get(2, 5), Some(LIGHT.box_hover_border));
+        assert_eq!(surface.get(5, 8), Some(LIGHT.box_fill));
+        let disabled = ButtonLook {
+            enabled: false,
+            ..check
+        };
+        paint(&mut surface, Rect::new(0, 0, 160, 24), &units("Upper"), disabled, &LIGHT);
+        assert_eq!(surface.get(2, 5), Some(LIGHT.box_disabled_border));
     }
 
     #[test]

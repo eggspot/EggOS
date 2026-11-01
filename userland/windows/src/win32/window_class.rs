@@ -164,6 +164,14 @@ fn system_class(kind: ControlKind) -> (u16, Class) {
     (system_atom(kind), class)
 }
 
+/// The cursor of window `window`'s class, 0 for none.
+pub(super) fn cursor_of(gui: &Gui, window: usize) -> usize {
+    gui.windows
+        .get(window)
+        .and_then(|entry| class_of(gui, entry))
+        .map_or(0, |(_, class)| class.cursor)
+}
+
 fn class_of(gui: &Gui, window: &Window) -> Option<(u16, Class)> {
     match window.procedure {
         Procedure::Program(_) => gui.classes.find(ClassName::Atom(window.class_atom)),
