@@ -14,7 +14,6 @@ use eggos_settings_file::clock_sync::{LARGEST, Outcome, Record, TEMPORARY_PREFIX
 use eggos_tls::chain::TrustAnchors;
 use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
 
-pub const AUTOMATIC_OPTION: &[u8] = b"--automatic";
 pub const STEP_LIMIT_MS: u64 = 3_600_000;
 pub const UNPROVEN_BUDGET_MS: u64 = 3_600_000;
 pub const IGNORE_BELOW_MS: u64 = 1_000;

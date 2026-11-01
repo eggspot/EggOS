@@ -25,12 +25,29 @@ pub enum Refused {
 pub struct Given<'a> {
     pub option: &'static OptionDefinition,
     pub value: Option<&'a [u8]>,
+    terminated: Option<&'a CStr>,
 }
 
-impl Given<'_> {
+impl<'a> Given<'a> {
+    fn of(option: &'static OptionDefinition, terminated: Option<&'a CStr>) -> Self {
+        Self {
+            option,
+            value: terminated.map(CStr::to_bytes),
+            terminated,
+        }
+    }
+
     pub fn is_long(&self, name: &str) -> bool {
         self.option.long == Some(name)
     }
+
+    pub fn value_as_c_string(&self) -> Option<&'a CStr> {
+        self.terminated
+    }
+}
+
+fn tail(argument: &CStr, from: usize) -> &CStr {
+    CStr::from_bytes_with_nul(&argument.to_bytes_with_nul()[from..]).unwrap_or(c"")
 }
 
 pub fn wants_json(definition: &CommandDefinition, arguments: &[&CStr]) -> bool {
@@ -76,27 +93,28 @@ pub fn parse_defined<'a, S: System>(
         }
         if let Some(long) = bytes.strip_prefix(b"--") {
             let (name, attached) = match long.iter().position(|&byte| byte == b'=') {
-                Some(at) => (&long[..at], Some(&long[at + 1..])),
+                Some(at) => (&long[..at], Some(tail(argument, at + 3))),
                 None => (long, None),
             };
             let Some(option) = definition.long_option(name) else {
                 output.invalid_option(bytes);
                 return Err(Refused::Reported);
             };
-            let value = match (option.value.is_some(), attached) {
-                (false, None) => None,
-                (false, Some(_)) => {
+            let value = match (option.value, attached) {
+                (None, None) => None,
+                (None, Some(_)) => {
                     output.coded(
                         &errors::USAGE,
                         &[b"option '--", name, b"' doesn't allow an argument"],
                     );
                     return Err(Refused::Reported);
                 }
-                (true, Some(value)) => Some(value),
-                (true, None) => match arguments.get(index) {
-                    Some(next) => {
+                (Some(_), Some(value)) => Some(value),
+                (Some(kind), None) if kind.optional => None,
+                (Some(_), None) => match arguments.get(index) {
+                    Some(&next) => {
                         index += 1;
-                        Some(next.to_bytes())
+                        Some(next)
                     }
                     None => {
                         output.coded(
@@ -107,7 +125,7 @@ pub fn parse_defined<'a, S: System>(
                     }
                 },
             };
-            on_option(output, Given { option, value })?;
+            on_option(output, Given::of(option, value))?;
             continue;
         }
         let mut at = 1;
@@ -118,21 +136,17 @@ pub fn parse_defined<'a, S: System>(
                 output.invalid_option(&[b'-', letter]);
                 return Err(Refused::Reported);
             };
-            if option.value.is_none() {
-                on_option(
-                    output,
-                    Given {
-                        option,
-                        value: None,
-                    },
-                )?;
+            let Some(kind) = option.value else {
+                on_option(output, Given::of(option, None))?;
                 continue;
-            }
+            };
             let value = if at < bytes.len() {
-                &bytes[at..]
-            } else if let Some(next) = arguments.get(index) {
+                Some(tail(argument, at))
+            } else if kind.optional {
+                None
+            } else if let Some(&next) = arguments.get(index) {
                 index += 1;
-                next.to_bytes()
+                Some(next)
             } else {
                 output.coded(
                     &errors::USAGE,
@@ -140,13 +154,7 @@ pub fn parse_defined<'a, S: System>(
                 );
                 return Err(Refused::Reported);
             };
-            on_option(
-                output,
-                Given {
-                    option,
-                    value: Some(value),
-                },
-            )?;
+            on_option(output, Given::of(option, value))?;
             break;
         }
     }
@@ -228,6 +236,35 @@ mod tests {
         assert_eq!(errors, "t: option requires an argument -- 'n'\n");
         let (_, _, errors) = given_to(&commands::HEAD, &[c"--long"]);
         assert_eq!(errors, "t: unrecognized option '--long'\n");
+    }
+
+    #[test]
+    fn an_optional_value_is_taken_only_attached() {
+        let (operands, seen, errors) =
+            given_to(&commands::DATE, &[c"--sync", c"+%s", c"--sync=10.0.2.2:123"]);
+        assert_eq!(operands, Ok(vec!["+%s".to_owned()]));
+        assert_eq!(seen, ["sync=", "sync=10.0.2.2:123"]);
+        assert_eq!(errors, "");
+    }
+
+    #[test]
+    fn values_keep_their_terminating_nul() {
+        let mut output = Output::new(Fake::default(), b"t");
+        let mut paths = Vec::new();
+        let arguments = [c"--reference=/a", c"-r", c"/b", c"-r/c"];
+        let parsed = parse_defined(&mut output, &arguments, &commands::DATE, |_, given| {
+            paths.push(given.value_as_c_string().map(CStr::to_owned));
+            Ok(())
+        });
+        assert!(parsed.is_ok());
+        assert_eq!(
+            paths,
+            [
+                Some(c"/a".to_owned()),
+                Some(c"/b".to_owned()),
+                Some(c"/c".to_owned())
+            ]
+        );
     }
 
     #[test]

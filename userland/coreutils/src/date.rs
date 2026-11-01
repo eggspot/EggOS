@@ -1,10 +1,13 @@
-use crate::network_clock::{self, AUTOMATIC_OPTION, Asker, Https};
+use crate::network::read_text;
+use crate::network_clock::{self, Asker, Https};
+use crate::options::{parse_count, parse_defined};
 use crate::output::{FAILURE, Output};
 use crate::system::{Duration, SymbolicLinks, System};
 use crate::zone::{local_seconds, local_zone};
 use core::ffi::CStr;
 use eggos_calendar::zone::{Rule, UTC};
 use eggos_calendar::{DateTime, MONTHS, ParseError, WEEKDAYS, parse_setting};
+use eggos_commands::{commands, errors};
 use eggos_net::Ipv4Address;
 use eggos_net::sntp::{self, ReplyError, Timestamp};
 use eggos_runtime::errno::Errno;
@@ -20,74 +23,67 @@ enum Shown<'a> {
 }
 
 pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let mut set: Option<&CStr> = None;
+    let mut set: Option<&[u8]> = None;
     let mut sync: Option<&[u8]> = None;
     let mut asker = Asker::Person;
     let mut shown = Shown::Now;
-    let mut format: Option<&[u8]> = None;
     let mut universal = false;
-    let mut options_end = false;
-    let mut index = 0;
-    while let Some(&argument) = arguments.get(index) {
-        index += 1;
-        let bytes = argument.to_bytes();
-        if !options_end && bytes == b"--" {
-            options_end = true;
-            continue;
-        }
-        if !options_end && bytes.len() > 1 && bytes[0] == b'-' {
-            match bytes {
-                b"-u" | b"--utc" | b"--universal" => universal = true,
-                b"--sync" => sync = Some(DEFAULT_TIME_SERVER),
-                AUTOMATIC_OPTION => asker = Asker::Automatic,
-                _ if bytes.starts_with(b"--sync=") => sync = Some(&bytes[b"--sync=".len()..]),
-                b"-s" | b"--set" | b"-r" | b"--reference" => {
-                    let Some(&value) = arguments.get(index) else {
-                        output.error(&[b"option requires an argument -- '", &bytes[1..], b"'"]);
-                        return FAILURE;
-                    };
-                    index += 1;
-                    match bytes {
-                        b"-s" | b"--set" => set = Some(value),
-                        _ => shown = Shown::File(value),
-                    }
+    let mut dry_run = false;
+    let parsed = parse_defined(output, arguments, &commands::DATE, |_, given| {
+        match (given.option.short, given.option.long) {
+            (Some(b'u'), _) | (None, Some("universal")) => universal = true,
+            (Some(b's'), _) => set = given.value,
+            (Some(b'r'), _) => {
+                if let Some(path) = given.value_as_c_string() {
+                    shown = Shown::File(path);
                 }
-                _ => match (
-                    bytes.strip_prefix(b"--set="),
-                    bytes.strip_prefix(b"--reference="),
-                ) {
-                    (Some(value), _) => set = Some(cstr_tail(argument, bytes.len() - value.len())),
-                    (_, Some(value)) => {
-                        shown = Shown::File(cstr_tail(argument, bytes.len() - value.len()));
-                    }
-                    _ => return output.invalid_option(bytes),
-                },
             }
-            continue;
+            (None, Some("sync")) => sync = Some(given.value.unwrap_or(DEFAULT_TIME_SERVER)),
+            (None, Some("automatic")) => asker = Asker::Automatic,
+            (None, Some("dry-run")) => dry_run = true,
+            _ => {}
         }
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        return FAILURE;
+    };
+    let mut format: Option<&[u8]> = None;
+    for operand in operands.all() {
+        let bytes = operand.to_bytes();
         match (bytes.strip_prefix(b"+"), format) {
             (Some(wanted), None) => format = Some(wanted),
             (Some(_), Some(_)) => {
-                output.error(&[b"extra operand '", bytes, b"'"]);
+                output.coded(&errors::USAGE, &[b"extra operand '", bytes, b"'"]);
                 return FAILURE;
             }
             (None, _) => {
-                output.error(&[
-                    b"invalid date '",
-                    bytes,
-                    b"': set the clock with -s 'YYYY-MM-DD HH:MM[:SS]' (UTC)",
-                ]);
+                output.coded(
+                    &errors::USAGE,
+                    &[
+                        b"invalid date '",
+                        bytes,
+                        b"': set the clock with -s 'YYYY-MM-DD HH:MM[:SS]' (UTC)",
+                    ],
+                );
                 return FAILURE;
             }
         }
     }
+    if dry_run && set.is_none() {
+        output.coded(&errors::USAGE, &[b"--dry-run needs -s"]);
+        return FAILURE;
+    }
     if asker == Asker::Automatic && sync.is_none() {
-        output.error(&[b"--automatic needs --sync"]);
+        output.coded(&errors::USAGE, &[b"--automatic needs --sync"]);
         return FAILURE;
     }
     let seconds = match (sync, set, shown) {
         (Some(_), Some(_), _) | (Some(_), _, Shown::File(_)) | (None, Some(_), Shown::File(_)) => {
-            output.error(&[b"the options to set the time and to show a file's time are exclusive"]);
+            output.coded(
+                &errors::USAGE,
+                &[b"the options to set the time and to show a file's time are exclusive"],
+            );
             return FAILURE;
         }
         (Some(server), None, Shown::Now) => {
@@ -96,10 +92,20 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
                 Err(status) => return status,
             }
         }
-        (None, Some(text), Shown::Now) => match set_clock(output, text) {
-            Ok(seconds) => seconds,
-            Err(status) => return status,
-        },
+        (None, Some(text), Shown::Now) => {
+            let seconds = match parse_time(output, text) {
+                Ok(seconds) => seconds,
+                Err(status) => return status,
+            };
+            if dry_run {
+                let zone = zone_of(output, universal);
+                return would_set_clock(output, seconds, format.unwrap_or(DEFAULT_FORMAT), &zone);
+            }
+            match set_clock(output, seconds) {
+                Ok(()) => seconds,
+                Err(status) => return status,
+            }
+        }
         (None, None, Shown::File(path)) => {
             match output.system.status(None, path, SymbolicLinks::Follow) {
                 Ok(status) => status.modified,
@@ -111,30 +117,68 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         }
         (None, None, Shown::Now) => output.system.now() as i64,
     };
-    let zone = match universal {
-        true => UTC,
-        false => local_zone(&mut output.system),
-    };
+    let zone = zone_of(output, universal);
     write_formatted(output, format.unwrap_or(DEFAULT_FORMAT), seconds, &zone);
     output.write(b"\n");
     0
 }
 
 const DEFAULT_FORMAT: &[u8] = b"%a %b %e %H:%M:%S %Z %Y";
+const PROCESS_STATUS: &CStr = c"/proc/self/status";
 
-fn cstr_tail(argument: &CStr, skip: usize) -> &CStr {
-    CStr::from_bytes_with_nul(&argument.to_bytes_with_nul()[skip..]).unwrap_or(c"")
+fn zone_of<S: System>(output: &mut Output<S>, universal: bool) -> Rule {
+    match universal {
+        true => UTC,
+        false => local_zone(&mut output.system),
+    }
 }
 
-fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32> {
-    let typed = core::str::from_utf8(text.to_bytes()).unwrap_or("");
+fn would_set_clock<S: System>(
+    output: &mut Output<S>,
+    seconds: i64,
+    format: &[u8],
+    zone: &Rule,
+) -> i32 {
+    let status = match read_text(&mut output.system, PROCESS_STATUS) {
+        Ok(status) => status,
+        Err(errno) => {
+            output.file_error(PROCESS_STATUS, errno);
+            return FAILURE;
+        }
+    };
+    if effective_user_id(status.as_bytes()) != Some(0) {
+        output.error(&[b"cannot set date: ", Errno::EPERM.message()]);
+        return FAILURE;
+    }
+    let now = output.system.now() as i64;
+    output.write(b"would set the clock from ");
+    write_formatted(output, format, now, zone);
+    output.write(b" to ");
+    write_formatted(output, format, seconds, zone);
+    output.write(b"\n");
+    0
+}
+
+fn effective_user_id(status: &[u8]) -> Option<u64> {
+    let line = status
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"Uid:"))?;
+    let effective = line
+        .split(|&byte| byte == b'\t' || byte == b' ')
+        .filter(|field| !field.is_empty())
+        .nth(1)?;
+    parse_count(effective)
+}
+
+fn parse_time<S: System>(output: &mut Output<S>, text: &[u8]) -> Result<i64, i32> {
+    let typed = core::str::from_utf8(text).unwrap_or("");
     let now = output.system.now() as i64;
     let seconds = match parse_setting(typed, now) {
         Ok(seconds) => seconds,
         Err(ParseError::NotADateAndTime) => {
             output.error(&[
                 b"invalid date '",
-                text.to_bytes(),
+                text,
                 b"': type YYYY-MM-DD HH:MM[:SS] or HH:MM[:SS], in UTC",
             ]);
             return Err(FAILURE);
@@ -144,14 +188,14 @@ fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32>
             return Err(FAILURE);
         }
         Err(ParseError::YearOutOfRange) => {
-            output.error(&[
-                b"invalid date '",
-                text.to_bytes(),
-                b"': the year must be 2000 to 2099",
-            ]);
+            output.error(&[b"invalid date '", text, b"': the year must be 2000 to 2099"]);
             return Err(FAILURE);
         }
     };
+    Ok(seconds)
+}
+
+fn set_clock<S: System>(output: &mut Output<S>, seconds: i64) -> Result<(), i32> {
     let since_epoch = Duration {
         seconds: seconds as u64,
         nanoseconds: 0,
@@ -159,7 +203,7 @@ fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32>
     match output.system.set_time(since_epoch) {
         Ok(()) => {
             network_clock::forget_unproven_steps(&mut output.system);
-            Ok(seconds)
+            Ok(())
         }
         Err(errno) => {
             output.error(&[b"cannot set date: ", errno.message()]);
@@ -553,5 +597,88 @@ mod tests {
         unknown.time_zone_variable = Some(b"Nowhere/Land".to_vec());
         let (_, out, _, _) = run(unknown, &[c"+%H %Z"]);
         assert_eq!(out, "01 UTC\n");
+    }
+
+    fn running_as(user: &str) -> Fake {
+        let status = format!("Name:\tdate\nUid:\t{user}\t{user}\t{user}\t{user}\n");
+        at_now().with_file("/proc/self/status", 0o444, status.as_bytes(), 0)
+    }
+
+    #[test]
+    fn options_come_from_the_registry_and_combine() {
+        let (status, out, _, fake) = run(at_now(), &[c"-us", c"2030-01-02 03:04:05", c"+%s"]);
+        assert_eq!((status, out.as_str()), (0, "1893553445\n"));
+        assert_eq!(fake.set_times, [whole_seconds(1_893_553_445)]);
+        let (_, out, _, _) = run(at_now(), &[c"--universal", c"+%F"]);
+        assert_eq!(out, "2026-10-29\n");
+        let (status, out, _, _) = run(at_now(), &[c"--", c"+%T"]);
+        assert_eq!((status, out.as_str()), (0, "14:05:09\n"));
+        for (arguments, error) in [
+            (&[c"--bogus"][..], "date: unrecognized option '--bogus'\n"),
+            (
+                &[c"--utc=yes"][..],
+                "date: option '--utc' doesn't allow an argument\n",
+            ),
+            (&[c"--set"][..], "date: option '--set' requires an argument\n"),
+            (&[c"--automatic"][..], "date: --automatic needs --sync\n"),
+            (&[c"--dry-run"][..], "date: --dry-run needs -s\n"),
+            (&[c"--sync", c"--dry-run"][..], "date: --dry-run needs -s\n"),
+            (
+                &[c"--", c"-u"][..],
+                "date: invalid date '-u': set the clock with -s 'YYYY-MM-DD HH:MM[:SS]' (UTC)\n",
+            ),
+        ] {
+            let (status, out, errors, fake) = run(at_now(), arguments);
+            assert_eq!((status, out.as_str()), (1, ""), "{arguments:?}");
+            assert_eq!(errors, error, "{arguments:?}");
+            assert!(fake.set_times.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_dry_run_checks_the_time_and_the_right_to_set_it_and_sets_nothing() {
+        let (status, out, errors, fake) = run(
+            running_as("0"),
+            &[c"--dry-run", c"-u", c"-s", c"2030-01-02 03:04:05"],
+        );
+        assert_eq!((status, errors.as_str()), (0, ""));
+        assert_eq!(
+            out,
+            "would set the clock from Thu Oct 29 14:05:09 UTC 2026 to Wed Jan  2 03:04:05 UTC \
+             2030\n"
+        );
+        assert!(fake.set_times.is_empty());
+        let (_, out, _, _) = run(
+            running_as("0"),
+            &[c"-s", c"2030-01-02 03:04:05", c"--dry-run", c"+%s"],
+        );
+        assert_eq!(out, "would set the clock from 1793282709 to 1893553445\n");
+        let (status, out, errors, fake) = run(
+            running_as("1000"),
+            &[c"--dry-run", c"-s", c"2030-01-02 03:04"],
+        );
+        assert_eq!((status, out.as_str()), (1, ""));
+        assert_eq!(errors, "date: cannot set date: Operation not permitted\n");
+        assert!(fake.set_times.is_empty());
+        let (status, _, errors, _) = run(running_as("0"), &[c"--dry-run", c"-s", c"tomorrow"]);
+        assert_eq!(status, 1);
+        assert_eq!(
+            errors,
+            "date: invalid date 'tomorrow': type YYYY-MM-DD HH:MM[:SS] or HH:MM[:SS], in UTC\n"
+        );
+        let (status, _, errors, _) = run(at_now(), &[c"--dry-run", c"-s", c"2030-01-02 03:04"]);
+        assert_eq!(status, 1);
+        assert_eq!(errors, "date: /proc/self/status: No such file or directory\n");
+    }
+
+    #[test]
+    fn sync_takes_its_server_only_attached() {
+        let (status, _, errors, fake) = run(with_time_server(123), &[c"--sync", c"+%s"]);
+        assert_eq!(status, 1);
+        assert_eq!(
+            errors,
+            "date: pool.ntp.org: no DNS server: /etc/resolv.conf names none\n"
+        );
+        assert!(fake.set_times.is_empty());
     }
 }

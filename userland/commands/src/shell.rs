@@ -86,6 +86,7 @@ const KILL_OPTIONS: [OptionDefinition; 2] = [
         value: Some(OptionValue {
             name: "signal",
             value: ValueType::Text,
+            optional: false,
         }),
         repeatable: false,
         default: Some("TERM"),

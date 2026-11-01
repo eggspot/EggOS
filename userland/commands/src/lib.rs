@@ -198,6 +198,9 @@ pub struct OptionValue {
     pub name: &'static str,
     /// Its type.
     pub value: ValueType,
+    /// Whether it may be left out: then it is given only attached (`--sync=host`), never as
+    /// the next word.
+    pub optional: bool,
 }
 
 /// One option of a command.
@@ -263,6 +266,7 @@ pub const fn limit_option(maximum: i64) -> OptionDefinition {
                 minimum: 1,
                 maximum,
             },
+            optional: false,
         }),
         repeatable: false,
         default: None,
@@ -278,6 +282,7 @@ pub const AFTER_OPTION: OptionDefinition = OptionDefinition {
     value: Some(OptionValue {
         name: "cursor",
         value: ValueType::Text,
+        optional: false,
     }),
     repeatable: false,
     default: None,
