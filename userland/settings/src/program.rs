@@ -84,6 +84,7 @@ const TASK_MANAGER_PROGRAM_NAME: &[u8] = b"task-manager";
 const APPS_OPTION: &[u8] = b"--apps";
 const WINDOW_DEVICE: &str = "/dev/window";
 const O_RDWR_CLOEXEC: usize = 0o2_000_002;
+const WNOHANG: usize = 1;
 const LIST_WINDOW: usize = 0xc060_770b;
 const MANAGE_WINDOW: usize = 0x4010_770c;
 const LIST_SIZE: usize = 96;
@@ -529,7 +530,7 @@ fn save_time_automatic(on: bool) -> Result<(), Errno> {
     save_session_value(TIME_AUTOMATIC, value)
 }
 
-fn start_clock_sync() -> Result<(), Errno> {
+fn start_clock_sync() -> Result<usize, Errno> {
     let null = CPath::new("/dev/null");
     let quiet = syscall(
         number::OPENAT,
@@ -548,7 +549,7 @@ fn start_clock_sync() -> Result<(), Errno> {
     let environment = [core::ptr::null()];
     let request = Spawn::new(c"/bin/date", &arguments, &environment, streams).in_own_session();
     let mut stack = alloc::boxed::Box::new(ChildStack::new());
-    let started = process::spawn(&mut stack, &request).map(|_| ());
+    let started = process::spawn(&mut stack, &request);
     if let Ok(fd) = quiet {
         close(fd);
     }
@@ -827,7 +828,7 @@ impl command::Machine for Machine {
     }
 
     fn start_clock_sync(&mut self) -> Result<(), &'static [u8]> {
-        start_clock_sync().map_err(Errno::message)
+        start_clock_sync().map(|_| ()).map_err(Errno::message)
     }
 
     fn save_display_scale(&mut self, scale: u32) -> Result<(), &'static [u8]> {
@@ -1022,6 +1023,7 @@ struct Settings {
     uptime_at_start: u64,
     unsaved_profile: Option<usize>,
     disk_work: Option<DiskWork>,
+    clock_sync_child: Option<usize>,
 }
 
 const SECOND_MS: u32 = 1000;
@@ -1061,6 +1063,14 @@ impl Application<CAPACITY> for Settings {
             }
             Some(Request::SetTimeZone(index)) => {
                 self.window.time_zone_saved(index, save_time_zone(index));
+            }
+            Some(Request::SetTimeAutomatic { on, sync_now }) => {
+                let saved = save_time_automatic(on);
+                let started_at = match (saved, sync_now) {
+                    (Ok(()), true) => self.start_clock_sync(),
+                    _ => None,
+                };
+                self.window.time_automatic_saved(on, saved, started_at);
             }
             Some(Request::SetDisplayScale(scale)) => {
                 self.window
@@ -1172,7 +1182,7 @@ impl Application<CAPACITY> for Settings {
             let (_, nanoseconds) = wall_clock();
             return Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS));
         }
-        match self.window.pane() {
+        let pane_tick = match self.window.pane() {
             ABOUT | NETWORK => {
                 let elapsed = now_ms.wrapping_sub(self.uptime_from_ms);
                 Some(now_ms.wrapping_add(SECOND_MS - elapsed % SECOND_MS))
@@ -1182,13 +1192,16 @@ impl Application<CAPACITY> for Settings {
                 Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS))
             }
             _ => None,
-        }
+        };
+        let reap_tick = self.clock_sync_child.map(|_| now_ms.wrapping_add(SECOND_MS));
+        pane_tick.or(reap_tick)
     }
 
     fn tick(&mut self, now_ms: u32) {
         self.save_unsaved();
         self.do_disk_work(now_ms);
         self.show_clock(now_ms);
+        self.clock_sync_running();
         if self.window.pairing_counting_down() {
             self.window.show_network(network_read());
         }
@@ -1292,10 +1305,42 @@ impl Settings {
     fn show_clock(&mut self, now_ms: u32) {
         match self.window.pane() {
             ABOUT => self.show_uptime(now_ms),
-            DATE_AND_TIME => self.window.show_time(wall_clock().0),
+            DATE_AND_TIME => {
+                self.window.show_time(wall_clock().0);
+                if self.window.facts().time_automatic {
+                    let running = self.clock_sync_running();
+                    self.window
+                        .show_clock_sync(clock_sync_record(), network_adapter(), running);
+                }
+            }
             NETWORK => self.window.show_network_adapter(network_adapter()),
             _ => {}
         }
+    }
+
+    fn start_clock_sync(&mut self) -> Option<i64> {
+        let started_at = wall_clock().0 as i64;
+        if self.clock_sync_running() {
+            return Some(started_at);
+        }
+        self.clock_sync_child = Some(start_clock_sync().ok()?);
+        Some(started_at)
+    }
+
+    fn clock_sync_running(&mut self) -> bool {
+        let Some(child) = self.clock_sync_child else {
+            return false;
+        };
+        let mut status = 0i32;
+        let waited = syscall(
+            number::WAIT4,
+            [child, &raw mut status as usize, WNOHANG, 0, 0, 0],
+        );
+        if matches!(waited, Ok(0) | Err(Errno::EINTR)) {
+            return true;
+        }
+        self.clock_sync_child = None;
+        false
     }
 
     fn show_uptime(&mut self, now_ms: u32) {
@@ -1477,6 +1522,7 @@ fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>) -> i32 {
         uptime_at_start: facts.uptime_s,
         unsaved_profile: None,
         disk_work: None,
+        clock_sync_child: None,
     };
     if let Some(asked) = pairing {
         let grants = grants_read(settings.window.facts().on_disk);

@@ -10,6 +10,7 @@ use crate::accessibility_pane::{AccessibilityPane, Shown};
 use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
+use crate::automatic_clock::{Adapter, AutomaticClock, ClockWidgets};
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
 use crate::keys::{DisplayChange, InputChange, KeysChange};
@@ -27,6 +28,7 @@ use eggos_mcp::grants::{AgentId, AgentName, GrantStore};
 use eggos_mcp::pairing::{Code, PairError};
 use eggos_net::status::InterfaceStatus;
 use eggos_runtime::errno::Errno;
+use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{KEYBOARD_LAYOUTS, KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 use eggos_toolkit::theme::{Theme, Token};
 use eggos_toolkit::input::key;
@@ -41,7 +43,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 209;
+pub const CAPACITY: usize = 211;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
@@ -62,9 +64,14 @@ const ABOUT_LINES: i32 = 104;
 const ABOUT_LINE_PITCH: i32 = 20;
 const EGG_HEIGHT: i32 = 48;
 
-const SET_FIELD: (i32, i32, i32, i32) = (144, 110, 200, 28);
-const SET_BUTTON: (i32, i32, i32, i32) = (352, 110, 96, 28);
-const STATUS_LINE: i32 = 156;
+const AUTOMATIC_ROW: i32 = 1;
+const SET_TO_ROW: i32 = 2;
+const CONTROL_IN_ROW: i32 = 6;
+const SET_FIELD: (i32, i32, i32, i32) = (144, 150, 200, 28);
+const SET_BUTTON: (i32, i32, i32, i32) = (352, 150, 96, 28);
+const STATUS_LINE: i32 = 196;
+const REMEDY_LINE: i32 = 216;
+const DATE_AND_TIME_PANE_HEIGHT: i32 = 408;
 
 const LAYOUT_LIST: (i32, i32, i32, i32) = (16, 64, 208, 96);
 const LAYOUT_ROW: i32 = 24;
@@ -315,6 +322,18 @@ const PANE_WORDS: [&[&str]; 11] = [
         "IANA",
         "Europe/Paris",
         "Time zone",
+        "automatic",
+        "automatically",
+        "sync",
+        "synchronize",
+        "synchronise",
+        "NTP",
+        "SNTP",
+        "network time",
+        "internet time",
+        "time server",
+        "pool.ntp.org",
+        "Set automatically",
     ],
     &[
         "agent",
@@ -394,6 +413,10 @@ pub enum Request {
     /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
     /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
     SetTimeZone(usize),
+    /// Save `time.automatic` as `on`, then, when `sync_now` and the save worked, start
+    /// `date --sync --automatic`, then say how both went
+    /// ([`SettingsWindow::time_automatic_saved`]) (D224).
+    SetTimeAutomatic { on: bool, sync_now: bool },
     /// Save this scale, 1 or 2, as `display.scale` for the next boot, then say how it went
     /// ([`SettingsWindow::display_scale_saved`]) (D195).
     SetDisplayScale(u32),
@@ -497,6 +520,7 @@ pub struct SettingsWindow {
     storage: StoragePane,
     agents: AgentsPane,
     zones: ZonePicker,
+    clock: AutomaticClock,
     display: DisplayPane,
     inputs: InputPanes,
     accessibility: AccessibilityPane,
@@ -589,7 +613,7 @@ pub(crate) fn time_text(seconds: u64, zone: usize) -> Text<64> {
     text
 }
 
-fn shown_status(facts: &Facts) -> &'static str {
+pub(crate) fn shown_status(facts: &Facts) -> &'static str {
     match facts.hardware_clock {
         true => SHOWN_WITH_HARDWARE_CLOCK,
         false => SHOWN_WITHOUT_HARDWARE_CLOCK,
@@ -689,6 +713,7 @@ impl SettingsWindow {
         );
         let panes: [WidgetId; PANES.len()] = core::array::from_fn(|pane| match pane {
             ABOUT => build.pane(scroll, Length::Fill(0)),
+            DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
             _ => build.pane(scroll, Length::Px(PANE_HEIGHT)),
         });
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
@@ -849,10 +874,20 @@ impl SettingsWindow {
             "Now",
             time_text(facts.now_s, facts.time_zone).as_str(),
         );
-        build.label(
+        let automatic = build.add(
+            Some(date_and_time),
+            Place::at(
+                PADDING,
+                FIRST_ROW + AUTOMATIC_ROW * SETTING_ROW + CONTROL_IN_ROW,
+                Length::Content,
+                Length::Content,
+            ),
+            Kind::checkbox(crate::automatic_clock::LABEL, facts.time_automatic),
+        );
+        let set_to = build.label(
             date_and_time,
             PADDING,
-            FIRST_ROW + SETTING_ROW + TEXT_IN_ROW,
+            FIRST_ROW + SET_TO_ROW * SETTING_ROW + TEXT_IN_ROW,
             "Set to",
             Token::Text,
         );
@@ -883,6 +918,7 @@ impl SettingsWindow {
             shown_status(&facts),
             Token::TextDim,
         );
+        let remedy = build.label(date_and_time, PADDING, REMEDY_LINE, "", Token::TextDim);
 
         let about = panes[ABOUT];
         build.add(
@@ -962,6 +998,18 @@ impl SettingsWindow {
         );
         tree.set_enabled(set_button, false);
         tree.set_default_button(set_button);
+        let clock = AutomaticClock::new(
+            &mut tree,
+            ClockWidgets {
+                check_box: automatic,
+                set_to,
+                field: set_field,
+                button: set_button,
+                line_1: status,
+                line_2: remedy,
+            },
+            &facts,
+        );
         tree.set_shown(no_disk, !facts.on_disk);
         tree.set_shown(keyboard_no_disk, !facts.on_disk);
         for (index, pane) in panes.iter().enumerate() {
@@ -1001,6 +1049,7 @@ impl SettingsWindow {
             storage,
             agents,
             zones,
+            clock,
             display,
             inputs,
             accessibility,
@@ -1581,10 +1630,53 @@ impl SettingsWindow {
     }
 
     fn reset_date_and_time(&mut self) {
-        self.tree.set_text(self.widgets.set_field, "");
-        self.tree.set_enabled(self.widgets.set_button, false);
-        self.set_status(shown_status(&self.facts), Token::TextDim);
+        self.clock.reset(&mut self.tree, &self.facts);
         self.zones.reset(&mut self.tree, self.facts.now_s as i64);
+    }
+
+    /// How saving `time.automatic` as `on` went ([`Request::SetTimeAutomatic`]), with the wall
+    /// clock's seconds when the sync it started began, if one did (D224, section 9.3).
+    pub fn time_automatic_saved(
+        &mut self,
+        on: bool,
+        saved: Result<(), Errno>,
+        sync_started_at: Option<i64>,
+    ) {
+        if saved.is_ok() {
+            self.facts.time_automatic = on;
+        }
+        self.clock
+            .saved(&mut self.tree, &self.facts, saved, sync_started_at);
+    }
+
+    /// Shows what the network clock's record (`record`, `None` before the first sync) and the
+    /// network adapter (`adapter`, `None` without one) say now; `sync_running`, whether the
+    /// sync this window started still runs (D224, section 9.4).
+    pub fn show_clock_sync(
+        &mut self,
+        record: Option<Record>,
+        adapter: Option<InterfaceStatus>,
+        sync_running: bool,
+    ) {
+        self.facts.clock_sync = record;
+        self.facts.network_adapter = adapter;
+        self.clock.show_sync(
+            &mut self.tree,
+            &self.facts,
+            record,
+            Adapter::of(adapter.as_ref()),
+            sync_running,
+        );
+    }
+
+    /// The `Date & time` pane's `Set automatically` (D224).
+    pub fn automatic_clock(&self) -> &AutomaticClock {
+        &self.clock
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pane_widget(&self, pane: usize) -> WidgetId {
+        self.widgets.panes[pane]
     }
 
     fn ask_to_set(&mut self) -> Option<Request> {
@@ -1655,6 +1747,9 @@ impl SettingsWindow {
                 .respond(&mut self.tree, response, now_ms, self.widgets.set_button)
         {
             return request;
+        }
+        if let Some(request) = self.clock.respond(response) {
+            return Some(request);
         }
         let widgets = self.widgets;
         match response {
@@ -1869,6 +1964,13 @@ mod tests {
 
     const DATE_AND_TIME_ROW: i32 = LIST_TOP + DATE_AND_TIME as i32 * SIDEBAR_ROW + 10;
 
+    fn manual() -> Facts {
+        Facts {
+            time_automatic: false,
+            ..Facts::example()
+        }
+    }
+
     fn press(window: &mut SettingsWindow, code: u16, character: u32) -> Option<Request> {
         let response = window.tree().handle(
             Input::Key {
@@ -1889,7 +1991,7 @@ mod tests {
     #[test]
     fn the_date_and_time_pane_is_laid_out_and_found_as_the_design_says() {
         use eggos_toolkit::geometry::Rect;
-        let mut window = SettingsWindow::new(Facts::example());
+        let mut window = SettingsWindow::new(manual());
         assert_eq!(PANES[DATE_AND_TIME], "Date & time");
         click(&mut window, 40, DATE_AND_TIME_ROW);
         assert_eq!(window.pane(), DATE_AND_TIME);
@@ -1897,16 +1999,16 @@ mod tests {
         let rect = |id: WidgetId| tree.rect(id).unwrap();
         assert_eq!(
             rect(window.widgets.set_field),
-            Rect::new(176 + 144, 110, 200, 28)
+            Rect::new(176 + 144, 150, 200, 28)
         );
         assert_eq!(
             rect(window.widgets.set_button),
-            Rect::new(176 + 352, 110, 96, 28)
+            Rect::new(176 + 352, 150, 96, 28)
         );
         let now = rect(window.widgets.now);
         assert_eq!((now.right(), now.y), (640 - 16, 76));
         let status = rect(window.widgets.status);
-        assert_eq!((status.x, status.y), (176 + 16, 156));
+        assert_eq!((status.x, status.y), (176 + 16, 196));
         assert_eq!(
             tree.text_of(window.widgets.now),
             Some("Thursday 29 October 2026, 14:05:09 UTC")
@@ -1941,7 +2043,7 @@ mod tests {
 
     #[test]
     fn typing_a_moment_and_enter_asks_to_set_the_clock_and_errors_keep_the_text() {
-        let mut window = SettingsWindow::new(Facts::example());
+        let mut window = SettingsWindow::new(manual());
         click(&mut window, 40, DATE_AND_TIME_ROW);
         let field = window.widgets().rect(window.widgets.set_field).unwrap();
         click(&mut window, field.x + 10, field.y + 10);
@@ -2002,7 +2104,7 @@ mod tests {
         let mut window = SettingsWindow::new(Facts {
             now_s: 12,
             hardware_clock: false,
-            ..Facts::example()
+            ..manual()
         });
         click(&mut window, 40, DATE_AND_TIME_ROW);
         assert_eq!(
@@ -2142,7 +2244,7 @@ mod tests {
     fn in_zone(name: &str) -> SettingsWindow {
         let mut window = SettingsWindow::new(Facts {
             time_zone: zone(name),
-            ..Facts::example()
+            ..manual()
         });
         click(&mut window, 40, DATE_AND_TIME_ROW);
         window
@@ -2183,7 +2285,7 @@ mod tests {
     #[test]
     fn typing_in_the_zone_field_lists_the_chosen_zone_then_the_matches() {
         let mut window = in_zone("UTC");
-        click(&mut window, 200, 236);
+        click(&mut window, 200, 296);
         type_text(&mut window, "par");
         assert_eq!(
             zone_rows(&window),
@@ -2205,7 +2307,7 @@ mod tests {
     #[test]
     fn arrows_in_the_list_choose_zones_and_a_refused_write_chooses_none() {
         let mut window = in_zone("UTC");
-        click(&mut window, 200, 236);
+        click(&mut window, 200, 296);
         type_text(&mut window, "par");
         assert_eq!(press(&mut window, key::DOWN, 0), None);
         let paramaribo = zone("America/Paramaribo");
@@ -2238,10 +2340,10 @@ mod tests {
     #[test]
     fn the_time_typed_to_set_is_the_chosen_zone_s_local_time() {
         let mut window = in_zone("Europe/Paris");
-        click(&mut window, 330, 120);
+        click(&mut window, 330, 160);
         type_text(&mut window, "2026-10-29 15:05");
         assert_eq!(
-            click(&mut window, 540, 120),
+            click(&mut window, 540, 160),
             Some(Request::SetTime(1_793_282_700))
         );
     }

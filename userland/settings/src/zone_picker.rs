@@ -33,13 +33,13 @@ pub struct PickerLayout {
 }
 
 impl PickerLayout {
-    /// The `Date & time` pane's (docs/ux/date-time-v0.3.md section 8).
+    /// The `Date & time` pane's (docs/ux/date-time-v0.3.md sections 8.2 and 9.2).
     pub const DATE_AND_TIME: Self = Self {
-        zone_line: 180,
-        facts_line: 200,
-        field: (16, 224, 304, 28),
-        count_line: 230,
-        list: (16, 260, 432, 72),
+        zone_line: 240,
+        facts_line: 260,
+        field: (16, 284, 304, 28),
+        count_line: 290,
+        list: (16, 320, 432, 72),
     };
     /// The first run's third page (docs/ux/first-run-accessibility-v0.3.md section 1.3).
     pub const FIRST_RUN: Self = Self {

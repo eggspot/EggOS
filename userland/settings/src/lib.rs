@@ -12,6 +12,7 @@ pub mod accessibility_pane;
 pub mod activity;
 pub mod agents_pane;
 pub mod art;
+pub mod automatic_clock;
 pub mod command;
 pub mod disk;
 pub mod facts;
