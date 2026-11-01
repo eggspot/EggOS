@@ -3,6 +3,7 @@ use crate::system::{CapturedRows, System};
 use crate::window_input::parse;
 use crate::wm::{USAGE_STATUS, number, open_device, refused, usage};
 use core::ffi::CStr;
+use eggos_commands::commands;
 use eggos_png::scale::{Downscale, MAX_FACTOR, factor_for, scaled_size};
 use eggos_png::{EncodeError, Encoder, EncoderWorkspace, PngSink};
 use eggos_runtime::errno::Errno;
@@ -161,8 +162,8 @@ fn positive(text: Option<&[u8]>) -> Result<Option<u32>, ()> {
 }
 
 pub fn capture<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let Some(parsed) = parse(arguments, &[b"-o", b"--max-width", b"--max-bytes"]) else {
-        return usage(output);
+    let Some(parsed) = parse(output, arguments, &commands::WM_CAPTURE) else {
+        return USAGE_STATUS;
     };
     if parsed.count != 1 {
         return usage(output);
@@ -533,6 +534,20 @@ mod tests {
             let (status, fake) = run(arguments, machine(10, 10));
             assert_eq!(status, 2, "{arguments:?}");
             assert_eq!(fake.capture_calls, 0);
+        }
+        for (arguments, error) in [
+            (
+                &[c"capture", c"--scale", c"2", c"129"][..],
+                "wm: unrecognized option '--scale'\n",
+            ),
+            (&[c"capture", c"-o"][..], "wm: option requires an argument -- 'o'\n"),
+            (
+                &[c"capture", c"129", c"--max-width"][..],
+                "wm: option '--max-width' requires an argument\n",
+            ),
+        ] {
+            let (_, fake) = run(arguments, machine(10, 10));
+            assert_eq!(fake.errors(), error, "{arguments:?}");
         }
     }
 }

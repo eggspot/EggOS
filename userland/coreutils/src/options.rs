@@ -2,7 +2,7 @@ use crate::output::Output;
 use crate::system::System;
 use crate::utilities::MAX_ARGUMENTS;
 use core::ffi::CStr;
-use eggos_commands::{CommandDefinition, OptionDefinition, ValueType, errors};
+use eggos_commands::{CommandDefinition, OptionDefinition, OptionValue, ValueType, errors};
 
 #[derive(Debug)]
 pub struct Operands<'a> {
@@ -26,6 +26,7 @@ pub struct Given<'a> {
     pub option: &'static OptionDefinition,
     pub value: Option<&'a [u8]>,
     terminated: Option<&'a CStr>,
+    second: Option<&'a CStr>,
 }
 
 impl<'a> Given<'a> {
@@ -34,7 +35,12 @@ impl<'a> Given<'a> {
             option,
             value: terminated.map(CStr::to_bytes),
             terminated,
+            second: None,
         }
+    }
+
+    fn with_second(self, second: Option<&'a CStr>) -> Self {
+        Self { second, ..self }
     }
 
     pub fn is_long(&self, name: &str) -> bool {
@@ -43,6 +49,26 @@ impl<'a> Given<'a> {
 
     pub fn value_as_c_string(&self) -> Option<&'a CStr> {
         self.terminated
+    }
+
+    pub fn second_value(&self) -> Option<&'a [u8]> {
+        self.second.map(CStr::to_bytes)
+    }
+}
+
+fn second_word<'a>(
+    kind: Option<OptionValue>,
+    first: Option<&CStr>,
+    arguments: &[&'a CStr],
+    index: &mut usize,
+) -> Result<Option<&'a CStr>, Refused> {
+    match kind {
+        Some(kind) if first.is_some() && kind.name.contains(' ') => {
+            let next = *arguments.get(*index).ok_or(Refused::Reported)?;
+            *index += 1;
+            Ok(Some(next))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -143,7 +169,14 @@ pub fn parse_defined<'a, S: System>(
                     }
                 },
             };
-            on_option(output, Given::of(option, value))?;
+            let Ok(second) = second_word(option.value, value, arguments, &mut index) else {
+                output.coded(
+                    &errors::USAGE,
+                    &[b"option '--", name, b"' requires an argument"],
+                );
+                return Err(Refused::Reported);
+            };
+            on_option(output, Given::of(option, value).with_second(second))?;
             continue;
         }
         let mut at = 1;
@@ -172,7 +205,14 @@ pub fn parse_defined<'a, S: System>(
                 );
                 return Err(Refused::Reported);
             };
-            on_option(output, Given::of(option, value))?;
+            let Ok(second) = second_word(option.value, value, arguments, &mut index) else {
+                output.coded(
+                    &errors::USAGE,
+                    &[b"option requires an argument -- '", &[letter], b"'"],
+                );
+                return Err(Refused::Reported);
+            };
+            on_option(output, Given::of(option, value).with_second(second))?;
             break;
         }
     }
@@ -277,6 +317,24 @@ mod tests {
         let (result, _, errors) = given_to(&commands::HEAD, &[c"-5"]);
         assert_eq!(result, Err(Refused::Reported));
         assert_eq!(errors, "t: invalid option -- '5'\n");
+    }
+
+    #[test]
+    fn a_value_named_with_two_words_takes_two() {
+        let mut output = Output::new(Fake::default(), b"t");
+        let mut points = Vec::new();
+        let arguments = [c"129", c"--at", c"10", c"20", c"0", c"-3"];
+        let parsed = parse_defined(&mut output, &arguments, &commands::WM_SCROLL, |_, given| {
+            points.push((given.value, given.second_value()));
+            Ok(())
+        });
+        let operands: Vec<&CStr> = parsed.unwrap().all().to_vec();
+        assert_eq!(operands, [c"129", c"0", c"-3"]);
+        assert_eq!(points, [(Some(&b"10"[..]), Some(&b"20"[..]))]);
+        let (result, _, errors) =
+            given_to(&commands::WM_SCROLL, &[c"1", c"0", c"0", c"--at", c"5"]);
+        assert_eq!(result, Err(Refused::Reported));
+        assert_eq!(errors, "t: option '--at' requires an argument\n");
     }
 
     #[test]

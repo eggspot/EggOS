@@ -3,11 +3,12 @@
 //! new` makes one and shows it; `wm desktop close <n>` closes one, its windows moving to the
 //! desktop before it; `wm desktop move <window> <n>` moves a window there without showing it.
 
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use crate::wm::open_device;
 use core::ffi::CStr;
-use eggos_commands::errors;
+use eggos_commands::{CommandDefinition, commands, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_runtime::errno::Errno;
 
@@ -23,6 +24,13 @@ const MOVE: u32 = 3;
 const USAGE: &[u8] =
     b"usage: wm desktop list [--json] | switch <n> | new | close <n> | move <window> <n>";
 const USAGE_STATUS: i32 = 2;
+const VERBS: [&CommandDefinition; 5] = [
+    &commands::WM_DESKTOP_LIST,
+    &commands::WM_DESKTOP_NEW,
+    &commands::WM_DESKTOP_SWITCH,
+    &commands::WM_DESKTOP_CLOSE,
+    &commands::WM_DESKTOP_MOVE,
+];
 
 /// The `wm desktop` lines `help` shows.
 pub const HELP: &[u8] =
@@ -147,15 +155,19 @@ pub fn desktop<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let Some((verb, rest)) = arguments.split_first() else {
         return usage(output);
     };
-    let rest = match rest.first() {
-        Some(first) if first.to_bytes() == b"--" => &rest[1..],
-        _ => rest,
-    };
     let verb = verb.to_bytes();
-    let json = rest.iter().any(|word| word.to_bytes() == b"--json");
-    let wanted = match (verb, rest) {
+    let Some(&definition) = VERBS
+        .iter()
+        .find(|definition| definition.words[2].as_bytes() == verb)
+    else {
+        return usage(output);
+    };
+    let Ok(parsed) = parse_defined(output, rest, definition, |_, _| Ok(())) else {
+        return USAGE_STATUS;
+    };
+    let json = output.is_json();
+    let wanted = match (verb, parsed.all()) {
         (b"list", []) => (None, 0, 0),
-        (b"list", [option]) if option.to_bytes() == b"--json" => (None, 0, 0),
         (b"new", []) => (Some(NEW), 0, 0),
         (b"switch", [n]) => match number(n) {
             Some(n) => (Some(SWITCH), n, 0),
@@ -256,5 +268,16 @@ mod tests {
         ] {
             assert_eq!(run(arguments).0, USAGE_STATUS, "{arguments:?}");
         }
+        assert_eq!(
+            run(&[c"new", c"--json"]),
+            (
+                USAGE_STATUS,
+                "wm: unrecognized option '--json'\n".to_owned()
+            )
+        );
+        assert_eq!(
+            run(&[c"switch", c"-x"]),
+            (USAGE_STATUS, "wm: invalid option -- 'x'\n".to_owned())
+        );
     }
 }

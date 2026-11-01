@@ -1,8 +1,9 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use crate::wm::{ACT_ON_ELEMENT, ACT_ON_ELEMENT_SIZE, USAGE_STATUS, number, open_device, refused};
 use core::ffi::CStr;
-use eggos_commands::errors;
+use eggos_commands::{commands, errors};
 use eggos_element_tree::{
     Action, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, act_on_element, elements, flags,
     put_word, read_word,
@@ -59,19 +60,10 @@ fn refused_tree<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) 
 }
 
 pub fn show<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let mut operands = arguments;
-    if let Some((first, rest)) = operands.split_first()
-        && first.to_bytes() == b"--json"
-    {
-        output.use_json();
-        operands = rest;
-    }
-    if let Some((first, rest)) = operands.split_first()
-        && first.to_bytes() == b"--"
-    {
-        operands = rest;
-    }
-    let [operand] = operands else {
+    let Ok(operands) = parse_defined(output, arguments, &commands::WM_SHOW, |_, _| Ok(())) else {
+        return USAGE_STATUS;
+    };
+    let [operand] = operands.all() else {
         return crate::wm::usage(output);
     };
     let operand = operand.to_bytes();
@@ -245,10 +237,10 @@ fn write_record<S: System>(output: &mut Output<S>, element: &Element<'_>) {
 }
 
 pub fn act<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let operands = match arguments.split_first() {
-        Some((first, rest)) if first.to_bytes() == b"--" => rest,
-        _ => arguments,
+    let Ok(parsed) = parse_defined(output, arguments, &commands::WM_ACT, |_, _| Ok(())) else {
+        return USAGE_STATUS;
     };
+    let operands = parsed.all();
     let (window, element, action, text) = match operands {
         [window, element, action] => (window, element, action, &b""[..]),
         [window, element, action, text] => (window, element, action, text.to_bytes()),
@@ -532,6 +524,33 @@ mod tests {
             assert_eq!(status, 2, "{arguments:?}");
         }
         assert_eq!(fake.acted.len(), 2, "the refused one sent nothing");
+    }
+
+    #[test]
+    fn show_and_act_parse_from_the_registry() {
+        let (status, json) = run(&[c"show", c"--json", c"129"], settings());
+        assert_eq!(status, 0);
+        let (status, after) = run(&[c"show", c"129", c"--json"], settings());
+        assert_eq!((status, after.output()), (0, json.output()));
+        let (status, fake) = run(&[c"act", c"--", c"129", c"302", c"select"], settings());
+        assert_eq!((status, fake.acted.len()), (0, 1));
+        for (arguments, error) in [
+            (&[c"show", c"-x", c"129"][..], "wm: invalid option -- 'x'\n"),
+            (
+                &[c"act", c"--json", c"129", c"302", c"invoke"][..],
+                "wm: unrecognized option '--json'\n",
+            ),
+            (
+                &[c"act", c"129", c"400", c"set-text", c"-x"][..],
+                "wm: invalid option -- 'x'\n",
+            ),
+        ] {
+            let (status, fake) = run(arguments, settings());
+            assert_eq!((status, fake.errors().as_str()), (2, error), "{arguments:?}");
+            assert!(fake.acted.is_empty());
+        }
+        let (status, _) = run(&[c"show", c"129", c"130"], settings());
+        assert_eq!(status, 2);
     }
 
     #[test]

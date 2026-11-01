@@ -1,8 +1,9 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::{Duration, System};
 use crate::wm::{SEND_INPUT, SEND_INPUT_SIZE, USAGE_STATUS, number, open_device, refused, usage};
 use core::ffi::CStr;
-use eggos_commands::errors;
+use eggos_commands::{CommandDefinition, commands, errors};
 use eggos_runtime::errno::Errno;
 
 pub const HELP: &[u8] = b"Window ids are the ones `wm list` shows; coordinates are pixels of the \
@@ -132,42 +133,34 @@ pub struct Arguments<'a> {
     pub label: Option<&'a [u8]>,
 }
 
-fn is_option(argument: &[u8]) -> bool {
-    argument.len() > 1 && argument[0] == b'-' && !argument[1].is_ascii_digit()
-}
-
-pub fn parse<'a>(arguments: &[&'a CStr], options: &[&[u8]]) -> Option<Arguments<'a>> {
+pub fn parse<'a, S: System>(
+    output: &mut Output<S>,
+    arguments: &[&'a CStr],
+    definition: &'static CommandDefinition,
+) -> Option<Arguments<'a>> {
     let mut parsed = Arguments::default();
-    let mut rest = arguments.iter();
-    let mut options_end = false;
-    while let Some(&argument) = rest.next() {
-        let bytes = argument.to_bytes();
-        if !options_end && bytes == b"--" {
-            options_end = true;
-            continue;
+    let operands = parse_defined(output, arguments, definition, |_, given| {
+        let value = given.value;
+        match (given.option.short, given.option.long) {
+            (Some(b'o'), _) => parsed.output_file = given.value_as_c_string(),
+            (_, Some("button")) => parsed.button = value,
+            (_, Some("max-width")) => parsed.max_width = value,
+            (_, Some("max-bytes")) => parsed.max_bytes = value,
+            (_, Some("choose")) => parsed.choose = true,
+            (_, Some("double")) => parsed.double = true,
+            (_, Some("label")) => parsed.label = value,
+            (_, Some("at")) => parsed.at = value.zip(given.second_value()),
+            _ => {}
         }
-        if !options_end && is_option(bytes) {
-            if !options.contains(&bytes) {
-                return None;
-            }
-            let mut value = || rest.next().map(|value| value.to_bytes());
-            match bytes {
-                b"-o" => parsed.output_file = Some(*rest.next()?),
-                b"--button" => parsed.button = Some(value()?),
-                b"--max-width" => parsed.max_width = Some(value()?),
-                b"--max-bytes" => parsed.max_bytes = Some(value()?),
-                b"--choose" => parsed.choose = true,
-                b"--double" => parsed.double = true,
-                b"--label" => parsed.label = Some(value()?),
-                b"--at" => {
-                    let x = value()?;
-                    parsed.at = Some((x, value()?));
-                }
-                _ => return None,
-            }
-            continue;
-        }
-        *parsed.positionals.get_mut(parsed.count)? = bytes;
+        Ok(())
+    })
+    .ok()?;
+    for operand in operands.all() {
+        let Some(slot) = parsed.positionals.get_mut(parsed.count) else {
+            usage(output);
+            return None;
+        };
+        *slot = operand.to_bytes();
         parsed.count += 1;
     }
     Some(parsed)
@@ -274,21 +267,17 @@ impl Sender {
 }
 
 pub fn send<S: System>(output: &mut Output<S>, verb: &[u8], arguments: &[&CStr]) -> i32 {
-    let options: &[&[u8]] = match verb {
-        b"click" => &[b"--button", b"--double"],
-        b"drag" => &[b"--button"],
-        b"scroll" => &[b"--at"],
-        _ => &[],
+    let definition = match verb {
+        b"click" => &commands::WM_CLICK,
+        b"drag" => &commands::WM_DRAG,
+        b"type" => &commands::WM_TYPE,
+        b"press" => &commands::WM_PRESS,
+        _ => &commands::WM_SCROLL,
     };
-    let Some(parsed) = parse(arguments, options) else {
-        return usage(output);
+    let Some(parsed) = parse(output, arguments, definition) else {
+        return USAGE_STATUS;
     };
-    let wanted = match verb {
-        b"click" | b"scroll" => 3,
-        b"drag" => 5,
-        _ => 2,
-    };
-    if parsed.count != wanted {
+    if parsed.count != definition.operands.len() {
         return usage(output);
     }
     let window_text = parsed.positionals[0];
@@ -1001,6 +990,50 @@ mod tests {
         assert_eq!(status, 2);
         let (status, _) = run(&[c"click", c"129", c"-1", c"1"], machine());
         assert_eq!(status, 2);
+    }
+
+    #[test]
+    fn the_input_verbs_parse_from_the_registry() {
+        let (status, fake) = run(
+            &[c"scroll", c"129", c"--at", c"5", c"6", c"0", c"-1"],
+            machine(),
+        );
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.sent_input,
+            [[129, KIND_WHEEL, 5, 6, 0, -1i32 as u32]]
+        );
+        let (status, fake) = run(
+            &[c"click", c"129", c"10", c"20", c"--button=right", c"--double"],
+            machine(),
+        );
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.sent_input,
+            [[129, KIND_DOUBLE_CLICK, 10, 20, 0x111, 0]]
+        );
+        for (arguments, error) in [
+            (
+                &[c"click", c"--frob", c"129", c"1", c"1"][..],
+                "wm: unrecognized option '--frob'\n",
+            ),
+            (
+                &[c"press", c"--double", c"129", c"a"][..],
+                "wm: unrecognized option '--double'\n",
+            ),
+            (
+                &[c"scroll", c"129", c"0", c"1", c"--at", c"5"][..],
+                "wm: option '--at' requires an argument\n",
+            ),
+            (
+                &[c"click", c"129", c"1", c"1", c"--button"][..],
+                "wm: option '--button' requires an argument\n",
+            ),
+        ] {
+            let (status, fake) = run(arguments, machine());
+            assert_eq!((status, fake.errors().as_str()), (2, error), "{arguments:?}");
+            assert!(fake.sent_input.is_empty());
+        }
     }
 
     #[test]
