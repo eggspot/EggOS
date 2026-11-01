@@ -92,6 +92,8 @@ integer in the machine's byte order unless marked 64; offsets are in bytes. Wind
 | `DESKTOP_ACTION` | `0xc0107723` (RW) | 16 | 0: action (0 switch, 1 new, 2 close, 3 move), 4: desktop (from 1), 8: window (for move); back: 12: the new desktop's number for new, the windows moved for close, else 0 | Switches to, makes, closes or moves a window to a desktop (D204); what `wm desktop` sends. `EINVAL` for an unknown action or desktop, `ENOENT` for no such window, `ENOSPC` for a ninth desktop, `EBUSY` for closing the last one; root only (`EPERM`). |
 | `SET_KEY_ACCESSIBILITY` | `0x400c7724` (W) | 12 | 0: sticky keys (0 or 1), 4: slow keys (0 or 1), 8: slow keys delay in ms (100 to 1000, read only when slow keys is 1) | Applies sticky keys and slow keys to the kernel's input layer at once (D205); what `settings set accessibility.*` and the Accessibility pane send. `EINVAL` for a delay out of range, `EPERM` from a process that is not root. |
 | `CHANGE_FLAGS` | `0x400c7725` (W) | 12 | 0: window, 4: mask, 8: values | Sets the client's own window's flags named in the mask to their bits in the values; only `PERSON_VIEW_ONLY` (8) may change on a live window (D193). `EINVAL` for another window, another flag in the mask, or a value bit outside it. |
+| `GET_PALETTE` | `0x80047727` (R) | 4 | 0: palette (out) | The desktop's palette index (D218): 0 dark, 1 light, plus 2 for high contrast; what `appearance.theme` held at boot or the last `SET_PALETTE`. A window created after a change asks it first. Any client. |
+| `SET_PALETTE` | `0x40047728` (W) | 4 | 0: palette | Makes that palette the desktop's at once: every window's client gets `PaletteChanged` and repaints in it (the toolkit's `application::run` does so itself). The palette is not saved: Settings and `settings set appearance.theme` save it. `EPERM` and `EINVAL` as `SET_PROFILE`. |
 
 Errors: a window that is not the client's, an unknown role, state, shape or action, unknown
 flags, a title too long or not UTF-8, a menu pool `SET_MENU` refuses, more than 8 rects: `EINVAL`; a role the client may not
@@ -123,6 +125,7 @@ nothing.
 | `Overflow` | 13 | records dropped | | | | the queue overflowed |
 | `MenuChosen` | 14 | menu index (from 0) | entry index in that menu (from 0, separators counted) | | | an item of the window's main menu (`SET_MENU`) was chosen, by a click or Enter, or by `CHOOSE_MENU` |
 | `Query` | 15 | serial | kind: 0 the element tree, 1 an action | element | action | another program asked for the window's element tree (`GET_TREE`) or an action on one element (`ACT_ON_ELEMENT`); answer it with `ANSWER_QUERY` within 500 ms (D161) |
+| `PaletteChanged` | 16 | palette index | | | | the desktop's palette changed (`SET_PALETTE`, D218): draw the whole window again in it |
 
 Each client's queue holds 256 records. When it is full, a `PointerMove` replaces the newest
 record if that is a `PointerMove` of the same window; otherwise the oldest record is dropped,
@@ -187,7 +190,11 @@ window (the root, id 1), 1 group, 2 label, 3 button, 4 checkbox, 5 radio group, 
 option or a card), 7 list, 8 list item, 9 text field (its text the value), 10 progress (its
 per mille the value), 11 graphic, 12 text (drawn text), 13 slider (its value `<value>
 <min>..<max> by <step>`, D199), 14 combo box (its value the chosen option's text, its options
-its children, D199); flags: 1 focused, 2 focusable, 4 disabled, 8 selected, 16 checked, 32
+its children, D199), 15 tooltip (its name the text, its value the shortcut, below its owner,
+listed whether or not it shows, D218), 16 menubar (its value the open title), 17 menuitem (a
+title or an item; an item's value its key), 18 table (its value `row <n> of <rows>`), 19 row
+(a shown row; its value every cell joined by tabs), 20 columnheader (its value `ascending` or
+`descending` when the table is sorted by it), 21 textarea (its value its text); flags: 1 focused, 2 focusable, 4 disabled, 8 selected, 16 checked, 32
 default, 64 expanded (D178), 128 person-only (its name and value left blank for agents,
 D193). `userland/element-tree` (`eggos-element-tree`)
 writes and reads them, and its `Query` decodes the record. The tree comes from the app: data,

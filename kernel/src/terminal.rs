@@ -265,6 +265,29 @@ pub fn desktop_profile() -> Profile {
     }
 }
 
+static CHOSEN_PALETTE: AtomicU8 = AtomicU8::new(0);
+
+/// How many palettes the desktop has: the dark and light themes, each with and without high
+/// contrast (D218).
+pub const PALETTES: u32 = 4;
+const APPEARANCE_THEME: &str = "appearance.theme";
+const LIGHT_PALETTE: u8 = 1;
+
+/// The desktop's palette index (D218): 0 dark, 1 light, plus 2 for high contrast; what the
+/// settings file's `appearance.theme` held at boot or the last `SET_PALETTE` set.
+pub fn desktop_palette() -> u32 {
+    u32::from(CHOSEN_PALETTE.load(Ordering::Relaxed))
+}
+
+/// Makes palette `index` the desktop's: every window's client is told at once, so each
+/// repaints in it.
+pub fn set_desktop_palette<P: Platform>(index: u32) {
+    CHOSEN_PALETTE.store(index as u8, Ordering::Relaxed);
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.set_palette(index, damage, events);
+    });
+}
+
 fn remember_profile(profile: Profile) {
     CHOSEN_PROFILE.store(profile.number() as u8 + 1, Ordering::Relaxed);
 }
@@ -316,6 +339,9 @@ pub fn load_saved_settings() {
         eggos_settings_file::keyboard_layout_set(&file[..length]),
         switch_key,
     );
+    if eggos_settings_file::value(&file[..length], APPEARANCE_THEME) == Some(&b"light"[..]) {
+        CHOSEN_PALETTE.store(LIGHT_PALETTE, Ordering::Relaxed);
+    }
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }

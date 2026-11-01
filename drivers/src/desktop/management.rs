@@ -230,6 +230,21 @@ impl Desktop {
         self.update_pointer(damage);
     }
 
+    /// Makes palette `index` the desktop's (D218): every window's client gets
+    /// `PaletteChanged` and the whole screen is drawn again.
+    pub fn set_palette(&mut self, index: u32, damage: &mut Damage, events: &mut dyn EventSink) {
+        for slot in 0..self.windows.len() {
+            if self.windows[slot].is_some() {
+                self.send(
+                    slot,
+                    EventRecord::new(event::PALETTE_CHANGED, 0, index as i32, 0, 0, 0),
+                    events,
+                );
+            }
+        }
+        damage.add(self.screen());
+    }
+
     /// The layout profile.
     pub fn profile(&self) -> super::Profile {
         self.profile

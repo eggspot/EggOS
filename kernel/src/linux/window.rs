@@ -86,6 +86,7 @@ pub fn ioctl<P: Platform>(
     let bytes = &mut bytes[..length];
     if number != request::GET_WORK_AREA
         && number != request::GET_PROFILE
+        && number != request::GET_PALETTE
         && number != request::GET_KEYBOARD_LAYOUT
         && number != request::APPS_CHANGED
     {
@@ -108,6 +109,7 @@ pub fn ioctl<P: Platform>(
     let changes_settings = matches!(
         request,
         Request::SetProfile { .. }
+            | Request::SetPalette { .. }
             | Request::SetKeyboardLayout { .. }
             | Request::SetKeyboardLayouts { .. }
             | Request::SetInputPreferences { .. }
@@ -330,6 +332,18 @@ pub fn ioctl<P: Platform>(
         Request::SetProfile { profile } => {
             let profile = Profile::from_number(profile).ok_or(Errno::EINVAL)?;
             set_desktop_profile::<P>(profile);
+        }
+        Request::GetPalette => {
+            put_word(bytes, 0, crate::terminal::desktop_palette());
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetPalette { palette } => {
+            if palette >= crate::terminal::PALETTES {
+                return Err(Errno::EINVAL);
+            }
+            crate::terminal::set_desktop_palette::<P>(palette);
         }
         Request::GetKeyboardLayout => {
             let flags = [
