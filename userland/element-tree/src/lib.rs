@@ -260,8 +260,11 @@ pub mod flags {
     /// Only a person may operate it: an agent's action on it is refused (D193, the controls
     /// that change agents' grants).
     pub const PERSON_ONLY: u16 = 128;
+    /// The window's app is not responding: the window server answered for it with the window
+    /// alone (D221).
+    pub const NOT_RESPONDING: u16 = 256;
     /// Every flag, with its name as `wm show` writes it, in order.
-    pub const NAMES: [(u16, &str); 8] = [
+    pub const NAMES: [(u16, &str); 9] = [
         (FOCUSED, "focused"),
         (FOCUSABLE, "focusable"),
         (DISABLED, "disabled"),
@@ -270,6 +273,7 @@ pub mod flags {
         (DEFAULT, "default"),
         (EXPANDED, "expanded"),
         (PERSON_ONLY, "person-only"),
+        (NOT_RESPONDING, "not-responding"),
     ];
 }
 

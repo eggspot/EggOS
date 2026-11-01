@@ -1924,6 +1924,30 @@ pub fn ask_init<P: Platform>(signal: u32) -> bool {
     true
 }
 
+/// Ends process `pid` with `SIGKILL` from the kernel, as the desktop's `End app` asks for an app
+/// that does not respond (D221); never init. Whether it was sent.
+pub fn kill_from_kernel<P: Platform>(pid: u32) -> bool {
+    let target = {
+        let table = process_table::TABLE.lock();
+        match pid == table.init() {
+            true => None,
+            false => table.target(pid),
+        }
+    };
+    let Some(running) = target.and_then(|target| target.running) else {
+        return false;
+    };
+    let Some(process) = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())
+    else {
+        return false;
+    };
+    send_from_outside::<P>(&process, &running.first_thread, Info::from_kernel(SIGKILL));
+    true
+}
+
 fn signal_ids<P: Platform>(process: &Process<P>) -> SignalIds {
     let credentials = process.credentials_and_limits().lock();
     let ids = credentials.credentials.ids(super::credentials::Kind::User);

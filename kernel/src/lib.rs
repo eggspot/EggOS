@@ -14,7 +14,6 @@ pub mod apps;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
 pub mod block;
-#[cfg(feature = "qemu-boot-clock")]
 pub mod boot_clock;
 pub mod clipboard;
 pub mod console;
@@ -81,7 +80,6 @@ pub const BOOT_MODE: BootMode = if cfg!(feature = "qemu-bench") {
 /// Returns how the boot went; the architecture entry point turns that into a machine exit. A
 /// release kernel returns only once init has ended, a failure.
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
-    #[cfg(feature = "qemu-boot-clock")]
     boot_clock::start::<P>();
     cpu::init_boot_cpu::<P>();
     let free_memory = P::memory_map();
