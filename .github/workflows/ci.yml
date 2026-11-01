@@ -549,7 +549,7 @@ jobs:
             target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
             target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: sdl3-${{ matrix.arch }}
           path: target/sdl-app/sdl3-${{ matrix.arch }}
