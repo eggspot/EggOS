@@ -1,5 +1,6 @@
-//! NSControl, NSButton and NSTextField (`docs/ux/macos-gui-v0.3.md` sections 2 and 3): a push
-//! button drawn as the toolkit's, which sends its action when a press is released inside it; an
+//! NSControl, NSButton and NSTextField (`docs/ux/macos-gui-v0.3.md` sections 2, 3 and 9): a
+//! button of any `NSButtonType` drawn as the toolkit's push button, toggle, checkbox or radio,
+//! which moves its state and sends its action when a press is released inside it; an
 //! editable text field drawn and edited as the toolkit's, which sends its action on Enter; and a
 //! label, plain text in its frame.
 
@@ -11,6 +12,7 @@ use super::{
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::{Runtime, methods};
+use eggos_macos_gui::button::{self as button_type, Family};
 use eggos_macos_gui::geometry::{Frame, Point};
 use eggos_macos_gui::keys::modifier;
 use eggos_macos_gui::paint;
@@ -44,6 +46,10 @@ struct ButtonFields {
     key_mask: u64,
     pressed: bool,
     inside: bool,
+    button_type: usize,
+    state: isize,
+    allows_mixed: bool,
+    alternate_title: Id,
 }
 
 #[repr(C)]
@@ -167,23 +173,92 @@ pub fn with_field_text<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
 
 /// Whether `object` is a button whose key equivalent is Return: its window's default button.
 pub fn is_default_button(object: Id) -> bool {
-    is(object, &NSBUTTON) && with_text(button(object).key_equivalent, |key| key == RETURN)
+    is(object, &NSBUTTON)
+        && matches!(family_of(object), Family::Push | Family::Toggle)
+        && with_text(button(object).key_equivalent, |key| key == RETURN)
 }
 
-/// Clicks `object` (a button): its action, as `performClick:`.
+/// Clicks `object` (a button), as `performClick:`: its state moves on, then its action.
 pub fn perform_click(object: Id) {
+    if control(object).disabled {
+        return;
+    }
+    let fields = button(object);
+    let family = button_type::family(fields.button_type);
+    let state = button_type::next_state(fields.state, fields.allows_mixed, family);
+    set_button_state(object, state);
     send_action(object);
 }
 
-extern "C" fn button_with_title(this: Id, _: Sel, title: Id, target: Id, action: Sel) -> Id {
-    let object = view::new_with_frame_of(this, Frame::default());
+/// The family `object`'s button type draws as.
+pub fn family_of(object: Id) -> Family {
+    button_type::family(button(object).button_type)
+}
+
+/// The state of the button `object` (`NSControlStateValue`).
+pub fn state_of(object: Id) -> isize {
+    button(object).state
+}
+
+fn group_key(object: Id) -> (usize, usize) {
+    (view::fields(object).superview as usize, control(object).action)
+}
+
+fn set_button_state(object: Id, state: isize) {
+    let fields = button(object);
+    let family = button_type::family(fields.button_type);
+    let state = button_type::stored_state(state, fields.allows_mixed, family);
+    if fields.state != state {
+        fields.state = state;
+        changed(object);
+    }
+    if family != Family::Radio || state != button_type::ON {
+        return;
+    }
+    let superview = view::fields(object).superview;
+    if superview.is_null() {
+        return;
+    }
+    let key = group_key(object);
+    let mut index = 0;
+    while let Some(&sibling) = view::fields(superview).subviews.as_slice().get(index) {
+        index += 1;
+        if sibling == object
+            || !is(sibling, &NSBUTTON)
+            || family_of(sibling) != Family::Radio
+            || !button_type::same_group(key, group_key(sibling))
+        {
+            continue;
+        }
+        if button(sibling).state != button_type::OFF {
+            button(sibling).state = button_type::OFF;
+            changed(sibling);
+        }
+    }
+}
+
+fn new_button(class: Id, title: Id, target: Id, action: Sel, kind: usize) -> Id {
+    let object = view::new_with_frame_of(class, Frame::default());
     if object.is_null() {
         return object;
     }
     store_copy(&mut button(object).title, title);
+    button(object).button_type = kind;
     control(object).target = target;
     control(object).action = action as usize;
     crate::foundation::autoreleased(object)
+}
+
+extern "C" fn button_with_title(this: Id, _: Sel, title: Id, target: Id, action: Sel) -> Id {
+    new_button(this, title, target, action, button_type::MOMENTARY_PUSH_IN)
+}
+
+extern "C" fn checkbox_with_title(this: Id, _: Sel, title: Id, target: Id, action: Sel) -> Id {
+    new_button(this, title, target, action, button_type::SWITCH)
+}
+
+extern "C" fn radio_with_title(this: Id, _: Sel, title: Id, target: Id, action: Sel) -> Id {
+    new_button(this, title, target, action, button_type::RADIO)
 }
 
 extern "C" fn button_init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
@@ -192,7 +267,64 @@ extern "C" fn button_init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
     }
     view::fields(this).frame = frame;
     store_copy(&mut button(this).title, string("Button"));
+    button(this).button_type = button_type::MOMENTARY_PUSH_IN;
     this
+}
+
+extern "C" fn set_button_type(this: Id, _: Sel, kind: usize) {
+    button(this).button_type = kind;
+    let state = button(this).state;
+    set_button_state(this, state);
+    changed(this);
+}
+
+extern "C" fn state(this: Id, _: Sel) -> isize {
+    button(this).state
+}
+
+extern "C" fn set_state(this: Id, _: Sel, state: isize) {
+    set_button_state(this, state);
+}
+
+extern "C" fn state_as_int(this: Id, _: Sel) -> i32 {
+    button(this).state as i32
+}
+
+extern "C" fn set_state_from_int(this: Id, _: Sel, state: i32) {
+    set_button_state(this, state as isize);
+}
+
+extern "C" fn allows_mixed_state(this: Id, _: Sel) -> u8 {
+    u8::from(button(this).allows_mixed)
+}
+
+extern "C" fn set_allows_mixed_state(this: Id, _: Sel, allows: u8) {
+    button(this).allows_mixed = allows != 0;
+    let state = button(this).state;
+    set_button_state(this, state);
+}
+
+extern "C" fn next_state(this: Id, _: Sel) -> isize {
+    let fields = button(this);
+    let family = button_type::family(fields.button_type);
+    button_type::next_state(fields.state, fields.allows_mixed, family)
+}
+
+extern "C" fn set_next_state(this: Id, sel: Sel) {
+    let state = next_state(this, sel);
+    set_button_state(this, state);
+}
+
+extern "C" fn alternate_title(this: Id, _: Sel) -> Id {
+    match button(this).alternate_title {
+        none if none.is_null() => string(""),
+        title => title,
+    }
+}
+
+extern "C" fn set_alternate_title(this: Id, _: Sel, title: Id) {
+    store_copy(&mut button(this).alternate_title, title);
+    changed(this);
 }
 
 extern "C" fn title(this: Id, _: Sel) -> Id {
@@ -257,7 +389,7 @@ extern "C" fn button_mouse_up(this: Id, _: Sel, event: Id) {
     fields.inside = false;
     changed(this);
     if clicked {
-        send_action(this);
+        perform_click(this);
     }
 }
 
@@ -267,15 +399,29 @@ extern "C" fn button_draw_rect(this: Id, _: Sel, _: Frame) {
     let fields = button(this);
     let pressed = fields.pressed && fields.inside;
     let mut title = Text::<TITLE_CAPACITY>::new();
-    with_text(fields.title, |text| title.set(text));
-    let primary = is_default_button(this);
+    with_text(fields.title, |main| {
+        with_text(fields.alternate_title, |alternate| {
+            title.set(button_type::shown_title(
+                fields.button_type,
+                fields.state,
+                pressed,
+                main,
+                alternate,
+            ));
+        });
+    });
+    let shown = button_type::Button {
+        family: button_type::family(fields.button_type),
+        title: title.as_str(),
+        state: fields.state,
+        primary: is_default_button(this),
+    };
     drawing::with_canvas(|canvas, height, origin, _, _| {
-        paint::button(
+        button_type::paint(
             canvas,
             height,
             Frame::new(origin.x, origin.y, size.width, size.height),
-            title.as_str(),
-            primary,
+            shown,
             Look {
                 pressed: pressed.then_some(0),
                 enabled,
@@ -435,6 +581,7 @@ extern "C" fn button_dealloc(this: Id, _: Sel) {
     let fields = button(this);
     store(&mut fields.title, core::ptr::null_mut());
     store(&mut fields.key_equivalent, core::ptr::null_mut());
+    store(&mut fields.alternate_title, core::ptr::null_mut());
     view::dispose(this);
 }
 
@@ -566,7 +713,19 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setKeyEquivalentModifierMask:" => set_key_mask,
         "performClick:" => perform_click_method,
         "setBezelStyle:" => ignore_word,
-        "setButtonType:" => ignore_word,
+        "setButtonType:" => set_button_type,
+        "state" => state,
+        "setState:" => set_state,
+        "integerValue" => state,
+        "setIntegerValue:" => set_state,
+        "intValue" => state_as_int,
+        "setIntValue:" => set_state_from_int,
+        "allowsMixedState" => allows_mixed_state,
+        "setAllowsMixedState:" => set_allows_mixed_state,
+        "nextState" => next_state,
+        "setNextState" => set_next_state,
+        "alternateTitle" => alternate_title,
+        "setAlternateTitle:" => set_alternate_title,
         "mouseDown:" => button_mouse_down,
         "mouseDragged:" => button_mouse_dragged,
         "mouseUp:" => button_mouse_up,
@@ -574,6 +733,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let button_class = methods![
         "buttonWithTitle:target:action:" => button_with_title,
+        "checkboxWithTitle:target:action:" => checkbox_with_title,
+        "radioButtonWithTitle:target:action:" => radio_with_title,
     ];
     let field_instance = methods![
         "dealloc" => field_dealloc,
