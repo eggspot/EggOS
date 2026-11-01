@@ -875,7 +875,7 @@ const MACOS_CONSOLE_CHECK_LINES: [&str; 23] = [
     "MACOS-CONSOLE status 0",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 25] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -894,6 +894,7 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 24] = [
     b"macos-objc bench; echo MACOS-CONSOLE status $?\r",
     b"macos-objc language; echo MACOS-CONSOLE status $?\r",
     b"macos-objc uncaught; echo MACOS-CONSOLE status $?\r",
+    b"macos-objc foundation; echo MACOS-CONSOLE status $?\r",
     b"macos-swift; echo MACOS-CONSOLE status $?\r",
     b"macos-swift conflict; echo MACOS-CONSOLE status $?\r",
     b"macos-swift fatal error; echo MACOS-CONSOLE status $?\r",
@@ -997,6 +998,21 @@ const OBJC_LANGUAGE_LINES: [&str; 27] = [
     "MACOS-OBJC timer 3 0",
     "MACOS-OBJC tick once",
     "MACOS-OBJC language done",
+    "MACOS-CONSOLE status 0",
+];
+
+const OBJC_FOUNDATION_LINES: [&str; 12] = [
+    "MACOS-OBJC heard EggNote v",
+    "MACOS-OBJC notes 1 1",
+    "MACOS-OBJC uuid E621E1F8-C36C-495A-93FC-0C247A3E6E5F 36 4 1",
+    "MACOS-OBJC encode 4 h\u{e9} 1",
+    "MACOS-OBJC files 1 1 1 1 1 1 4 NSFileTypeRegular 2",
+    "MACOS-OBJC files gone 1 0 4 NSCocoaErrorDomain",
+    "MACOS-OBJC later first",
+    "MACOS-OBJC mode waiting 1",
+    "MACOS-OBJC mode fired",
+    "MACOS-OBJC thread loop 1 0",
+    "MACOS-OBJC foundation done",
     "MACOS-CONSOLE status 0",
 ];
 
@@ -1120,7 +1136,7 @@ const OBJC_UNCAUGHT_LINES: [&str; 5] = [
     "MACOS-CONSOLE status 134",
 ];
 
-fn objc_program_output() -> [Vec<Line>; 6] {
+fn objc_program_output() -> [Vec<Line>; 7] {
     let whole = |line: &str| Line::Whole(line.to_owned());
     let loads = || OBJC_LOAD_LINES.iter().map(|line| whole(line));
     let mut program: Vec<Line> = loads().collect();
@@ -1153,6 +1169,8 @@ fn objc_program_output() -> [Vec<Line>; 6] {
     language.extend(OBJC_LANGUAGE_LINES.iter().map(|line| whole(line)));
     let mut uncaught: Vec<Line> = loads().collect();
     uncaught.extend(OBJC_UNCAUGHT_LINES.iter().map(|line| whole(line)));
+    let mut foundation: Vec<Line> = loads().collect();
+    foundation.extend(OBJC_FOUNDATION_LINES.iter().map(|line| whole(line)));
     [
         program,
         unrecognized,
@@ -1160,6 +1178,7 @@ fn objc_program_output() -> [Vec<Line>; 6] {
         bench,
         language,
         uncaught,
+        foundation,
     ]
 }
 
@@ -1191,6 +1210,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-std"),
             refused("macos-tools"),
             refused("macos-tools"),
+            refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
             refused("macos-objc"),
@@ -1264,6 +1284,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             "MACOS-CONSOLE status 0",
         ]),
         whole(&["macos-tools: invalid option -- x", "MACOS-CONSOLE status 2"]),
+        objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
         objc_program.next().unwrap_or_default(),
