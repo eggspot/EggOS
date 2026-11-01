@@ -164,10 +164,13 @@ impl<'a> Canvas<'a> {
 
     pub(super) fn text(&mut self, x: u32, y: u32, text: &str, colour: u32) {
         for (index, character) in text.chars().enumerate() {
-            self.glyph(
+            if character == ' ' {
+                continue;
+            }
+            self.glyph_rows(
                 x + index as u32 * GLYPH_WIDTH as u32,
                 y,
-                font::glyph_id(u32::from(character)),
+                font::glyph_rows(u32::from(character)),
                 colour,
             );
         }
@@ -209,11 +212,18 @@ impl<'a> Canvas<'a> {
     }
 
     fn glyph(&mut self, x: u32, y: u32, id: u8, colour: u32) {
-        let cell = Rect::new(x, y, GLYPH_WIDTH as u32, GLYPH_HEIGHT as u32);
-        if !cell.overlaps(&self.clip) || id == b' ' {
+        if id == b' ' {
             return;
         }
-        for (row, &bits) in font::rows(id).iter().enumerate() {
+        self.glyph_rows(x, y, font::rows(id), colour);
+    }
+
+    fn glyph_rows(&mut self, x: u32, y: u32, rows: &font::GlyphRows, colour: u32) {
+        let cell = Rect::new(x, y, GLYPH_WIDTH as u32, GLYPH_HEIGHT as u32);
+        if !cell.overlaps(&self.clip) {
+            return;
+        }
+        for (row, &bits) in rows.iter().enumerate() {
             for column in 0..GLYPH_WIDTH {
                 if bits & (0x80 >> column) != 0 {
                     self.pixel(x + column as u32, y + row as u32, colour);

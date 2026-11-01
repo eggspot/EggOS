@@ -156,7 +156,7 @@ fn ids_are_ascii_then_the_extras_in_the_design_s_order_else_the_question_mark() 
     assert_eq!(glyph_id('→' as u32), 0x9b);
     assert_eq!(glyph_id('↓' as u32), 0x9e);
     assert_eq!(glyph_id('▲' as u32), UP_TRIANGLE);
-    for unknown in [0x7f, 0x9f, 0x100, 0x178, 0x2501, 0x20ab, 0x1f600, 0x0a] {
+    for unknown in [0x7f, 0x9f, 0x180, 0x2501, 0x20ab, 0x1f600, 0x0a] {
         assert_eq!(glyph_id(unknown), REPLACEMENT, "U+{unknown:04X}");
         assert!(!covers(unknown), "U+{unknown:04X}");
     }
@@ -292,4 +292,94 @@ fn every_glyph_names_the_character_that_chose_it() {
     }
     assert_eq!(super::character(0x05), '?');
     assert_eq!(super::glyph_id(0x4e2d), super::REPLACEMENT);
+}
+
+fn design_glyphs(text: &str) -> Vec<(u32, GlyphRows)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut glyphs = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let Some(header) = line.strip_prefix("U+") else {
+            continue;
+        };
+        let code = u32::from_str_radix(&header[..4], 16).unwrap();
+        let mut rows = [0u8; GLYPH_HEIGHT];
+        for (row, bits) in rows.iter_mut().enumerate() {
+            for (column, pixel) in lines[at + 1 + row].bytes().enumerate() {
+                if pixel == b'#' {
+                    *bits |= 0x80 >> column;
+                }
+            }
+        }
+        glyphs.push((code, rows));
+    }
+    glyphs
+}
+
+#[test]
+fn egg_mono_draws_latin_extended_a_from_the_design_file() {
+    let glyphs = design_glyphs(include_str!("../../docs/ux/font-8x16-latin-ext-a.txt"));
+    assert_eq!(glyphs.len(), 128);
+    for (index, (code, rows)) in glyphs.iter().enumerate() {
+        assert_eq!(*code, 0x100 + index as u32);
+        assert_eq!(glyph_rows(*code), rows, "U+{code:04X}");
+        assert!(rows.iter().all(|row| row & 1 == 0), "U+{code:04X} column 7");
+        assert!(covers(*code));
+    }
+    assert!(covers(0x141));
+    assert!(!covers(0x180));
+    assert_eq!(glyph_rows(0x110), glyph_rows(0xd0));
+    let capital_bodies_kept = |accented: u32, plain: u8| {
+        glyph_rows(accented)[2..=12] == rows(plain)[2..=12]
+    };
+    assert!(capital_bodies_kept(0x100, b'A'));
+    assert!(capital_bodies_kept(0x160, b'S'));
+    assert!(capital_bodies_kept(0x178, b'Y'));
+    assert!(capital_bodies_kept(0x104, b'A'));
+    let small_bodies_kept = |accented: u32, plain: u8| {
+        glyph_rows(accented)[5..=12] == rows(plain)[5..=12]
+    };
+    assert!(small_bodies_kept(0x101, b'a'));
+    assert!(small_bodies_kept(0x161, b's'));
+    assert!(small_bodies_kept(0x17e, b'z'));
+    assert_eq!(glyph_rows(u32::from('A')), rows(b'A'));
+}
+
+#[test]
+fn folding_forgives_case_and_accents_both_ways() {
+    let fold = |character: char| ascii_fold(character).as_str().to_owned();
+    assert_eq!(fold('É'), "e");
+    assert_eq!(fold('ß'), "ss");
+    assert_eq!(fold('Œ'), "oe");
+    assert_eq!(fold('Ÿ'), "y");
+    assert_eq!(fold('Ł'), "l");
+    assert_eq!(fold('ı'), "i");
+    assert_eq!(fold('Þ'), "th");
+    assert_eq!(fold('€'), "€");
+    assert_eq!(fold('7'), "7");
+    assert_eq!(fold('×'), "×");
+    assert_eq!(fold('Q'), "q");
+    for (text, query) in [
+        ("Éditeur", "e"),
+        ("Straße", "strasse"),
+        ("Œuvre", "oe"),
+        ("Œuvre", "œ"),
+        ("Łódź", "lodz"),
+        ("Text Editor", "é"),
+        ("Files", ""),
+    ] {
+        assert!(contains_folded(text, query), "{text} {query}");
+    }
+    assert!(!contains_folded("Files", "z"));
+    for text in ["Files", "Text Editor", "Terminal", "a"] {
+        for query in ["f", "EDIT", "xt e", "q", "Terminals", ""] {
+            assert_eq!(
+                contains_folded(text, query),
+                text.to_ascii_lowercase().contains(&query.to_ascii_lowercase()),
+                "{text} {query}"
+            );
+        }
+    }
+    assert_eq!(cmp_folded("Dolphin", "Édition"), core::cmp::Ordering::Less);
+    assert_eq!(cmp_folded("Édition", "Files"), core::cmp::Ordering::Less);
+    assert_eq!(cmp_folded("Edition", "Édition"), core::cmp::Ordering::Less);
 }

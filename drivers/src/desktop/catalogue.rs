@@ -274,21 +274,11 @@ pub struct Catalogue {
 }
 
 fn contains_ignoring_case(text: &str, query: &str) -> bool {
-    let (text, query) = (text.as_bytes(), query.as_bytes());
-    query.is_empty()
-        || text
-            .windows(query.len())
-            .any(|window| window.eq_ignore_ascii_case(query))
-}
-
-fn lower(text: &str) -> impl Iterator<Item = u8> + '_ {
-    text.bytes().map(|byte| byte.to_ascii_lowercase())
+    crate::font::contains_folded(text, query)
 }
 
 fn ordered(first: &str, second: &str) -> core::cmp::Ordering {
-    lower(first)
-        .cmp(lower(second))
-        .then_with(|| first.cmp(second))
+    crate::font::cmp_folded(first, second)
 }
 
 impl Catalogue {
@@ -738,6 +728,17 @@ mod tests {
         );
         assert_eq!(found("notepad"), ["Text Editor"]);
         assert_eq!(found("gedit"), ["Text Editor"]);
+        assert_eq!(found("éditor"), ["Text Editor"]);
+        assert_eq!(found("PAÏNT"), ["Paint"]);
+    }
+
+    #[test]
+    fn the_search_and_the_order_forgive_accents() {
+        assert!(contains_ignoring_case("Éditeur", "e"));
+        assert!(contains_ignoring_case("Straße", "strasse"));
+        assert!(!contains_ignoring_case("Files", "z"));
+        assert_eq!(ordered("Dolphin", "Édition"), core::cmp::Ordering::Less);
+        assert_eq!(ordered("Édition", "Files"), core::cmp::Ordering::Less);
     }
 
     #[test]
