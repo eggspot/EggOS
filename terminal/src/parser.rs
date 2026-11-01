@@ -1,4 +1,5 @@
-use super::{Attributes, Terminal, TitleText, cell_flags, colours};
+use super::{Attributes, PATH_CAPACITY, Terminal, TitleText, cell_flags, colours};
+use alloc::vec::Vec;
 use eggos_font as font;
 
 pub(super) const MAX_PARAMETERS: usize = 16;
@@ -59,11 +60,16 @@ impl Parameters {
 enum Osc {
     Number(u16),
     Title,
+    Folder,
     Ignored,
 }
 
 const OSC_ICON_NAME_AND_TITLE: u16 = 0;
 const OSC_TITLE: u16 = 2;
+pub(super) const OSC_CURRENT_FOLDER: u16 = 7;
+pub(super) const FOLDER_URI_CAPACITY: usize = 3 * PATH_CAPACITY + 32;
+const FILE_SCHEME: &[u8] = b"file://";
+const LOCAL_HOST: &[u8] = b"localhost";
 
 #[derive(Debug)]
 pub(super) struct Parser {
@@ -77,6 +83,7 @@ pub(super) struct Parser {
     utf8_remaining: u8,
     osc: Osc,
     title_draft: TitleText,
+    folder_draft: Vec<u8>,
 }
 
 impl Parser {
@@ -92,6 +99,14 @@ impl Parser {
             utf8_remaining: 0,
             osc: Osc::Ignored,
             title_draft: TitleText::EMPTY,
+            folder_draft: Vec::new(),
+        }
+    }
+
+    fn string_capacity(&self) -> usize {
+        match self.osc {
+            Osc::Folder => FOLDER_URI_CAPACITY,
+            _ => usize::from(MAX_STRING_BYTES),
         }
     }
 
@@ -113,6 +128,13 @@ impl Parser {
                     self.title_draft = TitleText::EMPTY;
                     Osc::Title
                 }
+                b';' if number == OSC_CURRENT_FOLDER => {
+                    self.folder_draft.clear();
+                    match self.folder_draft.try_reserve(FOLDER_URI_CAPACITY) {
+                        Ok(()) => Osc::Folder,
+                        Err(_) => Osc::Ignored,
+                    }
+                }
                 _ => Osc::Ignored,
             },
             Osc::Title => {
@@ -121,7 +143,11 @@ impl Parser {
                 }
                 Osc::Title
             }
-            Osc::Ignored => Osc::Ignored,
+            Osc::Folder if self.folder_draft.len() < FOLDER_URI_CAPACITY => {
+                self.folder_draft.push(byte);
+                Osc::Folder
+            }
+            Osc::Folder | Osc::Ignored => Osc::Ignored,
         };
     }
 }
@@ -157,7 +183,7 @@ fn control(terminal: &mut Terminal, byte: u8) {
         BS => terminal.backspace(),
         HT => terminal.tab(),
         LF => terminal.line_feed(),
-        VT | FF => terminal.index_down(),
+        VT | FF => terminal.line_down(),
         CR => terminal.carriage_return(),
         ESC => {
             terminal.parser.state = State::Escape;
@@ -233,11 +259,11 @@ fn escape(terminal: &mut Terminal, byte: u8) {
         b'P' | b'X' | b'^' | b'_' => parser.start_string(Osc::Ignored),
         b'7' => terminal.save_cursor(),
         b'8' => terminal.restore_cursor(),
-        b'D' => terminal.index_down(),
+        b'D' => terminal.line_down(),
         b'M' => terminal.reverse_index(),
         b'E' => {
             terminal.carriage_return();
-            terminal.index_down();
+            terminal.line_down();
         }
         b'c' => terminal.reset(),
         _ => {}
@@ -300,8 +326,8 @@ fn string(terminal: &mut Terminal, byte: u8) {
         CAN | SUB => parser.state = State::Ground,
         ESC => parser.state = State::StringEscape,
         _ => {
-            parser.string_length += 1;
-            if parser.string_length > MAX_STRING_BYTES {
+            parser.string_length = parser.string_length.saturating_add(1);
+            if usize::from(parser.string_length) > parser.string_capacity() {
                 parser.state = State::Ground;
             } else {
                 parser.take_string_byte(byte);
@@ -312,11 +338,64 @@ fn string(terminal: &mut Terminal, byte: u8) {
 
 fn end_string(terminal: &mut Terminal) {
     terminal.parser.state = State::Ground;
-    if terminal.parser.osc == Osc::Title {
-        terminal.title = terminal.parser.title_draft;
-        terminal.title_changed = true;
+    match terminal.parser.osc {
+        Osc::Title => {
+            terminal.title = terminal.parser.title_draft;
+            terminal.title_changed = true;
+        }
+        Osc::Folder => {
+            let draft = core::mem::take(&mut terminal.parser.folder_draft);
+            if let Some(folder) = folder_of(&draft) {
+                terminal.folder = folder;
+                terminal.folder_changed = true;
+            }
+        }
+        _ => {}
     }
     terminal.parser.osc = Osc::Ignored;
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+pub(super) fn folder_of(uri: &[u8]) -> Option<Vec<u8>> {
+    let rest = uri.strip_prefix(FILE_SCHEME)?;
+    let slash = rest.iter().position(|&byte| byte == b'/')?;
+    let host = &rest[..slash];
+    if !host.is_empty() && host != LOCAL_HOST {
+        return None;
+    }
+    let path = &rest[slash..];
+    let mut folder = Vec::new();
+    folder.try_reserve(path.len().min(PATH_CAPACITY)).ok()?;
+    let mut index = 0;
+    while index < path.len() {
+        let byte = match path[index] {
+            b'%' => {
+                let high = hex_digit(*path.get(index + 1)?)?;
+                let low = hex_digit(*path.get(index + 2)?)?;
+                index += 3;
+                high << 4 | low
+            }
+            byte if byte < 0x20 || byte == DEL => return None,
+            byte => {
+                index += 1;
+                byte
+            }
+        };
+        if folder.len() == PATH_CAPACITY {
+            return None;
+        }
+        folder.push(byte);
+    }
+    core::str::from_utf8(&folder).ok()?;
+    Some(folder)
 }
 
 fn string_escape(terminal: &mut Terminal, byte: u8) {
@@ -400,6 +479,7 @@ fn set_private_mode(terminal: &mut Terminal, mode: u16, on: bool) {
         25 => terminal.modes.cursor_visible = on,
         47 | 1047 => terminal.use_alternate_screen(on, false),
         1049 => terminal.use_alternate_screen(on, true),
+        2004 => terminal.modes.bracketed_paste = on,
         _ => {}
     }
 }

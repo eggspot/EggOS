@@ -6,6 +6,11 @@ pub const TERM_FOREGROUND: u32 = 0x00d7_dee8;
 pub const TERM_CURSOR: u32 = 0x00f2_b33d;
 /// The design's `accent`: the scrollback mark.
 pub const ACCENT: u32 = 0x00f2_b33d;
+/// The fill of selected cells, `term.selection`.
+pub const TERM_SELECTION: u32 = 0x002e_4a6b;
+/// The ANSI colour drawn as [`TERM_FOREGROUND`] on [`TERM_SELECTION`]: bright black, too dim
+/// on the fill.
+pub const DIM_ON_SELECTION: u8 = 8;
 
 /// The colour index that means the terminal's own foreground or background.
 pub const DEFAULT_COLOUR: u8 = 16;

@@ -150,6 +150,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
         ("gfx_terminal_line", |_, n| gfx_terminal_line(n)),
         ("term_feed_line", |_, n| term_feed_line(n)),
         ("term_scroll_line", |_, n| term_scroll_line(n)),
+        ("term_reflow", |_, n| term_reflow(n)),
         ("gfx_compose_four_windows", |_, n| {
             gfx_compose_four_windows(n)
         }),
@@ -951,6 +952,20 @@ fn term_scroll_line(n: u64) {
         damage.clear();
         terminal.feed(black_box(b"\nscrolled"));
         terminal.render(black_box(&mut pixels), BENCH_STRIDE, 0, 0, &mut damage);
+    }
+}
+
+const REFLOW_GRIDS: [(u16, u16); 2] = [(BENCH_COLUMNS, BENCH_ROWS), (100, 30)];
+
+fn term_reflow(n: u64) {
+    let mut terminal = bench_terminal(BENCH_ROWS);
+    for _ in 0..eggos_drivers::terminal::HISTORY_LINES + usize::from(BENCH_ROWS) {
+        terminal.feed(SGR_LINE);
+        terminal.feed(b"\n");
+    }
+    for i in 0..n {
+        let (columns, rows) = REFLOW_GRIDS[(i as usize + 1) % 2];
+        black_box(terminal.resize(black_box(columns), rows));
     }
 }
 
@@ -2002,8 +2017,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 27..].split_at(20);
-        let benchmarks = &[&all[..all.len() - 27], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 28..].split_at(20);
+        let benchmarks = &[&all[..all.len() - 28], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -2036,6 +2051,7 @@ mod tests {
                 "gfx_terminal_line",
                 "term_feed_line",
                 "term_scroll_line",
+                "term_reflow",
                 "gfx_compose_four_windows",
                 "window_commit_line",
                 "window_hit_test"

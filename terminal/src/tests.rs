@@ -988,22 +988,50 @@ fn row_text_reads_the_characters_shown_without_trailing_spaces() {
 }
 
 #[test]
-fn a_narrower_grid_cuts_cells_for_good_and_a_wider_one_adds_blanks() {
+fn a_narrower_grid_reflows_lines_and_a_wider_one_joins_them_again() {
     let mut terminal = fed(10, 3, b"0123456789\r\nabcdefghij\r\nxy");
     assert!(terminal.resize(4, 3));
     assert_eq!(terminal.size(), (4, 3));
+    assert_eq!(screen_text(&terminal), ["efgh", "ij", "xy"]);
     assert_eq!(terminal.cursor(), (2, 2));
-    let mut text = [0u8; 16];
-    let length = terminal.row_text(0, &mut text);
-    assert_eq!(&text[..length], b"0123");
-    assert!(terminal.resize(8, 3));
-    let length = terminal.row_text(1, &mut text);
-    assert_eq!(&text[..length], b"abcd");
-    assert_eq!(terminal.line(1)[7], Cell::BLANK);
-    terminal.feed(b"\x1b[3;8Hz");
-    assert_eq!(terminal.line(2)[7].glyph, b'z');
+    assert_eq!(terminal.history_length(), 4);
+    assert_eq!(text(terminal.history_line(0)), "0123");
+    assert_eq!(terminal.row_flags(1), line_flags::WRAPPED);
+    assert_eq!(terminal.row_flags(2), 0);
+    assert!(terminal.take_selection_reset());
+    assert!(terminal.resize(10, 3));
+    assert_eq!(screen_text(&terminal), ["0123456789", "abcdefghij", "xy"]);
+    assert_eq!(terminal.history_length(), 0);
+    assert_eq!(terminal.cursor(), (2, 2));
     assert!(!terminal.resize(0, 3));
-    assert_eq!(terminal.size(), (8, 3));
+    assert_eq!(terminal.size(), (10, 3));
+}
+
+#[test]
+fn a_long_line_is_two_rows_at_80_columns_and_one_at_120_with_the_cursor_on_its_cell() {
+    let mut terminal = fed(80, 24, &[b'x'; 100]);
+    assert_eq!(terminal.row_flags(0), 0);
+    assert_eq!(terminal.row_flags(1), line_flags::WRAPPED);
+    terminal.feed(b"\x1b[2;16H");
+    assert!(terminal.resize(120, 24));
+    assert_eq!(row_text(&terminal, 0), "x".repeat(100));
+    assert_eq!(row_text(&terminal, 1), "");
+    assert_eq!(terminal.cursor(), (0, 95));
+    assert_eq!(terminal.row_flags(1), 0);
+    assert!(terminal.resize(80, 24));
+    assert_eq!(row_text(&terminal, 0), "x".repeat(80));
+    assert_eq!(row_text(&terminal, 1), "x".repeat(20));
+    assert_eq!(terminal.row_flags(1), line_flags::WRAPPED);
+    assert_eq!(terminal.cursor(), (1, 15));
+}
+
+#[test]
+fn a_reflowed_line_is_not_padded_past_its_last_written_cell() {
+    let mut terminal = fed(10, 4, b"0123456789ab");
+    assert!(terminal.resize(6, 4));
+    assert_eq!(screen_text(&terminal), ["012345", "6789ab", "", ""]);
+    assert_eq!(terminal.cursor(), (1, 5));
+    assert_eq!(terminal.row_flags(2), 0);
 }
 
 #[test]
@@ -1020,24 +1048,155 @@ fn a_shorter_grid_drops_blank_rows_below_the_cursor_then_moves_the_top_into_the_
         fed(6, 1, b"one").line(0)[..3]
     );
     assert_eq!(terminal.cursor(), (1, 4));
-    let mut text = [0u8; 8];
-    let length = terminal.row_text(0, &mut text);
-    assert_eq!(&text[..length], b"three");
-    assert!(terminal.resize(6, 5));
-    assert_eq!(
-        terminal.history_length(),
-        2,
-        "the scrollback is not pulled back"
-    );
-    assert_eq!(terminal.line(4), &[Cell::BLANK; 6]);
+    assert_eq!(row_text(&terminal, 0), "three");
     terminal.move_view(ViewMove::Oldest);
     assert_eq!(terminal.view_back(), 2);
-    assert!(terminal.resize(3, 5));
+    assert!(terminal.resize(5, 2));
     assert_eq!(terminal.view_back(), 0);
-    assert_eq!(
-        terminal.history_line(1)[..3],
-        fed(3, 1, b"two").line(0)[..3]
-    );
+}
+
+fn numbered_lines(count: usize) -> Vec<u8> {
+    (0..count)
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\r\n")
+        .into_bytes()
+}
+
+#[test]
+fn a_taller_grid_brings_lines_back_from_the_scrollback_before_adding_blank_rows() {
+    let mut terminal = fed(10, 4, &numbered_lines(14));
+    assert_eq!(terminal.history_length(), 10);
+    assert_eq!(terminal.cursor(), (3, 2));
+    assert!(terminal.resize(10, 10));
+    assert_eq!(terminal.history_length(), 4, "six lines came back");
+    assert_eq!(row_text(&terminal, 0), "4");
+    assert_eq!(terminal.cursor(), (9, 2), "the cursor's row moved down six");
+    let mut terminal = fed(10, 4, &numbered_lines(14));
+    assert!(terminal.resize(10, 20));
+    assert_eq!(terminal.history_length(), 0, "all ten came back");
+    assert_eq!(row_text(&terminal, 0), "0");
+    assert_eq!(terminal.cursor(), (13, 2));
+    assert!((14..20).all(|row| row_text(&terminal, row).is_empty()));
+}
+
+#[test]
+fn the_scrollback_keeps_the_newest_rows_when_a_narrower_grid_makes_more() {
+    let mut terminal = fed(20, 4, &numbered_lines(HISTORY_LINES + 4));
+    let long = [b'y'; 20];
+    terminal.feed(b"\r\n");
+    terminal.feed(&long);
+    assert!(terminal.resize(5, 4));
+    assert_eq!(terminal.history_length(), HISTORY_LINES);
+    assert_eq!(row_text(&terminal, 3), "yyyyy");
+}
+
+#[test]
+fn wrapped_rows_are_flagged_and_line_feeds_and_erases_clear_the_flag() {
+    let mut terminal = fed(4, 3, b"abcdef");
+    assert_eq!(terminal.row_flags(1), line_flags::WRAPPED);
+    terminal.feed(b"\x1b[1;1H\x1b[K");
+    assert_eq!(terminal.row_flags(1), 0, "erasing row 0's end ends the line");
+    let mut terminal = fed(4, 3, b"abcd\r\nx");
+    assert_eq!(terminal.row_flags(1), 0, "a line feed before the wrap");
+    terminal.feed(b"\x1b[1;1Habcdefgh");
+    assert_eq!(terminal.row_flags(1), line_flags::WRAPPED);
+    terminal.feed(b"\x1b[2J");
+    assert_eq!(terminal.row_flags(1), 0);
+    let mut terminal = fed(4, 2, b"abcdefgh\n");
+    assert_eq!(terminal.numbered_line(1).map(|(_, flags)| flags), Some(line_flags::WRAPPED));
+    assert_eq!(terminal.first_line_number(), 0);
+    terminal.feed(b"\x1bc");
+    assert!(terminal.take_selection_reset());
+    assert_eq!(terminal.row_flags(1), 0);
+}
+
+#[test]
+fn lines_keep_their_numbers_while_output_scrolls() {
+    let mut terminal = fed(10, 3, b"a\r\nb\r\nc");
+    assert_eq!(terminal.line_number_of_row(2), 2);
+    assert_eq!(terminal.last_line_number(), 2);
+    terminal.feed(b"\r\nd");
+    assert_eq!(terminal.row_of_line_number(2), Some(1));
+    assert_eq!(terminal.row_of_line_number(0), None);
+    assert_eq!(terminal.first_line_number(), 0);
+    assert_eq!(terminal.numbered_line(0).map(|(cells, _)| text(&cells[..1])), Some("a".to_string()));
+    terminal.move_view(ViewMove::Back(1));
+    assert_eq!(terminal.line_number_of_view_row(0), 0);
+    assert_eq!(terminal.view_row_of_line_number(2), Some(2));
+    terminal.feed(b"\x1b[3J");
+    assert!(terminal.take_selection_reset());
+    assert_eq!(terminal.numbered_line(0), None);
+}
+
+#[test]
+fn highlighted_cells_are_filled_with_the_selection_and_bright_black_is_drawn_bright() {
+    let mut terminal = fed(10, 2, b"ab cd\x1b[?25l");
+    terminal.set_highlight(Some(Highlight {
+        start: (0, 2),
+        end: (0, 3),
+    }));
+    let stride = 10 * GLYPH_WIDTH;
+    let mut pixels = vec![0u32; stride * 2 * GLYPH_HEIGHT];
+    let mut damage = Damage::new();
+    terminal.render(&mut pixels, stride, 0, 0, &mut damage);
+    assert_eq!(pixels[2 * GLYPH_WIDTH], TERM_SELECTION);
+    assert_eq!(pixels[5 * GLYPH_WIDTH], TERM_BACKGROUND);
+    let dim = Cell {
+        foreground: DIM_ON_SELECTION,
+        ..Cell::BLANK
+    };
+    assert_eq!(dim.colours_selected(true), (TERM_FOREGROUND, TERM_SELECTION));
+    assert_eq!(dim.colours_selected(false), dim.colours());
+    let highlight = Highlight {
+        start: (1, 4),
+        end: (3, 2),
+    };
+    assert_eq!(highlight.columns_of(1, 10), 4..10);
+    assert_eq!(highlight.columns_of(2, 10), 0..10);
+    assert_eq!(highlight.columns_of(3, 10), 0..2);
+    assert_eq!(highlight.columns_of(4, 10), 0..0);
+    terminal.feed(b"\x1b[?1049h");
+    assert_eq!(terminal.highlight(), None);
+    assert!(terminal.take_selection_reset());
+}
+
+#[test]
+fn bracketed_paste_is_a_mode_programs_turn_on() {
+    let mut terminal = terminal(10, 2);
+    assert!(!terminal.bracketed_paste());
+    terminal.feed(b"\x1b[?2004h");
+    assert!(terminal.bracketed_paste());
+    terminal.feed(b"\x1b[?2004l");
+    assert!(!terminal.bracketed_paste());
+}
+
+#[test]
+fn osc_7_reports_the_current_folder_from_a_local_file_url() {
+    let mut terminal = terminal(10, 2);
+    assert_eq!(terminal.current_folder(), None);
+    terminal.feed(b"\x1b]7;file:///a%20b\x07");
+    assert_eq!(terminal.current_folder(), Some("/a b"));
+    assert!(terminal.take_folder_change());
+    assert!(!terminal.take_folder_change());
+    terminal.feed(b"\x1b]7;file://localhost/x\x1b\\");
+    assert_eq!(terminal.current_folder(), Some("/x"));
+    for ignored in [
+        &b"\x1b]7;file://other/y\x07"[..],
+        b"\x1b]7;file://y\x07",
+        b"\x1b]7;file:///%zz\x07",
+        b"\x1b]7;file:///%ff\x07",
+        b"\x1b]7;http:///y\x07",
+    ] {
+        terminal.feed(ignored);
+        assert_eq!(terminal.current_folder(), Some("/x"));
+    }
+    assert!(terminal.take_folder_change());
+    let long = format!("\x1b]7;file:///{}\x07", "d".repeat(PATH_CAPACITY + 1));
+    terminal.feed(long.as_bytes());
+    assert_eq!(terminal.current_folder(), Some("/x"));
+    terminal.feed(b"ok");
+    assert_eq!(row_text(&terminal, 0), "ok");
 }
 
 #[test]

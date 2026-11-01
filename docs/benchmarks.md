@@ -120,6 +120,9 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 - `term_scroll_line`: a line feed at the bottom of an 80x24 terminal and its render (D114): the
   grid moved up a line into the scrollback, the pixels of 23 lines moved up instead of drawn
   again, the new line and the cursor drawn.
+- `term_reflow`: a resize of a terminal with a full scrollback between 80x24 and 100x30 (D222):
+  every logical line of the 256 scrollback rows and the screen laid out again at the new width,
+  the cursor kept on its cell; one resize per iteration, alternating the two sizes.
 - `gfx_compose_four_windows`: a 64x64 rectangle of a 1280x800 desktop where the terminal and
   four cascaded 658x430 windows overlap, composed from scratch (D127): the wallpaper, each
   window's shadow, chrome and content, the bar. The design's full-screen budget (four windows,
