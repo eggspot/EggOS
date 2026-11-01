@@ -134,13 +134,22 @@ const DEVICE_TAG: u8 = 0x82;
 /// The bytes the kernel asks a device's random number generator for at each reseed from it.
 pub const DEVICE_SEED_BYTES: usize = 32;
 
-/// Hashes `bytes` from a device's random number generator (virtio-rng) into the input, each
-/// byte credited with 8 bits as Linux credits virtio-rng, then reseeds ([`reseed`]); whether
-/// the generator is seeded (D219).
+/// Hashes `bytes` from a device's random number generator (virtio-rng) into the input,
+/// credited as [`device_credit`] says, then reseeds ([`reseed`]); whether the generator is
+/// seeded (D219).
 pub fn reseed_from_device<P: Platform>(bytes: &[u8]) -> bool {
-    let bits = u32::try_from(bytes.len()).map_or(u32::MAX, |length| length.saturating_mul(8));
-    add_input(DEVICE_TAG, bytes, bits);
+    add_input(DEVICE_TAG, bytes, device_credit(bytes));
     reseed::<P>()
+}
+
+/// How many bits a read of `bytes` from a device's random number generator is credited
+/// with: 8 a byte for a whole read of [`DEVICE_SEED_BYTES`] or more, none for a short read or
+/// one of zeros only, which a broken or hostile device gives (D219).
+pub fn device_credit(bytes: &[u8]) -> u32 {
+    if bytes.len() < DEVICE_SEED_BYTES || bytes.iter().all(|&byte| byte == 0) {
+        return 0;
+    }
+    u32::try_from(bytes.len()).map_or(u32::MAX, |length| length.saturating_mul(8))
 }
 
 /// Hashes `bytes` a program wrote to `/dev/random` or `/dev/urandom` into the input without
@@ -379,6 +388,21 @@ mod tests {
         reseed_from_device::<P>(&[7; DEVICE_SEED_BYTES]);
         assert!(GENERATION.load(Ordering::Acquire) > generation);
         assert!(is_seeded());
+    }
+
+    #[test]
+    fn a_device_s_short_or_all_zero_read_is_hashed_but_not_credited() {
+        assert_eq!(device_credit(&[7; DEVICE_SEED_BYTES]), 8 * DEVICE_SEED_BYTES as u32);
+        assert_eq!(device_credit(&[0; DEVICE_SEED_BYTES]), 0);
+        assert_eq!(device_credit(&[7; DEVICE_SEED_BYTES - 1]), 0);
+        assert_eq!(device_credit(&[]), 0);
+        let mut one_bit = [0u8; DEVICE_SEED_BYTES];
+        one_bit[DEVICE_SEED_BYTES - 1] = 1;
+        assert_eq!(device_credit(&one_bit), 8 * DEVICE_SEED_BYTES as u32);
+        let generation = GENERATION.load(Ordering::Acquire);
+        reseed_from_device::<P>(&[0; DEVICE_SEED_BYTES]);
+        reseed_from_device::<P>(&[7; 4]);
+        assert!(GENERATION.load(Ordering::Acquire) > generation, "still hashed and reseeded");
     }
 
     #[test]
