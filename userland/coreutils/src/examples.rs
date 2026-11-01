@@ -1,4 +1,4 @@
-use crate::fake::{Fake, FakeWindow};
+use crate::fake::{Fake, FakeTerminal, FakeWindow};
 use crate::system::FileSystemUsage;
 use crate::utilities::{Utility, run};
 use core::ffi::CStr;
@@ -39,6 +39,7 @@ fn machine() -> Fake {
         )
         .with_link("/proc/self", "7");
     fake.now = 1_793_282_709;
+    fake.terminal = Some(FakeTerminal::default());
     fake.file_systems = vec![(
         b"/home".to_vec(),
         FileSystemUsage {

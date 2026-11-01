@@ -155,6 +155,44 @@ pub struct FakeWindow {
     pub title: Vec<u8>,
 }
 
+/// A terminal on standard input and at [`FAKE_TERMINAL_PATH`], for `stty`: its settings and window
+/// size, and how often a new size reached its foreground group (`SIGWINCH`).
+#[derive(Debug, Clone)]
+pub struct FakeTerminal {
+    pub settings: [u8; crate::stty::SETTINGS_SIZE],
+    pub window: [u8; crate::stty::WINDOW_SIZE_SIZE],
+    pub window_size_changes: usize,
+}
+
+/// Where the fake terminal also opens.
+pub const FAKE_TERMINAL_PATH: &[u8] = b"/dev/pts/0";
+
+impl Default for FakeTerminal {
+    fn default() -> Self {
+        let mut terminal = Self {
+            settings: crate::stty::Settings::pseudo_terminal().to_bytes(),
+            window: [0; crate::stty::WINDOW_SIZE_SIZE],
+            window_size_changes: 0,
+        };
+        terminal.set_window_size(24, 80);
+        terminal
+    }
+}
+
+impl FakeTerminal {
+    pub fn set_window_size(&mut self, rows: u16, columns: u16) {
+        self.window[0..2].copy_from_slice(&rows.to_ne_bytes());
+        self.window[2..4].copy_from_slice(&columns.to_ne_bytes());
+    }
+
+    pub fn window_size(&self) -> (u16, u16) {
+        (
+            u16::from_ne_bytes([self.window[0], self.window[1]]),
+            u16::from_ne_bytes([self.window[2], self.window[3]]),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OpenFile {
     path: Vec<u8>,
@@ -209,6 +247,7 @@ pub struct Fake {
     pub working_directory: String,
     pub network: FakeNetwork,
     pub file_systems: Vec<(Vec<u8>, FileSystemUsage)>,
+    pub terminal: Option<FakeTerminal>,
     open: Vec<Option<OpenFile>>,
     next_inode: u64,
 }
@@ -276,6 +315,7 @@ impl Default for Fake {
             working_directory: "/".to_owned(),
             network: FakeNetwork::default(),
             file_systems: Vec::new(),
+            terminal: None,
             open: Vec::new(),
             next_inode: 1,
         }
@@ -432,6 +472,38 @@ impl Fake {
                 .then(|| (name.to_vec(), matches!(node, Node::Directory)))
         }));
         children
+    }
+
+    fn terminal_control(
+        &mut self,
+        descriptor: usize,
+        request: u32,
+        argument: &mut [u8],
+    ) -> Option<Result<(), Errno>> {
+        use crate::stty::{TCGETS, TCSETSW, TIOCGWINSZ, TIOCSWINSZ};
+        let names_terminal = descriptor == STANDARD_INPUT
+            || self
+                .file(descriptor)
+                .is_ok_and(|file| file.path == FAKE_TERMINAL_PATH);
+        if !names_terminal {
+            return None;
+        }
+        let Some(terminal) = self.terminal.as_mut() else {
+            return Some(Err(Errno::ENOTTY));
+        };
+        match request {
+            TCGETS => argument.copy_from_slice(&terminal.settings),
+            TCSETSW => terminal.settings.copy_from_slice(argument),
+            TIOCGWINSZ => argument.copy_from_slice(&terminal.window),
+            TIOCSWINSZ => {
+                if terminal.window[..] != argument[..] {
+                    terminal.window.copy_from_slice(argument);
+                    terminal.window_size_changes += 1;
+                }
+            }
+            _ => return Some(Err(Errno::ENOTTY)),
+        }
+        Some(Ok(()))
     }
 
     fn file(&mut self, descriptor: usize) -> Result<&mut OpenFile, Errno> {
@@ -879,6 +951,9 @@ impl System for Fake {
     ) -> Result<(), Errno> {
         if !crate::system::argument_fits(request, argument.len()) {
             return Err(Errno::EINVAL);
+        }
+        if let Some(result) = self.terminal_control(descriptor, request, argument) {
+            return result;
         }
         let path = self.file(descriptor)?.path.clone();
         if path == eggos_android_properties::AREA_PATH.to_bytes() {

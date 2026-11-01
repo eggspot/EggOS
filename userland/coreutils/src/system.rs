@@ -9,7 +9,11 @@ pub const STANDARD_ERROR: usize = 2;
 
 pub const STATX_SIZE: usize = 256;
 
-const SIZELESS_REQUESTS: [(u32, usize); 2] = [
+const SIZELESS_REQUESTS: [(u32, usize); 6] = [
+    (crate::stty::TCGETS, crate::stty::SETTINGS_SIZE),
+    (crate::stty::TCSETSW, crate::stty::SETTINGS_SIZE),
+    (crate::stty::TIOCGWINSZ, crate::stty::WINDOW_SIZE_SIZE),
+    (crate::stty::TIOCSWINSZ, crate::stty::WINDOW_SIZE_SIZE),
     (
         eggos_android_log::SNAPSHOT_REQUEST,
         eggos_android_log::SNAPSHOT_SIZE,

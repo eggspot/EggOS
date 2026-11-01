@@ -2388,11 +2388,23 @@ pub const EDIT: CommandDefinition = CommandDefinition {
 /// `terminal`, the terminal program (D187).
 pub const TERMINAL: CommandDefinition = CommandDefinition {
     words: &["terminal"],
-    summary: "Opens a terminal window running the shell.",
+    summary: "Opens a terminal window running the shell or a program.",
     description: "Opens a new terminal window, with the shell running in the current folder, \
-                  and returns at once; the window closes when its shell ends.",
-    options: &[],
-    operands: &[],
+                  and returns at once; the window closes when its shell ends. -e runs the \
+                  rest of the line as a program and its arguments instead (found through \
+                  PATH): its window closes when it exits with 0 and otherwise stays, saying \
+                  how it ended. -t names the window.",
+    options: &[
+        valued(
+            Some(b't'),
+            None,
+            "title",
+            ValueType::Text,
+            "The window's title, before \" - Terminal\".",
+        ),
+        flag(b'e', "Run the rest of the line, a program and its arguments, instead of the shell."),
+    ],
+    operands: &[operand("program", ValueType::Text, Count::ZeroOrMore)],
     outputs: NOTHING,
     max_effect: Effect::Change,
     errors: &[
@@ -2580,6 +2592,48 @@ pub const SLEEP: CommandDefinition = CommandDefinition {
     errors: &[exits(&USAGE, 1)],
     examples: &[example("sleep 0", "")],
     surface: Surface::NoGui("sleep is for scripts"),
+};
+
+/// `stty`.
+pub const STTY: CommandDefinition = CommandDefinition {
+    words: &["stty"],
+    summary: "Shows or changes the terminal's settings and size.",
+    description: "Without words, shows the speed and the settings that differ from sane ones; \
+                  size prints the rows and columns; -a shows every setting, -g a form stty \
+                  takes back. Words set modes (echo, -echo, raw, sane, ...), control characters \
+                  (intr ^C, erase undef), min and time, and rows and cols, which tell the \
+                  programs a new size. Works on standard input, or on the terminal -F names.",
+    options: &[
+        OptionDefinition {
+            short: Some(b'a'),
+            long: Some("all"),
+            value: None,
+            repeatable: false,
+            default: None,
+            help: "Show every setting.",
+        },
+        OptionDefinition {
+            short: Some(b'g'),
+            long: Some("save"),
+            value: None,
+            repeatable: false,
+            default: None,
+            help: "Show the settings as one word stty takes back.",
+        },
+        valued(
+            Some(b'F'),
+            Some("file"),
+            "device",
+            ValueType::Path,
+            "The terminal to use instead of standard input.",
+        ),
+    ],
+    operands: &[operand("setting", ValueType::Text, Count::ZeroOrMore)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 1), exits(&FAILED, 1)],
+    examples: &[example("stty size", "24 80\n")],
+    surface: Surface::Gui("a terminal window's size indicator, as it is resized"),
 };
 
 /// `sync`.
@@ -3127,7 +3181,7 @@ pub const DISK_REPAIR: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 90] = [
+pub static COMMANDS: [CommandDefinition; 91] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -3185,6 +3239,7 @@ pub static COMMANDS: [CommandDefinition; 90] = [
     SETTINGS_LIST,
     SETTINGS_SET,
     SLEEP,
+    STTY,
     SYNC,
     TAIL,
     TASKSET,
