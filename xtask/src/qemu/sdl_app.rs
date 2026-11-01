@@ -174,13 +174,15 @@ fn play_and_save(boot: &mut Boot<'_>, screen: &mut Screen, area: Rect) -> Result
     }
     press(screen, 'S')?;
     std::thread::sleep(SETTLE);
+    picture(screen, arch, "-sdl-app-save-prompt")?;
     tap(screen, "ret")?;
     std::thread::sleep(SETTLE);
+    picture(screen, arch, "-sdl-app-saved")?;
     tap(screen, "ret")?;
     Ok(())
 }
 
-fn wait_for_exit(boot: &mut Boot<'_>, prompts: usize) -> Result<(), String> {
+fn wait_for_exit(boot: &mut Boot<'_>, screen: &mut Screen, prompts: usize) -> Result<(), String> {
     let started = Instant::now();
     loop {
         boot.console.extend(boot.output.try_iter().flatten());
@@ -188,6 +190,7 @@ fn wait_for_exit(boot: &mut Boot<'_>, prompts: usize) -> Result<(), String> {
             return Ok(());
         }
         if started.elapsed() > EXIT_TIMEOUT {
+            let _ = picture(screen, boot.arch, "-sdl-app-not-ended");
             return Err(boot.fail(format!(
                 "{}: Brogue did not end within {}s of saving",
                 boot.arch.name,
@@ -298,7 +301,7 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     type_line(&mut boot, &open_line())?;
     let area = wait_for_window(&mut boot, &mut screen, &before)?;
     play_and_save(&mut boot, &mut screen, area)?;
-    wait_for_exit(&mut boot, 5)?;
+    wait_for_exit(&mut boot, &mut screen, 5)?;
     type_line(&mut boot, &after_line())?;
     boot.wait_for_prompts(6)?;
     type_line(&mut boot, POWER_OFF)?;

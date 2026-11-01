@@ -557,6 +557,15 @@ jobs:
       - name: A real SDL app, Brogue CE, installs, opens, plays a few turns, saves and closes inside EggOS
         run: cargo xtask sdl-app --arch ${{ matrix.arch }}
 
+      - name: Keep the SDL app test's screenshots when it fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdl-app-screenshots-${{ matrix.arch }}
+          path: target/screendump-${{ matrix.arch }}-sdl-app*.ppm
+          retention-days: 7
+          if-no-files-found: ignore
+
   win32-app:
     needs: changes
     if: needs.changes.outputs.code == 'true'
