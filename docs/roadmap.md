@@ -334,8 +334,10 @@ D16):
     and its shapes, Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu (Alt+Space),
     show desktop, the 2 s rule for a program that does not answer a close request, and the
     `wm` command. Since then: a profile setting (item 34), `wm`'s MCP tools, windows partly off
-    the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186). Next: windows
-    partly off the left edge.
+    the right and bottom edges, F11, the `Hand` and `Busy` pointers (D186); windows partly off
+    the left edge, the server's own `Busy` and ` (not responding)` for any window whose app
+    leaves an event unread for 2 s with an End app dialog, the `Working` pointer, the
+    launcher's caret blink (D221). Next: the phone and TV versions of `Working` and End app.
 32. **done** — users can now run Windows GUI programs from `eggsh` and see their windows on
     the desktop (D129, docs/windows-programs.md): x64 on x86_64 and ARM64 on aarch64, the
     layer's own user32 and gdi32 over `/dev/window`: window classes, windows with EggOS's

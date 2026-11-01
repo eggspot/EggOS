@@ -258,7 +258,7 @@ the command model's error, `{"error":{"code","category","message","fix","fix_com
 `path_not_allowed` (refused), `needs_grant`, `needs_confirmation`, `declined_by_user`
 (declined), `confirmation_failed` (failed), `confirmation_timed_out` (timeout),
 `question_pending` and `target_changed` (busy), `person_active` (busy, a person is using the
-machine), `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed`,
+machine), `not_responding` (busy, the window's app has left an event unread for 2 s, D221), `audit_failed`, `audit_full`, `request_id_too_long`, `capture_failed`,
 `is_a_folder`, `no_such_file` and `no_such_app`; the text is the same as before. Agents rely
 on the category; the session's `instructions` (generated from the registry) teach the verbs,
 the effects, the categories and `fix_command`. A command that fails gives its error output and

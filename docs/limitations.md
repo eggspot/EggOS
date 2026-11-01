@@ -448,18 +448,22 @@ restore it (its green control, a double-click on the title bar, Super+Up and Sup
 it to a half (Super+Left and Super+Right), minimise it to a chip in the bar, open its window
 menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the pointer is drawn
 by the GPU's cursor (D186), in the shape of a resize zone or of what a program asks for, the
-hand and the hourglass included. A boot screen shows the boot's progress until the first
-prompt; a window dragged by its title bar may hang off the right and bottom edges; F11 shows
+hand and the hourglass included, and `Working` (the arrow with a small hourglass) while an app
+it started has no window yet. A window whose app leaves an event unread for 2 s says ` (not
+responding)`, shows the hourglass over its content and, after 5 s more, offers `End app` (D221).
+A boot screen shows the boot's progress until the first prompt, and the serial console says
+`boot: desktop <ms>`; a window may hang off the left, right and bottom edges, keeping its title
+bar's grab inside, and the launcher's caret blinks; F11 shows
 the desktop in the macOS profile; a display smaller than about 658x458 shows the terminal on
 the whole screen instead of the desktop. Settings (`settings`, [Settings](settings.md), D132)
 picks the layout profile, Windows, macOS or Linux habits (the controls' side and the
 shortcuts), kept on the disk across reboots. Not yet:
-- dragging a window partly off the left edge (window positions are unsigned); a window the
-  desktop moves for itself (a restore, a new size) is put back wholly inside the work area;
-- the server's `Busy` pointer shows only over a window that left a close request unread for
-  0.5 s, not over every window that stops reading its events; the boot screen's serial lines
-  are `boot: display`, `boot: input` and `boot: init` (no `boot: desktop <ms>` line yet); the
-  composite arrow-and-hourglass pointer; Mac apps choose no pointer shape (no `NSCursor`);
+- Mac apps choose no pointer shape (no `NSCursor`); `Working` does not end when the started
+  program exits without a window (it ends after 5 s); `reduce_motion` is not a setting yet, so
+  the launcher's caret always blinks; the phone and TV versions of `Working`, `Busy` and the
+  End app dialog (the launcher's `Starting <name>...`, the bottom sheet, D221); the release
+  kernel's serial line has no first-frame time (only the `qemu-boot-clock` kernel's
+  `boot_to_desktop`);
 - a display that changes size while EggOS runs (the GPU's mode change events) keeps its first
   layout;
 - resizing the console's window: its grid stays 80x24 (terminal windows resize and reflow, D187,
@@ -467,8 +471,8 @@ shortcuts), kept on the disk across reboots. Not yet:
   mode, rectangular selection, copy with colours, search, URL detection, tabs or panes
   (docs/ux/terminal-selection-v0.3.md sections 7 and 10); its close question keeps its 400 px
   panel in a window narrower than 416 px (section 5); `stty` has no `ispeed` or `ospeed`;
-- the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
-  blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
+- the phone layout of the shell, 2x, dragging or arranging desktop icons and keyboard focus in
+  the Linux launcher's dash (D133);
 - removing or installing the Windows or macOS layer on its own (the component manager, D18,
   D152), and `app install --force`: `app install` refuses a program whose layer is not in the
   image, which on the release images happens only on riscv64 (D134, docs/apps.md);

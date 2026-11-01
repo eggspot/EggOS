@@ -178,6 +178,13 @@ Two results per architecture come from the release kernel rather than the benchm
   The count depends on QEMU's version (x86_64 is 20% apart between Ubuntu 24.04's QEMU 8.2.2
   and QEMU 10.2.2), so it is gated only on the version of the baseline's `<arch> qemu` line,
   CI's.
+- `boot_to_desktop` (D221): guest time from the start of `boot` to the frame that ends the
+  boot screen and shows the desktop, read by the same `qemu-boot-clock` kernel booted a second
+  time under `-icount`, this time with the virtio GPU; QEMU-dependent like `boot_to_prompt`.
+  The GPU is polled, so its completions may arrive at host-dependent times: the result is kept
+  only while repeated runs on one machine give the same number. The serial console of every
+  kernel also says `boot: desktop <ms>`, the wall-clock milliseconds to the desktop being made,
+  just before `boot: terminal`.
 - `release_image_bytes`: the size in bytes of the image `cargo xtask release` ships. Gated
   exactly: any growth fails until the baseline line is updated with the reason (CLAUDE.md,
   note 8).
