@@ -51,9 +51,14 @@ impl ObjectMemory for ProgramMemory {
         // SAFETY: as in `u64_at`.
         unsafe { (address as *const i32).read_unaligned() }
     }
+
+    fn u8_at(&self, address: u64) -> u8 {
+        // SAFETY: as in `u64_at`; a type descriptor's name is NUL-terminated.
+        unsafe { (address as *const u8).read() }
+    }
 }
 
-fn terminate_with(reason: &[u8]) -> ! {
+pub(super) fn terminate_with(reason: &[u8]) -> ! {
     super::super::crt::end_abnormally(reason, TERMINATE_STATUS)
 }
 
@@ -499,9 +504,7 @@ fn decorated_name(type_info: *const u8) -> &'static [u8] {
 }
 
 unsafe extern "efiapi" fn type_info_compare(left: *const u8, right: *const u8) -> i32 {
-    let (left, right) = (decorated_name(left), decorated_name(right));
-    let skip = |name: &'static [u8]| name.get(1..).unwrap_or(&[]);
-    match skip(left).cmp(skip(right)) {
+    match crate::rtti::compare_decorated(decorated_name(left), decorated_name(right)) {
         core::cmp::Ordering::Less => -1,
         core::cmp::Ordering::Equal => 0,
         core::cmp::Ordering::Greater => 1,
@@ -509,15 +512,7 @@ unsafe extern "efiapi" fn type_info_compare(left: *const u8, right: *const u8) -
 }
 
 unsafe extern "efiapi" fn type_info_hash(type_info: *const u8) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0100_0000_01b3;
-    let name = decorated_name(type_info);
-    name.get(1..)
-        .unwrap_or(&[])
-        .iter()
-        .fold(OFFSET_BASIS, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-        })
+    crate::rtti::hash_decorated(decorated_name(type_info))
 }
 
 extern "efiapi" fn type_info_destroy(_type_info: u64) {}

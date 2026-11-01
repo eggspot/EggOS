@@ -46,6 +46,7 @@ pub(super) const VCRUNTIME: &[&[Export]] = &[
     string::VCRUNTIME_EXPORTS,
     super::exception::C_SPECIFIC_EXPORTS,
     super::exception::CXX_EXPORTS,
+    super::exception::RTTI_EXPORTS,
     super::exception::TYPE_INFO_EXPORTS,
 ];
 

@@ -14,6 +14,7 @@ mod context;
 mod cxx;
 mod dispatch;
 mod frames;
+mod rtti;
 mod signal;
 mod vectored;
 
@@ -223,6 +224,9 @@ pub(super) const C_SPECIFIC_EXPORTS: &[Export] = c_specific::EXPORTS;
 
 /// vcruntime's C++ functions: the throw, the frame handlers and their support.
 pub(super) const CXX_EXPORTS: &[Export] = cxx::FUNCTIONS;
+
+/// vcruntime's run-time type information: `dynamic_cast`, `typeid` and `type_info::name()`.
+pub(super) const RTTI_EXPORTS: &[Export] = rtti::EXPORTS;
 
 /// vcruntime's `type_info` virtual function table, which programs import as data.
 pub(super) const TYPE_INFO_EXPORTS: &[Export] = &cxx::TYPE_INFO_TABLE_EXPORT;

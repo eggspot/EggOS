@@ -233,6 +233,8 @@ pub trait ObjectMemory {
     fn u64_at(&self, address: u64) -> u64;
     /// The 32-bit signed word at `address`.
     fn i32_at(&self, address: u64) -> i32;
+    /// The byte at `address`.
+    fn u8_at(&self, address: u64) -> u8;
 }
 
 /// How to find a part of an object from the object's address (MSVC's `PMD`): add `member`;
@@ -528,6 +530,10 @@ mod tests {
 
         fn i32_at(&self, address: u64) -> i32 {
             self.0.get(&address).copied().unwrap_or(0) as i32
+        }
+
+        fn u8_at(&self, address: u64) -> u8 {
+            self.0.get(&address).copied().unwrap_or(0) as u8
         }
     }
 

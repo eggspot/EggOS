@@ -15,7 +15,8 @@
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
 //! imports; `fault_handler.rs` turns its hardware faults into Windows exceptions, which
 //! `win32/exception` dispatches over the unwind data `unwind/` reads (D177), with C++'s data
-//! read by `cxx_data.rs` and the catch walk's decisions made by `cxx_walk.rs` (D229);
+//! read by `cxx_data.rs`, the catch walk's decisions made by `cxx_walk.rs`, and run-time type
+//! information and type names read by `rtti.rs` and `undecorate.rs` (D229);
 //! `user_shared_data.rs` lays out the page Windows shares with every
 //! process.
 
@@ -90,6 +91,8 @@ mod process_list;
 #[cfg(any(test, runs_windows_programs))]
 mod queued_calls;
 #[cfg(any(test, runs_windows_programs))]
+mod rtti;
+#[cfg(any(test, runs_windows_programs))]
 mod sockets;
 #[cfg(runs_windows_programs)]
 mod start;
@@ -103,6 +106,8 @@ mod translated;
 mod translation;
 #[cfg(any(test, runs_windows_programs))]
 mod trash;
+#[cfg(any(test, runs_windows_programs))]
+mod undecorate;
 #[cfg(any(test, runs_windows_programs))]
 mod unwind;
 #[cfg(any(test, runs_windows_programs))]
