@@ -116,3 +116,121 @@ fn turning_sticky_keys_on_or_off_shows_a_notice_for_three_seconds_then_the_chips
     assert_eq!(desktop.sticky_keys_notice(), Some(STICKY_KEYS_OFF));
     assert_eq!(desktop.sticky_strip().unwrap().width, 136);
 }
+
+fn press(desktop: &mut Desktop, code: u16, modifiers: Modifiers) -> Action {
+    let mut damage = Damage::new();
+    let action = desktop.key(code, true, modifiers, &mut damage, &mut DiscardEvents);
+    desktop.key(code, false, modifiers, &mut damage, &mut DiscardEvents);
+    action
+}
+
+fn ctrl_alt() -> Modifiers {
+    Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::ALT.bits())
+}
+
+fn inset(rect: Rect) -> Rect {
+    Rect::new(rect.x + 2, rect.y + 2, rect.width - 4, rect.height - 4)
+}
+
+#[test]
+fn ctrl_alt_tab_super_t_and_ctrl_f3_focus_the_panel_in_every_profile() {
+    for profile in Profile::ALL {
+        for takes_ctrl_keys in [false, true] {
+            for (code, modifiers) in [
+                (key::TAB, ctrl_alt()),
+                (key::T, Modifiers::SUPER),
+                (key::F3, Modifiers::CTRL),
+            ] {
+                assert_eq!(
+                    shortcut(code, modifiers, profile, takes_ctrl_keys),
+                    Some(Shortcut::FocusPanel)
+                );
+            }
+        }
+        assert_ne!(
+            shortcut(key::TAB, Modifiers::ALT, profile, false),
+            Some(Shortcut::FocusPanel)
+        );
+    }
+}
+
+#[test]
+fn the_ring_starts_on_the_system_item_moves_and_wraps_and_the_window_keeps_its_focus() {
+    let mut desktop = desktop(Profile::Macos);
+    let focused = desktop.focused();
+    let system = inset(desktop.system_item().unwrap());
+    let power = inset(desktop.power_button());
+    press(&mut desktop, key::TAB, ctrl_alt());
+    assert!(desktop.panel_has_focus());
+    assert_eq!(desktop.panel_focus_ring(), Some(system));
+    assert_eq!(desktop.focused(), focused);
+    let mut seen_power = false;
+    let mut steps = 0;
+    loop {
+        press(&mut desktop, key::RIGHT, Modifiers::NONE);
+        steps += 1;
+        let ring = desktop.panel_focus_ring().unwrap();
+        seen_power |= ring == power;
+        if ring == system {
+            break;
+        }
+        assert!(steps < 64);
+    }
+    assert!(seen_power);
+    press(&mut desktop, key::TAB, Modifiers::SHIFT);
+    assert_eq!(desktop.panel_focus_ring(), Some(power));
+    press(&mut desktop, key::TAB, Modifiers::NONE);
+    assert_eq!(desktop.panel_focus_ring(), Some(system));
+    press(&mut desktop, key::LEFT, Modifiers::NONE);
+    assert_eq!(desktop.panel_focus_ring(), Some(power));
+    press(&mut desktop, key::ENTER, Modifiers::NONE);
+    assert!(desktop.menu_open());
+    assert!(!desktop.panel_has_focus());
+}
+
+#[test]
+fn esc_and_a_click_give_the_keys_back_to_the_window() {
+    let mut desktop = desktop(Profile::Linux);
+    press(&mut desktop, key::T, Modifiers::SUPER);
+    assert!(desktop.panel_has_focus());
+    press(&mut desktop, key::ESC, Modifiers::NONE);
+    assert!(!desktop.panel_has_focus());
+    assert!(!desktop.menu_open());
+    press(&mut desktop, key::F3, Modifiers::CTRL);
+    assert!(desktop.panel_has_focus());
+    let mut damage = Damage::new();
+    desktop.pointer_moved(640, 400, &mut damage, &mut DiscardEvents);
+    desktop.left_button(true, &mut damage, &mut DiscardEvents);
+    desktop.left_button(false, &mut damage, &mut DiscardEvents);
+    assert!(!desktop.panel_has_focus());
+}
+
+#[test]
+fn a_second_press_rings_the_docks_first_icon_in_the_macos_profile_and_a_third_ends_it() {
+    let mut desktop = desktop(Profile::Macos);
+    let band = desktop.layout().dock_band.unwrap();
+    press(&mut desktop, key::TAB, ctrl_alt());
+    press(&mut desktop, key::TAB, ctrl_alt());
+    let ring = desktop.panel_focus_ring().unwrap();
+    assert!(ring.y >= band.y && ring.bottom() <= band.bottom());
+    press(&mut desktop, key::RIGHT, Modifiers::NONE);
+    assert!(desktop.panel_focus_ring().unwrap().x > ring.x);
+    press(&mut desktop, key::TAB, ctrl_alt());
+    assert!(!desktop.panel_has_focus());
+}
+
+#[test]
+fn in_the_windows_profile_the_ring_starts_on_start_and_a_second_press_ends_it() {
+    let mut desktop = desktop(Profile::Windows);
+    let bar = desktop.layout().taskbar.unwrap();
+    press(&mut desktop, key::TAB, ctrl_alt());
+    let ring = desktop.panel_focus_ring().unwrap();
+    assert_eq!(ring.y, bar.y + 2);
+    assert_eq!(ring.width, TASKBAR_ITEM - 4);
+    press(&mut desktop, key::ENTER, Modifiers::NONE);
+    assert!(desktop.launcher_open());
+    let mut desktop = self::desktop(Profile::Windows);
+    press(&mut desktop, key::TAB, ctrl_alt());
+    press(&mut desktop, key::TAB, ctrl_alt());
+    assert!(!desktop.panel_has_focus());
+}

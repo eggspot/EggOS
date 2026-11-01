@@ -919,6 +919,7 @@ impl Desktop {
         {
             self.draw_dock(canvas, dock);
         }
+        self.draw_panel_focus_ring(canvas);
     }
 
     fn draw_power(&self, canvas: &mut Canvas<'_>, bar: Rect) {

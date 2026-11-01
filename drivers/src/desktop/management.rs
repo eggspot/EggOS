@@ -749,6 +749,7 @@ impl Desktop {
                 }
             }
             Shortcut::ShowDesktop => self.show_desktop(damage, events),
+            Shortcut::FocusPanel => self.focus_panel(damage),
             Shortcut::PowerMenu => {
                 self.open_menu(damage);
                 self.menu_hover = Some(0);

@@ -100,6 +100,9 @@ pub enum Shortcut {
     CloseDesktop,
     /// Move the focused window to the next desktop, or the previous, and follow it.
     MoveToDesktop { next: bool },
+    /// Move the keys to the bar's items, then the dock's, then back to the window (D223):
+    /// Ctrl+Alt+Tab, Super+T and Ctrl+F3 in every profile.
+    FocusPanel,
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -117,7 +120,11 @@ pub fn shortcut(
     let alt = Modifiers::ALT;
     let super_key = Modifiers::SUPER;
     let ctrl_super = Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::SUPER.bits());
+    let ctrl_alt = Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::ALT.bits());
     Some(match code {
+        key::TAB if only(ctrl_alt) => Shortcut::FocusPanel,
+        key::T if only(super_key) => Shortcut::FocusPanel,
+        key::F3 if only(Modifiers::CTRL) => Shortcut::FocusPanel,
         key::TAB if without_shift == alt => Shortcut::Switch {
             back: shift,
             held: Held::Alt,

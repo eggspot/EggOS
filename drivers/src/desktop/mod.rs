@@ -28,6 +28,7 @@ pub mod layout;
 mod main_menu;
 mod management;
 mod paint;
+mod panel_focus;
 mod pointer;
 mod popups;
 pub mod protocol;
@@ -380,6 +381,7 @@ pub struct Desktop {
     clock_shows_time_of_day: bool,
     agent: agent::AgentState,
     sticky: sticky_keys::StickyChips,
+    panel_focus: Option<panel_focus::PanelFocus>,
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     desktops: u8,
     current_desktop: u8,
@@ -474,6 +476,7 @@ impl Desktop {
             clock_shows_time_of_day: false,
             agent: agent::AgentState::default(),
             sticky: sticky_keys::StickyChips::default(),
+            panel_focus: None,
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             desktops: 1,
             current_desktop: 0,
@@ -1808,6 +1811,9 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         self.note_person_input();
+        if pressed {
+            self.end_panel_focus(damage);
+        }
         let action = self.button_change(code, pressed, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
@@ -2188,6 +2194,9 @@ impl Desktop {
         }
         if self.keyboard_layout_menu_open() {
             return self.keyboard_layout_menu_key(code, pressed, damage, events);
+        }
+        if pressed && self.panel_focus.is_some() && !self.menu_open {
+            return self.panel_focus_key(code, modifiers, damage, events);
         }
         if !self.menu_open {
             if pressed
