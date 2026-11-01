@@ -6,8 +6,8 @@
 
 use super::event::{self, kind};
 use super::{
-    NSRESPONDER, NSWINDOW, NSWINDOW_META, application, ask, control, drawing, responds, server,
-    store, store_copy, string, view, with_text,
+    NSRESPONDER, NSWINDOW, NSWINDOW_META, application, ask, control, cursor, drawing, responds,
+    server, store, store_copy, string, view, with_text,
 };
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
@@ -237,6 +237,7 @@ pub fn show(window: Id) {
     fields(window).shown = true;
     application::make_key(window);
     initial_first_responder(window);
+    cursor::reset_tree(fields(window).content_view);
     mark_dirty(window);
     display_if_needed(window);
 }
@@ -271,6 +272,7 @@ pub fn close(window: Id, closing: bool) {
     fields.tracking = core::ptr::null_mut();
     // SAFETY: the window's buffer is no longer in its fields, so nothing draws on it.
     unsafe { server::destroy(&buffer) };
+    cursor::pointer_left(window);
     application::window_closed(window, closing);
 }
 
@@ -294,6 +296,16 @@ pub fn resize(window: Id, width: u32, height: u32) {
     mark_dirty(window);
 }
 
+/// The topmost view of `window` under `location`, in the window's coordinates.
+pub fn view_at(window: Id, location: Point) -> Option<Id> {
+    hit(window, location)
+}
+
+/// The content view of `window`, nil when it has none.
+pub fn content_of(window: Id) -> Id {
+    fields(window).content_view
+}
+
 fn hit(window: Id, location: Point) -> Option<Id> {
     let content = fields(window).content_view;
     if content.is_null() {
@@ -302,13 +314,13 @@ fn hit(window: Id, location: Point) -> Option<Id> {
     view::hit_test(content, location)
 }
 
-/// The pointer moved to `location`: the I-beam over an editable text field, else the arrow.
+/// The pointer moved to `location`: the shape NSCursor's rules give there.
 pub fn pointer_moved(window: Id, location: Point) {
-    let over_field = hit(window, location).is_some_and(view::is_editable_field);
-    let shape = match over_field {
-        true => server::POINTER_I_BEAM,
-        false => server::POINTER_ARROW,
-    };
+    cursor::pointer_moved(window, location);
+}
+
+/// Shows the pointer shape `shape` over `window`'s content, telling the server only of a change.
+pub fn show_pointer(window: Id, shape: u32) {
     let fields = fields(window);
     if fields.pointer_shape != shape && fields.buffer.window != 0 {
         fields.pointer_shape = shape;

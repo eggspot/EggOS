@@ -6,17 +6,20 @@
 //! (`NSButton`, `NSTextField` as the toolkit's controls), `NSAlert` runs a dialog of its own,
 //! `NSMenu` is shown by the server in the top bar, the standard About panel is the layer's own
 //! window, and every window answers agents with its views as an element tree (D175); compiled
-//! nibs are loaded into these classes (D231).
+//! nibs are loaded into these classes (D231). `NSCursor` chooses the server's pointer shapes and
+//! `NSPasteboard` reads and writes the clipboard every app shares (D232).
 
 mod about;
 mod alert;
 mod application;
 mod control;
+mod cursor;
 mod drawing;
 mod elements;
 mod event;
 mod menu;
 mod nib;
+mod pasteboard;
 mod server;
 mod view;
 mod window;
@@ -50,6 +53,8 @@ class_pairs! {
     NSALERT, NSALERT_META;
     NSMENU, NSMENU_META;
     NSMENUITEM, NSMENUITEM_META;
+    NSCURSOR, NSCURSOR_META;
+    NSPASTEBOARD, NSPASTEBOARD_META;
 }
 
 /// Sends `sel` with one `NSRect` argument.
@@ -157,6 +162,9 @@ pub fn set_up() -> bool {
             && alert::define(runtime)
             && menu::define(runtime)
             && nib::extend_bundle(runtime)
+            && cursor::define(runtime)
+            && cursor::extend_views(runtime)
+            && pasteboard::define(runtime)
     });
     defined && drawing::set_up()
 }
@@ -193,6 +201,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSMenu" => class(&NSMENU_META),
         b"_OBJC_CLASS_$_NSMenuItem" => class(&NSMENUITEM),
         b"_OBJC_METACLASS_$_NSMenuItem" => class(&NSMENUITEM_META),
+        b"_OBJC_CLASS_$_NSCursor" => class(&NSCURSOR),
+        b"_OBJC_METACLASS_$_NSCursor" => class(&NSCURSOR_META),
+        b"_OBJC_CLASS_$_NSPasteboard" => class(&NSPASTEBOARD),
+        b"_OBJC_METACLASS_$_NSPasteboard" => class(&NSPASTEBOARD_META),
         _ => application::resolve(name).or_else(|| drawing::resolve(name)),
     }
 }

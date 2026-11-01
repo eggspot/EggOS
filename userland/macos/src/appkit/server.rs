@@ -21,6 +21,8 @@ const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
 const SET_MENU: usize = 0x4100_7715;
 const GET_PLACEMENT: usize = 0xc014_771c;
+const SET_CLIPBOARD: usize = 0x4010_7720;
+const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
 const MENU_REQUEST_SIZE: usize = 256;
 const PIXEL_BYTES: usize = 4;
@@ -32,9 +34,6 @@ pub const ROLE_NORMAL: u32 = 0;
 pub const ROLE_DIALOG: u32 = 1;
 /// `CREATE`'s flag for a window the user cannot resize.
 pub const FIXED_SIZE: u32 = 1;
-/// `SET_POINTER`'s shapes.
-pub const POINTER_ARROW: u32 = 0;
-pub const POINTER_I_BEAM: u32 = 1;
 
 static DESCRIPTOR: AtomicUsize = AtomicUsize::new(0);
 
@@ -175,6 +174,24 @@ pub fn set_menu(window: u32, pool: &[u8]) {
     put(&mut set_menu, 4, length as u32);
     set_menu[8..8 + length].copy_from_slice(&pool[..length]);
     let _ = request(SET_MENU, &mut set_menu);
+}
+
+/// Makes `text` (UTF-8, at most 1 MiB) the clipboard every app shares (`SET_CLIPBOARD`, D197).
+pub fn set_clipboard(text: &[u8]) -> Result<(), Errno> {
+    let mut argument = [0u8; 16];
+    argument[..8].copy_from_slice(&(text.as_ptr() as u64).to_ne_bytes());
+    argument[8..].copy_from_slice(&(text.len() as u64).to_ne_bytes());
+    request(SET_CLIPBOARD, &mut argument)
+}
+
+/// Copies the shared clipboard's text into `into` as far as it fits (`GET_CLIPBOARD`, D197):
+/// its whole length and its serial; an empty `into` only asks for those.
+pub fn clipboard(into: &mut [u8]) -> Result<(usize, u32), Errno> {
+    let mut argument = [0u8; 32];
+    argument[..8].copy_from_slice(&(into.as_mut_ptr() as u64).to_ne_bytes());
+    argument[8..16].copy_from_slice(&(into.len() as u64).to_ne_bytes());
+    request(GET_CLIPBOARD, &mut argument)?;
+    Ok((word(&argument, 24) as usize, word(&argument, 28)))
 }
 
 /// Shows `shape` while the pointer is over `window`'s content.

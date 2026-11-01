@@ -4,7 +4,7 @@
 //! its colours, its primitives, controls and alert drawn with the toolkit, the main menu as the
 //! window server's `SET_MENU` pool, the server's key records as `NSEvent`'s key codes,
 //! characters and modifier flags, the standard About panel (D175), the button types and their
-//! states, and NSCursor's shapes and cursor rects (D232).
+//! states, and NSCursor's shapes and cursor rects, and NSPasteboard's type names (D232).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -18,3 +18,4 @@ pub mod geometry;
 pub mod keys;
 pub mod menu;
 pub mod paint;
+pub mod pasteboard;

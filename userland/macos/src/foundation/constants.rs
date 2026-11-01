@@ -1,5 +1,6 @@
 //! The NSString constants Foundation exports as `NSString *const` variables (D175): exception
-//! names, the error domains and `userInfo` keys and the run loop modes, each laid out as clang
+//! names, the error domains and `userInfo` keys, the run loop modes and AppKit's pasteboard
+//! names and types, each laid out as clang
 //! lays out a string literal (the constant string class, ASCII flags, its bytes and length),
 //! with the variable that holds its address, which is what the program imports.
 
@@ -49,8 +50,12 @@ pub const FILE_ATTRIBUTE_KEYS: usize = 9;
 pub const FIRST_FILE_TYPE: usize = 27;
 /// The `userInfo` key of the path a file error is about.
 pub const FILE_PATH_ERROR_KEY: usize = 34;
+/// `NSPasteboardTypeString`, the UTF-8 plain text type.
+pub const PASTEBOARD_TYPE_STRING: usize = 35;
+/// `NSPasteboardNameGeneral`, the shared clipboard's pasteboard (36 is `NSStringPboardType`).
+pub const PASTEBOARD_NAME_GENERAL: usize = 37;
 
-const CONSTANTS: [(&[u8], &[u8]); 35] = [
+const CONSTANTS: [(&[u8], &[u8]); 42] = [
     (
         b"_NSInvalidArgumentException",
         b"NSInvalidArgumentException\0",
@@ -107,6 +112,13 @@ const CONSTANTS: [(&[u8], &[u8]); 35] = [
     (b"_NSFileTypeSocket", b"NSFileTypeSocket\0"),
     (b"_NSFileTypeUnknown", b"NSFileTypeUnknown\0"),
     (b"_NSFilePathErrorKey", b"NSFilePath\0"),
+    (b"_NSPasteboardTypeString", b"public.utf8-plain-text\0"),
+    (b"_NSStringPboardType", b"NSStringPboardType\0"),
+    (b"_NSPasteboardNameGeneral", b"Apple CFPasteboard general\0"),
+    (b"_NSPasteboardNameFind", b"Apple CFPasteboard find\0"),
+    (b"_NSPasteboardNameFont", b"Apple CFPasteboard font\0"),
+    (b"_NSPasteboardNameRuler", b"Apple CFPasteboard ruler\0"),
+    (b"_NSPasteboardNameDrag", b"Apple CFPasteboard drag\0"),
 ];
 
 static STRINGS: [[AtomicUsize; STRING_WORDS]; CONSTANTS.len()] =

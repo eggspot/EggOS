@@ -271,10 +271,16 @@ mod runtime {
         notification::notification(constants::string(name), object, core::ptr::null_mut())
     }
 
+    /// The exported constant string at `index` of Foundation's list (`constants.rs`).
+    pub fn constant(index: usize) -> Id {
+        constants::string(index)
+    }
+
     pub use super::bundle::{LONGEST_PATH, app_name, info_string, own_icon_path};
     pub use super::constants::{
         APPLICATION_DID_FINISH_LAUNCHING, APPLICATION_WILL_FINISH_LAUNCHING,
-        APPLICATION_WILL_TERMINATE, WINDOW_WILL_CLOSE,
+        APPLICATION_WILL_TERMINATE, PASTEBOARD_NAME_GENERAL, PASTEBOARD_TYPE_STRING,
+        WINDOW_WILL_CLOSE,
     };
     pub use super::notification::post;
     pub use super::exception::terminate_with;

@@ -6,8 +6,8 @@
 
 use super::event::{self, kind};
 use super::{
-    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, elements, menu, nib, responds, server,
-    view, window,
+    NSAPPLICATION, NSAPPLICATION_META, NSRESPONDER, about, cursor, elements, menu, nib, responds,
+    server, view, window,
 };
 use crate::foundation::{self, NSARRAY, class_pointer, info_string};
 use crate::libsystem::{Exclusive, write_error};
@@ -358,8 +358,8 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             send1(window, sel!("performClose:"), 0);
         }
         Input::Resize { width, height } => window::resize(window, width, height),
-        Input::PointerLeave
-        | Input::StateChanged { .. }
+        Input::PointerLeave => cursor::pointer_left(window),
+        Input::StateChanged { .. }
         | Input::DeadKey { .. }
         | Input::Overflow => {}
     }
