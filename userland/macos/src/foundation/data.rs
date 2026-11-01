@@ -84,7 +84,8 @@ fn append(this: Id, bytes: &[u8]) -> bool {
     true
 }
 
-fn new_data(class: *mut ClassObject, bytes: &[u8]) -> Id {
+/// A new data object of `class` holding a copy of `bytes`, counted once.
+pub fn new_data(class: *mut ClassObject, bytes: &[u8]) -> Id {
     let object = new_instance(class);
     if object.is_null() {
         return object;

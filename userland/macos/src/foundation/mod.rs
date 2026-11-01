@@ -5,6 +5,7 @@
 //! the string constants Foundation exports; and (D231) NSNotification and its center and NSUUID.
 
 pub mod nib_archive;
+pub mod string_encoding;
 pub mod string_text;
 pub mod uuid;
 

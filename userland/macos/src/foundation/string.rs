@@ -4,11 +4,12 @@
 //! as bytes (with a NUL after them) and anything else as UTF-16 units, so `length` and
 //! `characterAtIndex:` take constant time on every string.
 
+use super::string_encoding;
 use super::string_text::{self, Text};
 use super::{
     CONSTANT_STRING, CONSTANT_STRING_META, Definition, NSMUTABLESTRING, NSMUTABLESTRING_META,
     NSSTRING, NSSTRING_META, UTF8_BUFFER, UTF8_BUFFER_META, autoreleased, class_pointer,
-    define as define_class, is_string, new_instance,
+    NSDATA, define as define_class, is_data, is_string, new_instance,
 };
 use crate::format::{self, Output};
 use crate::libsystem::heap;
@@ -351,7 +352,7 @@ unsafe extern "C" fn init_with_bytes(
     length: usize,
     encoding: usize,
 ) -> Id {
-    if !matches!(encoding, UTF8_ENCODING | ASCII_ENCODING) || (bytes.is_null() && length > 0) {
+    if bytes.is_null() && length > 0 {
         return initialized(this, false);
     }
     let bytes = if length == 0 {
@@ -360,7 +361,57 @@ unsafe extern "C" fn init_with_bytes(
         // SAFETY: the caller's promise.
         unsafe { core::slice::from_raw_parts(bytes, length) }
     };
-    init_with_utf8(this, bytes)
+    init_decoded(this, bytes, encoding)
+}
+
+fn init_decoded(this: Id, bytes: &[u8], encoding: usize) -> Id {
+    if encoding == UTF8_ENCODING {
+        return init_with_utf8(this, bytes);
+    }
+    let mut units = Buffer::new();
+    let mut complete = true;
+    let valid = string_encoding::decode(bytes, encoding, &mut |unit| {
+        complete &= units.push(unit);
+    });
+    let made = valid && complete && set_units(this, units.as_slice());
+    units.free();
+    initialized(this, made)
+}
+
+extern "C" fn init_with_data(this: Id, _: Sel, data: Id, encoding: usize) -> Id {
+    if data.is_null() || !is_data(data) {
+        return initialized(this, false);
+    }
+    init_decoded(this, super::data::bytes_of(data), encoding)
+}
+
+fn encoded_data(this: Id, encoding: usize, lossy: bool) -> Id {
+    let mut bytes = Buffer::new();
+    let mut complete = true;
+    let valid = string_encoding::encode(&text_of(this), encoding, lossy, &mut |piece| {
+        complete &= bytes.reserve(piece.len());
+        for &byte in piece {
+            bytes.push(byte);
+        }
+    });
+    let made = match valid && complete {
+        true => super::data::new_data(class_pointer(&NSDATA), bytes.as_slice()),
+        false => core::ptr::null_mut(),
+    };
+    bytes.free();
+    autoreleased(made)
+}
+
+extern "C" fn data_using_encoding(this: Id, _: Sel, encoding: usize) -> Id {
+    encoded_data(this, encoding, false)
+}
+
+extern "C" fn data_using_encoding_lossy(this: Id, _: Sel, encoding: usize, lossy: u8) -> Id {
+    encoded_data(this, encoding, lossy != 0)
+}
+
+extern "C" fn can_be_converted(this: Id, _: Sel, encoding: usize) -> u8 {
+    u8::from(string_encoding::encode(&text_of(this), encoding, false, &mut |_| {}))
 }
 
 extern "C" fn init_with_string(this: Id, _: Sel, other: Id) -> Id {
@@ -485,8 +536,16 @@ extern "C" fn c_string_using_encoding(this: Id, sel: Sel, encoding: usize) -> *c
     utf8_string(this, sel)
 }
 
-extern "C" fn length_of_bytes(this: Id, _: Sel, _: usize) -> usize {
-    text_of(this).utf8_len()
+extern "C" fn length_of_bytes(this: Id, _: Sel, encoding: usize) -> usize {
+    if encoding == UTF8_ENCODING {
+        return text_of(this).utf8_len();
+    }
+    let mut length = 0;
+    let mut count = |piece: &[u8]| length += piece.len();
+    match string_encoding::encode(&text_of(this), encoding, false, &mut count) {
+        true => length,
+        false => 0,
+    }
 }
 
 extern "C" fn is_equal(this: Id, _: Sel, other: Id) -> u8 {
@@ -851,6 +910,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "initWithString:" => init_with_string,
         "initWithCharacters:length:" => init_with_characters,
         "initWithBytes:length:encoding:" => init_with_bytes,
+        "initWithData:encoding:" => init_with_data,
+        "dataUsingEncoding:" => data_using_encoding,
+        "dataUsingEncoding:allowLossyConversion:" => data_using_encoding_lossy,
+        "canBeConvertedToEncoding:" => can_be_converted,
         "initWithFormat:" => eggos_string_init_with_format,
         "initWithFormat:arguments:" => init_with_format_arguments,
         "dealloc" => dealloc,
