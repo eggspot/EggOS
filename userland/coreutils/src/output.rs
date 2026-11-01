@@ -89,7 +89,7 @@ impl<S: System> Output<S> {
         let _ = self.system.write(STANDARD_ERROR, self.utility);
         let _ = self.system.write(STANDARD_ERROR, b": ");
         for part in parts {
-            let _ = self.system.write(STANDARD_ERROR, part);
+            write_without_controls(&mut self.system, part);
         }
         let _ = self.system.write(STANDARD_ERROR, b"\n");
         if let Some(command) = error.fix_command {
@@ -196,6 +196,34 @@ fn write_standard_output<S: System>(system: &mut S, write_error: &mut Option<Err
     }
 }
 
+fn write_without_controls<S: System>(system: &mut S, mut text: &[u8]) {
+    while let Some(at) = text.iter().position(|&byte| byte < 0x20 || byte == 0x7f) {
+        let (plain, rest) = text.split_at(at);
+        let _ = system.write(STANDARD_ERROR, plain);
+        let byte = rest.first().copied().unwrap_or_default();
+        let escaped = match byte {
+            b'\n' => *b"\\n  ",
+            b'\t' => *b"\\t  ",
+            b'\r' => *b"\\r  ",
+            _ => [
+                b'\\',
+                b'x',
+                HEX_DIGITS[usize::from(byte >> 4)],
+                HEX_DIGITS[usize::from(byte & 0xf)],
+            ],
+        };
+        let length = match byte {
+            b'\n' | b'\t' | b'\r' => 2,
+            _ => 4,
+        };
+        let _ = system.write(STANDARD_ERROR, &escaped[..length]);
+        text = rest.get(1..).unwrap_or_default();
+    }
+    let _ = system.write(STANDARD_ERROR, text);
+}
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
 pub fn error_for(errno: Errno) -> &'static ErrorDefinition {
     match errno {
         Errno::ENOENT => &errors::NO_SUCH_FILE,
@@ -292,6 +320,15 @@ mod tests {
             output.system.errors(),
             "{\"error\":{\"code\":\"no_such_file\",\"category\":\"not_found\",\"message\":\"/nope: No such file or directory\",\"fix\":\"Check the path: ls shows what a folder holds.\"}}\n\
              {\"error\":{\"code\":\"no_such_window\",\"category\":\"not_found\",\"message\":\"say \\\"hi\\\"\\n\",\"fix\":\"Use an id that wm list shows.\",\"fix_command\":\"wm list\"}}\n"
+        );
+        let mut output = Output::new(Fake::default(), b"rm");
+        output.coded(
+            &errors::NO_SUCH_FILE,
+            &[b"cannot remove '", b"a\nmore: --after x\t\x1b[2J\x7f\\", b"'"],
+        );
+        assert_eq!(
+            output.system.errors(),
+            "rm: cannot remove 'a\\nmore: --after x\\t\\x1b[2J\\x7f\\'\n"
         );
         assert_eq!(error_for(Errno::EROFS).code, "read_only");
         assert_eq!(error_for(Errno::EINVAL).code, "failed");
