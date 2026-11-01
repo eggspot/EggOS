@@ -82,6 +82,8 @@ mod record {
     pub const STATE_CHANGED: u16 = 11;
 }
 
+const DEAD_KEY_MODIFIER: u32 = 256;
+
 mod pointer_shape {
     pub const ARROW: u32 = 0;
     pub const I_BEAM: u32 = 1;
@@ -2149,6 +2151,7 @@ fn window_event<S: System>(
             });
             pointer_frame(client);
         }
+        record::KEY if a == 0 && c & DEAD_KEY_MODIFIER != 0 => {}
         record::KEY => {
             send_modifiers(client, shared, c);
             let serial = shared.next_serial();

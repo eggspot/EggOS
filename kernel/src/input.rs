@@ -24,6 +24,7 @@ use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use eggos_drivers::desktop::Profile;
+use eggos_drivers::desktop::protocol::DEAD_KEY_CHARACTER;
 use eggos_drivers::input::key;
 use eggos_drivers::input::keymap::{
     CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard, ThirdLevelKeys,
@@ -837,7 +838,12 @@ impl InputState {
             self.taken_back = code;
             self.repeat
                 .pressed(code, false, timing.now, timing.repeat_delay);
-            return;
+            return sink.event(InputEvent::Key {
+                code: 0,
+                pressed: true,
+                modifiers,
+                character: DEAD_KEY_CHARACTER,
+            });
         }
         self.typed(code, modifiers, press, timing, sink);
     }
@@ -983,11 +989,17 @@ impl InputState {
                 });
             }
         }
+        let character = match press {
+            Press::Dead => {
+                self.typist.pending_accent().map_or(0, u32::from) | DEAD_KEY_CHARACTER
+            }
+            _ => press.character(code, modifiers),
+        };
         sink.event(InputEvent::Key {
             code,
             pressed: true,
             modifiers,
-            character: press.character(code, modifiers),
+            character,
         });
     }
 

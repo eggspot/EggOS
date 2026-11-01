@@ -36,3 +36,5 @@ pub use eggos_element_tree as elements;
 mod tests;
 #[cfg(test)]
 mod tests_slice_two;
+#[cfg(test)]
+mod tests_dead_keys;

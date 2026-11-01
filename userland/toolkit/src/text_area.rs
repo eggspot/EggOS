@@ -342,6 +342,38 @@ pub fn caret_rect(area: &TextArea, store: &Store, rect: Rect) -> Rect {
     )
 }
 
+/// Draws a waiting dead key's `accent` at the caret of `area` over `store` at `rect` in place
+/// of the caret (D220), the rest of the caret's visual line moved right by the cell's width.
+pub fn paint_dead_key(
+    canvas: &mut Canvas<'_>,
+    area: &TextArea,
+    store: &Store,
+    rect: Rect,
+    accent: char,
+) {
+    let inner = inner(rect);
+    let clip = Rect::new(inner.x, rect.y + 1, inner.width, rect.height - 2);
+    let previous = canvas.narrow(clip);
+    let line = store.line_of(area.caret);
+    let (_, end) = store.line_range(line);
+    let x = inner.x + store.x_of(line, area.caret);
+    let y = inner.y + line as i32 * TEXT_AREA_LINE_PITCH - area.scroll;
+    crate::widget::paint_dead_key_cell(canvas, (x, y), clip.right(), accent, "");
+    let ink = canvas.palette().text;
+    let mut pen = crate::widget::dead_key_cell(x, y, accent).right();
+    for character in store.text().get(area.caret..end).unwrap_or("").chars() {
+        match character {
+            '\n' => {}
+            '\t' => pen += TEXT_AREA_TAB,
+            character => {
+                let mut bytes = [0; 4];
+                pen = canvas.text(pen, y, character.encode_utf8(&mut bytes), ink, 1);
+            }
+        }
+    }
+    canvas.restore(previous);
+}
+
 /// Draws `area` over `store` at `rect` as `look` says: the field's chrome made tall, the
 /// visible lines from the first one shown, the selection, the caret and the bar.
 pub fn paint(canvas: &mut Canvas<'_>, area: &TextArea, store: &Store, rect: Rect, look: Look) {

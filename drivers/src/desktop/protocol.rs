@@ -253,7 +253,15 @@ pub mod modifier {
     /// The third-level key: AltGr (Right Alt) on a layout with a third level, or Option in the
     /// macOS profile (D185).
     pub const ALT_GRAPH: u32 = 32;
+    /// A dead key's accent (D220): on a key record carrying the spacing accent now waiting
+    /// for the next key, or character 0 when Backspace took the accent back.
+    pub const DEAD: u32 = 256;
 }
+
+/// The bit the kernel sets in a key event's character for a dead key (D220): the rest is the
+/// waiting spacing accent, or 0 when Backspace took it back; the desktop hands it on as a key
+/// record with [`modifier::DEAD`].
+pub const DEAD_KEY_CHARACTER: u32 = 0x0080_0000;
 
 /// What a window is for (docs/ux/desktop-v0.3-gui.md, section 3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

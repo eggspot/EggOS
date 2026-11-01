@@ -1947,6 +1947,8 @@ impl Desktop {
     /// A key event whose `character` the keyboard layout chose (D185): as [`Self::key`], the
     /// focused window's record and the launcher's search taking `character` instead of the US
     /// keymap's. Code 0 is a character typed with no key of its own, such as a dead key's accent.
+    /// A `character` with [`protocol::DEAD_KEY_CHARACTER`] reaches the window as the waiting
+    /// accent (or 0) with [`modifier::DEAD`] (D220), and nothing else takes it as typed.
     pub fn key_typing(
         &mut self,
         code: u16,
@@ -2024,13 +2026,17 @@ impl Desktop {
                 return self.desktop_key(code, modifiers, damage, events);
             }
             if let Some(slot) = self.focus.filter(|&slot| self.is_visible(slot)) {
+                let (dead, character) = match self.typed & protocol::DEAD_KEY_CHARACTER {
+                    0 => (0, self.typed),
+                    _ => (modifier::DEAD, self.typed & !protocol::DEAD_KEY_CHARACTER),
+                };
                 let record = EventRecord::new(
                     event::KEY,
                     0,
                     i32::from(code),
                     i32::from(pressed),
-                    key_modifiers(modifiers),
-                    self.typed,
+                    key_modifiers(modifiers) | dead,
+                    character,
                 );
                 self.send(slot, record, events);
             }

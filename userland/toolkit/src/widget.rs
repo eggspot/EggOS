@@ -583,6 +583,11 @@ impl Kind {
         Self::TextArea(TextArea::new(store, placeholder))
     }
 
+    /// Whether text is typed into it: a text field or a text area.
+    pub fn is_text(&self) -> bool {
+        matches!(self, Self::TextField(_) | Self::TextArea(_))
+    }
+
     /// Whether Tab stops on it.
     pub fn is_focusable(&self) -> bool {
         matches!(
@@ -866,6 +871,49 @@ pub fn caret_rect(field: &Field, rect: Rect) -> Rect {
         1,
         LINE_HEIGHT,
     )
+}
+
+/// The narrowest cell a waiting dead key's accent is drawn in at the caret (D220).
+pub const DEAD_KEY_MIN_WIDTH: i32 = 4;
+
+/// The cell a waiting dead key's `accent` takes at a caret whose left edge is `x` on a line
+/// whose top is `y` (D220): as wide as the accent's advance, at least [`DEAD_KEY_MIN_WIDTH`],
+/// and a line tall.
+pub fn dead_key_cell(x: i32, y: i32, accent: char) -> Rect {
+    let mut bytes = [0; 4];
+    let width = text::width(accent.encode_utf8(&mut bytes)).max(DEAD_KEY_MIN_WIDTH);
+    Rect::new(x, y, width, LINE_HEIGHT)
+}
+
+/// Draws a cell for a waiting dead key's `accent` at `x` on the line at `y` and moves `after`
+/// right by its width (D220): the line's background from `x` to `right`, the cell in the
+/// accent token with the accent in `icon_dark`, then `after` in the text token.
+pub fn paint_dead_key_cell(
+    canvas: &mut Canvas<'_>,
+    (x, y): (i32, i32),
+    right: i32,
+    accent: char,
+    after: &str,
+) {
+    let palette = canvas.palette();
+    let cell = dead_key_cell(x, y, accent);
+    canvas.fill(Rect::new(x, y, right - x, LINE_HEIGHT), palette.field);
+    canvas.fill(cell, palette.accent);
+    let mut bytes = [0; 4];
+    canvas.text(x, y, accent.encode_utf8(&mut bytes), palette.icon_dark, 1);
+    canvas.text(cell.right(), y, after, palette.text, 1);
+}
+
+/// Draws a waiting dead key's `accent` at the caret of `field` at `rect` in place of the
+/// caret (D220), the text after the caret moved right by the cell's width.
+pub fn paint_dead_key(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, accent: char) {
+    let inner = field_inner(rect);
+    let previous = canvas.narrow(inner);
+    let text = field.text.as_str();
+    let x = inner.x - field.scroll + text::width(&text[..field.caret]);
+    let y = rect.y + (rect.height - LINE_HEIGHT) / 2;
+    paint_dead_key_cell(canvas, (x, y), inner.right(), accent, &text[field.caret..]);
+    canvas.restore(previous);
 }
 
 /// The caret's byte in `field` at `rect` nearest to x `x`, as a click there places it.

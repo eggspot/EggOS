@@ -158,6 +158,7 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     window_focused: bool,
     caret_epoch_ms: u32,
     caret_shown: bool,
+    dead_key: Option<char>,
     last_click: Option<(Target, u32)>,
     default_button: Option<WidgetId>,
     text_before_focus: Text<255>,
@@ -208,6 +209,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             window_focused: true,
             caret_epoch_ms: 0,
             caret_shown: true,
+            dead_key: None,
             last_click: None,
             default_button: None,
             text_before_focus: Text::new(),
@@ -728,6 +730,41 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
+    fn shows_dead_key(&self, id: WidgetId) -> bool {
+        self.dead_key.is_some()
+            && self.focus == Some(id)
+            && self.window_focused
+            && self.menu_keyboard().is_none()
+            && self.node(id).is_some_and(|node| node.enabled && node.kind.is_text())
+    }
+
+    fn show_dead_key(&mut self, accent: Option<char>) {
+        let shown = accent.filter(|_| {
+            self.focus
+                .and_then(|id| self.node(id))
+                .is_some_and(|node| node.kind.is_text())
+        });
+        if shown == self.dead_key {
+            return;
+        }
+        self.dead_key = shown;
+        if let Some(id) = self.focus {
+            self.damage_widget(id);
+        }
+    }
+
+    fn resolve_dead_key(&mut self, code: u16) {
+        if self.dead_key.is_some() && !key::is_modifier_or_lock(code) {
+            self.show_dead_key(None);
+        }
+    }
+
+    /// The accent a dead key left waiting, which the focused text field or text area shows at
+    /// its caret until the next key resolves it (D220).
+    pub fn dead_key(&self) -> Option<char> {
+        self.dead_key
+    }
+
     fn damage_widget(&mut self, id: WidgetId) {
         if let Some(node) = self.node(id) {
             let rect = node
@@ -781,7 +818,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             pressed: column.or(thumb).or(pressed),
             focused: self.window_focused && self.focus == Some(id) && self.menu_keyboard().is_none(),
             enabled: node.enabled,
-            caret_shown: self.caret_shown,
+            caret_shown: self.caret_shown && !self.shows_dead_key(id),
         }
     }
 
@@ -812,6 +849,21 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     }
                 }
                 kind => widget::paint(canvas, kind, node.rect, self.look(id)),
+            }
+            if let Some(accent) = self.dead_key.filter(|_| self.shows_dead_key(id)) {
+                match &node.kind {
+                    Kind::TextField(field) => {
+                        widget::paint_dead_key(canvas, field, node.rect, accent)
+                    }
+                    Kind::TextArea(area) => {
+                        if let Some(store) = self.stores.get(area.store) {
+                            crate::text_area::paint_dead_key(
+                                canvas, area, store, node.rect, accent,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             }
             canvas.restore(previous);
         }
@@ -1026,6 +1078,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             self.damage_widget(old);
         }
         self.focus = id;
+        self.dead_key = None;
         if let Some(new) = id {
             if let Some(Kind::TextField(field)) = self.kind(new) {
                 self.text_before_focus = field.text;
@@ -1254,6 +1307,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 character,
             } => match pressed {
                 true => {
+                    self.resolve_dead_key(code);
                     self.shift_held = modifiers.shift() || matches!(code, LEFT_SHIFT | RIGHT_SHIFT);
                     self.shortcut_held = modifiers.control_or_super();
                     self.alt_held = modifiers.0 & Modifiers::ALT != 0
@@ -1281,10 +1335,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     self.key_up(code)
                 }
             },
+            Input::DeadKey { accent } => {
+                self.show_dead_key(accent);
+                Response::Nothing
+            }
             Input::FocusIn | Input::FocusOut => {
                 let focused = input == Input::FocusIn;
                 let mut response = Response::Nothing;
                 if !focused {
+                    self.show_dead_key(None);
                     self.close_popup();
                     self.close_menu();
                     self.hide_tooltip();

@@ -740,11 +740,11 @@ fn a_layout_s_dead_keys_and_altgr_type_utf_8_and_characters_in_key_events() {
     assert_eq!(
         characters,
         [
-            (acute, true, 0),
+            (acute, true, u32::from('´') | DEAD_KEY_CHARACTER),
             (acute, false, 0),
             (18, true, u32::from('é')),
             (18, false, u32::from('e')),
-            (acute, true, 0),
+            (acute, true, u32::from('´') | DEAD_KEY_CHARACTER),
             (acute, false, 0),
             (0, true, u32::from('´')),
             (0, false, u32::from('´')),
@@ -767,7 +767,7 @@ fn a_layout_s_dead_keys_and_altgr_type_utf_8_and_characters_in_key_events() {
 }
 
 #[test]
-fn backspace_takes_back_a_waiting_accent_and_sends_nothing() {
+fn backspace_takes_back_a_waiting_accent_and_sends_only_the_dead_key_s_end() {
     let mut state = InputState::new();
     let mut keyboard = Device::keyboard();
     state.set_layout(layout::named(b"de").unwrap(), Profile::Windows);
@@ -781,6 +781,37 @@ fn backspace_takes_back_a_waiting_accent_and_sends_nothing() {
             ..
         }
     )));
+    let dead: Vec<(u16, bool, u32)> = recorded
+        .events
+        .iter()
+        .filter_map(|event| match *event {
+            InputEvent::Key {
+                code,
+                pressed,
+                character,
+                ..
+            } if character & DEAD_KEY_CHARACTER != 0 => Some((code, pressed, character)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        dead,
+        [
+            (13, true, u32::from('´') | DEAD_KEY_CHARACTER),
+            (0, true, DEAD_KEY_CHARACTER),
+        ]
+    );
+}
+
+#[test]
+fn a_dead_key_s_event_survives_the_queue_s_packing() {
+    let dead = InputEvent::Key {
+        code: 13,
+        pressed: true,
+        modifiers: Modifiers::SHIFT,
+        character: u32::from('`') | DEAD_KEY_CHARACTER,
+    };
+    assert_eq!(InputEvent::unpack(dead.pack()), Some(dead));
 }
 
 #[test]
