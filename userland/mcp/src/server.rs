@@ -116,6 +116,8 @@ const BUDGET_USED: &str = "Refused: this server run has written as much to the a
     may (2 MiB); calls are refused until the server starts again.";
 const QUESTION_PREFIX: &str = "eggos-elicit-";
 const PERSON_BUSY: &str = "Busy: a person is using the machine; wait a moment and retry.";
+const NOT_RESPONDING: &str = "Not responding: the window's app has left its events unread; wait \
+                              and retry, or close the window.";
 /// The audit log's detail for a dry run the server answered, after its target (D164).
 pub const DRY_RUN_DETAIL: &str = "dry run: nothing changed";
 const PAGE_CUT: &str = "The page was cut at the output's limit, so where the next page starts is \
@@ -2255,6 +2257,15 @@ impl Server {
         };
         let mut detail = [0u8; 224];
         let mut text = Text::new(&mut detail);
+        let stderr = buffers.stderr.get(..outcome.stderr).unwrap_or_default();
+        let not_responding = [&b"not_responding"[..], b": not responding"]
+            .iter()
+            .any(|needle| stderr.windows(needle.len()).any(|part| part == *needle));
+        if outcome.ended == Ended::Exited(BUSY_STATUS) && not_responding {
+            self.record_outcome(system, buffers, prepared, Outcome::Refused, "not responding");
+            refused(out, id, &errors::NOT_RESPONDING, NOT_RESPONDING);
+            return;
+        }
         if outcome.ended == Ended::Exited(BUSY_STATUS) && tool.kind != Kind::WmCapture {
             text.put("busy");
             if let Some(typed) = typed {

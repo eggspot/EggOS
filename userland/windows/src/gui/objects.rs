@@ -72,7 +72,7 @@ pub fn pointer_shape(handle: usize) -> u32 {
         cursor::SIZE_NORTH_EAST_SOUTH_WEST => 5,
         cursor::HAND => 7,
         cursor::WAIT => 8,
-        cursor::APP_STARTING => 0,
+        cursor::APP_STARTING => 9,
         _ => 0,
     }
 }
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(pointer_shape(cursor_handle(true, 32643)), 5);
         assert_eq!(pointer_shape(cursor_handle(true, 32649)), 7);
         assert_eq!(pointer_shape(cursor_handle(true, cursor::WAIT)), 8);
-        assert_eq!(pointer_shape(cursor_handle(true, cursor::APP_STARTING)), 0);
+        assert_eq!(pointer_shape(cursor_handle(true, cursor::APP_STARTING)), 9);
         assert_eq!(pointer_shape(cursor_handle(false, cursor::I_BEAM)), 0);
         assert_eq!(pointer_shape(0), 0);
         assert_ne!(icon_handle(true, 32512), 0);

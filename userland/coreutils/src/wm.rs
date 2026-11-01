@@ -30,6 +30,10 @@ pub const KERNEL_CLIENT: u32 = 0xffff;
 pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
 pub const BUSY_STATUS: i32 = 75;
+pub const NOT_RESPONDING_STATE: u32 = 0x100;
+pub const NOT_RESPONDING_ERRNO: Errno = Errno(107);
+pub const NOT_RESPONDING_SUFFIX: &[u8] = b" (not responding)";
+const STATE_NUMBER: u32 = 0xff;
 
 const USAGE: &[u8] =
     b"usage: wm list [--json] | wm focus|minimise|maximise|restore|close [--] <id> | \
@@ -114,6 +118,17 @@ pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -
             output.coded(&errors::NO_SUCH_WINDOW, &[window, b": no such window"]);
             FAILURE
         }
+        NOT_RESPONDING_ERRNO => {
+            output.coded(
+                &errors::NOT_RESPONDING,
+                &[
+                    window,
+                    b": not responding: its app has left its events unread; try again later, \
+                      or end it with wm close",
+                ],
+            );
+            BUSY_STATUS
+        }
         _ => {
             output.coded(error_for(errno), &[window, b": ", errno.message()]);
             FAILURE
@@ -122,7 +137,7 @@ pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -
 }
 
 fn state_name(state: u32) -> &'static [u8] {
-    match state {
+    match state & STATE_NUMBER {
         1 => b"minimised",
         2 => b"maximised",
         _ => b"normal",
@@ -209,7 +224,14 @@ fn write_entry<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
             output.write(state_name(word(entry, 4)));
             output.write(b" ");
         }
-        output.write_number(u64::from(word(entry, offset)), 0);
+        let value = word(entry, offset);
+        if matches!(field, 1 | 2) && (value as i32) < 0 {
+            output.write(b"-");
+        }
+        match field {
+            1 | 2 => output.write_number(u64::from((value as i32).unsigned_abs()), 0),
+            _ => output.write_number(u64::from(value), 0),
+        }
         output.write(b" ");
     }
     match word(entry, 24) {
@@ -219,6 +241,9 @@ fn write_entry<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
     output.write(b" ");
     let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
     output.write(&entry[TITLE_AT..TITLE_AT + length]);
+    if word(entry, 4) & NOT_RESPONDING_STATE != 0 {
+        output.write(NOT_RESPONDING_SUFFIX);
+    }
     output.write(b"\n");
 }
 
@@ -242,6 +267,8 @@ fn write_window<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
         KERNEL_CLIENT => out.null(),
         client => out.u64(u64::from(client)),
     }
+    out.key("responding");
+    out.bool(word(entry, 4) & NOT_RESPONDING_STATE == 0);
     out.key("title");
     let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
     out.string_lossy(&entry[TITLE_AT..TITLE_AT + length]);
@@ -429,9 +456,9 @@ mod tests {
         assert_eq!(
             fake.output(),
             "{\"id\":64,\"state\":\"normal\",\"x\":311,\"y\":192,\"width\":658,\
-             \"height\":458,\"client_pid\":null,\"title\":\"Terminal\"}\n\
+             \"height\":458,\"client_pid\":null,\"responding\":true,\"title\":\"Terminal\"}\n\
              {\"id\":129,\"state\":\"maximised\",\"x\":0,\"y\":28,\"width\":1280,\
-             \"height\":772,\"client_pid\":67,\"title\":\"first\"}\n"
+             \"height\":772,\"client_pid\":67,\"responding\":true,\"title\":\"first\"}\n"
         );
         let mut fake = windows();
         fake.window_server = false;
@@ -538,5 +565,42 @@ mod tests {
         let (status, fake) = run(&[c"list"], fake);
         assert_eq!(status, 1);
         assert!(fake.errors().starts_with("wm: /dev/window: "));
+    }
+    #[test]
+    fn a_window_hanging_off_the_left_and_one_not_responding_are_listed_as_they_show() {
+        let mut fake = windows();
+        fake.windows[1].state = NOT_RESPONDING_STATE;
+        fake.windows[1].rect = [(-542i32) as u32, 100, 658, 330];
+        fake.windows[1].title = b"Editor".to_vec();
+        let (status, fake) = run(&[c"list"], fake);
+        assert_eq!(status, 0);
+        assert!(
+            fake.output()
+                .ends_with("129 normal -542 100 658 330 67 Editor (not responding)\n"),
+            "{}",
+            fake.output()
+        );
+        let mut fake = windows();
+        fake.windows[1].state = NOT_RESPONDING_STATE | 2;
+        let (status, fake) = run(&[c"list", c"--json"], fake);
+        assert_eq!(status, 0);
+        assert!(fake.output().contains(
+            "\"state\":\"maximised\",\"x\":0,\"y\":28,\"width\":1280,\"height\":772,\
+             \"client_pid\":67,\"responding\":false,\"title\":\"first\""
+        ));
+    }
+
+    #[test]
+    fn a_window_that_does_not_respond_is_refused_as_busy_with_its_own_code() {
+        let mut output = Output::new(windows(), b"wm");
+        output.use_json();
+        let status = refused(&mut output, b"129", NOT_RESPONDING_ERRNO);
+        assert_eq!(status, BUSY_STATUS);
+        output.finish(status);
+        assert!(
+            output.system.errors().contains("\"code\":\"not_responding\""),
+            "{}",
+            output.system.errors()
+        );
     }
 }

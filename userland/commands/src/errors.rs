@@ -140,6 +140,15 @@ pub const PERSON_ACTIVE: ErrorDefinition = error(
     "Wait a moment and try again: a person always goes first.",
     None,
 );
+/// `wm act`, `wm type` and `wm menu`: the window's app has left an event unread for 2 s, so
+/// the window is not responding (exit 75, D221).
+pub const NOT_RESPONDING: ErrorDefinition = error(
+    "not_responding",
+    Category::Busy,
+    "Wait for the app to catch up and try again; wm list shows (not responding) until it does, \
+     and wm close ends a window that stays so.",
+    Some("wm list"),
+);
 /// `wm`: there is no window server (`/dev/window` cannot be opened).
 pub const NO_WINDOW_SERVER: ErrorDefinition = error(
     "no_window_server",
@@ -400,7 +409,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 54] = [
+pub const ALL: [&ErrorDefinition; 55] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -418,6 +427,7 @@ pub const ALL: [&ErrorDefinition; 54] = [
     &BAD_CURSOR,
     &NO_SUCH_WINDOW,
     &PERSON_ACTIVE,
+    &NOT_RESPONDING,
     &NO_WINDOW_SERVER,
     &NO_SUCH_MENU_ITEM,
     &DIALOG_OPEN,

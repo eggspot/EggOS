@@ -94,6 +94,7 @@ mod pointer_shape {
     pub const HIDDEN: u32 = 6;
     pub const HAND: u32 = 7;
     pub const BUSY: u32 = 8;
+    pub const WORKING: u32 = 9;
 }
 
 mod window_state {
@@ -2989,6 +2990,7 @@ fn pointer_shape_of(shape: u32) -> u32 {
         }
         cursor_shape::POINTER => pointer_shape::HAND,
         cursor_shape::WAIT => pointer_shape::BUSY,
+        cursor_shape::PROGRESS => pointer_shape::WORKING,
         _ => pointer_shape::ARROW,
     }
 }
