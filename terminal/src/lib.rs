@@ -1154,31 +1154,50 @@ impl Terminal {
                 continue;
             }
             let top = area.y as usize + usize::from(row) * GLYPH_HEIGHT;
-            let line = self.visible_line(row);
-            for column in span.start..span.end.min(self.columns) {
-                let cell = line[usize::from(column)];
-                let at = top * stride + area.x as usize + usize::from(column) * GLYPH_WIDTH;
-                let look = match cursor == Some((row, column)) {
-                    true => Some(self.cursor_look),
-                    false => None,
-                };
-                let (foreground, background) = match look {
-                    Some(CursorLook::Block) => (TERM_BACKGROUND, TERM_CURSOR),
-                    _ => cell.colours(),
-                };
-                let underline =
-                    cell.flags & cell_flags::UNDERLINE != 0 && look != Some(CursorLook::Block);
-                font::draw_glyph(
-                    pixels, stride, at, cell.glyph, foreground, background, underline,
-                );
-                if look == Some(CursorLook::Outline) {
-                    outline_cell(pixels, stride, at);
+            let end = span.end.min(self.columns);
+            let cursor_column = match cursor {
+                Some((cursor_row, column))
+                    if cursor_row == row && span.start <= column && column < end =>
+                {
+                    Some(column)
                 }
+                _ => None,
+            };
+            let cursor_look = self.cursor_look;
+            let line = self.visible_line(row);
+            let cell_at =
+                |column: u16| top * stride + area.x as usize + usize::from(column) * GLYPH_WIDTH;
+            let before_cursor = span.start..cursor_column.unwrap_or(end);
+            let after_cursor = cursor_column.map_or(end, |column| column + 1)..end;
+            for columns in [before_cursor, after_cursor] {
+                for column in columns {
+                    let cell = line[usize::from(column)];
+                    let (foreground, background) = cell.colours();
+                    let underline = cell.flags & cell_flags::UNDERLINE != 0;
+                    font::draw_glyph(
+                        pixels,
+                        stride,
+                        cell_at(column),
+                        cell.glyph,
+                        foreground,
+                        background,
+                        underline,
+                    );
+                }
+            }
+            if let Some(column) = cursor_column {
+                draw_cursor_cell(
+                    pixels,
+                    stride,
+                    cell_at(column),
+                    line[usize::from(column)],
+                    cursor_look,
+                );
             }
             band = band.union(Rect::new(
                 area.x + u32::from(span.start) * GLYPH_WIDTH as u32,
                 top as u32,
-                u32::from(span.end.min(self.columns) - span.start) * GLYPH_WIDTH as u32,
+                u32::from(end - span.start) * GLYPH_WIDTH as u32,
                 GLYPH_HEIGHT as u32,
             ));
         }
@@ -1212,6 +1231,21 @@ impl Terminal {
             let to = pixel_row * stride + area.x as usize;
             pixels.copy_within(to + distance..to + distance + width, to);
         }
+    }
+}
+
+#[cold]
+fn draw_cursor_cell(pixels: &mut [u32], stride: usize, at: usize, cell: Cell, look: CursorLook) {
+    let (foreground, background) = match look {
+        CursorLook::Block => (TERM_BACKGROUND, TERM_CURSOR),
+        _ => cell.colours(),
+    };
+    let underline = cell.flags & cell_flags::UNDERLINE != 0 && look != CursorLook::Block;
+    font::draw_glyph(
+        pixels, stride, at, cell.glyph, foreground, background, underline,
+    );
+    if look == CursorLook::Outline {
+        outline_cell(pixels, stride, at);
     }
 }
 
