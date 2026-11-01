@@ -44,7 +44,7 @@ aarch64 linux_epoll_wake 461.73
 aarch64 linux_exec_load 37144.47
 aarch64 linux_execve 95620.10
 aarch64 linux_file_map_read_unmap 16370.41
-aarch64 linux_file_read 522.11
+aarch64 linux_file_read 509.02
 aarch64 linux_fork 136725.04
 aarch64 linux_fork_touch 139508.85
 aarch64 linux_memfd_map_unmap 5895.80
@@ -110,7 +110,7 @@ riscv64 linux_epoll_wake 564.36
 riscv64 linux_exec_load 32119.50
 riscv64 linux_execve 63908.08
 riscv64 linux_file_map_read_unmap 27995.73
-riscv64 linux_file_read 565.69
+riscv64 linux_file_read 554.61
 riscv64 linux_fork 118416.28
 riscv64 linux_fork_touch 121079.87
 riscv64 linux_memfd_map_unmap 6862.04
@@ -175,7 +175,7 @@ x86_64 linux_epoll_wake 463.31
 x86_64 linux_exec_load 29070.01
 x86_64 linux_execve 39401.97
 x86_64 linux_file_map_read_unmap 9261.88
-x86_64 linux_file_read 424.64
+x86_64 linux_file_read 415.57
 x86_64 linux_fork 160695.15
 x86_64 linux_fork_touch 162254.24
 x86_64 linux_memfd_map_unmap 7369.85
