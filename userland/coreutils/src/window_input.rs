@@ -1004,6 +1004,26 @@ mod tests {
     }
 
     #[test]
+    fn every_input_to_a_window_not_responding_is_refused_with_its_own_code() {
+        for arguments in [
+            &[c"click", c"129", c"1", c"1"][..],
+            &[c"press", c"129", c"enter"][..],
+            &[c"scroll", c"129", c"0", c"1"][..],
+            &[c"type", c"129", c"a"][..],
+        ] {
+            let mut stuck = machine();
+            stuck.input_results = vec![Some(crate::wm::NOT_RESPONDING_ERRNO)];
+            let (status, fake) = run(arguments, stuck);
+            assert_eq!(status, BUSY_STATUS, "{arguments:?}");
+            assert!(
+                fake.errors().starts_with("wm: 129: not responding: "),
+                "{arguments:?}: {}",
+                fake.errors()
+            );
+        }
+    }
+
+    #[test]
     fn the_terminal_s_window_refuses_pointer_input_by_name() {
         let (status, fake) = run(&[c"click", c"64", c"1", c"1"], machine());
         assert_eq!(status, FAILURE);

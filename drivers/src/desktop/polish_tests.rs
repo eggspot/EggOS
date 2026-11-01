@@ -348,6 +348,65 @@ fn a_client_with_an_event_unread_for_2_s_is_not_responding_until_it_reads() {
 }
 
 #[test]
+fn every_injected_input_to_a_window_not_responding_is_refused_and_moving_it_is_not() {
+    let mut desktop = desktop(Profile::Windows);
+    let id = shown(&mut desktop, WIDE);
+    tick(&mut desktop, 1000);
+    let mut damage = Damage::new();
+    desktop.set_unread_since(CLIENT, Some(1000), &mut damage);
+    tick(&mut desktop, 1000 + UNREAD_EVENTS_BUSY_MS);
+    assert!(desktop.is_not_responding(id));
+    let left = crate::input::button::LEFT;
+    let inputs = [
+        InjectedInput::PointerMove { x: 10, y: 10 },
+        InjectedInput::Click {
+            x: 10,
+            y: 10,
+            button: left,
+        },
+        InjectedInput::DoubleClick {
+            x: 10,
+            y: 10,
+            button: left,
+        },
+        InjectedInput::Drag {
+            x: 10,
+            y: 10,
+            to_x: 40,
+            to_y: 40,
+            button: left,
+        },
+        InjectedInput::Wheel {
+            x: 10,
+            y: 10,
+            notches: 1,
+            sideways: 0,
+        },
+        InjectedInput::Key {
+            code: key::ENTER,
+            modifiers: Modifiers::NONE,
+        },
+        InjectedInput::Character('a'),
+    ];
+    let mut events = Recorded::default();
+    for input in inputs {
+        assert_eq!(
+            desktop.send_input(u32::from(id), input, &mut events),
+            Err(WindowError::NotResponding),
+            "{input:?}"
+        );
+    }
+    assert!(events.0.is_empty(), "nothing reaches the app's queue");
+    move_to(&mut desktop, id, 100, 120);
+    assert_eq!(desktop.window_bounds(id).map(|bounds| bounds.x), Some(100));
+    desktop.set_unread_since(CLIENT, None, &mut damage);
+    assert_eq!(
+        desktop.send_input(u32::from(id), InjectedInput::Character('a'), &mut events),
+        Ok(Injected::Queued)
+    );
+}
+
+#[test]
 fn a_press_on_a_window_busy_for_5_s_offers_to_end_its_app() {
     let mut desktop = desktop(Profile::Windows);
     let id = shown(&mut desktop, WIDE);
@@ -404,6 +463,46 @@ fn a_press_on_a_window_busy_for_5_s_offers_to_end_its_app() {
     );
     assert!(desktop.window_rect(id).is_none(), "gone in the same tick");
     assert_eq!(desktop.end_app_area(), None);
+}
+
+#[test]
+fn the_end_app_dialog_of_eggway_says_every_linux_window_app_ends_with_it() {
+    let mut desktop = desktop(Profile::Windows);
+    let id = shown(&mut desktop, WIDE);
+    let (x, y) = content_point(&desktop, id);
+    tick(&mut desktop, 1000);
+    let mut damage = Damage::new();
+    desktop.set_unread_since(CLIENT, Some(1000), &mut damage);
+    tick(&mut desktop, 1000 + UNREAD_EVENTS_BUSY_MS + END_APP_OFFER_MS);
+    assert_eq!(desktop.end_app_warnings(), None);
+    click(&mut desktop, x, y);
+    assert_eq!(
+        desktop.end_app_warnings(),
+        Some(&[super::responsiveness::END_APP_WARNING][..])
+    );
+    desktop.set_linux_apps_client(CLIENT);
+    assert_eq!(
+        desktop.end_app_warnings(),
+        Some(
+            &[
+                super::responsiveness::END_APP_WARNING,
+                super::responsiveness::END_APP_LINUX_APPS_WARNING
+            ][..]
+        )
+    );
+    let cells = super::responsiveness::END_APP_LINUX_APPS_WARNING.chars().count() as u32;
+    let width = cells * crate::font::GLYPH_WIDTH as u32;
+    assert!(12 + width <= END_APP_SIZE.0 - 12, "fits its line");
+    assert!(60 + crate::font::GLYPH_HEIGHT as u32 <= 80, "above the buttons");
+    desktop.forget_client(CLIENT, &mut damage);
+    desktop.set_unread_since(CLIENT, Some(20_000), &mut damage);
+    tick(&mut desktop, 20_000 + UNREAD_EVENTS_BUSY_MS + END_APP_OFFER_MS);
+    click(&mut desktop, x, y);
+    assert_eq!(
+        desktop.end_app_warnings(),
+        Some(&[super::responsiveness::END_APP_WARNING][..]),
+        "a client that disconnected is no longer eggway"
+    );
 }
 
 #[test]

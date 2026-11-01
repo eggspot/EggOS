@@ -3786,4 +3786,23 @@ fn a_window_that_does_not_respond_is_refused_with_its_own_code() {
         (outcome.as_str(), detail.as_str()),
         ("refused", "not responding")
     );
+    harness.system.outputs.insert(
+        "/bin/wm".into(),
+        (
+            Vec::new(),
+            b"wm: 129: not responding: its app has left its events unread; try again later, \
+              or end it with wm close\n  try: wm list\n"
+                .to_vec(),
+            Ended::Exited(BUSY_STATUS),
+        ),
+    );
+    for (id, tool, arguments) in [
+        (2, "wm_click", r#"{"window":129,"x":1,"y":1}"#),
+        (3, "wm_press", r#"{"window":129,"keys":"Enter"}"#),
+        (4, "wm_scroll", r#"{"window":129,"dy":-2}"#),
+    ] {
+        let answer = harness.call(id, tool, arguments);
+        assert!(is_error(&answer), "{tool}");
+        assert!(answer.contains("not_responding"), "{tool}: {answer}");
+    }
 }

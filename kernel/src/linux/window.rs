@@ -66,9 +66,23 @@ fn refused(error: WindowError) -> Errno {
 /// Opens the window server's device for process `process`: a new client. `ENXIO` without a
 /// display, `ENFILE` when the server serves as many clients as it may.
 pub fn open<P: Platform>(process: u32) -> Result<FileKind, Errno> {
-    window::connect(window::disconnect::<P>, process)
-        .map(FileKind::Window)
-        .map_err(errno)
+    let connection = window::connect(window::disconnect::<P>, process).map_err(errno)?;
+    let named = super::process_table::TABLE
+        .lock()
+        .list()
+        .find(|listed| listed.id == process)
+        .map(|listed| listed.name);
+    if named.is_some_and(|name| serves_linux_apps(&name)) {
+        let client = connection.client().id();
+        let _ = with_windows::<P, _>(|desktop, _, _, _| desktop.set_linux_apps_client(client));
+    }
+    Ok(FileKind::Window(connection))
+}
+
+const LINUX_APPS_SERVER: &[u8] = b"eggway";
+
+fn serves_linux_apps(name: &super::process_table::Name) -> bool {
+    name.split(|&byte| byte == 0).next() == Some(LINUX_APPS_SERVER)
 }
 
 /// `ioctl(fd, request, argument)` on `/dev/window`: the requests of docs/windows.md, their
@@ -495,9 +509,6 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EBUSY);
             }
             let injected = on_windows::<P, _>(|desktop, _, damage, events| {
-                if matches!(input, InjectedInput::Character(_)) {
-                    desktop.refuse_if_not_responding(window)?;
-                }
                 let injected = desktop.send_input(window, input, events)?;
                 match injected {
                     Injected::QueuedForDialog { dialog } => {
@@ -1047,4 +1058,18 @@ pub fn map<P: Platform>(
             | RegionError::OutOfMemory
             | RegionError::NotWritable => Errno::ENOMEM,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::process_table::name_of;
+
+    #[test]
+    fn only_eggway_serves_every_linux_window_app() {
+        assert!(serves_linux_apps(&name_of(b"eggway")));
+        for other in [&b"eggwayx"[..], b"egg", b"settings", b""] {
+            assert!(!serves_linux_apps(&name_of(other)), "{other:?}");
+        }
+    }
 }
