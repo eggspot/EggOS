@@ -39,7 +39,8 @@
 //!   `sys/eggos/keyboard_switch_key`: EggOS's own, the settings file's values of
 //!   `keyboard.layout`, `keyboard.layouts` and `keyboard.switch_key` the keyboard uses now, each
 //!   a line; writing a value (a trailing newline allowed) applies it at once, with or without a
-//!   display, and `EINVAL` refuses one the settings file would refuse. `settings set` writes
+//!   display, and `EINVAL` refuses one the settings file would refuse. Only a privileged caller
+//!   may write them; anyone else gets `EACCES`. `settings set` writes
 //!   them when there is no desktop to tell.
 //! - `self`: a link to the directory of the process that reads it.
 //! - `<pid>/`, one per process in the process table, listed after the files above: `cmdline`
@@ -174,6 +175,18 @@ pub enum KeyboardControl {
 
 fn is_control_file(node: u64) -> bool {
     matches!(node, KEYBOARD_LAYOUT | KEYBOARD_LAYOUTS_IN_USE | KEYBOARD_SWITCH_KEY)
+}
+
+/// Whether a caller with `credentials` may write `/proc/sys/eggos`'s control files (D220): only
+/// a privileged one, the rule `/dev/window` applies to the desktop's settings; `EACCES`
+/// otherwise.
+pub fn may_write_control_files(
+    credentials: &super::credentials::Credentials,
+) -> Result<(), super::Errno> {
+    match credentials.is_privileged() {
+        true => Ok(()),
+        false => Err(super::Errno::EACCES),
+    }
 }
 
 /// What writing `value` to control file `node` asks for: `None` for a value the settings file
@@ -1269,6 +1282,23 @@ mod tests {
         assert_eq!(
             proc.write(OSTYPE, WriteAt::Offset(0), b"x", 0),
             Err(Refused::ReadOnly)
+        );
+    }
+
+    #[test]
+    fn only_a_privileged_caller_may_write_the_control_files() {
+        use super::super::credentials::{Credentials, Ids, Kind};
+        let root = Credentials::new();
+        assert_eq!(may_write_control_files(&root), Ok(()));
+        let mut user = Credentials::new();
+        user.set_ids(Kind::User, Ids::all(1000)).unwrap();
+        assert_eq!(may_write_control_files(&user), Err(super::super::Errno::EACCES));
+        let mut root_group_only = Credentials::new();
+        root_group_only.set_ids(Kind::User, Ids::all(1000)).unwrap();
+        root_group_only.set_ids(Kind::Group, Ids::ROOT).unwrap();
+        assert_eq!(
+            may_write_control_files(&root_group_only),
+            Err(super::super::Errno::EACCES)
         );
     }
 

@@ -1288,7 +1288,12 @@ fn write_out_of_line<P: Platform>(
                 if snapshot.node.file_system().is_node_writable(snapshot.node.id()) =>
             {
                 let node = snapshot.node;
-                let result = file_changes::write_regular(process, &file, node, &iovecs, None);
+                let allowed = proc::may_write_control_files(
+                    &process.credentials_and_limits().lock().credentials,
+                );
+                let result = allowed.and_then(|()| {
+                    file_changes::write_regular(process, &file, node, &iovecs, None)
+                });
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
