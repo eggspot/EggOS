@@ -122,6 +122,7 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | Key | Value | Settable |
 |-----|-------|----------|
 | `shell.profile` | `windows`, `macos` (the default) or `linux` | yes |
+| `appearance.theme` | `dark` (the default) or `light`: every window repaints in it at once (D218; the Appearance pane) | yes |
 | `display.scale` | `1` (the default) or `2`, which doubles everything from the next boot (D195; the Display pane) | yes |
 | `display.resolution` | the screen's size, `1280x800` | no |
 | `display.pointer` | `software` | no |

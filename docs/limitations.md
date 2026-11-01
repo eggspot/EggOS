@@ -527,3 +527,16 @@ shortcuts), kept on the disk across reboots. Not yet:
 - Time zones (D194): a zone is its current rule, so times before its last change of rules show
   with today's rule; the desktop's clock and Settings' Date & time pane still show UTC, and
   `date -s` takes UTC; reading `/dev/rtc0` to wait for its alarm is not answered yet.
+- **The toolkit's second slice (D218, written, unchecked).** Tooltips, a menu bar (in the
+  window, or the top bar's main menu in the macOS profile) and menu buttons, tables with
+  resizable and sortable columns, a multi-line text area with word wrap, sideways scrolling
+  and drag and drop inside one window, and the light theme (`appearance.theme`, Settings >
+  Appearance, `settings set`, `settings_set`). Not yet: the shell's own panels, the boot screen
+  and the terminal keep their dark colours in the light theme, and so do the parts Files and
+  the Text Editor draw themselves; the Windows and macOS layers' system colours; high contrast
+  (`accessibility.high_contrast`) has its palettes but no setting; submenus, checkable items
+  and a bar's overflow; fit-to-content, reordering, multi-selection and cell focus in tables;
+  the text area's undo, word moves and touch handles, and a copy is cut at 4 KiB; drag between
+  windows; menus as bottom sheets, 40 px rows and a D-pad's two-dimensional focus on phones
+  and TVs; the macOS profile is checked again when a window gets the focus, not the moment it
+  changes.
