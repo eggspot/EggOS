@@ -18,6 +18,10 @@ use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
+use eggos_toolkit::text::Text as ToolkitText;
+use eggos_toolkit::text_area::Store;
+use eggos_toolkit::tree::WidgetTree;
+use eggos_toolkit::widget::{Align, Column, Kind, Place, TEXT_AREA_CAPACITY};
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::DiscardEvents;
@@ -156,6 +160,10 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
         }),
         ("window_commit_line", |_, n| window_commit_line(n)),
         ("window_hit_test", |_, n| window_hit_test(n)),
+        ("toolkit_table_layout_1000_rows", |_, n| {
+            toolkit_table_layout_1000_rows(n)
+        }),
+        ("text_area_wrap_64k", |_, n| text_area_wrap_64k(n)),
     ]
 }
 
@@ -1115,6 +1123,60 @@ fn window_hit_test(n: u64) {
         damage.clear();
     }
     black_box(desktop.focused_window());
+}
+
+fn bench_table_cell(_data: u32, row: usize, column: usize, out: &mut ToolkitText<64>) {
+    let _ = write!(out, "{row}:{column}");
+}
+
+const BENCH_TABLE_COLUMNS: [Column; 4] = [
+    Column::new("Name", 160, Align::Start),
+    Column::new("Size", 80, Align::End),
+    Column::new("Kind", 80, Align::Start),
+    Column::new("Modified", 120, Align::Start),
+];
+const BENCH_TABLE_SIZE: (i32, i32) = (400, 300);
+
+fn toolkit_table_layout_1000_rows(n: u64) {
+    let mut tree = Box::new(WidgetTree::<2>::new());
+    let table = Kind::table("Files", &BENCH_TABLE_COLUMNS, 1000, bench_table_cell, 0);
+    let Some(id) = tree.add(None, Place::fill(), table) else {
+        panic!("toolkit benchmark: the table does not fit its tree");
+    };
+    let (width, height) = BENCH_TABLE_SIZE;
+    tree.resize(width, height);
+    tree.set_scroll(id, 0, 24);
+    let mut pixels = alloc::vec![0u32; (width * height) as usize];
+    for _ in 0..n {
+        tree.resize(width, height);
+        tree.render(black_box(&mut pixels), width as u32, height as u32, 1);
+    }
+    black_box(&pixels);
+}
+
+const PANGRAM: &str = "the quick brown fox jumps over the lazy dog ";
+const WRAP_BREAK_EVERY: usize = 400;
+const WRAP_WIDTH: i32 = 384;
+
+fn text_area_wrap_64k(n: u64) {
+    let mut text = alloc::string::String::with_capacity(TEXT_AREA_CAPACITY);
+    let mut since_break = 0;
+    while text.len() + PANGRAM.len() + 1 <= TEXT_AREA_CAPACITY {
+        text.push_str(PANGRAM);
+        since_break += PANGRAM.len();
+        if since_break >= WRAP_BREAK_EVERY {
+            text.push('\n');
+            since_break = 0;
+        }
+    }
+    // SAFETY: every field of `Store` is an integer or an array of integers, so all-zero bytes
+    // are a valid value; `set` gives it its text and `wrap_all` its line index before use.
+    let mut store = unsafe { Box::<Store>::new_zeroed().assume_init() };
+    store.set(&text);
+    for _ in 0..n {
+        store.wrap_all(black_box(WRAP_WIDTH));
+    }
+    black_box(store.line_count());
 }
 
 const DEVICE_TREE: &[u8] = include_bytes!("../../hal/src/fdt/testdata/qemu-aarch64-virt.dtb");
