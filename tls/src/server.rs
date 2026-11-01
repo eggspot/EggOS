@@ -517,6 +517,7 @@ pub fn accept<'b>(
         pending_start: 0,
         pending_end: 0,
         closed: false,
+        certificate_validity: None,
         buffers,
     })
 }

@@ -785,6 +785,7 @@ pub struct Session<'b> {
     pub(crate) pending_start: usize,
     pub(crate) pending_end: usize,
     pub(crate) closed: bool,
+    pub(crate) certificate_validity: Option<(i64, i64)>,
 }
 
 impl fmt::Debug for Session<'_> {
@@ -879,6 +880,7 @@ pub fn connect<'b>(
 
     let mut requested: Option<([u8; 255], usize)> = None;
     let mut leaf: Option<LeafKey> = None;
+    let mut certificate_validity = None;
     let mut verified = false;
     let mut expected = ENCRYPTED_EXTENSIONS;
     loop {
@@ -922,6 +924,9 @@ pub fn connect<'b>(
                 let key = chain::verify(&chain[..count], settings.host, settings.now, anchors)
                     .map_err(Error::Certificate)?;
                 leaf = Some(LeafKey::copy(&key)?);
+                certificate_validity = x509::Certificate::parse(chain[0])
+                    .ok()
+                    .map(|certificate| (certificate.not_before, certificate.not_after));
                 expected = CERTIFICATE_VERIFY;
             }
             (CERTIFICATE_VERIFY, CERTIFICATE_VERIFY) => {
@@ -1024,6 +1029,7 @@ pub fn connect<'b>(
         pending_start: 0,
         pending_end: 0,
         closed: false,
+        certificate_validity,
         buffers,
     })
 }
@@ -1032,6 +1038,12 @@ impl Session<'_> {
     /// The cipher suite the server chose.
     pub fn suite(&self) -> CipherSuite {
         self.suite
+    }
+
+    /// For a client's session, the server certificate's validity: its `notBefore` and
+    /// `notAfter`, in seconds since 1970 (UTC); `None` for a server's session.
+    pub fn certificate_validity(&self) -> Option<(i64, i64)> {
+        self.certificate_validity
     }
 
     /// Sends `data` in records.
