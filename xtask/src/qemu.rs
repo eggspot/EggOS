@@ -250,6 +250,13 @@ pub enum Expect {
     /// came back abandoned once the child ended, the mapping went with its last handle, views
     /// of a page-file mapping share memory and refuse bad offsets and sizes, and a file's view
     /// wrote, flushed and copied on write; then its status 0.
+    /// Then `eggcrt2.exe`, our own C program (D228): its lines say the math library's `sin`,
+    /// `exp`, `pow`, `atan2`, `fmod`, `tgamma` and `sqrt` gave their values, `longjmp` left two
+    /// frames through a `__finally` and turned 0 into 1, `setlocale` named "C", the user's
+    /// default and a mixed locale and refused `de-DE`, `localeconv` gave en-US's separators and
+    /// `MB_CUR_MAX` followed `LC_CTYPE`, a `ccs=UTF-16LE` stream wrote and read back UTF-16 with
+    /// its byte order mark and `\r\n`, a text stream wrote `fputws` as UTF-8, and `_write` and
+    /// `_read` in text mode translated line ends and stopped at Ctrl+Z; then its status 0.
     /// Then `eggrust.exe`, our own Rust program on Rust's standard library (D189): its lines say
     /// `Command::output` ran a copy of itself with its arguments and took its output, error
     /// and exit code through pipes, a piped child's output was read as it came, a file was
@@ -600,7 +607,7 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT quit 0",
 ];
 
-const WINDOWS_CRT_SESSION: [&[u8]; 13] = [
+const WINDOWS_CRT_SESSION: [&[u8]; 14] = [
     b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
     b"cat /tmp/eggpad.log\r",
     b"cat /tmp/note.txt\r",
@@ -610,6 +617,7 @@ const WINDOWS_CRT_SESSION: [&[u8]; 13] = [
     b"eggspawn.exe; echo EGGSPAWN status $?\r",
     b"eggsync.exe; echo EGGSYNC status $?\r",
     b"eggnamed.exe; echo EGGNAMED status $?\r",
+    b"eggcrt2.exe; echo EGGCRT2 status $?\r",
     b"eggrust.exe; echo EGGRUST status $?\r",
     b"eggrust.exe panic; echo EGGRUST panic status $?\r",
     b"GREETING=hi eggmingw.exe one 'two words'; echo EGGMINGW status $?\r",
@@ -688,6 +696,22 @@ const EGGNAMED_LINES: [&str; 11] = [
     "EGGNAMED status 0",
 ];
 
+const EGGCRT2_LINES: [&str; 12] = [
+    "EGGCRT2 sin 0.841470984808 exp 2.71828182846 pow 1.41421356237",
+    "EGGCRT2 atan2 0.785398163397 fmod 1 tgamma 24 sqrt 1.4142135623730951",
+    "EGGCRT2 longjmp returned 1 after 3 rounds, finally ran 2",
+    "EGGCRT2 locale C, user English_United States.utf8, separators . ,, grouping 3, currency $, \
+     MB_CUR_MAX 4",
+    "EGGCRT2 locale numeric C: 160 long, numeric part 1, starts LC_COLLATE=English_United States.utf8;",
+    "EGGCRT2 locale de-DE refused 1, en-US object 1, back to C 1",
+    "EGGCRT2 wide file 18 bytes, line length 6 second e9, then ! ! end 1 1",
+    "EGGCRT2 multibyte file 4 bytes c3 a9 0d 0a",
+    "EGGCRT2 text wrote 4, file 6, read 4 a|b|",
+    "EGGCRT2 ctrl+z read 3 x|y then 0, setmode was 16384",
+    "EGGCRT2 done",
+    "EGGCRT2 status 0",
+];
+
 const EGGMINGW_LINES: [&str; 10] = [
     "EGGMINGW hello from msvcrt.dll, arguments 2: one|two words",
     "EGGMINGW greeting hi",
@@ -735,6 +759,7 @@ fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
         whole(&EGGSPAWN_LINES),
         whole(&EGGSYNC_LINES),
         whole(&EGGNAMED_LINES),
+        whole(&EGGCRT2_LINES),
         whole(&EGGRUST_LINES),
         vec![
             Line::Around("thread 'main'", ":"),
