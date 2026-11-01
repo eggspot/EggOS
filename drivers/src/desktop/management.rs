@@ -42,14 +42,18 @@ pub struct ListedWindow {
     pub id: super::WindowId,
     /// Normal, minimised or maximised.
     pub state: WindowState,
-    /// Its outside rectangle on the screen.
-    pub rect: Rect,
+    /// Its outside rectangle on the desktop's plane: left of the screen while it hangs off the
+    /// left edge (D221).
+    pub rect: super::Bounds,
     /// Its client's number, [`super::KERNEL_CLIENT`] for the kernel's.
     pub client: u16,
     /// Its title, [`Self::title_length`] bytes of UTF-8.
     pub title: [u8; TITLE_CAPACITY],
     /// See [`Self::title`].
     pub title_length: usize,
+    /// Whether its app reads its events: false while its title says `(not responding)`
+    /// (D221).
+    pub responding: bool,
 }
 
 /// What a point is on ([`Desktop::hit`]): a window's resize zone, or a window and its part.
@@ -66,7 +70,7 @@ pub(super) struct Hit {
 pub(super) struct Resize {
     pub window: usize,
     pub edges: u8,
-    pub start: Rect,
+    pub start: windows::Bounds,
     pub from: (u32, u32),
 }
 
@@ -86,20 +90,25 @@ impl Desktop {
             .filter(|&slot| self.window_at(slot).shown)
             .nth(index)
             .ok_or(WindowError::NoSuchWindow)?;
+        Ok(self.listed(slot))
+    }
+
+    pub(super) fn listed(&self, slot: usize) -> ListedWindow {
         let window = self.window_at(slot);
         let state = match (window.minimised, window.maximised) {
             (true, _) => WindowState::Minimised,
             (false, true) => WindowState::Maximised,
             (false, false) => WindowState::Normal,
         };
-        Ok(ListedWindow {
+        ListedWindow {
             id: window.id,
             state,
-            rect: window.outside(),
+            rect: window.bounds(),
             client: window.client,
             title: window.title,
             title_length: usize::from(window.title_length),
-        })
+            responding: !window.not_responding,
+        }
     }
 
     /// Does `action` ([`WindowAction`]'s numbers) to window `id`, whoever's it is, as `wm`
@@ -147,7 +156,7 @@ impl Desktop {
             WindowAction::Size => {
                 self.unmaximise(slot, damage, events);
                 let window = *self.window_at(slot);
-                let outside = window.outside();
+                let outside = window.bounds();
                 let wanted = |value: i32, chrome: u32| i64::from(value.max(0)) + i64::from(chrome);
                 let outside = windows::resized(
                     outside,
@@ -210,10 +219,14 @@ impl Desktop {
                 continue;
             }
             if let Some(before) = window.before_maximised {
-                let (x, y) = self.clamped(slot, i64::from(before.x), i64::from(before.y));
+                let (x, y) = self.hanging_clamped(
+                    before.content_width + windows::CHROME.0,
+                    i64::from(before.x),
+                    i64::from(before.y),
+                );
                 self.window_mut(slot).before_maximised = Some(Geometry { x, y, ..before });
             }
-            let outside = window.outside();
+            let outside = window.bounds();
             let too_large = outside.width > work.width || outside.height > work.height;
             if too_large && window.is_resizable() {
                 let geometry = Geometry {
@@ -483,7 +496,7 @@ impl Desktop {
         self.resize = Some(Resize {
             window: slot,
             edges,
-            start: self.window_at(slot).outside(),
+            start: self.window_at(slot).bounds(),
             from: self.pointer,
         });
     }
@@ -585,31 +598,28 @@ impl Desktop {
         }
     }
 
-    /// Client `client` read a close request: its windows are answering.
+    /// Client `client` read a close request: its windows are answering, unless it also leaves
+    /// other events unread (D221).
     pub fn close_answered(&mut self, client: u16, damage: &mut Damage) {
-        for slot in 0..self.windows.len() {
-            let Some(window) = self.windows[slot].as_mut() else {
-                continue;
-            };
-            if window.client != client || window.close_requested_ms.is_none() {
-                continue;
-            }
-            window.close_requested_ms = None;
-            if core::mem::take(&mut window.not_responding) && self.is_visible(slot) {
-                damage.add(self.window_at(slot).title_bar());
+        for window in self.windows.iter_mut().flatten() {
+            if window.client == client {
+                window.close_requested_ms = None;
             }
         }
+        self.refresh_responding(damage);
         self.update_pointer(damage);
     }
 
     /// The clock reached `now_ms`: windows whose close request went unread for
-    /// [`NOT_RESPONDING_AFTER_MS`] say `(not responding)`, and those unread for
-    /// [`CLOSE_TIMEOUT_MS`] are destroyed (their programs keep running). A clock behind the
-    /// request counts as no time waited. Returns whether any was destroyed.
+    /// [`NOT_RESPONDING_AFTER_MS`], or whose client left an event unread for
+    /// [`super::UNREAD_EVENTS_BUSY_MS`] (D221), say `(not responding)`, and those whose close
+    /// request went unread for [`CLOSE_TIMEOUT_MS`] are destroyed (their programs keep
+    /// running); an app's start stops showing `Working` after [`super::APP_STARTING_MS`], and
+    /// the launcher's caret blinks. A clock behind the request counts as no time waited.
+    /// Returns whether any window was destroyed.
     pub fn tick(&mut self, now_ms: u32, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
         self.now_ms = now_ms;
         let mut destroyed = false;
-        let mut stopped_answering = false;
         for slot in 0..self.windows.len() {
             let Some(window) = self.windows[slot] else {
                 continue;
@@ -617,21 +627,16 @@ impl Desktop {
             let Some(asked) = window.close_requested_ms else {
                 continue;
             };
-            let waited = (now_ms.wrapping_sub(asked) as i32).max(0) as u32;
-            if waited >= CLOSE_TIMEOUT_MS {
+            if super::responsiveness::waited(now_ms, asked) >= CLOSE_TIMEOUT_MS {
                 self.destroy_slot(slot, damage, events);
                 destroyed = true;
-            } else if waited >= NOT_RESPONDING_AFTER_MS && !window.not_responding {
-                self.window_mut(slot).not_responding = true;
-                stopped_answering = true;
-                if self.is_visible(slot) {
-                    damage.add(window.title_bar());
-                }
             }
         }
-        if destroyed || stopped_answering {
+        if destroyed {
             self.update_pointer(damage);
         }
+        self.tick_responsiveness(damage);
+        self.tick_caret(damage);
         self.tick_notice(damage);
         self.tick_tooltip(damage);
         self.tick_agent(damage);
@@ -809,8 +814,13 @@ impl Desktop {
         }
     }
 
-    /// The pointer shape the desktop shows now at the pointer, over `hit`.
+    /// The pointer shape the desktop shows now at the pointer, over `hit`: `Working` in the
+    /// arrow's place while an app starts (D221).
     pub(super) fn wanted_pointer(&self, hit: Hit) -> PointerShape {
+        self.with_server_shapes(self.shape_over(hit))
+    }
+
+    fn shape_over(&self, hit: Hit) -> PointerShape {
         if let Some(resize) = self.resize {
             return resize_pointer(resize.edges);
         }
@@ -856,6 +866,7 @@ impl Desktop {
                 .icon_menu_area()
                 .is_some_and(|rect| contains(rect, x, y))
             || self.notice_area().is_some_and(|rect| contains(rect, x, y))
+            || self.end_app_area().is_some_and(|rect| contains(rect, x, y))
     }
 
     /// Brings the drawn pointer up to date with the desktop's state, damaging where it was and
@@ -941,7 +952,7 @@ impl Desktop {
         };
         let window = *self.window_at(slot);
         if !sizing {
-            self.drag_window(
+            self.move_window(
                 slot,
                 i64::from(window.x) + dx,
                 i64::from(window.y) + dy,
@@ -950,7 +961,7 @@ impl Desktop {
             return;
         }
         let outside = windows::resized(
-            window.outside(),
+            window.bounds(),
             edge::RIGHT | edge::BOTTOM,
             dx,
             dy,

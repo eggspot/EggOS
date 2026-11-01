@@ -15,6 +15,7 @@ pub struct EventQueue {
     start: usize,
     length: usize,
     dropped: u32,
+    unread_since_ms: Option<u32>,
 }
 
 impl EventQueue {
@@ -28,7 +29,19 @@ impl EventQueue {
             start: 0,
             length: 0,
             dropped: 0,
+            unread_since_ms: None,
         })
+    }
+
+    /// When the oldest record waiting was queued, by its time stamp, or when the client last
+    /// read while records still waited (D221); `None` when none waits.
+    pub fn unread_since(&self) -> Option<u32> {
+        self.unread_since_ms
+    }
+
+    /// The client read records at `now_ms`: what still waits counts from then.
+    pub fn note_read(&mut self, now_ms: u32) {
+        self.unread_since_ms = (!self.is_empty()).then_some(now_ms);
     }
 
     /// Whether a record waits to be taken.
@@ -48,6 +61,9 @@ impl EventQueue {
 
     /// Adds `record` at the end, making room as the module documentation says.
     pub fn push(&mut self, record: EventRecord) {
+        if self.is_empty() {
+            self.unread_since_ms = Some(record.time_ms);
+        }
         if record.kind == event::RESIZE
             && let Some(waiting) = (0..self.length)
                 .map(|index| (self.start + index) % QUEUE_CAPACITY)
@@ -96,6 +112,9 @@ impl EventQueue {
         let record = self.records[self.start];
         self.start = (self.start + 1) % QUEUE_CAPACITY;
         self.length -= 1;
+        if self.is_empty() {
+            self.unread_since_ms = None;
+        }
         Some(record)
     }
 }
@@ -200,5 +219,29 @@ mod tests {
         assert_eq!(&bytes[16..20], &0x13u32.to_ne_bytes());
         assert_eq!(&bytes[20..24], &0x41u32.to_ne_bytes());
         assert_eq!(&bytes[24..32], &[0; 8]);
+    }
+    #[test]
+    fn the_unread_clock_counts_from_the_oldest_unread_record_or_the_last_read() {
+        let mut queue = EventQueue::new().unwrap();
+        assert_eq!(queue.unread_since(), None);
+        let mut first = record(event::KEY, 1, 1);
+        first.time_ms = 1000;
+        queue.push(first);
+        let mut second = record(event::KEY, 1, 2);
+        second.time_ms = 1700;
+        queue.push(second);
+        assert_eq!(queue.unread_since(), Some(1000), "the oldest record's time");
+        queue.pop();
+        queue.note_read(2000);
+        assert_eq!(queue.unread_since(), Some(2000), "a read restarts the clock");
+        queue.pop();
+        queue.note_read(2100);
+        assert_eq!(queue.unread_since(), None, "nothing waits");
+        let mut third = record(event::KEY, 1, 3);
+        third.time_ms = 2500;
+        queue.push(third);
+        assert_eq!(queue.unread_since(), Some(2500));
+        queue.pop();
+        assert_eq!(queue.unread_since(), None, "emptied by a take");
     }
 }

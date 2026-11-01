@@ -121,8 +121,10 @@ impl Desktop {
             && self.is_visible(slot)
         {
             self.damage_agent_pointer(damage);
-            let content = target.content();
-            self.agent.pointer = Some((content.x + x, content.y + y, self.now_ms));
+            let (left, top) = target.content_origin();
+            let at_x = (left + i64::from(x)).max(0) as u32;
+            let at_y = (top + i64::from(y)).max(0) as u32;
+            self.agent.pointer = Some((at_x, at_y, self.now_ms));
             self.damage_agent_pointer(damage);
         }
     }

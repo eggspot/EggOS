@@ -893,7 +893,7 @@ fn a_client_reads_its_own_window_s_placement_and_no_one_else_s() {
     assert_eq!(request::GET_PLACEMENT, 0xc014_771c);
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let window = shown(&mut desktop, CLIENT, 400, 300);
-    let outside = desktop.window_rect(window).unwrap();
+    let outside = desktop.window_bounds(window).unwrap();
     assert_eq!(desktop.placement(CLIENT, u32::from(window)), Ok(outside));
     assert_eq!(
         desktop.placement(OTHER, u32::from(window)),
@@ -904,7 +904,7 @@ fn a_client_reads_its_own_window_s_placement_and_no_one_else_s() {
         .unwrap();
     let moved = desktop.placement(CLIENT, u32::from(window)).unwrap();
     let work = desktop.work_area();
-    assert_eq!((moved.x, moved.y), (work.x + 10, work.y + 20));
+    assert_eq!((moved.x, moved.y), (work.x as i32 + 10, work.y + 20));
     let mut bytes = [0u8; size::GET_PLACEMENT];
     bytes[..4].copy_from_slice(&u32::from(window).to_ne_bytes());
     assert_eq!(

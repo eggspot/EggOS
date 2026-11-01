@@ -52,6 +52,7 @@ pub(super) struct Canvas<'a> {
     pixels: &'a mut [u32],
     stride: usize,
     clip: Rect,
+    shift: u32,
 }
 
 impl<'a> Canvas<'a> {
@@ -62,7 +63,22 @@ impl<'a> Canvas<'a> {
             pixels,
             stride,
             clip,
+            shift: 0,
         })
+    }
+
+    pub(super) fn shifted(&mut self, by: u32) -> Canvas<'_> {
+        Canvas {
+            pixels: &mut *self.pixels,
+            stride: self.stride,
+            clip: Rect::new(
+                self.clip.x + by,
+                self.clip.y,
+                self.clip.width,
+                self.clip.height,
+            ),
+            shift: self.shift + by,
+        }
     }
 
     pub(super) fn clip(&self) -> Rect {
@@ -79,6 +95,7 @@ impl<'a> Canvas<'a> {
             return;
         }
         let start = row as usize * self.stride;
+        let (left, right) = (left - self.shift, right - self.shift);
         self.pixels[start + left as usize..start + right as usize].fill(colour);
     }
 
@@ -92,6 +109,7 @@ impl<'a> Canvas<'a> {
             return None;
         }
         let start = row as usize * self.stride;
+        let (left, right) = (left - self.shift, right - self.shift);
         Some(&mut self.pixels[start + left as usize..start + right as usize])
     }
 
@@ -136,7 +154,7 @@ impl<'a> Canvas<'a> {
     fn darken(&mut self, x: u32, y: u32, darkening: fn(u32) -> u32) {
         let clip = self.clip;
         if x >= clip.x && x < clip.right() && y >= clip.y && y < clip.bottom() {
-            let at = y as usize * self.stride + x as usize;
+            let at = y as usize * self.stride + (x - self.shift) as usize;
             self.pixels[at] = darkening(self.pixels[at]);
         }
     }

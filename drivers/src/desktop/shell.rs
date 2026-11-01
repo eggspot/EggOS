@@ -604,6 +604,7 @@ impl Desktop {
                     return Action::None;
                 }
                 self.panels.starting = Some((app, self.now_ms));
+                self.app_starting(damage);
                 Action::Start(app)
             }
             AppId::Installed(_) => {
@@ -741,6 +742,7 @@ impl Desktop {
     /// may be launched again at once.
     pub fn launch_failed(&mut self, damage: &mut Damage) {
         self.panels.starting = None;
+        self.end_app_starting(damage);
         self.show_notice(super::launcher::LAUNCH_FAILED, damage);
     }
 

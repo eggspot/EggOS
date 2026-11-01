@@ -31,6 +31,7 @@ mod paint;
 mod pointer;
 mod popups;
 pub mod protocol;
+mod responsiveness;
 mod shell;
 pub mod shortcuts;
 mod windows;
@@ -43,6 +44,8 @@ mod keyboard_layout_tests;
 mod main_menu_tests;
 #[cfg(test)]
 mod management_tests;
+#[cfg(test)]
+mod polish_tests;
 #[cfg(test)]
 mod shell_tests;
 #[cfg(test)]
@@ -66,12 +69,15 @@ pub use keyboard_layout::{
     KEYBOARD_SETTINGS, KeyboardLayoutChoice, LAYOUT_MENU_WIDTH, LayoutMenuRow, MAX_SHOWN_LAYOUTS,
 };
 pub use launcher::{
-    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER, LAUNCHER_ROW_HEIGHT, LAYOUT_HINT_MS, NOTICE_MS,
-    TEXT_EDITOR_MISSING,
+    CARET_BLINK_MS, CARET_STEADY_AFTER_MS, FILES_MISSING, LAUNCH_FAILED, LAUNCHER_FOOTER,
+    LAUNCHER_ROW_HEIGHT, LAYOUT_HINT_MS, NOTICE_MS, TEXT_EDITOR_MISSING, caret_shown_at,
 };
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
 pub use pointer::{CURSOR_SIDE, write_cursor_image};
+pub use responsiveness::{
+    APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
+};
 
 /// How far a window's content is cut in from each side on its last rows, bottom row first:
 /// the pixels its rounded corners take (a maximised window has square corners).
@@ -80,7 +86,7 @@ pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU
 pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
 pub use windows::{
-    CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
+    Bounds, CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
     KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId, clamp_content_size,
     clamp_resized_content, edge, is_double_click, minimum_outside, resize_edges, resize_pointer,
     resized, slot_of,
@@ -247,6 +253,9 @@ pub enum Action {
     /// Focus the terminal and type `agentlog` in it, as the `Agent` chip's click asks
     /// ([`AGENT_LOG_LINE`]).
     ShowAgentLog,
+    /// End the client's process: the person chose `End app` for a window that is not
+    /// responding (D221). Its windows are gone already.
+    EndClient(u16),
     /// Make keyboard layout number `.0` the one in force, as the switch key does, chosen in
     /// the bar indicator's menu (D220).
     ChooseKeyboardLayout(u8),
@@ -359,6 +368,8 @@ pub struct Desktop {
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     desktops: u8,
     current_desktop: u8,
+    responsiveness: responsiveness::Responsiveness,
+    reduce_motion: bool,
 }
 
 impl Desktop {
@@ -449,6 +460,8 @@ impl Desktop {
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             desktops: 1,
             current_desktop: 0,
+            responsiveness: responsiveness::Responsiveness::default(),
+            reduce_motion: false,
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
         let mut terminal = Window::new(
@@ -564,15 +577,30 @@ impl Desktop {
         self.terminal().title_bar()
     }
 
-    /// Where the terminal's grid sits: inside the window's padding.
+    /// Where the terminal's grid sits: inside the window's padding, its left edge cut at the
+    /// screen's while the window hangs off it ([`Self::grid_on_screen`] places its cells).
     pub fn text_area(&self) -> TextArea {
-        let content = self.terminal().content();
+        let (x, y) = self.terminal().content_origin();
         TextArea {
-            x: content.x + PADDING,
-            y: content.y + PADDING,
+            x: (x + i64::from(PADDING)).max(0) as u32,
+            y: (y + i64::from(PADDING)) as u32,
             columns: GRID_COLUMNS,
             rows: GRID_ROWS,
         }
+    }
+
+    /// Where rectangle `rect` of the terminal's grid is on the screen, cut at the screen's left
+    /// edge while the window hangs off it (D221).
+    pub fn grid_on_screen(&self, rect: Rect) -> Rect {
+        let (x, y) = self.terminal().content_origin();
+        let padding = i64::from(PADDING);
+        Bounds::new(
+            (x + padding + i64::from(rect.x)) as i32,
+            (y + padding + i64::from(rect.y)) as u32,
+            rect.width,
+            rect.height,
+        )
+        .visible()
     }
 
     /// Whether the terminal's window is on screen.
@@ -624,6 +652,12 @@ impl Desktop {
     /// Window `id`'s rectangle, its border included, if it exists.
     pub fn window_rect(&self, id: WindowId) -> Option<Rect> {
         self.find(id).map(|slot| self.window_at(slot).outside())
+    }
+
+    /// Window `id`'s outside rectangle on the desktop's plane, which may begin left of the
+    /// screen (D221), if it exists.
+    pub fn window_bounds(&self, id: WindowId) -> Option<Bounds> {
+        self.find(id).map(|slot| self.window_at(slot).bounds())
     }
 
     /// Window `id`'s content on the screen, if it exists.
@@ -1040,14 +1074,15 @@ impl Desktop {
     }
 
     /// `client`'s window `id`'s outside rectangle on the screen, its border and title bar
-    /// included (D174): where `GetPlacement` says it is.
-    pub fn placement(&self, client: u16, id: u32) -> Result<Rect, WindowError> {
+    /// included (D174): where `GetPlacement` says it is, left of the screen while it hangs off
+    /// the left edge (D221).
+    pub fn placement(&self, client: u16, id: u32) -> Result<Bounds, WindowError> {
         let slot = self.owned(client, id)?;
-        Ok(self.window_at(slot).outside())
+        Ok(self.window_at(slot).bounds())
     }
 
     /// Places `client`'s window `id` with its top-left corner at (`x`, `y`) of the work area,
-    /// clamped so the whole window is inside it: at once if it is shown, else when it first is.
+    /// clamped as a person's move is (D221): at once if it is shown, else when it first is.
     pub fn set_position(
         &mut self,
         client: u16,
@@ -1169,19 +1204,12 @@ impl Desktop {
         if !self.is_visible(slot) {
             return Ok(());
         }
-        let content = window.content();
         if !was_ready || rects.is_empty() {
-            damage.add(content);
+            damage.add(window.content());
             return Ok(());
         }
         for rect in rects {
-            let clipped = rect.clipped(content.width, content.height);
-            damage.add(Rect::new(
-                content.x + clipped.x,
-                content.y + clipped.y,
-                clipped.width,
-                clipped.height,
-            ));
+            damage.add(window.content_to_screen(*rect));
         }
         Ok(())
     }
@@ -1223,6 +1251,7 @@ impl Desktop {
             }
         }
         self.forget_main_menu(slot, damage);
+        self.forget_end_app(slot, damage);
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
         }
@@ -1273,6 +1302,10 @@ impl Desktop {
     fn show(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
         self.place(slot);
         self.window_mut(slot).shown = true;
+        let window = self.window_at(slot);
+        if window.role == Role::Normal && window.client != KERNEL_CLIENT {
+            self.end_app_starting(damage);
+        }
         self.stack[self.stack_length] = slot as u8;
         self.stack_length += 1;
         if self.window_at(slot).role == Role::Normal {
@@ -1299,13 +1332,19 @@ impl Desktop {
         }
         let outside = window.outside();
         let work = self.work_area();
-        let (x, y) = if let Some((x, y)) = window.requested_position {
-            (
+        if let Some((x, y)) = window.requested_position {
+            let (x, y) = self.hanging_clamped(
+                outside.width,
                 i64::from(work.x) + i64::from(x),
                 i64::from(work.y) + i64::from(y),
-            )
-        } else if let Some(parent) = window.parent {
-            let parent = self.window_at(usize::from(parent)).outside();
+            );
+            let window = self.window_mut(slot);
+            window.x = x;
+            window.y = y;
+            return;
+        }
+        let (x, y) = if let Some(parent) = window.parent {
+            let parent = self.window_at(usize::from(parent)).bounds();
             (
                 i64::from(parent.x) + (i64::from(parent.width) - i64::from(outside.width)) / 2,
                 i64::from(parent.y) + (i64::from(parent.height) - i64::from(outside.height)) / 2,
@@ -1317,20 +1356,21 @@ impl Desktop {
                     i64::from(work.y + work.height.saturating_sub(outside.height) / 2),
                 ),
                 Some(top) => {
-                    let top = self.window_at(top).outside();
-                    let fits = |x: u32, y: u32| {
-                        x + outside.width <= work.right() && y + outside.height <= work.bottom()
+                    let top = self.window_at(top).bounds();
+                    let fits = |x: i64, y: i64| {
+                        x + i64::from(outside.width) <= i64::from(work.right())
+                            && y + i64::from(outside.height) <= i64::from(work.bottom())
                     };
-                    let cascaded = (top.x + CASCADE_STEP, top.y + CASCADE_STEP);
-                    let restarted = (work.x + CASCADE_STEP, work.y + CASCADE_STEP);
-                    let (x, y) = if fits(cascaded.0, cascaded.1) {
+                    let step = i64::from(CASCADE_STEP);
+                    let cascaded = (i64::from(top.x) + step, i64::from(top.y) + step);
+                    let restarted = (i64::from(work.x) + step, i64::from(work.y) + step);
+                    if fits(cascaded.0, cascaded.1) && cascaded.0 >= i64::from(work.x) {
                         cascaded
                     } else if fits(restarted.0, restarted.1) {
                         restarted
                     } else {
-                        (work.x, work.y)
-                    };
-                    (i64::from(x), i64::from(y))
+                        (i64::from(work.x), i64::from(work.y))
+                    }
                 }
             }
         };
@@ -1350,7 +1390,7 @@ impl Desktop {
             })
     }
 
-    fn clamped(&self, slot: usize, x: i64, y: i64) -> (u32, u32) {
+    fn clamped(&self, slot: usize, x: i64, y: i64) -> (i32, u32) {
         let outside = self.window_at(slot).outside();
         let work = self.work_area();
         let x = x.clamp(
@@ -1361,35 +1401,25 @@ impl Desktop {
             i64::from(work.y),
             i64::from(work.y + work.height.saturating_sub(outside.height)),
         );
-        (x as u32, y as u32)
+        (x as i32, y as u32)
     }
 
-    fn hanging_clamped(&self, slot: usize, x: i64, y: i64) -> (u32, u32) {
-        let outside = self.window_at(slot).outside();
+    fn hanging_clamped(&self, width: u32, x: i64, y: i64) -> (i32, u32) {
         let work = self.work_area();
-        let kept = HANGING_TITLE_KEPT.min(outside.width);
-        let x = x.clamp(
-            i64::from(work.x),
-            i64::from(work.right().saturating_sub(kept).max(work.x)),
-        );
-        let y = y.clamp(
-            i64::from(work.y),
-            i64::from(work.bottom().saturating_sub(TITLE_HEIGHT + 1).max(work.y)),
-        );
-        (x as u32, y as u32)
+        let (least, most) = windows::hanging_x_range(width, work, self.profile.control_side());
+        let lowest = work.bottom().saturating_sub(TITLE_HEIGHT + 1).max(work.y);
+        let x = x.max(least).min(most);
+        let y = y.max(i64::from(work.y)).min(i64::from(lowest));
+        (x as i32, y as u32)
     }
 
     fn move_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
-        let at = self.clamped(slot, x, y);
+        let width = self.window_at(slot).bounds().width;
+        let at = self.hanging_clamped(width, x, y);
         self.place_window(slot, at, damage);
     }
 
-    fn drag_window(&mut self, slot: usize, x: i64, y: i64, damage: &mut Damage) {
-        let at = self.hanging_clamped(slot, x, y);
-        self.place_window(slot, at, damage);
-    }
-
-    fn place_window(&mut self, slot: usize, (x, y): (u32, u32), damage: &mut Damage) {
+    fn place_window(&mut self, slot: usize, (x, y): (i32, u32), damage: &mut Damage) {
         let window = self.window_at(slot);
         if (x, y) == (window.x, window.y) {
             return;
@@ -1588,11 +1618,11 @@ impl Desktop {
     }
 
     fn content_point(&self, slot: usize) -> (i32, i32) {
-        let content = self.window_at(slot).content();
+        let (left, top) = self.window_at(slot).content_origin();
         let (x, y) = self.pointer;
         (
-            (i64::from(x) - i64::from(content.x)) as i32,
-            (i64::from(y) - i64::from(content.y)) as i32,
+            (i64::from(x) - left) as i32,
+            (i64::from(y) - top) as i32,
         )
     }
 
@@ -1689,7 +1719,7 @@ impl Desktop {
             self.unmaximise(drag.window, damage, events);
             self.drag = Some(drag);
         }
-        self.drag_window(
+        self.move_window(
             drag.window,
             i64::from(x) - drag.from_pointer_x,
             i64::from(y) - drag.from_pointer_y,
@@ -1783,6 +1813,9 @@ impl Desktop {
         let (x, y) = self.pointer;
         self.super_alone = false;
         self.close_notice(damage);
+        if let Some(action) = self.end_app_press(x, y, damage, events) {
+            return action;
+        }
         if self.main_menu_press(code, x, y, damage, events) {
             return Action::None;
         }
@@ -1868,6 +1901,9 @@ impl Desktop {
                     });
                 }
             }
+            Some(Part::Content) if self.offers_end_app(slot) => {
+                self.open_end_app(slot, damage, events)
+            }
             Some(Part::Content) => self.press_in_content(slot, code, events),
             Some(Part::Maximise | Part::Border) | None => {}
         }
@@ -1921,6 +1957,9 @@ impl Desktop {
             .window_at(slot)
             .part_at(x, y, self.profile.control_side())
         {
+            Some(Part::Content) if self.offers_end_app(slot) => {
+                self.open_end_app(slot, damage, events)
+            }
             Some(Part::Content) => self.press_in_content(slot, code, events),
             Some(Part::TitleBar) if code == button::RIGHT => {
                 self.open_window_menu(slot, Some((x, y)), damage, events)
@@ -2010,6 +2049,9 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        if let Some(action) = self.end_app_key(code, pressed, damage, events) {
+            return action;
+        }
         let super_key = matches!(code, key::LEFT_SUPER | key::RIGHT_SUPER);
         let alone_released = super_key && !pressed && self.super_alone;
         self.super_alone = super_key
@@ -2183,7 +2225,9 @@ impl Desktop {
             return;
         };
         if let Some(slot) = self.content_holding(clip) {
-            self.draw_content(&mut canvas, self.window_at(slot), contents);
+            let window = self.window_at(slot);
+            let shift = window.overhang();
+            self.draw_content(&mut canvas.shifted(shift), &window.moved_right(shift), contents);
             self.draw_agent_pointer(&mut canvas);
             if with_pointer {
                 self.draw_pointer(&mut canvas);
@@ -2196,10 +2240,13 @@ impl Desktop {
             let slot = usize::from(slot);
             let window = self.window_at(slot);
             if self.is_visible(slot) && window.with_shadow().overlaps(&clip) {
-                if window.has_shadow() {
-                    canvas.shadow(window.outside());
+                let shift = window.overhang();
+                let drawn = window.moved_right(shift);
+                let mut canvas = canvas.shifted(shift);
+                if drawn.has_shadow() {
+                    canvas.shadow(drawn.outside());
                 }
-                self.draw_window(&mut canvas, slot, contents);
+                self.draw_window(&mut canvas, slot, &drawn, contents);
             }
         }
         self.draw_panels(&mut canvas);
@@ -2286,8 +2333,13 @@ impl Desktop {
         }
     }
 
-    fn draw_window(&self, canvas: &mut Canvas<'_>, slot: usize, contents: &dyn Contents) {
-        let window = self.window_at(slot);
+    fn draw_window(
+        &self,
+        canvas: &mut Canvas<'_>,
+        slot: usize,
+        window: &Window,
+        contents: &dyn Contents,
+    ) {
         let outside = window.outside();
         let focused = self.focus == Some(slot);
         let (border, title, title_text) = if focused {

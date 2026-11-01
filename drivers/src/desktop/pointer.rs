@@ -1,7 +1,8 @@
 //! The pointer's shapes (docs/ux/desktop-v0.3-gui.md section 2, `desktop-v0.3.md` for the
-//! arrow, `desktop-polish-v0.3.md` section 1 for the hand and the hourglass): `X` black, `o`
-//! white, `.` transparent. Drawn in software over everything else, or written into the display's
-//! cursor image ([`write_cursor_image`]) when the display draws the pointer itself (D186).
+//! arrow, `desktop-polish-v0.3.md` section 1 for the hand and the hourglass and section 4.1
+//! for `Working`): `X` black, `o` white, `.` transparent. Drawn in software over everything
+//! else, or written into the display's cursor image ([`write_cursor_image`]) when the display
+//! draws the pointer itself (D186).
 
 use super::protocol::PointerShape;
 use crate::display::Rect;
@@ -129,6 +130,28 @@ const HOURGLASS: [&[u8]; 16] = [
     b"XXXXXXXXXXXXX",
 ];
 
+const WORKING: [&[u8]; 19] = [
+    b"X.....................",
+    b"XX....................",
+    b"XoX...................",
+    b"XooX..................",
+    b"XoooX.................",
+    b"XooooX................",
+    b"XoooooX...............",
+    b"XooooooX..............",
+    b"XoooooooX.............",
+    b"XooooooooX............",
+    b"XoooooooooX..XXXXXXXXX",
+    b"XooooooXXXXX..XoooooX.",
+    b"XoooXooX......XoXXXoX.",
+    b"XooX.XooX......XXXXX..",
+    b"XoX...XooX......XXX...",
+    b"XX....XooX.....XoXoX..",
+    b"X......XooX...XooXooX.",
+    b"........XX....XoXXXoX.",
+    b".............XXXXXXXXX",
+];
+
 /// The side of the square cursor image a display draws the pointer from: every shape fits it.
 pub const CURSOR_SIDE: u32 = 64;
 
@@ -159,6 +182,7 @@ fn bitmap(shape: PointerShape) -> Bitmap {
         PointerShape::Hidden => (&[], Transform::None),
         PointerShape::Hand => (&HAND, Transform::None),
         PointerShape::Busy => (&HOURGLASS, Transform::None),
+        PointerShape::Working => (&WORKING, Transform::None),
     };
     Bitmap { rows, transform }
 }
@@ -203,6 +227,7 @@ pub const fn size_and_hotspot(shape: PointerShape) -> ((u32, u32), (u32, u32)) {
         PointerShape::Hidden => ((0, 0), (0, 0)),
         PointerShape::Hand => ((17, 19), (5, 0)),
         PointerShape::Busy => ((13, 16), (6, 8)),
+        PointerShape::Working => ((22, 19), (0, 0)),
     }
 }
 
@@ -293,6 +318,7 @@ mod tests {
             PointerShape::Hidden,
             PointerShape::Hand,
             PointerShape::Busy,
+            PointerShape::Working,
         ] {
             let bitmap = bitmap(shape);
             assert_eq!(bitmap.size(), size_and_hotspot(shape).0, "{shape:?}");
@@ -327,7 +353,8 @@ mod tests {
         assert_eq!(area(PointerShape::Busy, 100, 50), Rect::new(94, 42, 13, 16));
         assert_eq!(PointerShape::from_value(7), Some(PointerShape::Hand));
         assert_eq!(PointerShape::from_value(8), Some(PointerShape::Busy));
-        assert_eq!(PointerShape::from_value(9), None);
+        assert_eq!(PointerShape::from_value(9), Some(PointerShape::Working));
+        assert_eq!(PointerShape::from_value(10), None);
     }
 
     #[test]
@@ -354,5 +381,46 @@ mod tests {
         write_cursor_image(PointerShape::Hidden, &mut image);
         assert!(image.iter().all(|&pixel| pixel == 0));
         assert_eq!(write_cursor_image(PointerShape::Arrow, &mut [0; 16]), None);
+    }
+    #[test]
+    fn working_is_the_arrow_with_a_small_hourglass_clear_of_its_tail() {
+        assert_eq!(
+            size_and_hotspot(PointerShape::Working),
+            ((22, 19), (0, 0))
+        );
+        assert!(WORKING.iter().all(|row| row.len() == 22));
+        let at = (100, 50);
+        for row in 0..19 {
+            for column in 0..12 {
+                assert_eq!(
+                    pixel_at(PointerShape::Working, at, 100 + column, 50 + row),
+                    pixel_at(PointerShape::Arrow, at, 100 + column, 50 + row),
+                    "({column}, {row})"
+                );
+            }
+            assert_eq!(pixel_at(PointerShape::Working, at, 112, 50 + row), None);
+            if row < 10 {
+                for column in 12..22 {
+                    assert_eq!(
+                        pixel_at(PointerShape::Working, at, 100 + column, 50 + row),
+                        None
+                    );
+                }
+            }
+        }
+        assert_eq!(pixel_at(PointerShape::Working, at, 113, 60), Some(BLACK));
+        assert_eq!(pixel_at(PointerShape::Working, at, 115, 61), Some(WHITE));
+        assert_eq!(pixel_at(PointerShape::Working, at, 116, 62), Some(BLACK));
+        assert_eq!(pixel_at(PointerShape::Working, at, 112, 60), None);
+        assert_eq!(pixel_at(PointerShape::Working, at, 113, 68), Some(BLACK));
+        assert_eq!(pixel_at(PointerShape::Working, at, 121, 68), Some(BLACK));
+        assert_eq!(pixel_at(PointerShape::Working, at, 122, 50), None);
+        let side = CURSOR_SIDE as usize;
+        let mut image = vec![0; side * side];
+        assert_eq!(
+            write_cursor_image(PointerShape::Working, &mut image),
+            Some((0, 0))
+        );
+        assert_eq!(image.iter().filter(|&&pixel| pixel != 0).count(), 173);
     }
 }

@@ -210,6 +210,7 @@ impl Desktop {
             || self.window_menu.is_some()
             || self.launcher.is_some()
             || self.icons.menu.is_some()
+            || self.responsiveness.dialog.is_some()
     }
 
     pub(super) fn begin_popup(&mut self, events: &mut dyn EventSink) {
@@ -258,6 +259,7 @@ impl Desktop {
         }
         self.close_launcher(damage, events);
         self.close_icon_menu(damage, events);
+        self.close_end_app(damage);
     }
 
     /// Window `slot` is going away: the switcher stops listing it and its window menu closes.
@@ -557,6 +559,7 @@ impl Desktop {
         self.draw_launcher(canvas);
         self.draw_icon_menu(canvas);
         self.draw_notice(canvas);
+        self.draw_end_app(canvas);
     }
 
     pub(super) fn popups_overlap(&self, clip: Rect) -> bool {
@@ -573,6 +576,7 @@ impl Desktop {
             || self.launcher_overlaps(clip)
             || self.icon_menu_overlaps(clip)
             || self.notice_overlaps(clip)
+            || self.end_app_overlaps(clip)
     }
 
     pub(super) fn draw_popup_surface(canvas: &mut Canvas<'_>, rect: Rect, surface: u32) {

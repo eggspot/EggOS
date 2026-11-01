@@ -152,6 +152,7 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
 
 #[test]
 fn dragging_the_title_bar_moves_the_window_and_lets_it_hang_off_the_right_and_bottom() {
+    let kept = windows::kept_when_hanging(ControlSide::Left, 1).1;
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
     desktop.pointer_moved(600, 174, &mut damage, &mut DiscardEvents);
@@ -163,13 +164,13 @@ fn dragging_the_title_bar_moves_the_window_and_lets_it_hang_off_the_right_and_bo
     let work = desktop.work_area();
     assert_eq!(
         desktop.window(),
-        Rect::new(work.right() - HANGING_TITLE_KEPT, work.y, 658, 430)
+        Rect::new(work.right() - kept, work.y, 658, 430)
     );
     desktop.pointer_moved(5000, 5000, &mut damage, &mut DiscardEvents);
     assert_eq!(
         desktop.window(),
         Rect::new(
-            work.right() - HANGING_TITLE_KEPT,
+            work.right() - kept,
             work.bottom() - TITLE_HEIGHT - 1,
             658,
             430
@@ -179,7 +180,8 @@ fn dragging_the_title_bar_moves_the_window_and_lets_it_hang_off_the_right_and_bo
     assert_eq!(pixels.len(), 1280 * 800);
     desktop.left_button(false, &mut damage, &mut DiscardEvents);
     desktop.pointer_moved(0, 600, &mut damage, &mut DiscardEvents);
-    assert_eq!(desktop.window().x, work.right() - HANGING_TITLE_KEPT);
+    assert_eq!(desktop.window().x, work.right() - kept);
+    assert_eq!(kept, HANGING_TITLE_KEPT + 68);
 }
 
 #[test]

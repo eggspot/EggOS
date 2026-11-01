@@ -151,7 +151,7 @@ fn resizing_keeps_the_opposite_edges_the_minimum_and_the_work_area() {
     let work = Rect::new(0, 28, 1280, 700);
     let start = Rect::new(200, 200, 400, 300);
     let minimum = (160, 92);
-    let resized_by = |edges, dx, dy| resized(start, edges, dx, dy, minimum, work);
+    let resized_by = |edges, dx, dy| resized(start, edges, dx, dy, minimum, work).visible();
     assert_eq!(
         resized_by(edge::RIGHT | edge::BOTTOM, 100, 60),
         Rect::new(200, 200, 500, 360)

@@ -330,10 +330,13 @@ pub enum PointerShape {
     /// An hourglass: the window does not take input now (D186). The server shows it itself over
     /// a window that does not answer.
     Busy,
+    /// The arrow with a small hourglass: working, but it still takes clicks (D221). The server
+    /// shows it itself while an app it started has no window yet.
+    Working,
 }
 
 impl PointerShape {
-    /// The shape numbered `value`, 0 to 8 in the order above.
+    /// The shape numbered `value`, 0 to 9 in the order above.
     pub const fn from_value(value: u32) -> Option<Self> {
         Some(match value {
             0 => Self::Arrow,
@@ -345,6 +348,7 @@ impl PointerShape {
             6 => Self::Hidden,
             7 => Self::Hand,
             8 => Self::Busy,
+            9 => Self::Working,
             _ => return None,
         })
     }
@@ -370,6 +374,9 @@ pub enum WindowError {
     Busy,
     /// The window's client has no room in its queue for the input's events yet (`EAGAIN`).
     QueueFull,
+    /// The window's app has left an event unread for [`super::UNREAD_EVENTS_BUSY_MS`]: it is not
+    /// responding, so nothing is asked of it (`ENOTCONN`, D221).
+    NotResponding,
 }
 
 /// A request and its arguments, as the caller wrote them.
@@ -992,10 +999,16 @@ pub mod act_outcome {
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside
-/// rectangle on the screen, client (`u16::MAX` for the kernel's), and title.
+/// rectangle on the screen (`X` an `i32`: a window may hang off the left edge, D221), client
+/// (`u16::MAX` for the kernel's), and title.
 pub mod list_reply {
     pub const WINDOW: usize = 0;
     pub const STATE: usize = 4;
+    /// Set in the `STATE` word, above the state's number, while the window is not responding
+    /// (D221).
+    pub const NOT_RESPONDING: u32 = 1 << 8;
+    /// The bits of the `STATE` word that hold the state's number.
+    pub const STATE_NUMBER: u32 = 0xff;
     pub const X: usize = 8;
     pub const Y: usize = 12;
     pub const WIDTH: usize = 16;
