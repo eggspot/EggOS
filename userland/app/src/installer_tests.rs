@@ -1306,3 +1306,33 @@ fn an_app_s_environment_is_written_and_its_fonts_are_linked_where_fontconfig_loo
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     assert_eq!(files.find("/Applications/.fonts"), None);
 }
+
+#[test]
+fn a_layer_is_the_base_s_link_into_its_component_and_missing_while_the_link_dangles() {
+    let mut files = host_with("/media/host/win-paint.exe", &paint());
+    files
+        .nodes
+        .retain(|(path, _)| path.as_slice() != b"/usr/lib/eggos/windows");
+    files.link(
+        "/usr/lib/eggos/windows",
+        "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows",
+    );
+    assert_eq!(
+        refused(&mut files, "/media/host/win-paint.exe", X86_64),
+        Problem::NotRunnable(NotRunnable::LayerMissing(Source::Windows))
+    );
+    let reason = crate::messages::reason(Problem::NotRunnable(NotRunnable::LayerMissing(
+        Source::Windows,
+    )));
+    assert_eq!(
+        reason.as_str(),
+        "it needs the Windows layer, which is not installed: install it with `component \
+         install windows-apps`"
+    );
+    files.file(
+        "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows",
+        b"\x7fELF layer",
+    );
+    let plan = planned(&mut files, "/media/host/win-paint.exe", X86_64);
+    assert_eq!(plan.name(), "win-paint");
+}

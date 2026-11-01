@@ -69,6 +69,16 @@ impl Write for Line {
     }
 }
 
+/// The component that brings the layer `source`'s programs need (D237): `windows-apps` and
+/// `mac-apps`; none for Linux programs, which the base runs.
+pub fn layer_component(source: Source) -> Option<&'static str> {
+    match source {
+        Source::Windows => Some("windows-apps"),
+        Source::Macos => Some("mac-apps"),
+        Source::Linux => None,
+    }
+}
+
 fn layer(source: Source) -> &'static str {
     match source {
         Source::Windows => "Windows",
@@ -111,11 +121,19 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
             "the {} layer runs on x86_64 and aarch64 only",
             layer(source)
         ),
-        NotRunnable::LayerMissing(source) => write!(
-            line,
-            "it needs the {} layer, which is not installed",
-            layer(source)
-        ),
+        NotRunnable::LayerMissing(source) => match layer_component(source) {
+            Some(component) => write!(
+                line,
+                "it needs the {} layer, which is not installed: install it with `component \
+                 install {component}`",
+                layer(source)
+            ),
+            None => write!(
+                line,
+                "it needs the {} layer, which is not installed",
+                layer(source)
+            ),
+        },
     };
 }
 

@@ -679,7 +679,7 @@ fn settle(
 ) -> Result<bool, Problem> {
     if let Some(layer) = layer_path(program.source) {
         let installed = files
-            .status(layer)
+            .status_following(layer)
             .is_ok_and(|status| status.kind == Kind::File);
         if !installed {
             return Err(Problem::NotRunnable(NotRunnable::LayerMissing(
