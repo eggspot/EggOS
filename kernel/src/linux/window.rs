@@ -707,7 +707,7 @@ fn listed_state(info: &ListedWindow) -> u32 {
 }
 
 fn not_responding_tree(listed: &ListedWindow) -> Vec<u8> {
-    use eggos_toolkit::elements::{Bounds, Element, HEADER_BYTES, Role, TreeWriter, flags};
+    use eggos_element_tree::{Bounds, Element, HEADER_BYTES, Role, TreeWriter, flags};
     let mut bytes = [0u8; HEADER_BYTES + TITLE_CAPACITY];
     let mut writer = TreeWriter::new(&mut bytes);
     let bounds = Bounds::new(0, 0, listed.rect.width as i32, listed.rect.height as i32);

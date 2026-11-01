@@ -166,9 +166,11 @@ dependencies = [
  "eggos-calendar",
  "eggos-drivers",
  "eggos-eggfs",
+ "eggos-element-tree",
  "eggos-hal",
  "eggos-net",
  "eggos-settings-file",
+ "eggos-toolkit",
  "eggos-translate",
  "eggos-wayland",
 ]

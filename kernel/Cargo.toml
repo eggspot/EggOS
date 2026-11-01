@@ -17,6 +17,10 @@ eggos-android-log = { path = "../android-log" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-wayland = { path = "../wayland" }
 eggos-translate = { path = "../translate" }
+eggos-element-tree = { path = "../userland/element-tree" }
+eggos-toolkit = { path = "../userland/toolkit", optional = true }
+
+[dev-dependencies]
 eggos-toolkit = { path = "../userland/toolkit" }
 
 [lints]
@@ -34,5 +38,5 @@ virtio-net = ["virtio"]
 rtc = []
 qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console", "virtio-net", "rtc"]
 qemu-test-fatal-exception = ["qemu-test"]
-qemu-bench = ["qemu-test"]
+qemu-bench = ["qemu-test", "dep:eggos-toolkit"]
 qemu-boot-clock = []
