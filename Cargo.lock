@@ -417,6 +417,7 @@ dependencies = [
  "eggos-translate",
  "eggos-translation-loader",
  "eggos-windows-gui",
+ "eggos-windows-registry",
 ]
 
 [[package]]
@@ -433,6 +434,13 @@ dependencies = [
 [[package]]
 name = "eggos-windows-gui-tests"
 version = "0.2.0"
+
+[[package]]
+name = "eggos-windows-registry"
+version = "0.2.0"
+dependencies = [
+ "eggos-commands",
+]
 
 [[package]]
 name = "xtask"

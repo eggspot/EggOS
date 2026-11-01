@@ -22,6 +22,7 @@ eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-translation-loader = { path = "../translation-loader" }
 eggos-windows-gui = { path = "../windows-gui" }
+eggos-windows-registry = { path = "../windows-registry" }
 
 [target.'cfg(any(target_arch = "aarch64", not(eggos_user)))'.dependencies]
 eggos-translate = { path = "../../translate" }

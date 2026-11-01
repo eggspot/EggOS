@@ -561,9 +561,9 @@ pub const CORE_VERBS: [&str; 20] = [
 ];
 
 /// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161 and D162),
-/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D224) and those of `wm
-/// desktop`, a noun of `wm` (D204).
-pub const NOUN_VERBS: [(&str, &[&str]); 6] = [
+/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D224), those of `wm
+/// desktop`, a noun of `wm` (D204), and those of `windows registry` (D230).
+pub const NOUN_VERBS: [(&str, &[&str]); 7] = [
     (
         "wm",
         &[
@@ -576,16 +576,18 @@ pub const NOUN_VERBS: [(&str, &[&str]); 6] = [
     ("app", &["icon"]),
     ("download", &["cancel", "clear"]),
     ("wm desktop", &["switch", "new"]),
+    ("windows registry", &["reset"]),
 ];
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full
 /// definition all the same (the spec's list, checked against the code).
-pub const KEPT_NAMES: [&str; 53] = [
+pub const KEPT_NAMES: [&str; 54] = [
     "agent", "agentlog", "app", "cat", "chmod", "clip", "cp", "date", "device", "df", "disk",
     "download", "echo", "edit", "false", "fetch", "free", "getprop", "grep", "halt", "head", "help",
     "hwclock", "ip", "kill", "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff",
     "ps", "readlink", "reboot", "rm", "setprop", "settings", "sleep", "stty", "sync", "tail",
-    "taskset", "tee", "terminal", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
+    "taskset", "tee", "terminal", "touch", "trash", "true", "uname", "uptime", "wc", "windows",
+    "wm",
 ];
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the

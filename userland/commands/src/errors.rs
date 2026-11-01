@@ -430,6 +430,91 @@ pub const STILL_DOWNLOADING: ErrorDefinition = error(
     None,
 );
 
+/// The registry key does not exist (D230).
+pub const NO_SUCH_KEY: ErrorDefinition = error(
+    "no_such_key",
+    Category::NotFound,
+    "Check the key: windows registry get shows a key's subkeys.",
+    None,
+);
+/// The registry value does not exist (D230).
+pub const NO_SUCH_VALUE: ErrorDefinition = error(
+    "no_such_value",
+    Category::NotFound,
+    "Check the name: windows registry get shows a key's values.",
+    None,
+);
+/// The key is in the machine's hive, which only an administrator changes (D230).
+pub const READ_ONLY_KEY: ErrorDefinition = error(
+    "read_only_key",
+    Category::ReadOnly,
+    "Change it under HKEY_CURRENT_USER, or as an administrator.",
+    None,
+);
+/// A predefined key cannot be created, deleted or edited (D230).
+pub const ROOT_KEY: ErrorDefinition = error(
+    "root_key",
+    Category::Refused,
+    "Name a key below the root.",
+    None,
+);
+/// The key has subkeys, so it cannot be deleted alone (D230).
+pub const HAS_SUBKEYS: ErrorDefinition = error(
+    "has_subkeys",
+    Category::Refused,
+    "Delete its subkeys first, or the whole key with windows registry delete.",
+    None,
+);
+/// A key or value name is empty, too long or holds a backslash (D230).
+pub const BAD_NAME: ErrorDefinition = error(
+    "bad_name",
+    Category::Usage,
+    "Use a shorter name without a backslash.",
+    None,
+);
+/// The data cannot be read as the value's type (D230).
+pub const BAD_DATA: ErrorDefinition = error(
+    "bad_data",
+    Category::Usage,
+    "Give a number, in decimal or after 0x, or pairs of hex digits for binary.",
+    None,
+);
+/// The value is larger than a registry value may be (D230).
+pub const VALUE_TOO_LARGE: ErrorDefinition = error(
+    "value_too_large",
+    Category::TooLarge,
+    "Store large data in a file and its path in the registry.",
+    None,
+);
+/// The key would be deeper than the registry allows (D230).
+pub const KEY_TOO_DEEP: ErrorDefinition = error(
+    "key_too_deep",
+    Category::TooLarge,
+    "Make the key higher up.",
+    None,
+);
+/// The registry file has reached its size limit (D230).
+pub const HIVE_FULL: ErrorDefinition = error(
+    "hive_full",
+    Category::TooLarge,
+    "Delete keys you no longer need.",
+    None,
+);
+/// The registry file is damaged (D230).
+pub const HIVE_DAMAGED: ErrorDefinition = error(
+    "hive_damaged",
+    Category::Damaged,
+    "Replace it with an empty one; the damaged file is kept beside it.",
+    Some("windows registry reset"),
+);
+/// The registry file could not be written (D230).
+pub const WRITE_FAILED: ErrorDefinition = error(
+    "write_failed",
+    Category::Failed,
+    "Check the disk and try again.",
+    None,
+);
+
 /// The definition of the error code `code`, if EggOS defines it.
 pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
     ALL.iter()
@@ -438,7 +523,7 @@ pub fn by_code(code: &[u8]) -> Option<&'static ErrorDefinition> {
 }
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 58] = [
+pub const ALL: [&ErrorDefinition; 70] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -497,4 +582,16 @@ pub const ALL: [&ErrorDefinition; 58] = [
     &NO_SUCH_DOWNLOAD,
     &ALREADY_ENDED,
     &STILL_DOWNLOADING,
+    &NO_SUCH_KEY,
+    &NO_SUCH_VALUE,
+    &READ_ONLY_KEY,
+    &ROOT_KEY,
+    &HAS_SUBKEYS,
+    &BAD_NAME,
+    &BAD_DATA,
+    &VALUE_TOO_LARGE,
+    &KEY_TOO_DEEP,
+    &HIVE_FULL,
+    &HIVE_DAMAGED,
+    &WRITE_FAILED,
 ];
