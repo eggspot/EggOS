@@ -631,7 +631,46 @@ fn button_outcome(window: usize, outcome: ButtonOutcome) {
         ButtonOutcome::Repaint => invalidate(window),
         ButtonOutcome::Clicked => {
             invalidate(window);
+            clear_radio_group(window);
             notify(window, code::BN_CLICKED);
+        }
+    }
+}
+
+fn clear_radio_group(window: usize) {
+    let cleared = with(|gui| {
+        let kind = ButtonKind::of(gui.windows.get(window)?.style);
+        if kind != ButtonKind::AutoRadio {
+            return None;
+        }
+        let (members, count) = windows::group_of(&gui.windows, window);
+        let mut cleared = [0usize; windows::MAX_WINDOWS];
+        let mut length = 0;
+        for &member in members[..count].iter().filter(|&&member| member != window) {
+            let Some(entry) = gui.windows.get(member) else {
+                continue;
+            };
+            let Procedure::Control(ControlKind::Button, address) = entry.procedure else {
+                continue;
+            };
+            if address == 0 || !ButtonKind::of(entry.style).is_radio() {
+                continue;
+            }
+            // SAFETY: as `is_checked`: a button's state is the `Button` `new_state` made, alive
+            // while its window is in the table, whose lock `with` holds.
+            let button = unsafe { &mut *(address as *mut Button) };
+            if button.checked {
+                button.checked = false;
+                cleared[length] = member;
+                length += 1;
+            }
+        }
+        Some((cleared, length))
+    })
+    .flatten();
+    if let Some((cleared, length)) = cleared {
+        for &member in &cleared[..length] {
+            invalidate(member);
         }
     }
 }
@@ -860,8 +899,14 @@ fn get_text(window: usize, kind: ControlKind, capacity: usize, buffer: usize) ->
 }
 
 fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
-    let enabled = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.enabled()));
-    if enabled != Some(true) {
+    let takes = with(|gui| {
+        gui.windows.get(window).is_some_and(|entry| {
+            entry.enabled()
+                && !(kind == ControlKind::Button
+                    && ButtonKind::of(entry.style) == ButtonKind::GroupBox)
+        })
+    });
+    if takes != Some(true) {
         return;
     }
     if kind != ControlKind::Static {
