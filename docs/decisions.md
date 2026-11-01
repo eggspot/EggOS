@@ -17159,3 +17159,5 @@ the license, by an explicit instruction recorded here.
   The same race with `mprotect` (another thread making a page executable or writable after the
   fault) is resolved the same way. Host test
   `a_permission_fault_on_a_page_another_thread_made_allow_the_access_is_retried`.
+- **Not yet.** The retry check looks at the mapping's write and execute bits but not its user
+  bit; checking it too would make a retry on a kernel-only entry fail safe.
