@@ -23,6 +23,7 @@ use eggos_toolkit::text_area::Store;
 use eggos_toolkit::tree::WidgetTree;
 use eggos_toolkit::widget::{Align, Column, Kind, Place, TEXT_AREA_CAPACITY};
 use core::ops::ControlFlow;
+use core::time::Duration;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::DiscardEvents;
 use eggos_drivers::desktop::{Contents, Desktop, WindowId};
@@ -57,7 +58,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 64] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -164,6 +165,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 62] {
             toolkit_table_layout_1000_rows(n)
         }),
         ("text_area_wrap_64k", |_, n| text_area_wrap_64k(n)),
+        ("block_read_4k_qd8", |_, n| block_read_4k_qd8::<P>(n)),
+        ("net_rx_wakeup", |_, n| net_rx_wakeup::<P>(n)),
     ]
 }
 
@@ -185,7 +188,79 @@ pub fn run<P: Platform, W: Write>(
             "{MARKER} {name} iterations={ITERATIONS} ticks={ticks} frequency={frequency}"
         )?;
     }
-    Ok(())
+    report_idle_wakeups::<P, W>(console)
+}
+
+/// How many times a CPU woke from idle: the idle loop counts each wake-up (feature
+/// `qemu-bench` only), and `idle_wakeups_per_second` reads it (D219).
+pub static IDLE_WAKEUPS: AtomicU64 = AtomicU64::new(0);
+
+const IDLE_WAKEUPS_NAME: &str = "idle_wakeups_per_second";
+
+const IDLE_WAKEUPS_SPAN: Duration = Duration::from_secs(1);
+
+fn report_idle_wakeups<P: Platform, W: Write>(console: &mut W) -> core::fmt::Result {
+    let before = IDLE_WAKEUPS.load(Ordering::Relaxed);
+    thread::sleep::<P>(IDLE_WAKEUPS_SPAN);
+    let woken = IDLE_WAKEUPS.load(Ordering::Relaxed).wrapping_sub(before);
+    writeln!(
+        console,
+        "{MARKER} {IDLE_WAKEUPS_NAME} iterations=1 ticks={woken} frequency=1000000000"
+    )
+}
+
+const QUEUE_DEPTH: usize = 8;
+
+const BLOCK_READ_BYTES: usize = 4096;
+
+fn block_read_4k_qd8<P: Platform>(n: u64) {
+    let mut buffers = alloc::vec![0u8; QUEUE_DEPTH * BLOCK_READ_BYTES];
+    let sectors_per_read = (BLOCK_READ_BYTES / crate::block::SECTOR_SIZE) as u64;
+    let mut read_all = |disk: &mut dyn crate::block::BlockDevice| {
+        let spread = (disk.sectors() / sectors_per_read).max(1);
+        for i in 0..n {
+            let mut reads: [(u64, &mut [u8]); QUEUE_DEPTH] = {
+                let mut chunks = buffers.chunks_exact_mut(BLOCK_READ_BYTES);
+                core::array::from_fn(|at| {
+                    let block = (i * QUEUE_DEPTH as u64 + at as u64 * 37) % spread;
+                    (block * sectors_per_read, chunks.next().unwrap_or_default())
+                })
+            };
+            let mut deadline = crate::devices::Deadline::after::<P>(1000);
+            black_box(disk.read_many(&mut reads, &mut deadline).ok());
+        }
+    };
+    let free_disk = (0..crate::block::MAX_DISKS)
+        .find_map(|index| crate::block::with_disk(index, 1000, |disk, _| read_all(disk)));
+    if free_disk.is_none() {
+        let mut disk = MemoryDisk(alloc::vec![0u8; 64 * BLOCK_READ_BYTES]);
+        read_all(&mut disk);
+    }
+}
+
+fn net_rx_wakeup<P: Platform>(n: u64) {
+    use crate::devices::interrupts::DeviceEvents;
+    static FRAMES: DeviceEvents = DeviceEvents::new();
+    static TAKEN: DeviceEvents = DeviceEvents::new();
+    let start = FRAMES.raised();
+    let Ok(network) = thread::spawn::<P, _>(move || {
+        let mut seen = start;
+        for _ in 0..n {
+            seen = FRAMES.wait::<P>(seen, u64::MAX);
+            TAKEN.raise::<P>();
+        }
+    }) else {
+        return;
+    };
+    let mut taken = TAKEN.raised();
+    for _ in 0..n {
+        FRAMES.raise::<P>();
+        while TAKEN.raised() == taken {
+            taken = TAKEN.wait::<P>(taken, u64::MAX);
+        }
+        taken = TAKEN.raised();
+    }
+    network.join::<P>();
 }
 
 /// The loop alone, so the per-iteration overhead every other result includes is visible.

@@ -97,6 +97,8 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     P::direct_map_offset()
                 )?;
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
+                #[cfg(feature = "virtio-rng")]
+                report_device_seed(console, devices::virtio::seed_random::<P>())?;
                 report_wall_clock(console, wall_clock::start::<P>())?;
                 if display::mode().is_none() {
                     display::offscreen::report(
@@ -602,6 +604,15 @@ fn report_random<W: Write>(console: &mut W, boot_seeds: random::BootSeeds) -> co
              getrandom waits, AT_RANDOM is guessable",
             random::SEEDED_BITS
         )
+    }
+}
+
+#[cfg(feature = "virtio-rng")]
+fn report_device_seed<W: Write>(console: &mut W, seeded: Option<bool>) -> core::fmt::Result {
+    match seeded {
+        Some(true) => writeln!(console, "random: reseeded from virtio-rng"),
+        Some(false) => writeln!(console, "random: reseeded from virtio-rng, still NOT SEEDED"),
+        None => Ok(()),
     }
 }
 

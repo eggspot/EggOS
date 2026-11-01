@@ -248,6 +248,20 @@ fn add_device(
     Ok(())
 }
 
+/// What a driver whose device may interrupt gives its requests as `keep_waiting`: with `events`,
+/// sleeping until the device's interrupt raises them or `deadline` passes; without, polling
+/// until `deadline`. The count it compares with is read now, before the request is posted.
+pub fn waiting_for(
+    events: Option<&'static DeviceEvents>,
+    deadline: &mut Deadline,
+) -> impl FnMut() -> bool + '_ {
+    let mut seen = events.map_or(0, DeviceEvents::raised);
+    move || match events {
+        Some(events) => deadline.sleep_until_raised(events, &mut seen),
+        None => deadline.keep_waiting(),
+    }
+}
+
 /// Has the virtio device `id`, whose transport is `transport`, interrupt: its interrupt's handler
 /// acknowledges it and raises `events`. On virtio-mmio, the slot's device-tree interrupt routed
 /// through the platform's controller; on virtio-pci, MSI-X entry 0 for its configuration and
@@ -681,14 +695,16 @@ pub use disk::BLOCK_DRIVER;
 mod disk {
     use super::*;
     use crate::block::{BlockDevice, BlockError};
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use eggos_drivers::virtio::block::{MEMORY_BYTES, VirtioBlock};
 
     type Disk = VirtioBlock<AnyTransport, DmaRegion>;
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
-    /// The polled virtio block device (virtio 1.2, 5.2), installed as one of the kernel's
-    /// disks ([`crate::block`]).
+    /// The virtio block device (virtio 1.2, 5.2), installed as one of the kernel's disks
+    /// ([`crate::block`]), with several requests in flight; a request's caller sleeps until the
+    /// device interrupts where the machine routes its interrupt (D219), polls otherwise.
     pub static BLOCK_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-blk",
         pass: ProbePass::Device,
@@ -696,7 +712,15 @@ mod disk {
         probe: probe_block,
     };
 
-    struct VirtioDisk(Disk);
+    static DISK_EVENTS: [DeviceEvents; crate::block::MAX_DISKS] =
+        [const { DeviceEvents::new() }; crate::block::MAX_DISKS];
+
+    static DISK_EVENTS_TAKEN: AtomicUsize = AtomicUsize::new(0);
+
+    struct VirtioDisk {
+        disk: Disk,
+        events: Option<&'static DeviceEvents>,
+    }
 
     fn block_error(error: virtio::Error) -> BlockError {
         match error {
@@ -708,11 +732,11 @@ mod disk {
 
     impl BlockDevice for VirtioDisk {
         fn sectors(&self) -> u64 {
-            self.0.sectors()
+            self.disk.sectors()
         }
 
         fn is_read_only(&self) -> bool {
-            self.0.is_read_only()
+            self.disk.is_read_only()
         }
 
         fn read(
@@ -721,8 +745,20 @@ mod disk {
             buffer: &mut [u8],
             deadline: &mut Deadline,
         ) -> Result<(), BlockError> {
-            self.0
-                .read(sector, buffer, &mut || deadline.keep_waiting())
+            let mut waiting = waiting_for(self.events, deadline);
+            self.disk
+                .read(sector, buffer, &mut waiting)
+                .map_err(block_error)
+        }
+
+        fn read_many(
+            &mut self,
+            reads: &mut [(u64, &mut [u8])],
+            deadline: &mut Deadline,
+        ) -> Result<(), BlockError> {
+            let mut waiting = waiting_for(self.events, deadline);
+            self.disk
+                .read_many(reads, &mut waiting)
                 .map_err(block_error)
         }
 
@@ -732,16 +768,25 @@ mod disk {
             buffer: &[u8],
             deadline: &mut Deadline,
         ) -> Result<(), BlockError> {
-            self.0
-                .write(sector, buffer, &mut || deadline.keep_waiting())
+            let mut waiting = waiting_for(self.events, deadline);
+            self.disk
+                .write(sector, buffer, &mut waiting)
                 .map_err(block_error)
         }
 
         fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
-            self.0
-                .flush(&mut || deadline.keep_waiting())
-                .map_err(block_error)
+            let mut waiting = waiting_for(self.events, deadline);
+            self.disk.flush(&mut waiting).map_err(block_error)
         }
+    }
+
+    fn take_disk_events() -> Option<&'static DeviceEvents> {
+        let taken = DISK_EVENTS_TAKEN
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |taken| {
+                (taken < DISK_EVENTS.len()).then_some(taken + 1)
+            })
+            .ok()?;
+        DISK_EVENTS.get(taken)
     }
 
     fn probe_block(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
@@ -762,7 +807,7 @@ mod disk {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let disk = match VirtioBlock::new(transport, memory, &mut || deadline.keep_waiting()) {
+        let mut disk = match VirtioBlock::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(disk) => disk,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {
@@ -774,7 +819,12 @@ mod disk {
                 return Err(ProbeError::Refused(error.description()));
             }
         };
-        crate::block::install(Box::new(VirtioDisk(disk)))
+        let events = take_disk_events()
+            .filter(|events| connect_interrupt(probe, id, disk.transport(), *events).is_ok());
+        if events.is_some() {
+            disk.enable_interrupts();
+        }
+        crate::block::install(Box::new(VirtioDisk { disk, events }))
             .map_err(|_| ProbeError::Refused("no room for another disk"))
     }
 }
@@ -792,8 +842,9 @@ mod agent {
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
-    /// The polled virtio console device (virtio 1.2, 5.3) with multiple ports, whose port
-    /// named [`agent_channel::PORT_NAME`] becomes the agent channel (D136).
+    /// The virtio console device (virtio 1.2, 5.3) with multiple ports, whose port named
+    /// [`agent_channel::PORT_NAME`] becomes the agent channel (D136), on interrupts where the
+    /// machine routes them (D219).
     pub static CONSOLE_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-console",
         pass: ProbePass::Device,
@@ -845,7 +896,8 @@ mod agent {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let console = match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting()) {
+        let mut console = match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting())
+        {
             Ok(console) => console,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {
@@ -862,8 +914,18 @@ mod agent {
                 "its port is not named org.eggos.mcp, the agent channel's name",
             ));
         }
-        agent_channel::install(Box::new(AgentConsole(console)))
-            .map_err(|_| ProbeError::Refused("an agent channel is already in use"))
+        let interrupting =
+            connect_interrupt(probe, id, console.transport(), &agent_channel::DEVICE_EVENTS)
+                .is_ok();
+        if interrupting {
+            console.enable_interrupts();
+        }
+        let port = Box::new(AgentConsole(console));
+        let installed = match interrupting {
+            true => agent_channel::install_interrupting(port),
+            false => agent_channel::install(port),
+        };
+        installed.map_err(|_| ProbeError::Refused("an agent channel is already in use"))
     }
 }
 
@@ -881,8 +943,8 @@ mod network {
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
-    /// The polled virtio network device (virtio 1.2, 5.1), the stack's adapter (D157,
-    /// [`crate::net`]).
+    /// The virtio network device (virtio 1.2, 5.1), the stack's adapter (D157,
+    /// [`crate::net`]), on interrupts where the machine routes them (D219).
     pub static NET_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-net",
         pass: ProbePass::Device,
@@ -928,7 +990,7 @@ mod network {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let net = match VirtioNet::new(transport, memory, &mut || deadline.keep_waiting()) {
+        let mut net = match VirtioNet::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(net) => net,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {
@@ -940,13 +1002,22 @@ mod network {
                 return Err(ProbeError::Refused(error.description()));
             }
         };
-        crate::net::install(Box::new(VirtioAdapter(net)))
-            .map_err(|_| ProbeError::Refused("a network adapter is already in use"))
+        let interrupting =
+            connect_interrupt(probe, id, net.transport(), &crate::net::DEVICE_EVENTS).is_ok();
+        if interrupting {
+            net.enable_interrupts();
+        }
+        let adapter = Box::new(VirtioAdapter(net));
+        let installed = match interrupting {
+            true => crate::net::install_interrupting(adapter),
+            false => crate::net::install(adapter),
+        };
+        installed.map_err(|_| ProbeError::Refused("a network adapter is already in use"))
     }
 }
 
 #[cfg(any(test, feature = "virtio-rng"))]
-pub use entropy::{RNG_DRIVER, read_random};
+pub use entropy::{RNG_DRIVER, read_random, seed_random};
 
 #[cfg(any(test, feature = "virtio-rng"))]
 pub(crate) use entropy::{put_rng, take_rng};
@@ -954,15 +1025,21 @@ pub(crate) use entropy::{put_rng, take_rng};
 #[cfg(any(test, feature = "virtio-rng"))]
 mod entropy {
     use super::*;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use eggos_drivers::virtio::rng::{MEMORY_BYTES, VirtioRng};
 
     pub(crate) type Rng = VirtioRng<AnyTransport, DmaRegion>;
 
     static RNG: LeafSpinLock<Option<Box<Rng>>> = LeafSpinLock::new_leaf(None);
 
+    static RNG_EVENTS: DeviceEvents = DeviceEvents::new();
+
+    static INTERRUPTING: AtomicBool = AtomicBool::new(false);
+
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
-    /// The polled virtio entropy device (virtio 1.2, 5.4).
+    /// The virtio entropy device (virtio 1.2, 5.4), on interrupts where the machine routes them
+    /// (D219); the kernel's generator is reseeded from it at boot ([`seed_random`]).
     pub static RNG_DRIVER: DriverDescriptor = DriverDescriptor {
         name: "virtio-rng",
         pass: ProbePass::Device,
@@ -989,7 +1066,11 @@ mod entropy {
             .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
         match VirtioRng::new(transport, memory, &mut || deadline.keep_waiting()) {
-            Ok(rng) => {
+            Ok(mut rng) => {
+                if connect_interrupt(probe, id, rng.transport(), &RNG_EVENTS).is_ok() {
+                    rng.enable_interrupts();
+                    INTERRUPTING.store(true, Ordering::Release);
+                }
                 *RNG.lock() = Some(Box::new(rng));
                 Ok(())
             }
@@ -1005,14 +1086,30 @@ mod entropy {
         }
     }
 
-    /// Fills the start of `bytes` with random bytes from the virtio entropy device, polling it
-    /// until `deadline`, and returns how many; `None` when there is no such device or it did not
-    /// answer in time.
+    /// Fills the start of `bytes` with random bytes from the virtio entropy device, sleeping
+    /// until it interrupts, or polling it, until `deadline`, and returns how many; `None` when
+    /// there is no such device, another read has it, or it did not answer in time. Call it with
+    /// no lock held.
     pub fn read_random(bytes: &mut [u8], deadline: &mut Deadline) -> Option<usize> {
-        RNG.lock()
-            .as_mut()?
-            .read(bytes, &mut || deadline.keep_waiting())
-            .ok()
+        let mut rng = RNG.lock().take()?;
+        let events = INTERRUPTING
+            .load(Ordering::Acquire)
+            .then_some(&RNG_EVENTS);
+        let read = rng.read(bytes, &mut waiting_for(events, deadline)).ok();
+        *RNG.lock() = Some(rng);
+        read
+    }
+
+    /// Reseeds the kernel's generator with [`crate::random::DEVICE_SEED_BYTES`] from the virtio
+    /// entropy device (D219): whether the generator is seeded then, `None` without a device or
+    /// an answer within a second.
+    pub fn seed_random<P: eggos_hal::Platform>() -> Option<bool> {
+        let mut bytes = [0u8; crate::random::DEVICE_SEED_BYTES];
+        let mut deadline = Deadline::after::<P>(ANSWER_TIMEOUT_MS);
+        let read = read_random(&mut bytes, &mut deadline).filter(|&read| read > 0);
+        let seeded = read.map(|read| crate::random::reseed_from_device::<P>(&bytes[..read]));
+        eggos_hal::random::wipe(&mut bytes);
+        seeded
     }
 
     pub(crate) fn take_rng() -> Option<Rng> {

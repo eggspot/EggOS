@@ -210,6 +210,16 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
         &self.transport
     }
 
+    /// Has the device interrupt when it uses buffers of any of its queues, for a driver woken
+    /// by its interrupt instead of polling (D219); what it used before is found by the next
+    /// look.
+    pub fn enable_interrupts(&mut self) {
+        self.queues.control_receive.enable_used_notifications();
+        self.queues.control_transmit.enable_used_notifications();
+        self.queues.port_receive.enable_used_notifications();
+        self.queues.port_transmit.enable_used_notifications();
+    }
+
     /// The data port's name, as the device gave it (cut at [`MAX_NAME_BYTES`]).
     pub fn name(&self) -> &[u8] {
         &self.name[..self.name_len]

@@ -1921,6 +1921,8 @@ fn idle_loop<P: Platform>() -> ! {
         // an interrupt: the timer's, or the wake-up interrupt from the CPU that made it ready
         // here or whose slice ended with threads ready. One already pending is taken at once.
         P::wait_for_interrupt();
+        #[cfg(feature = "qemu-bench")]
+        crate::bench::IDLE_WAKEUPS.fetch_add(1, Ordering::Relaxed);
     }
 }
 

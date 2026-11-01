@@ -129,6 +129,20 @@ const CLOCK_TAG: u8 = 0x80;
 
 const USER_INPUT_TAG: u8 = 0x81;
 
+const DEVICE_TAG: u8 = 0x82;
+
+/// The bytes the kernel asks a device's random number generator for at each reseed from it.
+pub const DEVICE_SEED_BYTES: usize = 32;
+
+/// Hashes `bytes` from a device's random number generator (virtio-rng) into the input, each
+/// byte credited with 8 bits as Linux credits virtio-rng, then reseeds ([`reseed`]); whether
+/// the generator is seeded (D219).
+pub fn reseed_from_device<P: Platform>(bytes: &[u8]) -> bool {
+    let bits = u32::try_from(bytes.len()).map_or(u32::MAX, |length| length.saturating_mul(8));
+    add_input(DEVICE_TAG, bytes, bits);
+    reseed::<P>()
+}
+
 /// Hashes `bytes` a program wrote to `/dev/random` or `/dev/urandom` into the input without
 /// crediting them, as Linux does: they can only add to what the generator knows. Takes effect
 /// at the next [`reseed`].
@@ -357,6 +371,14 @@ mod tests {
         fill::<P>(&mut bytes);
         let key = cpu::current::<P>().random.lock();
         assert!(key.generation > before);
+    }
+
+    #[test]
+    fn a_device_s_bytes_are_credited_and_reseed() {
+        let generation = GENERATION.load(Ordering::Acquire);
+        reseed_from_device::<P>(&[7; DEVICE_SEED_BYTES]);
+        assert!(GENERATION.load(Ordering::Acquire) > generation);
+        assert!(is_seeded());
     }
 
     #[test]

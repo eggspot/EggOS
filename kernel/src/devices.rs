@@ -364,11 +364,13 @@ impl Default for DeviceTable {
     }
 }
 
-/// A point on the platform's clock to poll a device until.
+/// A point on the platform's clock to poll a device until, or to sleep until while its
+/// interrupt is awaited.
 #[derive(Debug, Clone, Copy)]
 pub struct Deadline {
     ticks: fn() -> u64,
     end: u64,
+    park: fn(&interrupts::DeviceEvents, u64, u64) -> u64,
 }
 
 impl Deadline {
@@ -378,12 +380,26 @@ impl Deadline {
         Self {
             ticks: P::clock_ticks,
             end: P::clock_ticks().saturating_add(ticks),
+            park: interrupts::DeviceEvents::wait::<P>,
         }
     }
 
     /// Whether the deadline is still ahead: what a polling loop asks before it polls again.
     pub fn keep_waiting(&mut self) -> bool {
         (self.ticks)() < self.end
+    }
+
+    /// What a loop waiting for a device that interrupts asks before it looks again: sleeps
+    /// until `events` were raised since `seen` (which it updates) or the deadline, and says
+    /// whether the deadline was still ahead. Read `seen` ([`interrupts::DeviceEvents::raised`])
+    /// before the first look at the device. Call it as
+    /// [`interrupts::DeviceEvents::wait`] is called: with no lock held.
+    pub fn sleep_until_raised(&mut self, events: &interrupts::DeviceEvents, seen: &mut u64) -> bool {
+        if (self.ticks)() >= self.end {
+            return false;
+        }
+        *seen = (self.park)(events, *seen, self.end);
+        true
     }
 }
 

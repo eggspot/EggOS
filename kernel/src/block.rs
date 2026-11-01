@@ -55,6 +55,19 @@ pub trait BlockDevice: Send {
     fn flush(&mut self, _deadline: &mut Deadline) -> Result<(), BlockError> {
         Ok(())
     }
+    /// Reads every one of `reads`, each the sectors from its first one into its buffer, with as
+    /// many requests in flight at once as the device takes (D219); one after the other by
+    /// default.
+    fn read_many(
+        &mut self,
+        reads: &mut [(u64, &mut [u8])],
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
+        for (sector, buffer) in reads.iter_mut() {
+            self.read(*sector, buffer, deadline)?;
+        }
+        Ok(())
+    }
 }
 
 /// The names of the disks in `/dev`, by the place they were installed at.
