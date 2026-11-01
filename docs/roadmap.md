@@ -1114,15 +1114,15 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC, HPET: planned) |
 | x86 I/O APIC (lines routed by the MADT's overrides) | **done** (device lines through it: planned, M5) |
 | PCI MSI-X (the capability, the table in a BAR, entries masked while written) | **done** on x86_64 (D184) |
-| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184) | **done** (interrupts for block, console, GPU, network and entropy: planned) |
-| virtio-rng (polled) | **done** (D111) |
-| virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112) | **done** (cursor queue, interrupts: planned) |
+| virtio core: virtio-mmio (version 2), modern virtio-pci, the split virtqueue (D111); interrupts through the slot's line or MSI-X (D184); block, console, network and entropy on interrupts (D219) | **done** (the GPU's interrupts, a line per queue, lines through the I/O APIC and on other CPUs, lines given back: planned) |
+| virtio-rng, on interrupts, reseeding the kernel's generator at boot (D111, D219) | **done** |
+| virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112); the cursor queue draws the pointer (D186) | **done** (interrupts, display mode changes: planned) |
 | virtio-input: keyboard, tablet and mouse, capabilities from the device's configuration, keyboard layouts with dead keys and AltGr, key repeat, Caps Lock's light, the input event queue (D113, D184, D185) | **done** (more layouts, Num and Scroll Lock lights: planned) |
-| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
-| virtio-blk (polled): capacity, read-only disks, reads, writes and flushes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
+| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114); the cursor blinks (D186) | **done** (2x scale: planned) |
+| virtio-blk: capacity, read-only disks, reads, writes and flushes of 512-byte sectors, up to 15 requests in flight, on interrupts (D130, D219); a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** |
 | EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync`, symbolic and hard links (D170), an offline check and repair (D192) (D131, docs/eggfs.md) | **done** (several requests in flight, access times: planned) |
-| virtio-console (the agent channel's named port, D136) | **done** |
-| virtio-net (polled): hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157) | **done** (interrupts, offloads, several adapters: planned) |
+| virtio-console (the agent channel's named port, D136), on interrupts (D219) | **done** (its input as a console: planned) |
+| virtio-net: hardware address, link state and MTU from the configuration, 16 receive and 16 transmit buffers (D157), on interrupts (D219) | **done** (offloads, several adapters: planned) |
 
 ## Toward "better than macOS, Windows and Linux"
 

@@ -31,7 +31,10 @@ at the next boot; without a disk the pane says `No disk attached: this choice la
 power-off.`
 
 **Display** shows the resolution, the scale (1x) and how the pointer is drawn; **Keyboard** the
-layout (US); **About** the version, the architecture, the CPUs, the memory and the uptime;
+layout (US); **About** the version, the architecture, the CPUs, the memory and the uptime, and under them
+the machine's devices (D219, docs/ux/devices-v0.3.md): a table of `Kind`, `Device` and
+`Driver` with the rows `device list` prints, read from `/proc/driver/devices` each time the pane
+is shown, and `Show all <n> devices` for every device, unticked whenever the pane opens;
 **Mouse** and **Components** come in a later version. The scale is 1x in 0.3.0 (the `2x`
 choice is shown disabled).
 

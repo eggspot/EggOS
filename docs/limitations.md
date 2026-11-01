@@ -16,14 +16,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   aarch64, 161 ms on riscv64 and 261 ms on x86_64 from QEMU's start, on CI's machines on
   2026-10-29; the release notes give each image's own figure).
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse
-  (on interrupts, D184), virtio-blk (polled, one request at a time, for the host folder), the
-  real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (polled, the
-  first adapter only, D157) and on test kernels virtio-rng. Nothing else is driven: no Wi-Fi,
-  no sound, no USB (D110-D113, D130). `device list` and `device_list` show the devices as of
-  boot (no hot-plug); Settings' About does not list them yet; two virtio input devices read
+  (on interrupts, D184), virtio-blk (up to 15 requests in flight, on interrupts, D219), the
+  real-time clock (x86_64 CMOS, AArch64 PL031, RISC-V Goldfish, D150), virtio-net (on
+  interrupts, the first adapter only, D157, D219), virtio-console (the agent channel, on
+  interrupts) and on test kernels virtio-rng, which reseeds the kernel's generator at boot only.
+  A driver whose device's interrupt cannot be routed polls it as before. Nothing else is
+  driven: no Wi-Fi, no sound, no USB (D110-D113, D130). `device list`, `device_list` and
+  Settings' About show the devices as of boot (no hot-plug); two virtio input devices read
   alike; the console UART and the interrupt controller, set up before the driver model, read
-  `No driver`. A display mode change (QEMU's window resized) is not followed, virtio-console
-  input is not a console, and the kernel's random generator is not reseeded from virtio-rng.
+  `No driver`. About's table keeps its columns' widths when the window is wider and has no
+  two-line rows for narrow windows or touch yet; it lists at most 64 devices. Every device line
+  goes to the boot CPU, a device has one line for all its queues, x86 devices without MSI-X
+  have none (no I/O APIC lines), and a line is never given back, even when connecting it
+  failed. A display mode change (QEMU's window resized) is not followed, the GPU is polled,
+  and virtio-console input is not a console (D219).
 - **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
   adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
   `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://` and
@@ -36,8 +42,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
   multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
   `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
-  docs/ux/network-v0.3.md). The adapter is polled (50 wakeups a second when idle) until drivers
-  run on interrupts. On riscv64, `--mcp --apps` with a disk and the network takes more than
+  docs/ux/network-v0.3.md). The adapter interrupts (D219); while TCP connections are open its
+  thread still wakes every 20 ms for their timers. On riscv64, `--mcp --apps` with a disk and the network takes more than
   the machine's eight virtio slots: add `--no-network` there.
 
 ## What the system can do
@@ -75,7 +81,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   close only at the next commit, and one left open at power-off at the next mount; removing
   the name in the folder a multiply named file was made in walks the whole tree for another;
   version 1 disks mount and become version 2 at their first link. It searches directories linearly,
-  and keeps one request to the disk in flight; moving a file between `/home` and
+  and waits for each transfer to the disk before the next (the driver takes up to 15
+  requests at once, D219, but EggFS asks for one transfer at a time); moving a file between `/home` and
   `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
   FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
   GiB when QEMU's `qemu-img` is missing, and nothing stops two QEMUs sharing one image (macOS

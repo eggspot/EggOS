@@ -24,7 +24,8 @@ address usually comes within milliseconds. `ip addr` shows it.
 
 ## What works
 
-- **Adapters.** virtio-net (D157), polled, the first one only. The interface is `eth0`; `lo`
+- **Adapters.** virtio-net (D157), on interrupts where the machine routes them (D219), the
+  first one only. The interface is `eth0`; `lo`
   (127.0.0.1/8) always exists, and packets to `127.0.0.0/8` or to the machine's own address
   never leave it.
 - **DHCP.** The kernel asks for an address at boot and keeps it: it renews the lease halfway
@@ -82,8 +83,11 @@ What the kernel reports, all read-only:
 - `net/` (`eggos-net`): the protocols, without allocation, clock or device, shared by the
   kernel, the utilities and the tests: Ethernet, ARP, IPv4, ICMP echo, UDP, the DHCP client,
   DNS messages, one interface's stack and the status text.
-- `kernel/src/net.rs`: the adapter, its interface and the thread that polls it (every
-  millisecond while frames move, every 20 ms otherwise); `net/endpoints.rs` the UDP ports and
+- `kernel/src/net.rs`: the adapter, its interface and the thread that runs it: woken by the
+  adapter's interrupt when frames arrive (`net::DEVICE_EVENTS`, D219) or when an interface
+  timer is due, and while TCP connections are open every millisecond while frames move and
+  every 20 ms otherwise for their timers; an adapter that cannot interrupt is polled at those
+  intervals; `net/endpoints.rs` the UDP ports and
   ping identifiers and their queues (212992 bytes each by default, within the kernel's
   reserve for programs, D155); `net/resolv_conf.rs` the served `/etc/resolv.conf`.
 - `net/` also holds TCP (`tcp.rs`: segments and one connection's state machine over its
