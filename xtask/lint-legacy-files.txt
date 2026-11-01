@@ -31,7 +31,6 @@ hal/src/time.rs 4
 hal/src/user.rs 1
 kernel/build.rs 4
 kernel/src/address_space.rs 48
-kernel/src/bench.rs 69
 kernel/src/cpu.rs 23
 kernel/src/elf.rs 9
 kernel/src/exception.rs 1

@@ -6,6 +6,81 @@ result is an instruction count per iteration (D27), compared with `benchmarks/ba
 exactly by default (what `cargo xtask ci` and the weekly performance pass run), report-only with
 `--report-only` (CI's mode: every change reported, a result more than 2x slower fails, D122).
 
+## Kernel core
+
+- `empty_loop`: the loop alone, so the per-iteration overhead every other result includes is
+  visible.
+- `linux_clock_monotonic_read` and `linux_clock_realtime_read`: what
+  `clock_gettime(CLOCK_MONOTONIC)` and every other clock read cost beyond the system-call round
+  trip (D73): the clock read and its conversion to nanoseconds.
+- `random_fill_16` and `random_fill_4096`: `N` bytes from the random number generator (D56): with
+  16, one draw, what `AT_RANDOM` costs each program; with 4096, a stream from a draw's key,
+  `getrandom`'s long path without the copy to the program.
+- `breakpoint_round_trip`: exception entry, the kernel's handler and the return: the path syscalls
+  and page faults will take (D25).
+- `frame_allocate_untouched`: allocating never-used frames, the path every frame takes first.
+  Untouched frames are not written, so the range can be any addresses. Twice the frames allocated,
+  so the buddy allocator's bitmap (taken from the top, never written here) leaves `n` untouched
+  frames.
+- `frame_free_allocate`: freeing a frame and allocating it again: the free stack's push and pop,
+  the steady-state path once memory has been recycled. The frame is a page of this function's
+  stack, which the allocator reaches at its own address (offset 0).
+- `frame_contiguous_allocate_free`: allocating and freeing a block of 4 contiguous frames from the
+  kernel's frame allocator: the buddy allocator's split on allocation and merge on free (D31), the
+  path of heap allocations larger than a frame. Runs after the self-tests, so the allocator is in
+  place; without one, nothing is timed.
+- `heap_allocate_free_small`: allocating and freeing a small block through the kernel's global
+  heap: taking and releasing its lock around a size class's free-list pop and push, the steady
+  state of `Box` and small `Vec`s. Runs after the self-tests, so the frame allocator is in place;
+  without one every allocation fails and only the failure path is timed.
+- `thread_yield_round_trip`: the boot thread and one other passing the CPU back and forth through
+  `yield_now`: per iteration two switches (D35), each with the scheduler's queue rotation and a
+  stack canary check. Includes starting and joining the thread once per run, a few hundred
+  instructions spread over the iterations. Without a frame allocator for the stack, nothing is
+  timed.
+- `preemption_point_idle`: a preemption point in a time slice that is not over: the window for a
+  pending interrupt and the check, which long-running kernel code pays per call (D37).
+- `wait_queue_wake_empty`: waking a wait queue nobody waits in: what code that changes a condition
+  pays when no thread waits for it (D39).
+- `thread_wait_wake_round_trip`: the boot thread and one other handing a turn back and forth
+  through two wait queues: per iteration each thread wakes the other and blocks until its turn
+  comes, so two wakes, two condition checks that fail and two that hold, and two switches (D39).
+  Includes starting and joining the thread once per run, as in `thread_yield_round_trip`.
+- `syscall_round_trip`: a null system call from user mode and back (D47): the HAL's test program
+  makes system call 2 in a loop; each iteration is its `svc`/`ecall`/`syscall` into the kernel, the
+  kernel looking at why, and the return to the program. The program's address space stays active
+  throughout, as for a process making system calls. Setting the program up and freeing it is timed
+  too, amortized over the iterations.
+- `process_syscall_round_trip`: a null system call from a process's own thread (D48):
+  `syscall_round_trip` plus what the thread's loop adds per call, its preemption point, the check
+  that the address space is loaded and the call to its handler. Includes starting the process and
+  its thread and joining it once per run.
+- `linux_syscall_round_trip`: an unknown Linux system call from a Linux program's thread (M6):
+  `process_syscall_round_trip` with the Linux layer's handler, whose dispatch answers `ENOSYS`, its
+  cheapest path, as the thread's handler. Includes starting the process and its thread and joining
+  it once per run.
+- `linux_exec_load`: starting a Linux program from its ELF image (D51): a new process, the
+  self-test's image with only the code `linux_start` needs (D62) loaded into it with the
+  self-test's arguments and environment (its code, data and `.bss` mapped, its stack's region
+  recorded and its arguments' page mapped and laid out), then the process freed. Each page is a
+  frame of its own, zeroed: 1 for the stack (the rest of it is mapped as the program touches it,
+  D52), 6 for the program, and the tables, so the frames dominate.
+- `linux_mmap_munmap`: `mmap` of 16 anonymous pages and `munmap` of them again (D53), as a
+  program's allocator reserves and returns memory: the arguments checked, the region placed
+  top-down, inserted and removed, the tables walked for pages to unmap (none: they were never
+  touched), this CPU's translations of the range dropped (the address space is active, as for the
+  program's own call) and the other CPUs' records looked at. Without the trap from user mode
+  (`linux_syscall_round_trip` has it).
+- `process_switch_round_trip`: two processes' threads taking turns on one CPU, each yielding at
+  every null system call (D48): per iteration two system calls, two thread switches and two
+  address-space switches, with what each switch costs on the CPU afterwards (the user translations
+  it drops). Compare with `process_syscall_round_trip` and `thread_yield_round_trip`. Includes
+  starting and joining both once per run.
+- `fp_process_switch_round_trip`: `process_switch_round_trip` with programs that use their FP/SIMD
+  registers (D54), each checking every one after each call (`TestProgram::fp_registers`): per
+  iteration also two saves and two loads of FP/SIMD registers, and the program's checks. Compare
+  with `process_switch_round_trip`.
+
 ## Timers
 
 - `timer_arm`: arms the one-shot timer for a deadline far ahead, so it never fires during the

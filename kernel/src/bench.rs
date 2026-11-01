@@ -53,11 +53,8 @@ pub const MARKER: &str = "EGGOS-BENCH:";
 pub const ITERATIONS: u64 = 10_000;
 const WARMUP_ITERATIONS: u64 = 100;
 
-/// Benchmarks whose one iteration is a whole job (a photo decoded), with the iterations each is
-/// timed over after a single untimed one: under `-icount` a few give the same exact count.
 const LONG_BENCHMARKS: [(&str, u64); 1] = [("image_decode_jpeg_640x480", 20)];
 
-/// The untimed and the timed iterations of benchmark `name`.
 fn iterations_of(name: &str) -> (u64, u64) {
     match LONG_BENCHMARKS.iter().find(|(long, _)| *long == name) {
         Some(&(_, iterations)) => (1, iterations),
@@ -279,7 +276,6 @@ fn net_rx_wakeup<P: Platform>(n: u64) {
     network.join::<P>();
 }
 
-/// The loop alone, so the per-iteration overhead every other result includes is visible.
 fn empty_loop(n: u64) {
     for i in 0..n {
         black_box(i);
@@ -292,8 +288,6 @@ fn clock_read<P: Platform>(n: u64) {
     }
 }
 
-/// What `clock_gettime(CLOCK_MONOTONIC)` and every other clock read cost beyond the system-call
-/// round trip (D73): the clock read and its conversion to nanoseconds.
 fn linux_clock_monotonic_read<P: Platform>(n: u64) {
     for _ in 0..n {
         black_box(linux::time::monotonic_nanoseconds::<P>());
@@ -306,9 +300,6 @@ fn linux_clock_realtime_read<P: Platform>(n: u64) {
     }
 }
 
-/// `N` bytes from the random number generator (D56): with 16, one draw, what `AT_RANDOM`
-/// costs each program; with 4096, a stream from a draw's key, `getrandom`'s long path
-/// without the copy to the program.
 fn random_fill<P: Platform, const N: usize>(n: u64) {
     let mut bytes = [0u8; N];
     for _ in 0..n {
@@ -1300,8 +1291,6 @@ fn device_tree_walk(n: u64) {
     }
 }
 
-/// Exception entry, the kernel's handler and the return: the path syscalls and page faults
-/// will take (D25).
 fn breakpoint_round_trip<P: Platform>(n: u64) {
     for _ in 0..n {
         P::breakpoint();
@@ -1328,9 +1317,6 @@ fn timer_interrupt_round_trip<P: Platform>(n: u64) {
     }
 }
 
-/// Allocating never-used frames, the path every frame takes first. Untouched frames are not
-/// written, so the range can be any addresses. Twice the frames allocated, so the buddy
-/// allocator's bitmap (taken from the top, never written here) leaves `n` untouched frames.
 fn frame_allocate_untouched(n: u64) {
     let mut map = MemoryMap::new();
     map.add_ram(PhysicalRange::from_start_length(
@@ -1343,9 +1329,6 @@ fn frame_allocate_untouched(n: u64) {
     }
 }
 
-/// Freeing a frame and allocating it again: the free stack's push and pop, the steady-state
-/// path once memory has been recycled. The frame is a page of this function's stack, which
-/// the allocator reaches at its own address (offset 0).
 fn frame_free_allocate(n: u64) {
     #[repr(C, align(4096))]
     struct Page(core::mem::MaybeUninit<[u8; FRAME_SIZE as usize]>);
@@ -1368,10 +1351,6 @@ fn frame_free_allocate(n: u64) {
     black_box(&mut page);
 }
 
-/// Allocating and freeing a block of 4 contiguous frames from the kernel's frame allocator: the
-/// buddy allocator's split on allocation and merge on free (D31), the path of heap allocations
-/// larger than a frame. Runs after the self-tests, so the allocator is in place; without one,
-/// nothing is timed.
 fn frame_contiguous_allocate_free(n: u64) {
     let mut frames = FRAMES.lock();
     let Some(frames) = frames.as_mut() else {
@@ -1385,10 +1364,6 @@ fn frame_contiguous_allocate_free(n: u64) {
     }
 }
 
-/// Allocating and freeing a small block through the kernel's global heap: taking and releasing
-/// its lock around a size class's free-list pop and push, the steady state of `Box` and small
-/// `Vec`s. Runs after the self-tests, so the frame allocator is in place; without one every
-/// allocation fails and only the failure path is timed.
 fn heap_allocate_free_small(n: u64) {
     let layout = Layout::new::<[u64; 4]>();
     for _ in 0..n {
@@ -1401,10 +1376,6 @@ fn heap_allocate_free_small(n: u64) {
     }
 }
 
-/// The boot thread and one other passing the CPU back and forth through `yield_now`: per
-/// iteration two switches (D35), each with the scheduler's queue rotation and a stack canary
-/// check. Includes starting and joining the thread once per run, a few hundred instructions
-/// spread over the iterations. Without a frame allocator for the stack, nothing is timed.
 fn thread_yield_round_trip<P: Platform>(n: u64) {
     let Ok(other) = thread::spawn::<P, _>(move || {
         for _ in 0..n {
@@ -1419,16 +1390,12 @@ fn thread_yield_round_trip<P: Platform>(n: u64) {
     other.join::<P>();
 }
 
-/// A preemption point in a time slice that is not over: the window for a pending interrupt
-/// and the check, which long-running kernel code pays per call (D37).
 fn preemption_point_idle<P: Platform>(n: u64) {
     for _ in 0..n {
         thread::preemption_point::<P>();
     }
 }
 
-/// Waking a wait queue nobody waits in: what code that changes a condition pays when no
-/// thread waits for it (D39).
 fn wait_queue_wake_empty<P: Platform>(n: u64) {
     static QUEUE: thread::WaitQueue = thread::WaitQueue::new();
     for _ in 0..n {
@@ -1436,10 +1403,6 @@ fn wait_queue_wake_empty<P: Platform>(n: u64) {
     }
 }
 
-/// The boot thread and one other handing a turn back and forth through two wait queues: per
-/// iteration each thread wakes the other and blocks until its turn comes, so two wakes, two
-/// condition checks that fail and two that hold, and two switches (D39). Includes starting and
-/// joining the thread once per run, as in `thread_yield_round_trip`.
 fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
     static TURN: AtomicU64 = AtomicU64::new(0);
     static BOOT: thread::WaitQueue = thread::WaitQueue::new();
@@ -1501,11 +1464,6 @@ fn futex_wait_wake_round_trip<P: Platform>(n: u64) {
     other.join::<P>();
 }
 
-/// A null system call from user mode and back (D47): the HAL's test program makes system call
-/// 2 in a loop; each iteration is its `svc`/`ecall`/`syscall` into the kernel, the kernel
-/// looking at why, and the return to the program. The program's address space stays active
-/// throughout, as for a process making system calls. Setting the program up and freeing it is
-/// timed too, amortized over the iterations.
 fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
@@ -1525,10 +1483,6 @@ fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
-/// A null system call from a process's own thread (D48): `syscall_round_trip` plus what the
-/// thread's loop adds per call, its preemption point, the check that the address space is
-/// loaded and the call to its handler. Includes starting the process and its thread and
-/// joining it once per run.
 fn process_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
@@ -1551,9 +1505,6 @@ fn process_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     thread.join::<P>();
 }
 
-/// An unknown Linux system call from a Linux program's thread (M6): `process_syscall_round_trip`
-/// with the Linux layer's handler, whose dispatch answers `ENOSYS`, its cheapest path, as the
-/// thread's handler. Includes starting the process and its thread and joining it once per run.
 fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: as in `process_syscall_round_trip`.
     let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
@@ -1578,12 +1529,6 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     thread.join::<P>();
 }
 
-/// Starting a Linux program from its ELF image (D51): a new process, the self-test's image
-/// with only the code `linux_start` needs (D62) loaded into it with the self-test's arguments
-/// and environment (its code, data and `.bss` mapped, its stack's region recorded and its
-/// arguments' page mapped and laid out), then the process freed. Each page is a frame of its
-/// own, zeroed: 1 for the stack (the rest of it is mapped as the program touches it, D52), 6
-/// for the program, and the tables, so the frames dominate.
 fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let image = selftest::linux_start_only_image::<P>();
     let arguments = selftest::LINUX_START_ARGUMENTS.map(str::as_bytes);
@@ -1712,7 +1657,6 @@ fn linux_epoll_wake<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// The pages a Linux program's page faults map, in chunks of this many per process.
 const PAGE_FAULT_CHUNK: u64 = 512;
 
 fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
@@ -1736,12 +1680,6 @@ fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// `mmap` of 16 anonymous pages and `munmap` of them again (D53), as a program's allocator
-/// reserves and returns memory: the arguments checked, the region placed top-down, inserted
-/// and removed, the tables walked for pages to unmap (none: they were never touched), this
-/// CPU's translations of the range dropped (the address space is active, as for the program's
-/// own call) and the other CPUs' records looked at. Without the trap from user mode
-/// (`linux_syscall_round_trip` has it).
 fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::memory::{map, prot};
     const LENGTH: u64 = 16 * FRAME_SIZE;
@@ -1944,11 +1882,6 @@ fn linux_file_read<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// Two processes' threads taking turns on one CPU, each yielding at every null system call
-/// (D48): per iteration two system calls, two thread switches and two address-space switches,
-/// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
-/// with `process_syscall_round_trip` and `thread_yield_round_trip`. Includes starting and
-/// joining both once per run.
 fn process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let mut threads = [None, None];
     for thread in &mut threads {
@@ -1975,10 +1908,6 @@ fn process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// `process_switch_round_trip` with programs that use their FP/SIMD registers (D54), each
-/// checking every one after each call ([`TestProgram::fp_registers`]): per iteration also two
-/// saves and two loads of FP/SIMD registers, and the program's checks. Compare with
-/// `process_switch_round_trip`.
 fn fp_process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let mut threads = [None, None];
     for (number, thread) in threads.iter_mut().enumerate() {
@@ -2289,7 +2218,6 @@ mod tests {
         );
     }
 
-    /// Kernel memory for the benchmarks: page tables, active (frozen) as the kernel's are.
     fn page_tables_for_test() -> Memory<CountingPlatform> {
         let _frames = thread::host::frames_for_test();
         let mut frames = FRAMES.lock();
