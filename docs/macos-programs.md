@@ -303,7 +303,7 @@ What works:
   significant digits and floats with 7.
 
 A Foundation class the layer lacks stops the program only when it is first used:
-`eggos-macos: unimplemented Foundation class NSUUID`, status 127; a missing function
+`eggos-macos: unimplemented Foundation class NSXPCConnection`, status 127; a missing function
 names its library the same way (`unimplemented Foundation function NSHomeDirectory`).
 
 ## Swift programs

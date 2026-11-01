@@ -352,7 +352,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (argc > 1 && strcmp(argv[1], "unimplemented") == 0) {
-        say([[NSUUID UUID] UUIDString]);
+        say([[NSXPCConnection new] description]);
         return 1;
     }
     if (argc > 1 && strcmp(argv[1], "language") == 0) {

@@ -1114,7 +1114,7 @@ fn objc_program_output() -> [Vec<Line>; 6] {
     ]);
     let mut unimplemented: Vec<Line> = loads().collect();
     unimplemented.extend([
-        Line::Around("eggos-macos: unimplemented ", " class NSUUID"),
+        Line::Around("eggos-macos: unimplemented ", " class NSXPCConnection"),
         whole("MACOS-CONSOLE status 127"),
     ]);
     let mut bench: Vec<Line> = loads().collect();

@@ -2,10 +2,11 @@
 //! and their mutable and constant (compiler-emitted literal) classes, NSBundle, NSLog and the
 //! class and selector name functions, as classes of the layer's own Objective-C runtime; and
 //! (D175) NSException, NSProcessInfo, NSDate, NSError, NSData, NSSet, NSTimer, NSRunLoop and
-//! the string constants Foundation exports; and (D231) NSNotification and its center.
+//! the string constants Foundation exports; and (D231) NSNotification and its center and NSUUID.
 
 pub mod nib_archive;
 pub mod string_text;
+pub mod uuid;
 
 #[cfg(eggos_user)]
 mod array;
@@ -92,6 +93,7 @@ mod runtime {
         NSRUNLOOP, NSRUNLOOP_META;
         NSNOTIFICATION, NSNOTIFICATION_META;
         NSNOTIFICATIONCENTER, NSNOTIFICATIONCENTER_META;
+        NSUUID, NSUUID_META;
     }
 
     /// The class object `class` as the pointer the runtime takes.
@@ -186,6 +188,7 @@ mod runtime {
                 && set::define(runtime)
                 && timer::define(runtime)
                 && notification::define(runtime)
+                && super::uuid::define(runtime)
                 && super::description::extend_object(runtime)
         }) && number::set_up_booleans()
             && array::set_up_empty()
@@ -243,6 +246,8 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSNotification" => class(&NSNOTIFICATION_META),
             b"_OBJC_CLASS_$_NSNotificationCenter" => class(&NSNOTIFICATIONCENTER),
             b"_OBJC_METACLASS_$_NSNotificationCenter" => class(&NSNOTIFICATIONCENTER_META),
+            b"_OBJC_CLASS_$_NSUUID" => class(&NSUUID),
+            b"_OBJC_METACLASS_$_NSUUID" => class(&NSUUID_META),
             b"___NSArray0__struct" => Some(array::empty_address()),
             b"___NSDictionary0__struct" => Some(dictionary::empty_address()),
             b"___kCFBooleanTrue" => Some(number::boolean_object(true)),
