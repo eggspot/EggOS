@@ -74,8 +74,9 @@ pointer over the grid is `IBeam` (today `Arrow`), the `Arrow` over the padding.
 
 **Paste.** The clipboard's text is prepared as every terminal does: `CR LF` and `LF` become
 `CR` (the Enter key's byte, so a pasted script runs line by line), `TAB` is kept, every other
-control character and `ESC` is dropped (nothing pasted can be a sequence, and `ESC [ 201 ~`
-cannot be forged inside brackets); UTF-8 is passed through (the layout's non-ASCII bytes are
+control character and `ESC` is dropped, `DEL` and the C1 controls U+0080 to U+009F too (the
+8-bit CSI U+009B with its sequence; D222's research pass), so nothing pasted can be a sequence
+and `ESC [ 201 ~` cannot be forged inside brackets; UTF-8 is passed through (the layout's non-ASCII bytes are
 the same bytes, D185). With bracketed paste on (`CSI ? 2004 h`: the engine's `Modes` gains
 `bracketed_paste`, read by `Terminal::bracketed_paste()`), the bytes go between `ESC [ 200 ~`
 and `ESC [ 201 ~`. The paste is at most **64 KiB** (`PASTE_CAPACITY`, cut at a character
