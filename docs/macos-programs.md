@@ -422,9 +422,13 @@ lacks stops the app when it is first used (`eggos-macos: unimplemented AppKit cl
   still end the program at once), associated objects, key-value coding and observing,
   `NSInvocation` and message forwarding (`forwardInvocation:`, `forwardingTargetForSelector:`,
   `+resolveInstanceMethod:`), `method_setImplementation`, `class_replaceMethod`,
-  `conformsToProtocol:` and protocol objects, `objc_msgSend_fpret`, and most of Foundation:
-  NSFileManager, NSNotification, NSUUID, character sets, path methods, string encodings
-  (`dataUsingEncoding:`), locales, time zones and run loop modes. Dictionaries look keys up by
+  `conformsToProtocol:` and protocol objects, `objc_msgSend_fpret`, and much of Foundation:
+  NSURL (so `URLsForDirectory:inDomains:`), NSKeyedArchiver and NSKeyedUnarchiver, character
+  sets, path methods, locales and time zones. NSNotificationCenter, NSUUID, NSFileManager,
+  the search-path functions, string encodings, run loop modes, a run loop per thread and
+  `performSelector:withObject:afterDelay:` work (D231); a block observer's queue is ignored
+  (it is told on the posting thread), copying a folder refuses symbolic links in it, and a
+  thread sleeping in its run loop is not woken early by a timer another thread adds. Dictionaries look keys up by
   comparing them one by one (no hash index yet), and keep their keys in insertion order where
   macOS's order is unspecified, as sets keep their objects. Subclasses of Foundation's class clusters (a custom NSString subclass) are not
   supported. ARC's return-value handoff is not used yet, so returned objects always go
