@@ -457,6 +457,17 @@ mod tests {
     }
 
     #[test]
+    fn only_character_devices_have_device_numbers() {
+        let files = DeviceFiles;
+        let last = FIRST_PSEUDO_TERMINAL + u64::from(pseudo_terminal::MAX_PSEUDO_TERMINALS) + 8;
+        for node in 0..last {
+            if files.character_device(node).is_some() {
+                assert_eq!(files.kind(node), NodeKind::CharacterDevice, "node {node}");
+            }
+        }
+    }
+
+    #[test]
     fn the_directory_lists_the_window_device_and_its_number() {
         let files = DeviceFiles;
         let _guard = crate::agent_channel::tests_lock();

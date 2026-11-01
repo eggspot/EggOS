@@ -480,6 +480,10 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         self.changing(|volume| volume.set_permissions(node, permissions))
     }
 
+    fn keeps_holds(&self) -> bool {
+        true
+    }
+
     fn hold(&self, node: u64) {
         if node_kind(node) != NodeKind::Directory {
             let _ = self.volume().hold(node);

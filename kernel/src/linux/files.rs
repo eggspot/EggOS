@@ -319,12 +319,9 @@ fn open<P: Platform>(
     let caller = process.id().get();
     let follow_last = flags & open_flag::NOFOLLOW == 0;
     let mut created = false;
-    let found = match links_allowed {
-        true => vfs::resolve_as(root, start, path, caller, follow_last),
-        false => vfs::resolve_without_links(root, start, path, caller, follow_last),
-    };
-    let node = match found {
-        Ok(node) => node,
+    let found = vfs::resolve_with_kind(root, start, path, caller, follow_last, links_allowed);
+    let (node, kind) = match found {
+        Ok(found) => found,
         Err(vfs::Error::NotFound) if !only_path && flags & open_flag::CREAT != 0 => {
             let created_file = super::file_changes::create_file::<P>(
                 root,
@@ -337,7 +334,7 @@ fn open<P: Platform>(
             match created_file {
                 Ok(node) => {
                     created = true;
-                    node
+                    (node, node.kind())
                 }
                 Err(Errno::EROFS) => return Err(creation_error(caller, root, start, path)),
                 Err(error) => return Err(error),
@@ -355,8 +352,8 @@ fn open<P: Platform>(
             );
         }
     };
-    let directory = node.is_directory();
-    let kind = if only_path {
+    let directory = kind == NodeKind::Directory;
+    let file_kind = if only_path {
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
@@ -378,12 +375,16 @@ fn open<P: Platform>(
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
-        if node.kind() == NodeKind::SymbolicLink {
+        if kind == NodeKind::SymbolicLink {
             return Err(Errno::ELOOP);
         }
-        if let Some(device) = node.character_device() {
+        let device = match kind {
+            NodeKind::CharacterDevice => node.character_device(),
+            _ => None,
+        };
+        if let Some(device) = device {
             open_device(process, node, device, flags)?
-        } else if node.kind() == NodeKind::Socket {
+        } else if kind == NodeKind::Socket {
             return Err(Errno::ENXIO);
         } else {
             if !directory && (writes || flags & open_flag::TRUNC != 0) {
@@ -400,7 +401,7 @@ fn open<P: Platform>(
         true => open_flag::PATH,
         false => flags,
     };
-    let file = Arc::new(OpenFile::new(kind, status));
+    let file = Arc::new(OpenFile::new(file_kind, status));
     let limit = open_file_limit(process);
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let opened = thread

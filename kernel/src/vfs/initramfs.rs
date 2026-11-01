@@ -297,7 +297,7 @@ impl Initramfs {
             .entries
             .get(parent.first_child as usize..parent.end_of_children as usize)?;
         let index = children
-            .binary_search_by(|entry| self.entry_name(entry).cmp(name))
+            .binary_search_by(|entry| compare_names(self.entry_name(entry), name))
             .ok()?;
         Some(parent.first_child + index as u32)
     }
@@ -309,6 +309,18 @@ impl Initramfs {
 
     fn entry_at(&self, node: u64) -> &Entry {
         &self.entries[node as usize]
+    }
+}
+
+#[inline(always)]
+fn compare_names(name: &[u8], other: &[u8]) -> Ordering {
+    match name
+        .iter()
+        .zip(other)
+        .find(|(byte, other_byte)| byte != other_byte)
+    {
+        Some((byte, other_byte)) => byte.cmp(other_byte),
+        None => name.len().cmp(&other.len()),
     }
 }
 
@@ -498,6 +510,16 @@ pub mod tests {
             .map_while(|position| file_system.entry(directory, position))
             .map(|entry| entry.name.as_bytes().to_vec())
             .collect()
+    }
+
+    #[test]
+    fn names_compare_as_byte_strings() {
+        let names: [&[u8]; 8] = [b"", b"a", b"ab", b"abc", b"b", b"ba", b"etc", b"\xff"];
+        for name in names {
+            for other in names {
+                assert_eq!(compare_names(name, other), name.cmp(other));
+            }
+        }
     }
 
     #[test]

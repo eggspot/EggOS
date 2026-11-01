@@ -247,6 +247,7 @@ impl FileKind {
 pub struct OpenFile {
     kind: FileKind,
     status: AtomicU32,
+    held: bool,
     offset: AtomicU64,
 }
 
@@ -254,14 +255,19 @@ impl OpenFile {
     /// A description of `kind` opened with `flags`, of which it keeps the access mode and the
     /// status flags ([`open_flag::STATUS`]), at offset 0.
     pub fn new(kind: FileKind, flags: u32) -> Self {
-        if let Some(node) = kind.node() {
-            node.hold();
-        }
+        let held = match kind.node() {
+            Some(node) if node.file_system().keeps_holds() => {
+                node.hold();
+                true
+            }
+            _ => false,
+        };
         Self {
             kind,
             status: AtomicU32::new(
                 flags & (open_flag::ACCMODE | open_flag::STATUS | open_flag::PATH),
             ),
+            held,
             offset: AtomicU64::new(0),
         }
     }
@@ -340,14 +346,26 @@ impl OpenFile {
     }
 }
 
-impl Drop for OpenFile {
-    fn drop(&mut self) {
+impl OpenFile {
+    #[inline(never)]
+    fn report_close_and_release(&self) {
         super::file_locks::description_closed(self);
         if let FileKind::Regular(node) = &self.kind {
             super::inotify::closed(*node, self.is_writable());
         }
-        if let Some(node) = self.kind.node() {
+        if self.held
+            && let Some(node) = self.kind.node()
+        {
             node.release();
+        }
+    }
+}
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        let watched = super::inotify::WATCHES.load(Ordering::Relaxed) != 0;
+        if self.held || watched || super::file_locks::any_held() {
+            self.report_close_and_release();
         }
     }
 }

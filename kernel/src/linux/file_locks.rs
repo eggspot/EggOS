@@ -417,6 +417,12 @@ fn description(file: &OpenFile) -> Owner {
     Owner::Description(file as *const OpenFile as usize)
 }
 
+/// Whether any process holds a lock: while none does, closing a file has none to let go of.
+#[inline]
+pub fn any_held() -> bool {
+    LOCKS.load(Ordering::Relaxed) != 0
+}
+
 /// Lets go of the locks the open file description `file` holds: called as it goes, once its
 /// last descriptor is closed.
 pub fn description_closed(file: &OpenFile) {
