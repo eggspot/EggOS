@@ -287,6 +287,27 @@ pub fn unwind(
     reached
 }
 
+/// Whether unwinding from `start` (whose `pc` is a return address) reaches a frame whose
+/// establisher is `establisher`, so `unwind` to it would end there.
+pub fn reaches_frame(start: &Context, establisher: u64) -> bool {
+    let kinds = HandlerKinds {
+        exception: false,
+        termination: true,
+    };
+    let mut walk = Walk::new(start, true, kinds);
+    loop {
+        match walk.next() {
+            Event::End => return false,
+            Event::Frame(frame) if frame.establisher == establisher => return true,
+            Event::Catch {
+                catch,
+                function_skipped: true,
+            } if catch.parent_frame == establisher => return true,
+            Event::Frame(_) | Event::Bridge | Event::Catch { .. } => {}
+        }
+    }
+}
+
 const REWRITTEN: [usize; 5] = [
     UCONTEXT_SP,
     UCONTEXT_PC,

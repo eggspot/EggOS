@@ -18,7 +18,7 @@ use super::super::thread_environment::{self, teb};
 use super::context::{Context, capturing_entry};
 use super::dispatch::{self, NO_STATE, Origin, UnwindTarget};
 use super::frames::{self, Bridge};
-use super::{CatchState, DispatcherContext, ExceptionRecord, FrameData, disposition, flag};
+use super::{CatchState, DispatcherContext, ExceptionRecord, FrameData, disposition, flag, status};
 use crate::cxx_data::{
     self, Action, CXX_EXCEPTION, CXX_MAGIC, CatchableType, FunctionData, Handler, ThrowInfo,
     TryBlock, flags as cxx_flags,
@@ -424,8 +424,14 @@ unsafe fn frame_handler(
         return disposition::CONTINUE_SEARCH;
     };
     if unwinding {
+        // SAFETY: the handler's contract.
+        let long_jump = unsafe { (*record).code } == status::LONGJMP;
         let to = match dispatch::unwind_target() {
             Some(target) if target.frame == frame && target.state != NO_STATE => target.state,
+            Some(target) if target.frame == frame && long_jump => function.state_at(
+                target.ip.wrapping_sub(image.base).wrapping_sub(1),
+                data.function_begin,
+            ),
             _ => -1,
         };
         unwind_states(&function, frame, frame_pointer, state, to);

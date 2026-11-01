@@ -18,9 +18,11 @@ mod signal;
 mod vectored;
 
 use crate::library::Export;
-use context::{Context, unwinder};
+use context::unwinder;
 
+pub(in crate::win32) use context::{Context, capturing_entry};
 pub use dispatch::deliver_fault;
+pub(in crate::win32) use dispatch::{NO_STATE, UnwindTarget, reaches_frame, resume, unwind};
 pub use frames::{in_layer, set_image};
 
 /// Exception flags (`EXCEPTION_RECORD.ExceptionFlags`).
@@ -49,6 +51,7 @@ pub mod status {
     pub const NONCONTINUABLE_EXCEPTION: u32 = 0xc000_0025;
     pub const UNWIND: u32 = 0xc000_0027;
     pub const INVALID_UNWIND_TARGET: u32 = 0xc000_0029;
+    pub const LONGJMP: u32 = 0x8000_0026;
 }
 
 /// The most parameters an exception record holds.

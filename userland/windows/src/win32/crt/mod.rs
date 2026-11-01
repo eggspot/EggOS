@@ -5,8 +5,8 @@
 //! runtime's startup and exit functions here (`runtime.rs`) and a few kernel32 functions of its
 //! own (`startup.rs`). The rest is the C library: the heap (`heap.rs`), strings and characters
 //! (`string.rs`), streams and `printf` (`stdio.rs`), low-level I/O on descriptors
-//! (`low_level.rs`, D179), the math library (`math.rs`, D228), and the utility and time functions
-//! (`utility.rs`). Exception
+//! (`low_level.rs`, D179), the math library (`math.rs`, D228), `setjmp` (`setjmp.rs`, D228),
+//! and the utility and time functions (`utility.rs`). Exception
 //! handling, C's and C++'s, and `signal` are in `win32/exception` (D177); both runtimes' lists
 //! include their functions. MinGW-w64's programs import the old C runtime, `msvcrt.dll` (D189):
 //! the same functions, its own names where they differ (`msvcrt.rs`), its `FILE` array and its
@@ -19,6 +19,7 @@ mod low_level;
 mod math;
 mod msvcrt;
 mod runtime;
+mod setjmp;
 mod startup;
 mod stdio;
 mod string;
@@ -57,6 +58,7 @@ pub(super) const UCRT: &[&[Export]] = &[
     low_level::EXPORTS,
     utility::EXPORTS,
     math::EXPORTS,
+    setjmp::EXPORTS,
     super::exception::CXX_UCRT_EXPORTS,
     super::exception::SIGNAL_EXPORTS,
 ];
@@ -76,6 +78,7 @@ pub(super) const MSVCRT: &[&[Export]] = &[
     low_level::EXPORTS,
     utility::EXPORTS,
     math::EXPORTS,
+    setjmp::EXPORTS,
     super::exception::C_SPECIFIC_EXPORTS,
     super::exception::CXX_EXPORTS,
     super::exception::CXX_UCRT_EXPORTS,

@@ -302,7 +302,7 @@ mod arch {
         };
     }
 
-    pub(in crate::win32::exception) use capturing_entry;
+    pub(in crate::win32) use capturing_entry;
 
     /// Where a fault's dispatch starts once the signal handler returns: the handler pointed
     /// the thread here with the exception, the signal frame's `ucontext_t` and the signal in
@@ -616,7 +616,7 @@ mod arch {
         };
     }
 
-    pub(in crate::win32::exception) use capturing_entry;
+    pub(in crate::win32) use capturing_entry;
 
     /// Where a fault's dispatch starts once the signal handler returns: the handler pointed
     /// the thread here with the exception, the signal frame's `ucontext_t` and the signal in
@@ -640,7 +640,7 @@ mod arch {
         [UCONTEXT_REGS, UCONTEXT_REGS + 8, UCONTEXT_REGS + 16];
 }
 
-pub(super) use arch::capturing_entry;
+pub(in crate::win32) use arch::capturing_entry;
 pub use arch::{
     Context, UCONTEXT_ARGUMENTS, UCONTEXT_PC, UCONTEXT_SP, capture, fault_entry, restore,
 };
