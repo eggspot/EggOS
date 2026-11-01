@@ -151,6 +151,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-image"
+version = "0.2.0"
+dependencies = [
+ "eggos-png",
+]
+
+[[package]]
 name = "eggos-init"
 version = "0.2.0"
 dependencies = [
